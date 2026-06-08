@@ -92,6 +92,27 @@ describe('reconcileDailyImport', () => {
     expect(result.strategies.map((strategy) => strategy.accountName)).toEqual(['LIVE1234']);
   });
 
+  it('attributes executions to strategies through matching order ids', () => {
+    const parsed = {
+      accounts: [{ accountName: 'ACC1', connection: 'Lucid', grossRealizedPnl: 0, accountBalance: 50000, weeklyPnl: 0 }],
+      strategies: [{ accountName: 'ACC1', strategyName: '0 - RBO-1.8', strategyFamily: 'RBO', enabled: true }],
+      orders: [
+        { accountName: 'ACC1', id: 'ORDER-1', strategyName: '0 - RBO-1.8' },
+      ],
+      executions: [
+        { accountName: 'ACC1', orderId: 'ORDER-1', action: 'Buy', quantity: 2, price: 19000 },
+        { accountName: 'ACC1', orderId: 'MANUAL-1', action: 'Sell', quantity: 2, price: 19010 },
+      ],
+    };
+
+    const result = reconcileDailyImport({ clientId: 'client-1', date: '2026-06-08', registry: {}, parsed });
+
+    expect(result.executions).toEqual([
+      expect.objectContaining({ orderId: 'ORDER-1', strategyName: '0 - RBO-1.8' }),
+      expect.objectContaining({ orderId: 'MANUAL-1', strategyName: '' }),
+    ]);
+  });
+
   it('recalculates flags after account registry classification changes', () => {
     const initial = reconcileDailyImport({
       clientId: 'client-1',

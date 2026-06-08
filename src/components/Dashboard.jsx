@@ -31,7 +31,13 @@ function MiniTimeline({ executions }) {
   );
 }
 
+function formatPrice(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '';
+}
+
 function AccountDetail({ row, executions, colSpan = 7 }) {
+  const [expandedStrategy, setExpandedStrategy] = useState('');
   const accountExecutions = executions.filter((execution) => execution.accountName === row.accountName);
   return (
     <tr className="account-detail-row">
@@ -41,13 +47,48 @@ function AccountDetail({ row, executions, colSpan = 7 }) {
             <h4>Strategies</h4>
             {row.strategies?.length ? (
               <div className="strategy-detail-list">
-                {row.strategies.map((strategy) => (
-                  <div className="strategy-detail" key={`${row.accountName}-${strategy.strategyName}`}>
-                    <strong>{strategy.strategyName}</strong>
-                    <span>{strategy.instrument} · {strategy.enabled ? 'Enabled' : 'Disabled'}{strategy.strategyFamily === 'Bullet Bot' && strategy.direction ? ` · ${strategy.direction}` : ''}</span>
-                    <span>Realized {formatCurrency(strategy.realized)} · Unrealized {formatCurrency(strategy.unrealized)}</span>
-                  </div>
-                ))}
+                {row.strategies.map((strategy) => {
+                  const key = `${row.accountName}-${strategy.strategyName}`;
+                  const strategyExecutions = accountExecutions.filter((execution) => execution.strategyName === strategy.strategyName);
+                  return (
+                    <div className="strategy-detail" key={key}>
+                      <button
+                        className="strategy-detail-toggle"
+                        onClick={() => setExpandedStrategy((current) => (current === key ? '' : key))}
+                      >
+                        <span>
+                          <strong><ChevronDown className={expandedStrategy === key ? 'chevron open' : 'chevron'} size={14} /> {strategy.strategyName}</strong>
+                          <small>{strategy.instrument} · {strategy.enabled ? 'Enabled' : 'Disabled'}{strategy.strategyFamily === 'Bullet Bot' && strategy.direction ? ` · ${strategy.direction}` : ''}</small>
+                        </span>
+                        <span>
+                          <small>Realized {formatCurrency(strategy.realized)} · Unrealized {formatCurrency(strategy.unrealized)}</small>
+                          <small>{strategyExecutions.length} executions</small>
+                        </span>
+                      </button>
+                      {expandedStrategy === key ? (
+                        <div className="strategy-trades">
+                          {strategyExecutions.length ? (
+                            <table className="mini-table">
+                              <thead><tr><th>Time</th><th>Action</th><th>Qty</th><th>Price</th><th>E/X</th><th>Name</th></tr></thead>
+                              <tbody>
+                                {strategyExecutions.map((execution) => (
+                                  <tr key={`${execution.id || execution.orderId}-${execution.time}-${execution.name}`}>
+                                    <td>{execution.time || '-'}</td>
+                                    <td>{execution.action || '-'}</td>
+                                    <td>{execution.quantity || 0}</td>
+                                    <td>{formatPrice(execution.price)}</td>
+                                    <td>{execution.entryExit || '-'}</td>
+                                    <td>{execution.name || '-'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : <p className="muted">No trades attributed to this strategy today.</p>}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             ) : <p className="muted">No strategies linked to this account in this close.</p>}
           </div>

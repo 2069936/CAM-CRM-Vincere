@@ -116,7 +116,13 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
   const sourceAccounts = (parsed.accounts || []).filter((account) => !isSimulatorAccount(account.accountName));
   const strategies = (parsed.strategies || []).filter((strategy) => !isSimulatorAccount(strategy.accountName));
   const orders = (parsed.orders || []).filter((order) => !isSimulatorAccount(order.accountName));
-  const executions = (parsed.executions || []).filter((execution) => !isSimulatorAccount(execution.accountName));
+  const orderStrategyById = Object.fromEntries(orders.map((order) => [order.id, order.strategyName || '']));
+  const executions = (parsed.executions || [])
+    .filter((execution) => !isSimulatorAccount(execution.accountName))
+    .map((execution) => ({
+      ...execution,
+      strategyName: orderStrategyById[execution.orderId] || '',
+    }));
   const strategiesByAccount = groupStrategiesByAccount(strategies);
   const seen = new Set();
 
