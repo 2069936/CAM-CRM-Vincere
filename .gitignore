@@ -21,6 +21,7 @@ dist-ssr
 *.xlsx
 NinjaTrader Grid*.csv
 Vincere Trading 6.0/
+public/strategy-set-index.json
 
 # Editor directories and files
 .vscode/*

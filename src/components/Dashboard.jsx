@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw } from 'lucide-react';
 import { formatCurrency, summarizeAccountRows } from '../domain/report';
+import { enrichStrategyWithSetMatch } from '../domain/xmlMatch';
 
 function Metric({ label, value, tone }) {
   return (
@@ -45,6 +46,11 @@ function formatStrategySettings(strategy) {
   return parts.join(' · ');
 }
 
+function formatConfigMatch(match) {
+  if (!match?.matched) return match?.reason || '';
+  return [match.risk, match.setVersion, match.period ? `Period ${match.period}` : '', match.passType, match.direction].filter(Boolean).join(' · ');
+}
+
 function AccountDetail({ row, executions, colSpan = 7 }) {
   const [expandedStrategy, setExpandedStrategy] = useState('');
   const accountExecutions = executions.filter((execution) => execution.accountName === row.accountName);
@@ -60,6 +66,7 @@ function AccountDetail({ row, executions, colSpan = 7 }) {
                   const key = `${row.accountName}-${strategy.strategyName}`;
                   const strategyExecutions = accountExecutions.filter((execution) => execution.strategyName === strategy.strategyName);
                   const settings = formatStrategySettings(strategy);
+                  const configLabel = formatConfigMatch(strategy.configMatch);
                   return (
                     <div className="strategy-detail" key={key}>
                       <button
@@ -69,6 +76,7 @@ function AccountDetail({ row, executions, colSpan = 7 }) {
                         <span>
                           <strong><ChevronDown className={expandedStrategy === key ? 'chevron open' : 'chevron'} size={14} /> {strategy.strategyName}</strong>
                           <small>{strategy.instrument} · {strategy.enabled ? 'Enabled' : 'Disabled'}{strategy.strategyFamily === 'Bullet Bot' && strategy.direction ? ` · ${strategy.direction}` : ''}</small>
+                          {configLabel ? <small>{configLabel}</small> : null}
                           {settings ? <small>{settings}</small> : null}
                         </span>
                         <span>
@@ -172,7 +180,7 @@ function AccountTable({ title, rows, executions, mode }) {
   );
 }
 
-export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, strategySetRecords = [] }) {
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -184,6 +192,10 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
   }
 
   const summary = summarizeAccountRows(rows);
+  const enrichedRows = rows.map((row) => ({
+    ...row,
+    strategies: (row.strategies || []).map((strategy) => enrichStrategyWithSetMatch(strategy, strategySetRecords)),
+  }));
   const relevantAccountNames = new Set(rows.map((row) => row.accountName));
   const flags = (dailyImport.flags || []).filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
   const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');
@@ -229,11 +241,11 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
 
       {title === 'Evaluations' ? (
         <>
-          <AccountTable title="Bullet Bot" rows={rows.filter((row) => row.meta?.accountType === 'Evaluation - Bullet Bot')} executions={dailyImport.executions || []} mode={mode} />
-          <AccountTable title="Standard Evaluations" rows={rows.filter((row) => row.meta?.accountType === 'Evaluation - Standard')} executions={dailyImport.executions || []} mode={mode} />
+          <AccountTable title="Bullet Bot" rows={enrichedRows.filter((row) => row.meta?.accountType === 'Evaluation - Bullet Bot')} executions={dailyImport.executions || []} mode={mode} />
+          <AccountTable title="Standard Evaluations" rows={enrichedRows.filter((row) => row.meta?.accountType === 'Evaluation - Standard')} executions={dailyImport.executions || []} mode={mode} />
         </>
       ) : (
-        <AccountTable title={title} rows={rows} executions={dailyImport.executions || []} mode={mode} />
+        <AccountTable title={title} rows={enrichedRows} executions={dailyImport.executions || []} mode={mode} />
       )}
     </div>
   );

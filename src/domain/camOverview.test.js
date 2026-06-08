@@ -154,4 +154,61 @@ describe('buildCamOverview', () => {
     expect(smallGroup.deviationFlags).toEqual([]);
     expect(flatGroup.deviationFlags).toEqual([]);
   });
+
+  it('attaches XML config matches and execution movement points to algorithm instances', () => {
+    const clients = [
+      {
+        id: 'client-a',
+        name: 'Amanda',
+        accountRegistry: { ACC1: { alias: 'Lucid - 1001' } },
+        dailyImports: [{
+          id: 'client-a-close',
+          importedAt: '2026-06-08T22:00:00.000Z',
+          executions: [
+            { accountName: 'ACC1', strategyName: '2 - RBO-1.8', time: '9:30 AM', price: 100, action: 'Buy' },
+            { accountName: 'ACC1', strategyName: '2 - RBO-1.8', time: '9:45 AM', price: 108, action: 'Sell' },
+            { accountName: 'ACC1', strategyName: '0 - OGX-1.0', time: '10:00 AM', price: 200, action: 'Buy' },
+          ],
+          snapshots: [makeSnapshot({
+            accountName: 'ACC1',
+            strategies: [{
+              ...makeStrategy({ name: '2 - RBO-1.8', realized: 80 }),
+              params: {
+                parsed: true,
+                direction: 'Both',
+                posSizes: [2, 2, 2],
+                profitTargets: [155, 175, 250],
+                stopLossTicks: 105,
+              },
+            }],
+          })],
+        }],
+      },
+    ];
+    const setRecords = [{
+      family: 'RBO',
+      risk: 'Low Risk',
+      period: '2',
+      setVersion: 'v3',
+      signature: {
+        direction: 'Both',
+        posSizes: [2, 2, 2],
+        profitTargets: [155, 175, 250],
+        stopLossTicks: 105,
+      },
+    }];
+
+    const overview = buildCamOverview(clients, setRecords);
+
+    expect(overview.algorithms[0].items[0].configMatch).toMatchObject({
+      matched: true,
+      risk: 'Low Risk',
+      period: '2',
+      setVersion: 'v3',
+    });
+    expect(overview.algorithms[0].items[0].executionPoints).toEqual([
+      expect.objectContaining({ time: '9:30 AM', price: 100, action: 'Buy' }),
+      expect.objectContaining({ time: '9:45 AM', price: 108, action: 'Sell' }),
+    ]);
+  });
 });

@@ -1,4 +1,5 @@
 import { getLatestClientImport } from './demoStore';
+import { matchStrategySet } from './xmlMatch';
 
 function average(values) {
   if (!values.length) return 0;
@@ -32,7 +33,7 @@ function accountMeta(client, importResult, accountName) {
   };
 }
 
-export function buildCamOverview(clients = []) {
+export function buildCamOverview(clients = [], setRecords = []) {
   const groups = new Map();
 
   for (const client of clients) {
@@ -43,6 +44,15 @@ export function buildCamOverview(clients = []) {
       const meta = accountMeta(client, latestImport, snapshot.accountName);
       for (const strategy of snapshot.strategies || []) {
         const label = strategyLabel(strategy);
+        const executionPoints = (latestImport.executions || [])
+          .filter((execution) => execution.accountName === snapshot.accountName && execution.strategyName === strategy.strategyName)
+          .map((execution) => ({
+            time: execution.time || '',
+            price: Number(execution.price || 0),
+            action: execution.action || '',
+            entryExit: execution.entryExit || '',
+            quantity: Number(execution.quantity || 0),
+          }));
         const item = {
           clientId: client.id,
           clientName: client.name,
@@ -56,6 +66,8 @@ export function buildCamOverview(clients = []) {
           unrealized: Number(strategy.unrealized || 0),
           accountWeeklyPnl: Number(snapshot.weeklyPnl || 0),
           enabled: Boolean(strategy.enabled),
+          configMatch: matchStrategySet(strategy, setRecords),
+          executionPoints,
         };
 
         if (!groups.has(label.key)) {

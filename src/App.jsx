@@ -133,9 +133,9 @@ function ReportPanel({ client, dailyImport, onClose }) {
   );
 }
 
-function CamOverview({ clients }) {
+function CamOverview({ clients, strategySetRecords = [], strategySetIndexStatus }) {
   const [expandedAlgorithm, setExpandedAlgorithm] = useState('');
-  const overview = buildCamOverview(clients);
+  const overview = buildCamOverview(clients, strategySetRecords);
 
   return (
     <main className="content">
@@ -152,6 +152,16 @@ function CamOverview({ clients }) {
         <div className="metric"><span>Accounts running</span><strong>{overview.totals.accounts}</strong></div>
         <div className="metric"><span>Deviation alerts</span><strong>{overview.totals.openDeviationFlags}</strong></div>
       </div>
+
+      <section className="panel compact-panel">
+        <div className="panel-heading">
+          <h3>XML strategy index</h3>
+          <span className={strategySetRecords.length ? 'badge success' : 'badge muted'}>
+            {strategySetRecords.length ? `${strategySetRecords.length} set files` : strategySetIndexStatus}
+          </span>
+        </div>
+        <p className="muted">Risk, period, pass type, and set version are matched locally from the generated XML index when signatures are unique.</p>
+      </section>
 
       <section className={overview.deviationFlags.length ? 'panel danger-panel' : 'panel'}>
         <div className="panel-heading"><h3>Deviation alerts</h3><span className="count">{overview.deviationFlags.length}</span></div>
@@ -209,8 +219,12 @@ function CamOverview({ clients }) {
                               <div className="cam-instance" key={`${item.clientId}-${item.accountName}-${item.strategyName}`}>
                                 <strong>{item.clientName} · {item.accountAlias}</strong>
                                 <span>{item.strategyName || algorithm.algorithm} · {item.enabled ? 'Enabled' : 'Disabled'}</span>
+                                {item.configMatch?.matched ? (
+                                  <span>{[item.configMatch.risk, item.configMatch.setVersion, item.configMatch.period ? `Period ${item.configMatch.period}` : '', item.configMatch.passType].filter(Boolean).join(' · ')}</span>
+                                ) : <span>{item.configMatch?.reason || 'XML config unknown'}</span>}
                                 <span className={item.realized >= 0 ? 'positive' : 'negative'}>Daily realized {formatCurrency(item.realized)}</span>
                                 <span className={item.accountWeeklyPnl >= 0 ? 'positive' : 'negative'}>Account weekly {formatCurrency(item.accountWeeklyPnl)}</span>
+                                <MovementSparkline points={item.executionPoints || []} />
                               </div>
                             ))}
                           </div>
@@ -244,6 +258,27 @@ function CamOverview({ clients }) {
         </div>
       </section>
     </main>
+  );
+}
+
+function MovementSparkline({ points = [] }) {
+  const prices = points.map((point) => Number(point.price || 0)).filter((value) => Number.isFinite(value) && value > 0);
+  if (!prices.length) return <small className="muted">No execution movement for this strategy.</small>;
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const spread = max - min || 1;
+  const polyline = prices.map((price, index) => {
+    const x = prices.length === 1 ? 100 : (index / (prices.length - 1)) * 180;
+    const y = 42 - ((price - min) / spread) * 34;
+    return `${x},${y}`;
+  }).join(' ');
+  return (
+    <div className="movement-card">
+      <svg viewBox="0 0 180 50" role="img" aria-label="Strategy execution price movement">
+        <polyline points={polyline} fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <small>{prices.length} executions · {prices[0].toLocaleString('en-US')} → {prices.at(-1).toLocaleString('en-US')}</small>
+    </div>
   );
 }
 
@@ -287,8 +322,29 @@ export default function App() {
   const [showOverview, setShowOverview] = useState(false);
   const [reportImport, setReportImport] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
+  const [strategySetIndex, setStrategySetIndex] = useState({ status: 'Not loaded', records: [] });
 
   useEffect(() => saveDemoState(state), [state]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/strategy-set-index.json', { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        if (data?.records?.length) {
+          setStrategySetIndex({ status: 'Loaded', records: data.records });
+        } else {
+          setStrategySetIndex({ status: 'Run npm run xml:index', records: [] });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setStrategySetIndex({ status: 'Run npm run xml:index', records: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedClient = state.clients.find((client) => client.id === state.selectedClientId) || state.clients[0] || null;
   const dailyImport = selectedClient ? getClientImportByDate(selectedClient, selectedDate) : null;
@@ -413,7 +469,13 @@ export default function App() {
         </nav>
       </aside>
 
-      {showOverview ? <CamOverview clients={state.clients} /> : (
+      {showOverview ? (
+        <CamOverview
+          clients={state.clients}
+          strategySetRecords={strategySetIndex.records}
+          strategySetIndexStatus={strategySetIndex.status}
+        />
+      ) : (
         <main className="content">
           {!selectedClient ? (
             <div className="empty-state">
@@ -456,6 +518,7 @@ export default function App() {
                     mode={tabMode(effectiveActiveTab)}
                     onBuildReport={() => setReportImport(dailyImport)}
                     onRecalculate={recalculateImport}
+                    strategySetRecords={strategySetIndex.records}
                   />
                   <section className="panel">
                     <button className="registry-toggle" onClick={() => setRegistryOpen((value) => !value)}>
