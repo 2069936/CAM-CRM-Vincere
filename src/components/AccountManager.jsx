@@ -12,6 +12,7 @@ const ACCOUNT_TYPE_OPTIONS = [
 const STATUS_OPTIONS = Object.values(ACCOUNT_STATUSES);
 const PAYOUT_OPTIONS = Object.values(PAYOUT_STATES);
 const PASS_TYPES = ['', '1-day pass', '2-day pass', '3-day pass'];
+const DIRECTIONS = ['', 'Long', 'Short'];
 
 export default function AccountManager({ accounts, snapshots, onUpdateAccount }) {
   const rows = Object.values(accounts || {}).map((account) => ({
@@ -32,6 +33,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount })
             <th>Type</th>
             <th>Status</th>
             <th>Pass</th>
+            <th>Direction</th>
             <th>Payout</th>
             <th>Target</th>
             <th>Notes</th>
@@ -67,6 +69,15 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount })
                   onChange={(event) => onUpdateAccount(account.accountName, { bulletBotPassType: event.target.value })}
                 >
                   {PASS_TYPES.map((option) => <option key={option} value={option}>{option || 'N/A'}</option>)}
+                </select>
+              </td>
+              <td>
+                <select
+                  value={account.bulletBotDirection || ''}
+                  disabled={account.accountType !== ACCOUNT_TYPES.EVALUATION_BULLET}
+                  onChange={(event) => onUpdateAccount(account.accountName, { bulletBotDirection: event.target.value })}
+                >
+                  {DIRECTIONS.map((option) => <option key={option} value={option}>{option || 'N/A'}</option>)}
                 </select>
               </td>
               <td>

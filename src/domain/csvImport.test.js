@@ -55,6 +55,20 @@ describe('csvImport', () => {
     });
   });
 
+  it('infers strategy direction from NinjaTrader parameters when present', () => {
+    const csv = [
+      'Strategy,Instrument,Account display name,Data series,Parameters,Unrealized,Realized,Connection,Enabled',
+      '0 - Bullet Bot-1.1,NQ JUN26,ACC1,20 Second,False/10/V-C0E19E-F6089795-EF0841W/Short/2/155/1/1/2020 9:29:30 AM/1/1/2020 9:27:00 AM/110/1/1/2020 9:30:20 AM/1/1/2020 9:27:00 AM/True (Backtest/EntryOrderTickOffset/LicenseKey/MyTradeDirection/PositionSize/ProfitTargetTicks/RangeEnd/RangeStart/StopLossTicks/TradeEnd1/TradeStart1/TradeWindow1IsOn),$0.00,$0.00,Lucid,True',
+    ].join('\n');
+
+    const parsed = parseNinjaTraderCsvText(csv, 'strategies.csv');
+
+    expect(parsed.rows[0]).toMatchObject({
+      strategyFamily: 'Bullet Bot',
+      direction: 'Short',
+    });
+  });
+
   it('detects orders files by headers regardless of file name', () => {
     const csv = [
       'State,Account display name,Strategy,Instrument,Action,Type,Quantity,Limit,Stop,Filled,Avg. price,Remaining,Name,ID,Time',

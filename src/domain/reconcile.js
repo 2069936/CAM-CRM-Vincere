@@ -97,6 +97,18 @@ function createSnapshot(account, strategies) {
   };
 }
 
+function snapshotToAccount(snapshot) {
+  return {
+    accountName: snapshot.accountName,
+    connection: snapshot.connection,
+    grossRealizedPnl: snapshot.grossRealizedPnl,
+    trailingMaxDrawdown: snapshot.trailingMaxDrawdown,
+    accountBalance: snapshot.accountBalance,
+    weeklyPnl: snapshot.weeklyPnl,
+    unrealizedPnl: snapshot.unrealizedPnl,
+  };
+}
+
 export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) {
   const accountsByName = {};
   const snapshots = [];
@@ -199,5 +211,27 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
     orders,
     executions,
     flags,
+  };
+}
+
+export function recalculateDailyImport({ dailyImport, registry = {} }) {
+  const recalculated = reconcileDailyImport({
+    clientId: dailyImport.clientId,
+    date: dailyImport.date,
+    registry,
+    parsed: {
+      accounts: (dailyImport.snapshots || []).map(snapshotToAccount),
+      strategies: dailyImport.strategies || [],
+      orders: dailyImport.orders || [],
+      executions: dailyImport.executions || [],
+    },
+  });
+
+  return {
+    ...dailyImport,
+    status: recalculated.status,
+    accounts: recalculated.accounts,
+    snapshots: recalculated.snapshots,
+    flags: recalculated.flags,
   };
 }

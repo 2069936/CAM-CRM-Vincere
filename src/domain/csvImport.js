@@ -88,6 +88,18 @@ function parseBool(value) {
   return String(value || '').trim().toLowerCase() === 'true';
 }
 
+function inferDirection(parametersRaw) {
+  const text = String(parametersRaw || '');
+  const licenseAnchored = text.match(/\/V-[^/]+\/(Long|Short|Both)\//i);
+  if (licenseAnchored) return licenseAnchored[1][0].toUpperCase() + licenseAnchored[1].slice(1).toLowerCase();
+
+  const keyList = text.match(/\(([^)]*MyTradeDirection[^)]*)\)$/i);
+  if (!keyList) return '';
+
+  const generic = text.match(/\/(Long|Short|Both)\//i);
+  return generic ? generic[1][0].toUpperCase() + generic[1].slice(1).toLowerCase() : '';
+}
+
 function normalizeRow(row) {
   const normalized = {};
   for (const [key, value] of Object.entries(row)) {
@@ -127,13 +139,15 @@ function mapAccount(row) {
 }
 
 function mapStrategy(row) {
+  const parametersRaw = row.parameters || '';
   return {
     strategyName: row.strategy || '',
     strategyFamily: normalizeStrategyFamily(row.strategy),
     instrument: row.instrument || '',
     accountName: row.accountDisplayName || '',
     dataSeries: row.dataSeries || '',
-    parametersRaw: row.parameters || '',
+    parametersRaw,
+    direction: inferDirection(parametersRaw),
     unrealized: parseCurrency(row.unrealized),
     realized: parseCurrency(row.realized),
     connection: row.connection || '',

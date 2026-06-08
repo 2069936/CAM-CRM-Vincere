@@ -17,6 +17,7 @@ import {
   appendDailyImport,
   getClientImportByDate,
   loadDemoState,
+  replaceDailyImport,
   saveDemoState,
   selectClient,
   todayIsoDate,
@@ -24,7 +25,7 @@ import {
   updateImportStatus,
   upsertAccountMeta,
 } from './domain/demoStore';
-import { reconcileDailyImport } from './domain/reconcile';
+import { recalculateDailyImport, reconcileDailyImport } from './domain/reconcile';
 import { buildDailyReportSummary, formatCurrency } from './domain/report';
 
 const TABS = ['Evaluations', 'Funded', 'Credentials & Notes', 'Price Checks'];
@@ -217,6 +218,15 @@ export default function App() {
     setState((current) => updateImportStatus(current, selectedClient.id, dailyImport.id, 'Closed'));
   }
 
+  function recalculateImport() {
+    if (!selectedClient || !dailyImport) return;
+    const recalculated = recalculateDailyImport({
+      dailyImport,
+      registry: selectedClient.accountRegistry,
+    });
+    setState((current) => replaceDailyImport(current, selectedClient.id, recalculated));
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -291,7 +301,12 @@ export default function App() {
               {activeTab === 'Price Checks' ? <PriceChecksTab /> : null}
               {['Evaluations', 'Funded', 'Cash'].includes(activeTab) ? (
                 <>
-                  <Dashboard client={selectedClient} dailyImport={dailyImport} onBuildReport={() => setReportImport(dailyImport)} />
+                  <Dashboard
+                    client={selectedClient}
+                    dailyImport={dailyImport}
+                    onBuildReport={() => setReportImport(dailyImport)}
+                    onRecalculate={recalculateImport}
+                  />
                   <section className="panel">
                     <div className="panel-heading">
                       <h3>Account Registry</h3>

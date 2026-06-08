@@ -104,6 +104,17 @@ export function updateImportStatus(state, clientId, importId, status) {
   }));
 }
 
+export function replaceDailyImport(state, clientId, importResult) {
+  return updateClient(state, clientId, (client) => ({
+    ...client,
+    accountRegistry: {
+      ...client.accountRegistry,
+      ...importResult.accounts,
+    },
+    dailyImports: client.dailyImports.map((item) => (item.id === importResult.id ? importResult : item)),
+  }));
+}
+
 export function getLatestClientImport(client) {
   if (!client?.dailyImports?.length) return null;
   return [...client.dailyImports].sort((a, b) => String(b.importedAt || '').localeCompare(String(a.importedAt || '')))[0];

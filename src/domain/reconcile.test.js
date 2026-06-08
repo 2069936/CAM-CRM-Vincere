@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reconcileDailyImport } from './reconcile';
+import { recalculateDailyImport, reconcileDailyImport } from './reconcile';
 
 describe('reconcileDailyImport', () => {
   it('preserves existing manual classification and flags only new accounts', () => {
@@ -90,5 +90,34 @@ describe('reconcileDailyImport', () => {
     expect(Object.keys(result.accounts)).toEqual(['LIVE1234']);
     expect(result.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['LIVE1234']);
     expect(result.strategies.map((strategy) => strategy.accountName)).toEqual(['LIVE1234']);
+  });
+
+  it('recalculates flags after account registry classification changes', () => {
+    const initial = reconcileDailyImport({
+      clientId: 'client-1',
+      date: '2026-06-08',
+      registry: {},
+      parsed: {
+        accounts: [{ accountName: 'ACC1', connection: 'Lucid', grossRealizedPnl: 0, accountBalance: 50000 }],
+        strategies: [{ accountName: 'ACC1', strategyName: '0 - RBO-1.8', strategyFamily: 'RBO', enabled: true }],
+        orders: [],
+        executions: [],
+      },
+    });
+
+    const recalculated = recalculateDailyImport({
+      dailyImport: initial,
+      registry: {
+        ACC1: {
+          ...initial.accounts.ACC1,
+          accountType: 'Funded',
+          status: 'Active',
+        },
+      },
+    });
+
+    expect(initial.flags.map((flag) => flag.type)).toContain('Unassigned account');
+    expect(recalculated.flags.map((flag) => flag.type)).not.toContain('Unassigned account');
+    expect(recalculated.status).toBe('Ready to close');
   });
 });
