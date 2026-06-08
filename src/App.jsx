@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   BarChart3,
   CalendarDays,
@@ -28,7 +28,7 @@ import {
 import { recalculateDailyImport, reconcileDailyImport } from './domain/reconcile';
 import { buildDailyReportSummary, formatCurrency } from './domain/report';
 
-const TABS = ['Evaluations', 'Funded', 'Credentials & Notes', 'Price Checks'];
+const STATIC_TABS = ['Credentials & Notes', 'Price Checks'];
 
 function deriveClientBadge(client) {
   const latest = client.dailyImports.at(-1);
@@ -47,7 +47,8 @@ function filteredAccountsForTab(client, dailyImport, tab) {
   };
   const snapshots = dailyImport?.snapshots || [];
   const entries = Object.fromEntries(Object.entries(accounts).filter(([, account]) => {
-    if (tab === 'Evaluations') return account.accountType?.startsWith('Evaluation') || account.accountType === 'Unassigned';
+    if (tab === 'Review') return account.accountType === 'Unassigned' || account.accountType === 'Inactive / Ignore';
+    if (tab === 'Evaluations') return account.accountType?.startsWith('Evaluation');
     if (tab === 'Funded') return account.accountType === 'Funded';
     if (tab === 'Cash') return account.accountType === 'Cash';
     return true;
@@ -56,6 +57,26 @@ function filteredAccountsForTab(client, dailyImport, tab) {
     accounts: entries,
     snapshots: snapshots.filter((snapshot) => entries[snapshot.accountName]),
   };
+}
+
+function buildVisibleTabs(client, dailyImport) {
+  const accounts = {
+    ...(dailyImport?.accounts || {}),
+    ...(client?.accountRegistry || {}),
+  };
+  const values = Object.values(accounts);
+  const tabs = [];
+  if (values.some((account) => account.accountType === 'Unassigned' || account.accountType === 'Inactive / Ignore')) tabs.push('Review');
+  if (values.some((account) => account.accountType?.startsWith('Evaluation'))) tabs.push('Evaluations');
+  if (values.some((account) => account.accountType === 'Funded')) tabs.push('Funded');
+  if (values.some((account) => account.accountType === 'Cash')) tabs.push('Cash');
+  return [...tabs, ...STATIC_TABS];
+}
+
+function tabMode(tab) {
+  if (tab === 'Cash') return 'cash';
+  if (tab === 'Review') return 'review';
+  return 'standard';
 }
 
 function ReportPanel({ client, dailyImport, onClose }) {
@@ -176,13 +197,13 @@ export default function App() {
 
   const selectedClient = state.clients.find((client) => client.id === state.selectedClientId) || state.clients[0] || null;
   const dailyImport = selectedClient ? getClientImportByDate(selectedClient, selectedDate) : null;
-  const hasCash = selectedClient && Object.values(selectedClient.accountRegistry || {}).some((account) => account.accountType === 'Cash');
-  const visibleTabs = hasCash ? ['Evaluations', 'Funded', 'Cash', 'Credentials & Notes', 'Price Checks'] : TABS;
+  const visibleTabs = selectedClient ? buildVisibleTabs(selectedClient, dailyImport) : STATIC_TABS;
 
-  const currentTabData = useMemo(() => {
-    if (!selectedClient) return { accounts: {}, snapshots: [] };
-    return filteredAccountsForTab(selectedClient, dailyImport, activeTab);
-  }, [selectedClient, dailyImport, activeTab]);
+  const effectiveActiveTab = visibleTabs.includes(activeTab) ? activeTab : visibleTabs[0] || 'Credentials & Notes';
+
+  const currentTabData = selectedClient
+    ? filteredAccountsForTab(selectedClient, dailyImport, effectiveActiveTab)
+    : { accounts: {}, snapshots: [] };
 
   function handleAddClient(event) {
     event.preventDefault();
@@ -293,17 +314,19 @@ export default function App() {
 
               <div className="tabs">
                 {visibleTabs.map((tab) => (
-                  <button className={activeTab === tab ? 'active' : ''} key={tab} onClick={() => setActiveTab(tab)}>{tab}</button>
+                  <button className={effectiveActiveTab === tab ? 'active' : ''} key={tab} onClick={() => setActiveTab(tab)}>{tab}</button>
                 ))}
               </div>
 
-              {activeTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
-              {activeTab === 'Price Checks' ? <PriceChecksTab /> : null}
-              {['Evaluations', 'Funded', 'Cash'].includes(activeTab) ? (
+              {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
+              {effectiveActiveTab === 'Price Checks' ? <PriceChecksTab /> : null}
+              {['Review', 'Evaluations', 'Funded', 'Cash'].includes(effectiveActiveTab) ? (
                 <>
                   <Dashboard
-                    client={selectedClient}
                     dailyImport={dailyImport}
+                    rows={currentTabData.snapshots}
+                    title={effectiveActiveTab}
+                    mode={tabMode(effectiveActiveTab)}
                     onBuildReport={() => setReportImport(dailyImport)}
                     onRecalculate={recalculateImport}
                   />

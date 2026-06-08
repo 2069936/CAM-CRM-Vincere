@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDailyReportSummary } from './report';
+import { buildDailyReportSummary, summarizeAccountRows } from './report';
 
 describe('buildDailyReportSummary', () => {
   it('uses current account registry metadata over stale import metadata', () => {
@@ -33,5 +33,19 @@ describe('buildDailyReportSummary', () => {
 
     expect(report.grouped.funded).toHaveLength(1);
     expect(report.grouped.evaluations).toHaveLength(0);
+  });
+});
+
+describe('summarizeAccountRows', () => {
+  it('summarizes only the rows provided by the active tab', () => {
+    const rows = [
+      { accountName: 'CASH1', grossRealizedPnl: 10, weeklyPnl: 20, accountBalance: 1000 },
+    ];
+
+    const summary = summarizeAccountRows(rows);
+
+    expect(summary.counts.accounts).toBe(1);
+    expect(summary.totals.aggregateBalance).toBe(1000);
+    expect(summary.totals.grossRealizedPnl).toBe(10);
   });
 });

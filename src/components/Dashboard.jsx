@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw } from 'lucide-react';
-import { buildDailyReportSummary, formatCurrency } from '../domain/report';
+import { formatCurrency, summarizeAccountRows } from '../domain/report';
 
 function Metric({ label, value, tone }) {
   return (
@@ -62,9 +62,10 @@ function AccountDetail({ row, executions }) {
   );
 }
 
-function AccountTable({ title, rows, executions }) {
+function AccountTable({ title, rows, executions, mode }) {
   const [expandedAccount, setExpandedAccount] = useState('');
   if (!rows.length) return null;
+  const isCash = mode === 'cash';
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -76,12 +77,12 @@ function AccountTable({ title, rows, executions }) {
           <thead>
             <tr>
               <th>Account</th>
-              <th>Status</th>
-              <th>Strategies</th>
+              {!isCash ? <th>Status</th> : null}
+              {!isCash ? <th>Strategies</th> : null}
               <th>Daily PnL</th>
               <th>Weekly PnL</th>
-              <th>Drawdown</th>
               <th>Aggregate balance</th>
+              {!isCash ? <th>Drawdown</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -96,18 +97,20 @@ function AccountTable({ title, rows, executions }) {
                     <strong><ChevronDown className={expandedAccount === row.accountName ? 'chevron open' : 'chevron'} size={14} /> {row.meta.alias || row.accountName}</strong>
                     <small>{row.meta.connection || row.connection || 'No connection'}</small>
                   </td>
-                  <td>{row.meta.status || 'Active'}</td>
-                  <td>
-                    {row.strategies?.length ? row.strategies.map((strategy) => (
-                      <span className={strategy.enabled ? 'strategy enabled' : 'strategy'} key={`${row.accountName}-${strategy.strategyName}`}>
-                        {strategy.strategyFamily || strategy.strategyName}{strategy.direction ? ` · ${strategy.direction}` : ''}
-                      </span>
-                    )) : <span className="muted">None</span>}
-                  </td>
+                  {!isCash ? <td>{row.meta.status || 'Active'}</td> : null}
+                  {!isCash ? (
+                    <td>
+                      {row.strategies?.length ? row.strategies.map((strategy) => (
+                        <span className={strategy.enabled ? 'strategy enabled' : 'strategy'} key={`${row.accountName}-${strategy.strategyName}`}>
+                          {strategy.strategyFamily || strategy.strategyName}{strategy.direction ? ` · ${strategy.direction}` : ''}
+                        </span>
+                      )) : <span className="muted">None</span>}
+                    </td>
+                  ) : null}
                   <td className={row.grossRealizedPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.grossRealizedPnl)}</td>
                   <td className={row.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.weeklyPnl)}</td>
-                  <td>{formatCurrency(row.trailingMaxDrawdown)}</td>
                   <td>{formatCurrency(row.accountBalance)}</td>
+                  {!isCash ? <td>{formatCurrency(row.trailingMaxDrawdown)}</td> : null}
                 </tr>
                 {expandedAccount === row.accountName ? <AccountDetail row={row} executions={executions} /> : null}
               </Fragment>
@@ -119,7 +122,7 @@ function AccountTable({ title, rows, executions }) {
   );
 }
 
-export default function Dashboard({ client, dailyImport, onBuildReport, onRecalculate }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate }) {
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -130,16 +133,19 @@ export default function Dashboard({ client, dailyImport, onBuildReport, onRecalc
     );
   }
 
-  const report = buildDailyReportSummary(client, dailyImport);
-  const criticalFlags = report.flags.filter((flag) => flag.severity === 'Critical');
+  const summary = summarizeAccountRows(rows);
+  const relevantAccountNames = new Set(rows.map((row) => row.accountName));
+  const flags = (dailyImport.flags || []).filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
+  const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');
+  const isCash = mode === 'cash';
 
   return (
     <div className="dashboard-stack">
       <div className="metric-grid">
-        <Metric label="Accounts" value={report.counts.accounts} />
-        <Metric label="Daily/Gross PnL" value={formatCurrency(report.totals.grossRealizedPnl)} tone={report.totals.grossRealizedPnl >= 0 ? 'positive' : 'negative'} />
-        <Metric label="Weekly PnL" value={formatCurrency(report.totals.weeklyPnl)} tone={report.totals.weeklyPnl >= 0 ? 'positive' : 'negative'} />
-        <Metric label="Aggregate balance" value={formatCurrency(report.totals.aggregateBalance)} />
+        <Metric label={`${title} accounts`} value={summary.counts.accounts} />
+        <Metric label="Daily/Gross PnL" value={formatCurrency(summary.totals.grossRealizedPnl)} tone={summary.totals.grossRealizedPnl >= 0 ? 'positive' : 'negative'} />
+        <Metric label="Weekly PnL" value={formatCurrency(summary.totals.weeklyPnl)} tone={summary.totals.weeklyPnl >= 0 ? 'positive' : 'negative'} />
+        <Metric label={isCash ? 'Cash account balance' : 'Aggregate balance'} value={formatCurrency(summary.totals.aggregateBalance)} />
       </div>
 
       <section className={criticalFlags.length ? 'panel danger-panel' : 'panel'}>
@@ -154,9 +160,9 @@ export default function Dashboard({ client, dailyImport, onBuildReport, onRecalc
             </button>
           </div>
         </div>
-        {report.flags.length ? (
+        {flags.length ? (
           <div className="flag-list">
-            {report.flags.map((flag) => (
+            {flags.map((flag) => (
               <div className={`flag ${flag.severity.toLowerCase()}`} key={flag.id}>
                 {flag.severity === 'Critical' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
                 <div>
@@ -171,9 +177,7 @@ export default function Dashboard({ client, dailyImport, onBuildReport, onRecalc
         )}
       </section>
 
-      <AccountTable title="Evaluations" rows={report.grouped.evaluations} executions={dailyImport.executions || []} />
-      <AccountTable title="Funded" rows={report.grouped.funded} executions={dailyImport.executions || []} />
-      <AccountTable title="Cash Accounts" rows={report.grouped.cash} executions={dailyImport.executions || []} />
+      <AccountTable title={title} rows={rows} executions={dailyImport.executions || []} mode={mode} />
     </div>
   );
 }

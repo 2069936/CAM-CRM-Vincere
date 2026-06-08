@@ -496,6 +496,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   min-width: 120px;
 }
 
+.field-na {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  color: var(--muted);
+}
+
 .strategy {
   display: inline-flex;
   border-radius: 999px;
