@@ -15,6 +15,7 @@ dist-ssr
 # Local brainstorming/session artifacts
 .superpowers/
 .worktrees/
+.claude/
 
 # Sensitive client/trading source files kept local
 *.xlsx

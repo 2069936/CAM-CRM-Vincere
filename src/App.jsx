@@ -55,7 +55,9 @@ function filteredAccountsForTab(client, dailyImport, tab) {
   }));
   return {
     accounts: entries,
-    snapshots: snapshots.filter((snapshot) => entries[snapshot.accountName]),
+    snapshots: snapshots
+      .filter((snapshot) => entries[snapshot.accountName])
+      .map((snapshot) => ({ ...snapshot, meta: entries[snapshot.accountName] || {} })),
   };
 }
 

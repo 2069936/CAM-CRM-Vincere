@@ -94,10 +94,10 @@ function AccountTable({ title, rows, executions, mode }) {
                   onClick={() => setExpandedAccount((current) => (current === row.accountName ? '' : row.accountName))}
                 >
                   <td>
-                    <strong><ChevronDown className={expandedAccount === row.accountName ? 'chevron open' : 'chevron'} size={14} /> {row.meta.alias || row.accountName}</strong>
-                    <small>{row.meta.connection || row.connection || 'No connection'}</small>
+                    <strong><ChevronDown className={expandedAccount === row.accountName ? 'chevron open' : 'chevron'} size={14} /> {row.meta?.alias || row.accountName}</strong>
+                    <small>{row.meta?.connection || row.connection || 'No connection'}</small>
                   </td>
-                  {!isCash ? <td>{row.meta.status || 'Active'}</td> : null}
+                  {!isCash ? <td>{row.meta?.status || 'Active'}</td> : null}
                   {!isCash ? (
                     <td>
                       {row.strategies?.length ? row.strategies.map((strategy) => (
