@@ -87,6 +87,152 @@ function tabMode(tab) {
   return 'standard';
 }
 
+function latestImports(clients = []) {
+  return clients.map((client) => ({
+    client,
+    dailyImport: client.dailyImports?.at(-1) || null,
+  }));
+}
+
+function buildManagerSummary(clients = []) {
+  const imports = latestImports(clients);
+  const snapshots = imports.flatMap(({ dailyImport }) => dailyImport?.snapshots || []);
+  const openFlags = imports.flatMap(({ dailyImport }) => dailyImport?.flags || []);
+  const activeStrategies = snapshots.flatMap((snapshot) => snapshot.strategies || []).filter((strategy) => strategy.enabled);
+  const weeklyPnl = snapshots.reduce((total, snapshot) => total + Number(snapshot.weeklyPnl || 0), 0);
+  const dailyPnl = snapshots.reduce((total, snapshot) => total + Number(snapshot.grossRealizedPnl || 0), 0);
+
+  return {
+    clients: clients.length,
+    accounts: snapshots.length,
+    algorithms: new Set(activeStrategies.map((strategy) => `${strategy.strategyFamily || strategy.strategyName}-${strategy.strategyVersion || ''}`)).size,
+    dailyPnl,
+    weeklyPnl,
+    openFlags: openFlags.length,
+  };
+}
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('manager');
+  const [password, setPassword] = useState('demo');
+
+  function submit(event) {
+    event.preventDefault();
+    onLogin({ username, role: username.toLowerCase().includes('cam') ? 'CAM' : 'Manager' });
+  }
+
+  return (
+    <main className="login-screen">
+      <section className="login-panel">
+        <span className="eyebrow">Vincere Trading</span>
+        <h1>Client Account Manager CRM</h1>
+        <p>Demo access layer for manager and CAM workspaces.</p>
+        <form onSubmit={submit} className="login-form">
+          <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+          <button className="primary-button">Sign in</button>
+        </form>
+        <small>Demo only: any username/password continues. Use "manager" to start at the executive overview.</small>
+      </section>
+    </main>
+  );
+}
+
+function ManagerOverview({ clients, onOpenCam }) {
+  const liveSummary = buildManagerSummary(clients);
+  const cams = [
+    { name: 'Pedro', role: 'Live CAM', clients: liveSummary.clients, accounts: liveSummary.accounts, weeklyPnl: liveSummary.weeklyPnl, dailyPnl: liveSummary.dailyPnl, flags: liveSummary.openFlags, live: true },
+    { name: 'Amanda', role: 'Mock CAM', clients: 9, accounts: 44, weeklyPnl: 1280, dailyPnl: 340, flags: 3 },
+    { name: 'Juan Pablo', role: 'Mock CAM', clients: 7, accounts: 31, weeklyPnl: -420, dailyPnl: -180, flags: 5 },
+    { name: 'Ed', role: 'Mock CAM', clients: 11, accounts: 52, weeklyPnl: 2140, dailyPnl: 720, flags: 1 },
+  ];
+  const totals = cams.reduce((acc, cam) => ({
+    clients: acc.clients + cam.clients,
+    accounts: acc.accounts + cam.accounts,
+    weeklyPnl: acc.weeklyPnl + cam.weeklyPnl,
+    dailyPnl: acc.dailyPnl + cam.dailyPnl,
+    flags: acc.flags + cam.flags,
+  }), { clients: 0, accounts: 0, weeklyPnl: 0, dailyPnl: 0, flags: 0 });
+
+  return (
+    <main className="manager-shell">
+      <aside className="manager-sidebar">
+        <span className="eyebrow">Platform</span>
+        <strong>Vincere CRM</strong>
+        <button className="client-link active"><Users size={16} /><span>Manager Overview</span><em>Demo</em></button>
+        <button className="client-link" onClick={onOpenCam}><BarChart3 size={16} /><span>Pedro CAM</span><em>Live</em></button>
+      </aside>
+      <section className="content">
+        <div className="page-header">
+          <div>
+            <span className="eyebrow">Manager overview</span>
+            <h1>Operations Command Center</h1>
+            <p>Team-level analytics adapted from the master spreadsheet: accounts, strategy performance, lifecycle and flags.</p>
+          </div>
+          <button className="primary-button" onClick={onOpenCam}><BarChart3 size={16} /> Open Pedro Workspace</button>
+        </div>
+
+        <div className="metric-grid">
+          <div className="metric"><span>CAMs</span><strong>{cams.length}</strong></div>
+          <div className="metric"><span>Clients</span><strong>{totals.clients}</strong></div>
+          <div className="metric"><span>Accounts</span><strong>{totals.accounts}</strong></div>
+          <div className="metric"><span>Open flags</span><strong>{totals.flags}</strong></div>
+        </div>
+
+        <div className="metric-grid">
+          <div className="metric"><span>Team daily PnL</span><strong className={totals.dailyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(totals.dailyPnl)}</strong></div>
+          <div className="metric"><span>Team weekly PnL</span><strong className={totals.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(totals.weeklyPnl)}</strong></div>
+          <div className="metric"><span>Running algorithms</span><strong>{Math.max(liveSummary.algorithms, 8)}</strong></div>
+          <div className="metric"><span>Excel analytics</span><strong>Mapped</strong></div>
+        </div>
+
+        <section className="panel">
+          <div className="panel-heading"><h3>Client account managers</h3><span className="badge muted">Live + mock</span></div>
+          <div className="cam-card-grid">
+            {cams.map((cam) => (
+              <button className={cam.live ? 'cam-card live' : 'cam-card'} key={cam.name} onClick={cam.live ? onOpenCam : undefined}>
+                <strong>{cam.name}</strong>
+                <span>{cam.role}</span>
+                <small>{cam.clients} clients · {cam.accounts} accounts · {cam.flags} flags</small>
+                <em className={cam.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(cam.weeklyPnl)} weekly</em>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="overview-grid">
+          <div className="panel">
+            <div className="panel-heading"><h3>Strategy analyzer</h3><span className="count">Score 0-10</span></div>
+            <div className="strategy-rank-list">
+              {[
+                ['RBO_PF', 8.7, 1240],
+                ['IFSP', 7.9, 980],
+                ['OGX_PF', 6.8, 420],
+                ['Bullet Bot', 5.9, 0],
+              ].map(([name, score, weekly]) => (
+                <div className="rank-row" key={name}>
+                  <strong>{name}</strong>
+                  <span>{score}/10</span>
+                  <em className={weekly >= 0 ? 'positive' : 'negative'}>{formatCurrency(weekly)}</em>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="panel">
+            <div className="panel-heading"><h3>Lifecycle metrics</h3><span className="badge muted">From Excel model</span></div>
+            <div className="lifecycle-grid">
+              <div><span>Total evaluations</span><strong>128</strong></div>
+              <div><span>Avg days to fail</span><strong>5.4</strong></div>
+              <div><span>Avg days to funded</span><strong>12.1</strong></div>
+              <div><span>Avg days to payout</span><strong>18.7</strong></div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  );
+}
+
 function ReportPanel({ client, dailyImport, onClose }) {
   const report = buildDailyReportSummary(client, dailyImport);
   return (
@@ -315,6 +461,8 @@ function PriceChecksTab() {
 
 export default function App() {
   const [state, setState] = useState(() => loadDemoState());
+  const [session, setSession] = useState(null);
+  const [platformView, setPlatformView] = useState('manager');
   const [newClientName, setNewClientName] = useState('');
   const [activeTab, setActiveTab] = useState('Evaluations');
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
@@ -423,6 +571,14 @@ export default function App() {
     setState((current) => replaceDailyImport(current, selectedClient.id, recalculated));
   }
 
+  if (!session) {
+    return <LoginScreen onLogin={(nextSession) => setSession(nextSession)} />;
+  }
+
+  if (platformView === 'manager') {
+    return <ManagerOverview clients={state.clients} onOpenCam={() => setPlatformView('cam')} />;
+  }
+
   return (
     <>
     <div className="app-shell">
@@ -431,6 +587,7 @@ export default function App() {
           <span>Account Manager</span>
           <strong>{state.accountManager.name}</strong>
           <div className="backup-actions">
+            <button className="ghost-button" onClick={() => setPlatformView('manager')}><Users size={14} /> Team</button>
             <button className="ghost-button" onClick={handleExport}><Download size={14} /> Export</button>
             <label className="ghost-button">
               <Upload size={14} /> Import
