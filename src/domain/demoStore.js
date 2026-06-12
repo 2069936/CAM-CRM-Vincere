@@ -8,6 +8,16 @@ export function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function isoDateOffset(daysBack) {
+  const date = new Date();
+  date.setDate(date.getDate() - daysBack);
+  return date.toISOString().slice(0, 10);
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function demoStrategy({ slot = 2, family = 'RBO_PF', version = '1.8', realized = 0, enabled = true, stop = 105, targets = [155, 175, 250], sizes = [2, 2, 2], direction = 'Both', instrument = 'M2K JUN26' }) {
   const displayFamily = family.replace('_', '-');
   return {
@@ -75,26 +85,54 @@ function demoFlag(type, severity, accountName, message) {
   };
 }
 
+function buildHistoricalImports({ id, registry, snapshots, executions, flags }) {
+  return [6, 5, 4, 3, 2, 1, 0].map((daysBack, index) => {
+    const date = isoDateOffset(daysBack);
+    const isLatest = daysBack === 0;
+    const multiplier = 0.62 + (index * 0.08);
+    const dailyShift = index % 2 === 0 ? 35 : -45;
+    const historicalSnapshots = isLatest ? snapshots : snapshots.map((snapshot) => {
+      const strategies = (snapshot.strategies || []).map((strategy) => ({
+        ...deepClone(strategy),
+        realized: Math.round((Number(strategy.realized || 0) * multiplier) + dailyShift),
+      }));
+      const strategyTotal = strategies.reduce((total, strategy) => total + Number(strategy.realized || 0), 0);
+      const grossRealizedPnl = strategies.length ? strategyTotal : Math.round((Number(snapshot.grossRealizedPnl || 0) * multiplier) + dailyShift);
+      return {
+        ...deepClone(snapshot),
+        grossRealizedPnl,
+        weeklyPnl: Math.round((Number(snapshot.weeklyPnl || 0) * multiplier) + (dailyShift * (index + 1))),
+        accountBalance: Math.round(Number(snapshot.accountBalance || 0) + grossRealizedPnl),
+        strategies,
+      };
+    });
+
+    return {
+      id: `${id}-${date}`,
+      clientId: id,
+      date,
+      importedAt: `${date}T22:00:00.000Z`,
+      status: isLatest && flags.length ? 'Needs review' : 'Closed',
+      accounts: registry,
+      snapshots: historicalSnapshots,
+      strategies: historicalSnapshots.flatMap((snapshot) => snapshot.strategies || []),
+      orders: [],
+      executions: isLatest ? executions : executions.map((execution) => ({
+        ...deepClone(execution),
+        price: Number(execution.price || 0) + (index * 3) - 8,
+      })),
+      flags: isLatest ? flags : [],
+    };
+  });
+}
+
 function demoClient({ id, name, registry, snapshots, executions, flags }) {
-  const date = todayIsoDate();
   return {
     id,
     name,
     status: 'Active',
     accountRegistry: registry,
-    dailyImports: [{
-      id: `${id}-${date}`,
-      clientId: id,
-      date,
-      importedAt: `${date}T22:00:00.000Z`,
-      status: flags.length ? 'Needs review' : 'Ready to close',
-      accounts: registry,
-      snapshots,
-      strategies: snapshots.flatMap((snapshot) => snapshot.strategies || []),
-      orders: [],
-      executions,
-      flags,
-    }],
+    dailyImports: buildHistoricalImports({ id, registry, snapshots, executions, flags }),
     credentials: {
       ip: 'VPS demo',
       username: 'demo-user',
@@ -222,6 +260,13 @@ export function createDemoState() {
       id: 'am-pedro',
       name: 'Pedro',
     },
+    camProfiles: [
+      { id: 'am-pedro', name: 'Pedro', role: 'Senior CAM', status: 'Active', live: true, clientIds: clients.map((client) => client.id) },
+      { id: 'am-amanda', name: 'Amanda', role: 'CAM', status: 'Active', live: false, clients: 9, accounts: 44, weeklyPnl: 1280, dailyPnl: 340, flags: 3 },
+      { id: 'am-juan', name: 'Juan Pablo', role: 'CAM', status: 'Active', live: false, clients: 7, accounts: 31, weeklyPnl: -420, dailyPnl: -180, flags: 5 },
+      { id: 'am-ed', name: 'Ed', role: 'CAM', status: 'Active', live: false, clients: 11, accounts: 52, weeklyPnl: 2140, dailyPnl: 720, flags: 1 },
+      { id: 'am-sarah', name: 'Sarah', role: 'Junior CAM', status: 'Training', live: false, clients: 4, accounts: 18, weeklyPnl: 260, dailyPnl: 90, flags: 2 },
+    ],
     clients,
     selectedClientId: 'client-rome',
   };
@@ -255,6 +300,30 @@ export function addClient(state, name) {
     ...state,
     clients: [...state.clients, client],
     selectedClientId: client.id,
+  };
+}
+
+export function addCamProfile(state, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return state;
+  const existingProfiles = state.camProfiles || [];
+  return {
+    ...state,
+    camProfiles: [
+      ...existingProfiles,
+      {
+        id: createId('am'),
+        name: trimmed,
+        role: 'CAM',
+        status: 'New',
+        live: false,
+        clients: 0,
+        accounts: 0,
+        weeklyPnl: 0,
+        dailyPnl: 0,
+        flags: 0,
+      },
+    ],
   };
 }
 
@@ -347,6 +416,7 @@ export function parseImportedState(text) {
   }
   return {
     accountManager: data.accountManager,
+    camProfiles: data.camProfiles || [],
     clients: data.clients,
     selectedClientId: data.selectedClientId || data.clients[0]?.id || null,
   };

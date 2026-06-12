@@ -17,6 +17,7 @@ import Dashboard from './components/Dashboard';
 import UploadArea from './components/UploadArea';
 import {
   addClient,
+  addCamProfile,
   appendDailyImport,
   createDemoState,
   exportFileName,
@@ -113,6 +114,22 @@ function buildManagerSummary(clients = []) {
   };
 }
 
+function buildTeamHistory(clients = []) {
+  const byDate = new Map();
+  for (const client of clients) {
+    for (const dailyImport of client.dailyImports || []) {
+      const existing = byDate.get(dailyImport.date) || { date: dailyImport.date, dailyPnl: 0, weeklyPnl: 0, accounts: 0 };
+      for (const snapshot of dailyImport.snapshots || []) {
+        existing.dailyPnl += Number(snapshot.grossRealizedPnl || 0);
+        existing.weeklyPnl += Number(snapshot.weeklyPnl || 0);
+        existing.accounts += 1;
+      }
+      byDate.set(dailyImport.date, existing);
+    }
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('manager');
   const [password, setPassword] = useState('demo');
@@ -139,14 +156,15 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function ManagerOverview({ clients, onOpenCam, onLoadDemo }) {
+function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam }) {
+  const [newCamName, setNewCamName] = useState('');
   const liveSummary = buildManagerSummary(clients);
-  const cams = [
-    { name: 'Pedro', role: 'Live CAM', clients: liveSummary.clients, accounts: liveSummary.accounts, weeklyPnl: liveSummary.weeklyPnl, dailyPnl: liveSummary.dailyPnl, flags: liveSummary.openFlags, live: true },
-    { name: 'Amanda', role: 'Mock CAM', clients: 9, accounts: 44, weeklyPnl: 1280, dailyPnl: 340, flags: 3 },
-    { name: 'Juan Pablo', role: 'Mock CAM', clients: 7, accounts: 31, weeklyPnl: -420, dailyPnl: -180, flags: 5 },
-    { name: 'Ed', role: 'Mock CAM', clients: 11, accounts: 52, weeklyPnl: 2140, dailyPnl: 720, flags: 1 },
-  ];
+  const teamHistory = buildTeamHistory(clients);
+  const cams = (camProfiles.length ? camProfiles : createDemoState().camProfiles).map((profile) => (
+    profile.live
+      ? { ...profile, role: 'Live CAM', clients: liveSummary.clients, accounts: liveSummary.accounts, weeklyPnl: liveSummary.weeklyPnl, dailyPnl: liveSummary.dailyPnl, flags: liveSummary.openFlags }
+      : profile
+  ));
   const totals = cams.reduce((acc, cam) => ({
     clients: acc.clients + cam.clients,
     accounts: acc.accounts + cam.accounts,
@@ -154,6 +172,12 @@ function ManagerOverview({ clients, onOpenCam, onLoadDemo }) {
     dailyPnl: acc.dailyPnl + cam.dailyPnl,
     flags: acc.flags + cam.flags,
   }), { clients: 0, accounts: 0, weeklyPnl: 0, dailyPnl: 0, flags: 0 });
+
+  function submitCam(event) {
+    event.preventDefault();
+    onCreateCam(newCamName);
+    setNewCamName('');
+  }
 
   return (
     <main className="manager-shell">
@@ -191,15 +215,34 @@ function ManagerOverview({ clients, onOpenCam, onLoadDemo }) {
         </div>
 
         <section className="panel">
-          <div className="panel-heading"><h3>Client account managers</h3><span className="badge muted">Live + mock</span></div>
+          <div className="panel-heading">
+            <h3>Client account managers</h3>
+            <form className="inline-create-form" onSubmit={submitCam}>
+              <input value={newCamName} placeholder="New CAM name" onChange={(event) => setNewCamName(event.target.value)} />
+              <button className="secondary-button"><Plus size={14} /> Create CAM</button>
+            </form>
+          </div>
           <div className="cam-card-grid">
             {cams.map((cam) => (
               <button className={cam.live ? 'cam-card live' : 'cam-card'} key={cam.name} onClick={cam.live ? onOpenCam : undefined}>
                 <strong>{cam.name}</strong>
-                <span>{cam.role}</span>
+                <span>{cam.role} · {cam.status || 'Active'}</span>
                 <small>{cam.clients} clients · {cam.accounts} accounts · {cam.flags} flags</small>
                 <em className={cam.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(cam.weeklyPnl)} weekly</em>
               </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading"><h3>7-day trading backlog</h3><span className="badge muted">Historical closes</span></div>
+          <div className="history-strip">
+            {teamHistory.map((day) => (
+              <div className="history-day" key={day.date}>
+                <span>{day.date.slice(5)}</span>
+                <strong className={day.dailyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(day.dailyPnl)}</strong>
+                <small>{day.accounts} accounts · weekly {formatCurrency(day.weeklyPnl)}</small>
+              </div>
             ))}
           </div>
         </section>
@@ -609,8 +652,10 @@ export default function App() {
     return (
       <ManagerOverview
         clients={state.clients}
+        camProfiles={state.camProfiles}
         onOpenCam={() => setPlatformView('cam')}
         onLoadDemo={() => setState(createDemoState())}
+        onCreateCam={(name) => setState((current) => addCamProfile(current, name))}
       />
     );
   }
