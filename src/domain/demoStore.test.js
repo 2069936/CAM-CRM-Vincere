@@ -2,15 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   addClient,
   appendDailyImport,
-  createInitialState,
   getLatestClientImport,
   parseImportedState,
   upsertAccountMeta,
 } from './demoStore';
 
+function emptyState() {
+  return {
+    accountManager: { id: 'am-test', name: 'Test AM' },
+    clients: [],
+    selectedClientId: null,
+  };
+}
+
 describe('demoStore', () => {
   it('creates clients and persists account metadata updates in state', () => {
-    const withClient = addClient(createInitialState(), 'Amanda Example');
+    const withClient = addClient(emptyState(), 'Amanda Example');
     const client = withClient.clients[0];
 
     const updated = upsertAccountMeta(withClient, client.id, 'ACC1', {
@@ -26,7 +33,7 @@ describe('demoStore', () => {
   });
 
   it('appends daily imports and returns the latest import by timestamp', () => {
-    const state = addClient(createInitialState(), 'Amanda Example');
+    const state = addClient(emptyState(), 'Amanda Example');
     const clientId = state.clients[0].id;
     const firstImport = { id: 'one', date: '2026-06-08', importedAt: '2026-06-08T10:00:00.000Z', accounts: {} };
     const secondImport = { id: 'two', date: '2026-06-09', importedAt: '2026-06-09T10:00:00.000Z', accounts: {} };
@@ -38,7 +45,7 @@ describe('demoStore', () => {
   });
 
   it('round-trips an exported backup through parseImportedState', () => {
-    const state = addClient(createInitialState(), 'Amanda Example');
+    const state = addClient(emptyState(), 'Amanda Example');
     const restored = parseImportedState(JSON.stringify(state));
 
     expect(restored.clients[0].name).toBe('Amanda Example');

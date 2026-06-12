@@ -903,6 +903,10 @@ textarea {
   background: rgba(69, 163, 255, 0.08);
 }
 
+.cam-card:not(.live) {
+  cursor: default;
+}
+
 .cam-card span,
 .cam-card small {
   color: var(--muted);
@@ -950,10 +954,39 @@ textarea {
   color: var(--muted);
 }
 
+.exception-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.exception-card {
+  display: grid;
+  gap: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.exception-card span,
+.exception-card small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.exception-card.critical {
+  border-color: rgba(255, 90, 105, 0.38);
+}
+
+.exception-card.warning {
+  border-color: rgba(244, 187, 68, 0.38);
+}
+
 @media (max-width: 980px) {
   .app-shell, .manager-shell { grid-template-columns: 1fr; }
   .sidebar, .manager-sidebar { min-height: auto; }
-  .metric-grid, .team-grid, .form-grid, .report-metrics, .cam-card-grid, .overview-grid { grid-template-columns: 1fr; }
+  .metric-grid, .team-grid, .form-grid, .report-metrics, .cam-card-grid, .overview-grid, .exception-grid { grid-template-columns: 1fr; }
   .page-header { flex-direction: column; }
 }
 

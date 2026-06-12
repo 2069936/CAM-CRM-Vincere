@@ -18,6 +18,7 @@ import UploadArea from './components/UploadArea';
 import {
   addClient,
   appendDailyImport,
+  createDemoState,
   exportFileName,
   getClientImportByDate,
   loadDemoState,
@@ -138,7 +139,7 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function ManagerOverview({ clients, onOpenCam }) {
+function ManagerOverview({ clients, onOpenCam, onLoadDemo }) {
   const liveSummary = buildManagerSummary(clients);
   const cams = [
     { name: 'Pedro', role: 'Live CAM', clients: liveSummary.clients, accounts: liveSummary.accounts, weeklyPnl: liveSummary.weeklyPnl, dailyPnl: liveSummary.dailyPnl, flags: liveSummary.openFlags, live: true },
@@ -169,7 +170,10 @@ function ManagerOverview({ clients, onOpenCam }) {
             <h1>Operations Command Center</h1>
             <p>Team-level analytics adapted from the master spreadsheet: accounts, strategy performance, lifecycle and flags.</p>
           </div>
-          <button className="primary-button" onClick={onOpenCam}><BarChart3 size={16} /> Open Pedro Workspace</button>
+          <div className="header-actions">
+            <button className="secondary-button" onClick={onLoadDemo}><Download size={16} /> Reload Demo Data</button>
+            <button className="primary-button" onClick={onOpenCam}><BarChart3 size={16} /> Open Pedro Workspace</button>
+          </div>
         </div>
 
         <div className="metric-grid">
@@ -225,6 +229,32 @@ function ManagerOverview({ clients, onOpenCam }) {
               <div><span>Avg days to fail</span><strong>5.4</strong></div>
               <div><span>Avg days to funded</span><strong>12.1</strong></div>
               <div><span>Avg days to payout</span><strong>18.7</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading"><h3>Exception logic</h3><span className="badge muted">Explainable flags</span></div>
+          <div className="exception-grid">
+            <div className="exception-card critical">
+              <strong>Payout hold violation</strong>
+              <span>Triggered when account status is `Payout Hold` and the latest close still has one or more enabled strategies.</span>
+              <small>Formula: payout_hold && enabled_strategies &gt; 0</small>
+            </div>
+            <div className="exception-card critical">
+              <strong>Unexpected strategy active</strong>
+              <span>Triggered when an inactive, reserve, or failed account is still running an enabled strategy.</span>
+              <small>Formula: status in [Inactive, Reserve, Failed] && enabled_strategies &gt; 0</small>
+            </div>
+            <div className="exception-card warning">
+              <strong>Unassigned account</strong>
+              <span>Triggered when a new imported account has not been manually classified as Evaluation, Funded, Cash, Bullet Bot, or Ignore.</span>
+              <small>Formula: account_type = Unassigned</small>
+            </div>
+            <div className="exception-card warning">
+              <strong>Strategy deviation</strong>
+              <span>Triggered when an algorithm instance performs materially worse than peers running the same family/version.</span>
+              <small>Formula: realized_pnl &lt; peer_mean - 1.5 * peer_stdev</small>
             </div>
           </div>
         </section>
@@ -576,7 +606,13 @@ export default function App() {
   }
 
   if (platformView === 'manager') {
-    return <ManagerOverview clients={state.clients} onOpenCam={() => setPlatformView('cam')} />;
+    return (
+      <ManagerOverview
+        clients={state.clients}
+        onOpenCam={() => setPlatformView('cam')}
+        onLoadDemo={() => setState(createDemoState())}
+      />
+    );
   }
 
   return (
