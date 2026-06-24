@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'cam_crm_demo_state_v1';
-const DEMO_STATE_VERSION = 8;
+const DEMO_STATE_VERSION = 9;
 
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -147,10 +147,20 @@ function demoClient({ id, name, registry, snapshots, executions, flags, activity
     accountRegistry: registry,
     dailyImports: buildHistoricalImports({ id, registry, snapshots, executions, flags }),
     credentials: {
-      ip: 'VPS demo',
-      username: 'demo-user',
-      password: '••••••••',
-      notes: '',
+      ip: '',
+      username: '',
+      password: '',
+      ntLogin: '',
+      firmLogin: '',
+      firmPassword: '',
+    },
+    profile: {
+      fullName: name + ' (demo)',
+      email: name.toLowerCase().replace(/\s+/g, '.') + '@email.com',
+      phone: '',
+      timezone: 'America/Chicago',
+      propFirm: 'Apex Trader Funding',
+      messenger: '',
     },
     priceChecks: [],
     notes: `${name} demo account set for manager review.`,

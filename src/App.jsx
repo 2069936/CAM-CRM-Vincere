@@ -1537,16 +1537,51 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
 
 function CredentialsTab({ client, onUpdateClient }) {
   const credentials = client.credentials || {};
+  const profile = client.profile || {};
+
+  function updateProfile(patch) {
+    onUpdateClient({ profile: { ...profile, ...patch } });
+  }
+  function updateCredentials(patch) {
+    onUpdateClient({ credentials: { ...credentials, ...patch } });
+  }
+
   return (
-    <section className="panel">
-      <div className="panel-heading"><h3>Credentials & Notes</h3><Lock size={16} /></div>
-      <div className="form-grid">
-        <label>VPS IP<input value={credentials.ip || ''} onChange={(e) => onUpdateClient({ credentials: { ...credentials, ip: e.target.value } })} /></label>
-        <label>Username<input value={credentials.username || ''} onChange={(e) => onUpdateClient({ credentials: { ...credentials, username: e.target.value } })} /></label>
-        <label>Password<input type="password" value={credentials.password || ''} onChange={(e) => onUpdateClient({ credentials: { ...credentials, password: e.target.value } })} /></label>
-        <label>Client notes<textarea value={client.notes || ''} onChange={(e) => onUpdateClient({ notes: e.target.value })} /></label>
-      </div>
-    </section>
+    <div className="credentials-stack">
+      <section className="panel">
+        <div className="panel-heading"><h3>Client profile</h3><span className="badge muted">Contact information</span></div>
+        <div className="form-grid">
+          <label>Full name<input value={profile.fullName || ''} placeholder="Legal name" onChange={(e) => updateProfile({ fullName: e.target.value })} /></label>
+          <label>Email<input type="email" value={profile.email || ''} placeholder="client@email.com" onChange={(e) => updateProfile({ email: e.target.value })} /></label>
+          <label>Phone<input type="tel" value={profile.phone || ''} placeholder="+1 (555) 000-0000" onChange={(e) => updateProfile({ phone: e.target.value })} /></label>
+          <label>Time zone<input value={profile.timezone || ''} placeholder="e.g. America/New_York" onChange={(e) => updateProfile({ timezone: e.target.value })} /></label>
+          <label>Prop firm<input value={profile.propFirm || ''} placeholder="e.g. Apex, TopStep, FTMO" onChange={(e) => updateProfile({ propFirm: e.target.value })} /></label>
+          <label>Discord / Telegram<input value={profile.messenger || ''} placeholder="Handle or username" onChange={(e) => updateProfile({ messenger: e.target.value })} /></label>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading"><h3>VPS / Platform access</h3><Lock size={16} /></div>
+        <div className="form-grid">
+          <label>VPS IP<input value={credentials.ip || ''} onChange={(e) => updateCredentials({ ip: e.target.value })} /></label>
+          <label>Username<input value={credentials.username || ''} onChange={(e) => updateCredentials({ username: e.target.value })} /></label>
+          <label>Password<input type="password" value={credentials.password || ''} onChange={(e) => updateCredentials({ password: e.target.value })} /></label>
+          <label>NT login<input value={credentials.ntLogin || ''} placeholder="NinjaTrader username" onChange={(e) => updateCredentials({ ntLogin: e.target.value })} /></label>
+          <label>Prop firm login<input value={credentials.firmLogin || ''} placeholder="Dashboard login email" onChange={(e) => updateCredentials({ firmLogin: e.target.value })} /></label>
+          <label>Prop firm password<input type="password" value={credentials.firmPassword || ''} onChange={(e) => updateCredentials({ firmPassword: e.target.value })} /></label>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading"><h3>Notes</h3></div>
+        <textarea
+          className="client-notes-area"
+          value={client.notes || ''}
+          placeholder="Internal notes, special instructions, client preferences..."
+          onChange={(e) => onUpdateClient({ notes: e.target.value })}
+        />
+      </section>
+    </div>
   );
 }
 

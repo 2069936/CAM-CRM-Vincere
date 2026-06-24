@@ -1535,6 +1535,9 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 }
 
 /* Activity log */
+.credentials-stack { display: flex; flex-direction: column; gap: 16px; }
+.client-notes-area { width: 100%; min-height: 120px; resize: vertical; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); padding: 10px 12px; font-size: 13px; }
+
 .activity-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 .activity-form-row { display: flex; gap: 8px; }
 .activity-form-row select { flex: 1; }
