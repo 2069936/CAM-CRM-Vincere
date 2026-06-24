@@ -1219,6 +1219,51 @@ function ClientOverview({ client, dailyImport }) {
   );
 }
 
+function searchClients(clients, query) {
+  if (!query || query.length < 2) return [];
+  const q = query.toLowerCase();
+  const results = [];
+
+  for (const client of clients) {
+    const matches = [];
+
+    if (client.name.toLowerCase().includes(q)) {
+      matches.push({ type: 'client', label: client.name });
+    }
+
+    if (client.notes?.toLowerCase().includes(q)) {
+      const idx = client.notes.toLowerCase().indexOf(q);
+      matches.push({ type: 'note', label: 'Notes: …' + client.notes.slice(Math.max(0, idx - 20), idx + 60) + '…' });
+    }
+
+    const registry = client.accountRegistry || {};
+    for (const meta of Object.values(registry)) {
+      if (
+        meta.alias?.toLowerCase().includes(q) ||
+        meta.accountName?.toLowerCase().includes(q) ||
+        meta.connection?.toLowerCase().includes(q)
+      ) {
+        matches.push({ type: 'account', label: `Account: ${meta.alias || meta.accountName}` });
+      }
+    }
+
+    for (const task of (client.tasks || [])) {
+      if (!task.done && task.text?.toLowerCase().includes(q)) {
+        matches.push({ type: 'task', label: `Task: ${task.text.slice(0, 70)}${task.text.length > 70 ? '…' : ''}` });
+      }
+    }
+
+    for (const entry of (client.activityLog || [])) {
+      if (entry.text?.toLowerCase().includes(q)) {
+        matches.push({ type: 'activity', label: `Log: ${entry.text.slice(0, 70)}${entry.text.length > 70 ? '…' : ''}` });
+      }
+    }
+
+    if (matches.length) results.push({ client, matches: matches.slice(0, 3) });
+  }
+  return results;
+}
+
 function buildTodayBriefing(clients) {
   const today = todayIsoDate();
   return clients.map((client) => {
@@ -2089,28 +2134,46 @@ export default function App() {
               <em>{profile.status || 'Active'}</em>
             </button>
           ))}
-          <div className="nav-label">Clients</div>
-          {currentCamClients
-            .filter((c) => !clientSearch || c.name.toLowerCase().includes(clientSearch.toLowerCase()))
-            .map((client) => {
-              const badge = deriveClientBadge(client);
-              const todayClose = getClientImportByDate(client, todayIsoDate());
-              const closeStatus = !todayClose ? 'no-close' : todayClose.status === 'Closed' ? 'closed' : 'uploaded';
-              return (
-                <button
-                  className={!showOverview && selectedClient?.id === client.id ? 'client-link active' : 'client-link'}
-                  key={client.id}
-                  onClick={() => {
-                    setState((current) => selectClient(current, client.id));
-                    setShowOverview(false);
-                  }}
-                >
-                  <span className={`close-dot close-dot-${closeStatus}`} title={closeStatus === 'no-close' ? 'No files today' : closeStatus === 'closed' ? 'Closed today' : 'Uploaded · not closed'} />
-                  <span>{client.name}</span>
-                  <em className={badge.tone}>{badge.label}</em>
-                </button>
-              );
-            })}
+          {clientSearch.length >= 2 ? (() => {
+            const searchResults = searchClients(currentCamClients, clientSearch);
+            return searchResults.length ? (
+              <>
+                <div className="nav-label">{searchResults.length} match{searchResults.length !== 1 ? 'es' : ''}</div>
+                {searchResults.map(({ client, matches }) => (
+                  <button
+                    key={client.id}
+                    className={!showOverview && selectedClient?.id === client.id ? 'client-link client-link-search active' : 'client-link client-link-search'}
+                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setClientSearch(''); }}
+                  >
+                    <span>{client.name}</span>
+                    <div className="search-matches">
+                      {matches.map((m, i) => <small key={i} className={`search-match-${m.type}`}>{m.label}</small>)}
+                    </div>
+                  </button>
+                ))}
+              </>
+            ) : <div className="nav-label muted">No matches for "{clientSearch}"</div>;
+          })() : (
+            <>
+              <div className="nav-label">Clients</div>
+              {currentCamClients.map((client) => {
+                const badge = deriveClientBadge(client);
+                const todayClose = getClientImportByDate(client, todayIsoDate());
+                const closeStatus = !todayClose ? 'no-close' : todayClose.status === 'Closed' ? 'closed' : 'uploaded';
+                return (
+                  <button
+                    className={!showOverview && selectedClient?.id === client.id ? 'client-link active' : 'client-link'}
+                    key={client.id}
+                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); }}
+                  >
+                    <span className={`close-dot close-dot-${closeStatus}`} title={closeStatus === 'no-close' ? 'No files today' : closeStatus === 'closed' ? 'Closed today' : 'Uploaded · not closed'} />
+                    <span>{client.name}</span>
+                    <em className={badge.tone}>{badge.label}</em>
+                  </button>
+                );
+              })}
+            </>
+          )}
         </nav>
       </aside>
 
