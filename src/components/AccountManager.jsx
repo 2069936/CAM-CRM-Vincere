@@ -41,6 +41,9 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, m
             {!isCash ? <th>Date Added</th> : null}
             {!isCash ? <th>Date Funded</th> : null}
             {!isCash ? <th>Date Failed</th> : null}
+            {!isCash ? <th>Last Payout</th> : null}
+            {!isCash ? <th>Last Payout $</th> : null}
+            {!isCash ? <th># Payouts</th> : null}
             <th>Notes</th>
           </tr>
         </thead>
@@ -154,6 +157,30 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, m
                     value={account.dateFailed || ''}
                     onChange={(event) => onUpdateAccount(account.accountName, { dateFailed: event.target.value })}
                   />
+                </td>
+              ) : null}
+              {!isCash ? (
+                <td>
+                  <input
+                    type="date"
+                    value={account.dateLastPayout || ''}
+                    onChange={(event) => onUpdateAccount(account.accountName, { dateLastPayout: event.target.value })}
+                  />
+                </td>
+              ) : null}
+              {!isCash ? (
+                <td>
+                  <input
+                    type="number"
+                    value={account.lastPayoutAmount ?? ''}
+                    placeholder="e.g. 2500"
+                    onChange={(event) => onUpdateAccount(account.accountName, { lastPayoutAmount: event.target.value })}
+                  />
+                </td>
+              ) : null}
+              {!isCash ? (
+                <td style={{ textAlign: 'center' }}>
+                  <strong>{account.payoutCount || 0}</strong>
                 </td>
               ) : null}
               <td>
