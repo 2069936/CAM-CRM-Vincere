@@ -545,6 +545,40 @@ function LoginScreen({ onLogin, users }) {
   );
 }
 
+function buildCamPerformance(clients = [], camProfiles = []) {
+  const clientCam = {};
+  for (const cam of camProfiles) {
+    for (const id of cam.clientIds || []) clientCam[id] = cam.id;
+  }
+
+  const camMap = {};
+  for (const cam of camProfiles) {
+    camMap[cam.id] = { id: cam.id, name: cam.name, weeklyPnl: 0, dailyPnl: 0, funded: 0, evaluations: 0, totalAccounts: 0, openFlags: 0, clients: 0 };
+  }
+
+  for (const client of clients) {
+    const camId = clientCam[client.id];
+    if (!camId || !camMap[camId]) continue;
+    const bucket = camMap[camId];
+    const latest = client.dailyImports?.at(-1);
+    if (!latest) continue;
+    const registry = { ...(latest.accounts || {}), ...(client.accountRegistry || {}) };
+    bucket.clients++;
+    for (const snap of latest.snapshots || []) {
+      const meta = registry[snap.accountName] || {};
+      if (meta.accountType === 'Inactive / Ignore') continue;
+      bucket.totalAccounts++;
+      bucket.weeklyPnl += Number(snap.weeklyPnl || 0);
+      bucket.dailyPnl += Number(snap.grossRealizedPnl || 0);
+      if (meta.accountType === 'Funded') bucket.funded++;
+      else if (meta.accountType?.startsWith('Evaluation')) bucket.evaluations++;
+    }
+    bucket.openFlags += (latest.flags || []).filter((f) => f.status !== 'Resolved').length;
+  }
+
+  return Object.values(camMap).sort((a, b) => b.weeklyPnl - a.weeklyPnl);
+}
+
 function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onLogout, users = [], onUsersChange, session }) {
   const [newCamName, setNewCamName] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', displayName: '', role: USER_ROLES.CAM, camProfileId: '' });
@@ -565,6 +599,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const strategies = buildStrategyAnalyzer(clients);
   const lifecycle = buildLifecycleMetrics(clients);
   const riskDist = buildRiskDistribution(clients, camProfiles);
+  const camPerf = buildCamPerformance(clients, camProfiles);
 
   function submitCam(event) {
     event.preventDefault();
@@ -716,6 +751,47 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                   </div>
                 );
               })}
+            </div>
+          </section>
+        ) : null}
+
+        {camPerf.length > 0 ? (
+          <section className="panel">
+            <div className="panel-heading">
+              <h3>CAM performance ranking</h3>
+              <span className="badge muted">Weekly P&amp;L · sorted best to worst</span>
+            </div>
+            <div className="table-wrap">
+              <table className="ops-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>CAM</th>
+                    <th>Clients</th>
+                    <th>Accounts</th>
+                    <th>Funded</th>
+                    <th>Evals</th>
+                    <th>Daily P&amp;L</th>
+                    <th>Weekly P&amp;L</th>
+                    <th>Open flags</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {camPerf.map((cam, i) => (
+                    <tr key={cam.id} className={cam.openFlags >= 3 ? 'row-warning' : ''}>
+                      <td><span className="rank-badge">{i + 1}</span></td>
+                      <td><strong>{cam.name}</strong></td>
+                      <td>{cam.clients}</td>
+                      <td>{cam.totalAccounts}</td>
+                      <td>{cam.funded}</td>
+                      <td>{cam.evaluations}</td>
+                      <td className={cam.dailyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(cam.dailyPnl)}</td>
+                      <td className={cam.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(cam.weeklyPnl)}</td>
+                      <td className={cam.openFlags >= 3 ? 'negative' : ''}>{cam.openFlags}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         ) : null}
