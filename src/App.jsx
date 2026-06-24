@@ -953,10 +953,43 @@ function ClientOverview({ client, dailyImport }) {
   );
 }
 
-function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRecords = [], strategySetIndexStatus, camName = '' }) {
+function buildTodayBriefing(clients) {
+  const today = todayIsoDate();
+  return clients.map((client) => {
+    const todayImport = getClientImportByDate(client, today);
+    const latest = client.dailyImports?.at(-1) || null;
+    const criticalFlags = (latest?.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved');
+    const openFlags = (latest?.flags || []).filter((f) => f.status !== 'Resolved');
+    const openTasks = (client.tasks || []).filter((t) => !t.done);
+    const overdueTasks = openTasks.filter((t) => t.dueDate && t.dueDate < today);
+    const highTasks = openTasks.filter((t) => t.priority === 'High');
+    const payoutAccounts = Object.values(client.accountRegistry || {}).filter(
+      (m) => m.payoutState && m.payoutState !== 'Not requested'
+    );
+    const dailyPnl = (latest?.snapshots || []).reduce((s, snap) => s + Number(snap.grossRealizedPnl || 0), 0);
+    const closeStatus = !todayImport ? 'pending' : todayImport.status === 'Closed' ? 'closed' : 'uploaded';
+
+    const urgency = criticalFlags.length > 0 ? 'critical'
+      : overdueTasks.length > 0 ? 'warning'
+      : highTasks.length > 0 || payoutAccounts.length > 0 ? 'info'
+      : closeStatus === 'pending' ? 'pending'
+      : 'ok';
+
+    return { client, criticalFlags, openFlags, openTasks, overdueTasks, highTasks, payoutAccounts, dailyPnl, closeStatus, urgency };
+  }).sort((a, b) => {
+    const order = { critical: 0, warning: 1, info: 2, pending: 3, ok: 4 };
+    return order[a.urgency] - order[b.urgency];
+  });
+}
+
+function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRecords = [], strategySetIndexStatus, camName = '', onSelectClient }) {
   const [expandedAlgorithm, setExpandedAlgorithm] = useState('');
   const overview = buildCamOverview(clients, strategySetRecords);
   const displayName = camName || 'this workspace';
+  const briefing = buildTodayBriefing(clients);
+
+  const urgencyCounts = { critical: 0, warning: 0, info: 0, pending: 0, ok: 0 };
+  briefing.forEach((b) => { urgencyCounts[b.urgency] = (urgencyCounts[b.urgency] || 0) + 1; });
 
   return (
     <main className="content">
@@ -967,6 +1000,46 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
           <p>Algorithm performance across {displayName}'s latest client closes.</p>
         </div>
       </div>
+
+      {clients.length > 0 ? (
+        <section className={urgencyCounts.critical ? 'panel danger-panel' : 'panel'}>
+          <div className="panel-heading">
+            <h3>Today's briefing</h3>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {urgencyCounts.critical ? <span className="badge danger">{urgencyCounts.critical} critical</span> : null}
+              {urgencyCounts.warning ? <span className="badge warning">{urgencyCounts.warning} overdue</span> : null}
+              {urgencyCounts.pending ? <span className="badge muted">{urgencyCounts.pending} not uploaded</span> : null}
+              {!urgencyCounts.critical && !urgencyCounts.warning ? <span className="badge success">All clear</span> : null}
+            </div>
+          </div>
+          <div className="briefing-grid">
+            {briefing.map(({ client, criticalFlags, openFlags, overdueTasks, highTasks, payoutAccounts, dailyPnl, closeStatus, urgency }) => (
+              <button
+                key={client.id}
+                className={`briefing-card briefing-${urgency}`}
+                onClick={() => onSelectClient && onSelectClient(client.id)}
+              >
+                <div className="briefing-card-head">
+                  <strong>{client.name}</strong>
+                  <span className={`briefing-dot briefing-dot-${closeStatus}`} title={closeStatus === 'pending' ? 'No files today' : closeStatus === 'closed' ? 'Closed' : 'Uploaded'} />
+                </div>
+                <em className={dailyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(dailyPnl)} today</em>
+                <div className="briefing-chips">
+                  {criticalFlags.length ? <span className="task-chip task-chip-high">{criticalFlags.length} critical</span> : null}
+                  {openFlags.length && !criticalFlags.length ? <span className="task-chip">{openFlags.length} flags</span> : null}
+                  {overdueTasks.length ? <span className="task-chip task-chip-high">{overdueTasks.length} overdue</span> : null}
+                  {highTasks.length && !overdueTasks.length ? <span className="task-chip task-chip-due warning">{highTasks.length} high tasks</span> : null}
+                  {payoutAccounts.length ? <span className="task-chip">{payoutAccounts.length} payout</span> : null}
+                  {!criticalFlags.length && !openFlags.length && !overdueTasks.length && !highTasks.length && !payoutAccounts.length
+                    ? <span className="task-chip" style={{ color: 'var(--green)' }}>Clean</span>
+                    : null}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <div className="metric-grid">
         <div className="metric"><span>Clients</span><strong>{clients.length}</strong></div>
         <div className="metric"><span>Algorithms</span><strong>{overview.totals.algorithms}</strong></div>
@@ -1707,6 +1780,10 @@ export default function App() {
           strategySetRecords={strategySetIndex.records}
           strategySetIndexStatus={strategySetIndex.status}
           camName={currentCamProfile?.name || ''}
+          onSelectClient={(clientId) => {
+            setState((current) => selectClient(current, clientId));
+            setShowOverview(false);
+          }}
         />
       ) : (
         <main className="content">
