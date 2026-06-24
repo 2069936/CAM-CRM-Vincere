@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'cam_crm_demo_state_v1';
-const DEMO_STATE_VERSION = 5;
+const DEMO_STATE_VERSION = 6;
 
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -163,11 +163,13 @@ export function createDemoState() {
         ROME5298: { accountName: 'ROME5298', alias: 'Live - 5298', connection: 'Live', accountType: 'Cash', status: 'Active', payoutState: 'Not requested', notes: 'Cash account: daily, weekly, balance only.', dateAdded: '2026-01-15' },
         ROME7045: { accountName: 'ROME7045', alias: 'BlueSky - 7045', connection: 'BlueSky', accountType: 'Funded', status: 'Active', payoutState: 'Not requested', targetProfit: 52000, maxDrawdownLimit: 2500, dateAdded: '2026-02-10', dateFunded: '2026-02-24', payoutCount: 2, dateLastPayout: '2026-05-12' },
         ROME8801: { accountName: 'ROME8801', alias: 'Lucid - 8801', connection: 'Lucid', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 53000, maxDrawdownLimit: 2000, dateAdded: '2026-05-20' },
+        ROME9002: { accountName: 'ROME9002', alias: 'Tradovate - 9002', connection: 'Tradovate', accountType: 'Funded', status: 'Active', payoutState: 'Not requested', targetProfit: 52500, maxDrawdownLimit: 4000, dateAdded: '2026-04-01', dateFunded: '2026-04-15' },
       },
       snapshots: [
         demoSnapshot({ accountName: 'ROME5298', connection: 'Live', grossRealizedPnl: 640, weeklyPnl: 1820, balance: 28450, drawdown: 0, strategies: [ogx] }),
         demoSnapshot({ accountName: 'ROME7045', connection: 'BlueSky', grossRealizedPnl: 180, weeklyPnl: 320, balance: 50500, drawdown: -1200, strategies: [rbo] }),
         demoSnapshot({ accountName: 'ROME8801', connection: 'Lucid', grossRealizedPnl: -330, weeklyPnl: -577, balance: 49670, drawdown: -1600, strategies: [ifsp] }),
+        demoSnapshot({ accountName: 'ROME9002', connection: 'Tradovate', grossRealizedPnl: 0, weeklyPnl: 860, balance: 51840, drawdown: -650, strategies: [demoStrategy({ family: 'OGX_PF', version: '2.4', realized: 220, enabled: true, instrument: 'MNQ JUN26' })] }),
       ],
       executions: [
         ...demoExecution({ accountName: 'ROME5298', strategyName: ogx.strategyName, base: 19020 }),
