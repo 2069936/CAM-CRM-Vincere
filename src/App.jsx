@@ -1031,7 +1031,7 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
   return lines.join('\n');
 }
 
-function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient, onResolveFlag }) {
+function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onAddClient, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient, onResolveFlag }) {
   const [newCamName, setNewCamName] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', displayName: '', email: '', role: USER_ROLES.CAM, camProfileId: '' });
   const [editUserId, setEditUserId] = useState(null);
@@ -1042,6 +1042,8 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const [batchImportResult, setBatchImportResult] = useState(null);
   const [drillDate, setDrillDate] = useState('');
   const [teamCopyDone, setTeamCopyDone] = useState(false);
+  const [newClientForm, setNewClientForm] = useState({ name: '', camId: '', stage: 'Active' });
+  const [showNewClient, setShowNewClient] = useState(false);
   const [fundedSort, setFundedSort] = useState({ col: 'buffer', dir: -1 });
   const [managerSearch, setManagerSearch] = useState('');
   const teamHistory = buildTeamHistory(clients);
@@ -1194,6 +1196,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </div>
           </div>
           <div className="header-actions">
+            <button className={showNewClient ? 'secondary-button' : 'ghost-button'} onClick={() => setShowNewClient(v => !v)}>+ New Client</button>
             <button className={showPipeline ? 'secondary-button' : 'ghost-button'} onClick={() => setShowPipeline(v => !v)}>📋 Pipeline</button>
             <button className={showBatchImport ? 'secondary-button' : 'ghost-button'} onClick={() => { setShowBatchImport(v => !v); setBatchImportResult(null); }}>⬆ Batch Import</button>
             <button className="ghost-button" onClick={() => { const txt = buildTeamWeeklyReport(clients, camProfiles); navigator.clipboard.writeText(txt).then(() => alert('Weekly team summary copied!')); }} title="Copy weekly team summary for Slack / email">📋 Weekly Report</button>
@@ -1225,6 +1228,36 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </div>
           )}
         </div>
+
+        {showNewClient && (
+          <section className="panel" style={{maxWidth:480}}>
+            <div className="panel-heading"><h3>Add new client</h3></div>
+            <form className="form-grid" style={{padding:'4px 0 8px'}} onSubmit={e => {
+              e.preventDefault();
+              if (!newClientForm.name.trim()) return;
+              onAddClient?.(newClientForm.name.trim(), newClientForm.camId, newClientForm.stage);
+              setNewClientForm({ name: '', camId: '', stage: 'Active' });
+              setShowNewClient(false);
+            }}>
+              <label>Client name *<input autoFocus value={newClientForm.name} onChange={e => setNewClientForm(f => ({...f, name: e.target.value}))} placeholder="e.g. Carlos M." /></label>
+              <label>Assign to CAM
+                <select value={newClientForm.camId} onChange={e => setNewClientForm(f => ({...f, camId: e.target.value}))}>
+                  <option value="">— Unassigned —</option>
+                  {camProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              <label>Stage
+                <select value={newClientForm.stage} onChange={e => setNewClientForm(f => ({...f, stage: e.target.value}))}>
+                  {['Onboarding','Active','At Risk','Paused','Inactive'].map(s => <option key={s}>{s}</option>)}
+                </select>
+              </label>
+              <div style={{display:'flex',gap:8,gridColumn:'1/-1',marginTop:4}}>
+                <button type="submit" className="primary-button" disabled={!newClientForm.name.trim()}>Create client</button>
+                <button type="button" className="ghost-button" onClick={() => setShowNewClient(false)}>Cancel</button>
+              </div>
+            </form>
+          </section>
+        )}
 
         {showPipeline && (() => {
           const STAGES = ['Onboarding', 'Active', 'At Risk', 'Paused', 'Inactive'];
@@ -4544,6 +4577,14 @@ export default function App() {
         onResolveFlag={(clientId, importId, flagId) =>
           setState((current) => resolveFlagInImport(current, clientId, importId, flagId))
         }
+        onAddClient={(name, camId, stage) => setState(current => {
+          const withClient = addClient(current, name, camId || null);
+          const newClient = withClient.clients.find(c => c.name === name && !(current.clients.find(x => x.id === c.id)));
+          if (newClient && stage && stage !== 'Active') {
+            return { ...withClient, clients: withClient.clients.map(c => c.id === newClient.id ? { ...c, profile: { ...c.profile, stage } } : c) };
+          }
+          return withClient;
+        })}
       />
       </ErrorBoundary>
     );
