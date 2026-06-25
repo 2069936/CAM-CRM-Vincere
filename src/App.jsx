@@ -4773,6 +4773,12 @@ export default function App() {
         </>
       ) : (
         <main className="content">
+          {state.teamAnnouncement && (
+            <div className="team-announcement-banner" style={{margin:'12px 20px 0'}}>
+              <span>📢</span>
+              <span style={{flex:1}}><strong>Manager:</strong> {state.teamAnnouncement}</span>
+            </div>
+          )}
           {!selectedClient ? (
             <div className="onboarding-empty">
               <div className="onboarding-hero">
