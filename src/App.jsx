@@ -4263,6 +4263,7 @@ export default function App() {
   const [platformView, setPlatformView] = useState('manager');
   const [newClientName, setNewClientName] = useState('');
   const [clientSearch, setClientSearch] = useState('');
+  const [viewedClientIds, setViewedClientIds] = useState(new Set());
   const [activeTab, setActiveTab] = useState('Overview');
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
   const [showUpload, setShowUpload] = useState(false);
@@ -4678,7 +4679,7 @@ export default function App() {
                   <button
                     key={client.id}
                     className={!showOverview && selectedClient?.id === client.id ? 'client-link client-link-search active' : 'client-link client-link-search'}
-                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setShowSOP(false); setClientSearch(''); }}
+                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setShowSOP(false); setClientSearch(''); setViewedClientIds(s => new Set([...s, client.id])); }}
                   >
                     <span>{client.name}</span>
                     <div className="search-matches">
@@ -4714,9 +4715,10 @@ export default function App() {
                   <button
                     className={!showOverview && selectedClient?.id === client.id ? 'client-link active' : 'client-link'}
                     key={client.id}
-                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setShowSOP(false); }}
+                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setShowSOP(false); setViewedClientIds(s => new Set([...s, client.id])); }}
                   >
                     <span className={`close-dot close-dot-${closeStatus}`} title={closeStatus === 'no-close' ? 'No files today' : closeStatus === 'closed' ? 'Closed today' : 'Uploaded · not closed'} />
+                    {closeStatus === 'uploaded' && !viewedClientIds.has(client.id) && <span className="new-data-badge" title="New data uploaded — not yet reviewed">NEW</span>}
                     <span>{client.name}{(() => { const d = lastContactDaysAgo(client); return d !== null && d > 3 ? <span className="last-contact-dot" title={`Last contact ${d}d ago`} style={{ background: d > 7 ? 'var(--red)' : 'var(--yellow)' }} /> : null; })()}{(() => { const td = todayIsoDate(); const tasks = (client.tasks||[]).filter(t=>!t.done); const overdue=tasks.filter(t=>t.dueDate&&t.dueDate<td).length; const dueToday=tasks.filter(t=>t.dueDate===td).length; if(overdue) return <span style={{marginLeft:3,fontSize:9,fontWeight:700,color:'var(--negative)',background:'rgba(239,68,68,0.15)',borderRadius:3,padding:'1px 3px'}} title={`${overdue} overdue task${overdue!==1?'s':''}`}>{overdue}</span>; if(dueToday) return <span style={{marginLeft:3,fontSize:9,fontWeight:700,color:'var(--warning)',background:'rgba(245,158,11,0.15)',borderRadius:3,padding:'1px 3px'}} title={`${dueToday} task${dueToday!==1?'s':''} due today`}>{dueToday}</span>; return null; })()}</span>
                     {(() => {
                       const latest = client.dailyImports?.at(-1);

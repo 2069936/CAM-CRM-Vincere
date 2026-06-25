@@ -2105,3 +2105,4 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .team-announcement-banner { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
 .team-announcement-form { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
 .team-announcement-form input { flex: 1; padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font-size: 13px; }
+.new-data-badge { font-size: 8px; font-weight: 800; letter-spacing: .04em; color: var(--accent); background: rgba(69,163,255,0.15); border: 1px solid rgba(69,163,255,0.3); border-radius: 3px; padding: 1px 4px; line-height: 1; vertical-align: middle; margin-left: 2px; }
