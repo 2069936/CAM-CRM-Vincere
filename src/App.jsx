@@ -3798,6 +3798,10 @@ export default function App() {
                         {...currentTabData}
                         mode={tabMode(effectiveActiveTab)}
                         onUpdateAccount={handleAccountUpdate}
+                        onAddAccount={(accountName, meta) => {
+                          if (!selectedClient || !accountName.trim()) return;
+                          setState((current) => upsertAccountMeta(current, selectedClient.id, accountName.trim(), meta));
+                        }}
                       />
                     ) : null}
                   </section>

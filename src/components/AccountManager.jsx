@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES } from '../domain/reconcile';
 
 const ACCOUNT_TYPE_OPTIONS = [
@@ -14,18 +15,48 @@ const PAYOUT_OPTIONS = Object.values(PAYOUT_STATES);
 const PASS_TYPES = ['', '1-day pass', '2-day pass', '3-day pass'];
 const DIRECTIONS = ['', 'Long', 'Short'];
 
-export default function AccountManager({ accounts, snapshots, onUpdateAccount, mode }) {
+export default function AccountManager({ accounts, snapshots, onUpdateAccount, onAddAccount, mode }) {
   const isCash = mode === 'cash';
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState(ACCOUNT_TYPES.FUNDED);
+  const [newAlias, setNewAlias] = useState('');
+  const [newConnection, setNewConnection] = useState('');
+
   const rows = Object.values(accounts || {}).map((account) => ({
     ...account,
     snapshot: (snapshots || []).find((item) => item.accountName === account.accountName),
   }));
 
-  if (!rows.length) {
-    return <div className="empty-state">No accounts loaded for this date yet.</div>;
+  function submitAdd(e) {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    onAddAccount?.(newName.trim(), {
+      accountName: newName.trim(),
+      alias: newAlias.trim() || newName.trim(),
+      accountType: newType,
+      connection: newConnection.trim(),
+      status: ACCOUNT_STATUSES.ACTIVE,
+      dateAdded: new Date().toISOString().slice(0, 10),
+    });
+    setNewName(''); setNewAlias(''); setNewConnection('');
   }
 
   return (
+    <div>
+    {onAddAccount && (
+      <form className="add-account-form" onSubmit={submitAdd}>
+        <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Account ID (e.g. ROME7045)" />
+        <input value={newAlias} onChange={e => setNewAlias(e.target.value)} placeholder="Alias (e.g. BlueSky - 7045)" />
+        <input value={newConnection} onChange={e => setNewConnection(e.target.value)} placeholder="Connection" />
+        <select value={newType} onChange={e => setNewType(e.target.value)}>
+          {ACCOUNT_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}
+        </select>
+        <button type="submit" className="primary-button">+ Add account</button>
+      </form>
+    )}
+    {!rows.length ? (
+      <div className="empty-state">No accounts loaded for this date yet. Use the form above to pre-register an account, or upload an NT CSV file.</div>
+    ) : (
     <div className="table-wrap">
       <table className="ops-table registry-table">
         <thead>
@@ -194,6 +225,8 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, m
           ))}
         </tbody>
       </table>
+    </div>
+    )}
     </div>
   );
 }

@@ -1912,3 +1912,8 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .input-copy-row input { flex: 1; }
 .copy-btn { padding: 3px 6px; min-width: unset; color: var(--muted); }
 .copy-btn:hover { color: var(--accent); }
+
+/* Add account form in registry */
+.add-account-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 0 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.add-account-form input { padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12px; min-width: 0; flex: 1; }
+.add-account-form select { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12px; }
