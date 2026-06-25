@@ -2123,7 +2123,41 @@ function buildPortfolioInsights(clients, allClients = []) {
       }
     }
 
-    // 4. Account not uploading (no close today or yesterday)
+    // 4. Strategy cooling — algo was positive last week, now negative 3+ days
+    if (latest) {
+      const latestRegistry = { ...(latest.accounts || {}), ...registry };
+      for (const snap of snapshots) {
+        const meta = latestRegistry[snap.accountName] || {};
+        if (!['Funded', 'Evaluation - Standard'].includes(meta.accountType)) continue;
+        const enabledStrats = (snap.strategies || []).filter(s => s.enabled);
+        if (!enabledStrats.length) continue;
+        const recentImports = imports.slice(-10);
+        if (recentImports.length < 6) continue;
+        const pnls = recentImports.map(di => {
+          const s = (di.snapshots || []).find(x => x.accountName === snap.accountName);
+          return s ? Number(s.grossRealizedPnl || 0) : null;
+        }).filter(v => v !== null);
+        if (pnls.length < 6) continue;
+        const prior4 = pnls.slice(0, Math.floor(pnls.length / 2));
+        const recent4 = pnls.slice(Math.floor(pnls.length / 2));
+        const priorAvg = prior4.reduce((s, v) => s + v, 0) / prior4.length;
+        const recentAvg = recent4.reduce((s, v) => s + v, 0) / recent4.length;
+        const negativeDays = recent4.filter(v => v < 0).length;
+        if (priorAvg > 50 && recentAvg < 0 && negativeDays >= 3) {
+          insights.push({
+            severity: 'warning',
+            type: 'Strategy Cooling',
+            clientId: client.id,
+            clientName: client.name,
+            accountAlias: meta.alias || snap.accountName,
+            message: `Performance shift: avg was ${formatCurrency(priorAvg)}/day, now ${formatCurrency(recentAvg)}/day (${negativeDays} negative days recently)`,
+            action: 'Review in Stack Playbook — consider algo change',
+          });
+        }
+      }
+    }
+
+    // 5. Account not uploading (no close today or yesterday)
     const todayImport = getClientImportByDate(client, today);
     if (!todayImport) {
       const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
