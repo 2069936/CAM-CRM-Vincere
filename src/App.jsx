@@ -986,6 +986,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const [newUser, setNewUser] = useState({ username: '', password: '', displayName: '', role: USER_ROLES.CAM, camProfileId: '' });
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [teamCopyDone, setTeamCopyDone] = useState(false);
+  const [fundedSort, setFundedSort] = useState({ col: 'buffer', dir: -1 });
   const teamHistory = buildTeamHistory(clients);
   const cams = (camProfiles.length ? camProfiles : createDemoState().camProfiles).map((profile) => {
     const summary = buildManagerSummary(clientsForCam(clients, profile));
@@ -1142,25 +1143,43 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           <section className="panel">
             <div className="panel-heading">
               <h3>All funded accounts</h3>
-              <span className="badge muted">{allFunded.length} accounts · sorted by drawdown risk</span>
+              <span className="badge muted">{allFunded.length} accounts</span>
             </div>
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Client</th>
-                    <th>CAM</th>
-                    <th>Strategies</th>
-                    <th>Daily PnL</th>
-                    <th>Weekly PnL</th>
-                    <th>Buffer</th>
-                    <th>Target</th>
-                    <th>Payout</th>
-                  </tr>
+                  {(() => {
+                    const SortTh = ({ col, label }) => {
+                      const active = fundedSort.col === col;
+                      return (
+                        <th style={{cursor:'pointer',userSelect:'none',whiteSpace:'nowrap'}} onClick={() => setFundedSort(s => s.col === col ? { col, dir: -s.dir } : { col, dir: -1 })}>
+                          {label}{active ? (fundedSort.dir === -1 ? ' ↓' : ' ↑') : ' ·'}
+                        </th>
+                      );
+                    };
+                    return (
+                      <tr>
+                        <th>Account</th>
+                        <SortTh col="client" label="Client" />
+                        <th>CAM</th>
+                        <th>Strategies</th>
+                        <SortTh col="dailyPnl" label="Daily PnL" />
+                        <SortTh col="weeklyPnl" label="Weekly PnL" />
+                        <SortTh col="buffer" label="Buffer" />
+                        <SortTh col="targetPct" label="Target" />
+                        <th>Payout</th>
+                      </tr>
+                    );
+                  })()}
                 </thead>
                 <tbody>
-                  {allFunded.map((row) => (
+                  {[...allFunded].sort((a, b) => {
+                    const { col, dir } = fundedSort;
+                    const av = col === 'client' ? (a.clientName || '') : (a[col] ?? -Infinity);
+                    const bv = col === 'client' ? (b.clientName || '') : (b[col] ?? -Infinity);
+                    if (typeof av === 'string') return dir * av.localeCompare(bv);
+                    return dir * (bv - av);
+                  }).map((row) => (
                     <tr key={row.accountName} className={row.bufferPct !== null && row.bufferPct <= 20 ? 'row-highlight' : ''} style={{cursor:'pointer'}} onClick={() => { const cam = camProfiles.find(c => c.clientIds?.includes(row.clientId)); onOpenCam(cam?.id, row.clientId); }}>
                       <td><strong>{row.alias}</strong><small>{row.connection}</small></td>
                       <td>{row.clientName}</td>
