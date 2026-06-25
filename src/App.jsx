@@ -824,6 +824,7 @@ function buildPayoutPipeline(clients = [], camProfiles = []) {
       const snapshot = (latest?.snapshots || []).find((s) => s.accountName === meta.accountName);
       rows.push({
         clientName: client.name,
+        clientId: client.id,
         camName,
         accountName: meta.accountName,
         alias: meta.alias || meta.accountName,
@@ -1927,10 +1928,15 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                   <tbody>
                     {pipeline.map((row) => (
                       <tr key={`${row.clientName}-${row.accountName}`}>
-                        <td><strong>{row.alias}</strong></td>
-                        <td>{row.clientName}</td>
+                        <td><strong>{row.alias}</strong><small>{row.accountName}</small></td>
+                        <td style={{cursor:'pointer'}} onClick={() => { const cam = camProfiles.find(c => c.clientIds?.includes(row.clientId)); onOpenCam(cam?.id, row.clientId); }}>{row.clientName}</td>
                         <td>{row.camName}</td>
-                        <td><span className={`badge ${row.payoutState === 'Payout approved' || row.payoutState === 'Clear to trade' ? 'success' : row.payoutState === 'Payout requested' ? 'warning' : 'muted'}`}>{row.payoutState}</span></td>
+                        <td>
+                          <select value={row.payoutState} style={{fontSize:11,padding:'2px 6px'}}
+                            onChange={e => onUpdateClientAccount?.(row.clientId, row.accountName, { payoutState: e.target.value })}>
+                            {['Not requested','Payout eligible','Request payout','Payout requested','Payout approved','Clear to trade'].map(s => <option key={s}>{s}</option>)}
+                          </select>
+                        </td>
                         <td className="positive">{formatCurrency(row.balance)}</td>
                         <td>{row.payoutCount}×</td>
                       </tr>
