@@ -2341,6 +2341,7 @@ export default function App() {
                     onResolveFlag={handleResolveFlag}
                     onUpdateAccount={handleAccountUpdate}
                     strategySetRecords={strategySetIndex.records}
+                    client={selectedClient}
                   />
                   <section className="panel">
                     <button className="registry-toggle" onClick={() => setRegistryOpen((value) => !value)}>

@@ -110,7 +110,57 @@ function buildTradeStats(executions, strategies) {
   return { roundTrips, entries: entries.length, grossRealized, avgPerTrip, priceRange, total: executions.length };
 }
 
-function AccountDetail({ row, executions, colSpan = 7 }) {
+function AccountHistorySparkline({ accountName, dailyImports }) {
+  const history = (dailyImports || []).slice(-14).map((di) => {
+    const snap = (di.snapshots || []).find((s) => s.accountName === accountName);
+    return { date: di.date, pnl: snap ? Number(snap.grossRealizedPnl || 0) : null };
+  }).filter((d) => d.pnl !== null);
+
+  if (history.length < 2) return <p className="muted">Not enough history to display.</p>;
+
+  const values = history.map((d) => d.pnl);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const W = 280;
+  const H = 48;
+  const stepX = W / (history.length - 1);
+
+  const pts = history.map((d, i) => {
+    const x = i * stepX;
+    const y = H - ((d.pnl - min) / range) * H;
+    return [x, y];
+  });
+
+  const polyline = pts.map(([x, y]) => `${x},${y}`).join(' ');
+  const totalPnl = values.reduce((s, v) => s + v, 0);
+
+  return (
+    <div className="account-history-sparkline">
+      <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} style={{ overflow: 'visible' }}>
+        <polyline
+          points={polyline}
+          fill="none"
+          stroke={totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
+        {pts.map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r={3} fill={history[i].pnl >= 0 ? 'var(--green)' : 'var(--red)'}>
+            <title>{history[i].date}: {history[i].pnl >= 0 ? '+' : ''}{formatCurrency(history[i].pnl)}</title>
+          </circle>
+        ))}
+      </svg>
+      <div className="sparkline-labels">
+        <small className="muted">{history[0]?.date}</small>
+        <small className={totalPnl >= 0 ? 'positive' : 'negative'}>{totalPnl >= 0 ? '+' : ''}{formatCurrency(totalPnl)} total</small>
+        <small className="muted">{history.at(-1)?.date}</small>
+      </div>
+    </div>
+  );
+}
+
+function AccountDetail({ row, executions, colSpan = 7, dailyImports }) {
   const [expandedStrategy, setExpandedStrategy] = useState('');
   const accountExecutions = executions.filter((execution) => execution.accountName === row.accountName);
   const tradeStats = buildTradeStats(accountExecutions, row.strategies || []);
@@ -189,6 +239,10 @@ function AccountDetail({ row, executions, colSpan = 7 }) {
             <MiniTimeline executions={accountExecutions} />
             <small>{accountExecutions.length} executions</small>
           </div>
+          <div>
+            <h4>Account history</h4>
+            <AccountHistorySparkline accountName={row.accountName} dailyImports={dailyImports} />
+          </div>
         </div>
       </td>
     </tr>
@@ -204,7 +258,7 @@ function payoutStateTone(state) {
   return 'muted';
 }
 
-function AccountTable({ title, rows, executions, mode, onUpdateAccount }) {
+function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImports }) {
   const [expandedAccount, setExpandedAccount] = useState('');
   if (!rows.length) return null;
   const isCash = mode === 'cash';
@@ -287,7 +341,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount }) {
                   ) : null}
                   {isFunded ? (() => { const r = fundedRiskLevel(row); return <td className={r.tone}>{r.label}</td>; })() : null}
                 </tr>
-                {expandedAccount === row.accountName ? <AccountDetail row={row} executions={executions} colSpan={colSpan} /> : null}
+                {expandedAccount === row.accountName ? <AccountDetail row={row} executions={executions} colSpan={colSpan} dailyImports={dailyImports} /> : null}
               </Fragment>
             ))}
           </tbody>
@@ -297,7 +351,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount }) {
   );
 }
 
-export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onUpdateAccount, strategySetRecords = [] }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onUpdateAccount, strategySetRecords = [], client }) {
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -363,11 +417,11 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
 
       {title === 'Evaluations' ? (
         <>
-          <AccountTable title="Bullet Bot" rows={enrichedRows.filter((row) => row.meta?.accountType === 'Evaluation - Bullet Bot')} executions={dailyImport.executions || []} mode={mode} onUpdateAccount={onUpdateAccount} />
-          <AccountTable title="Standard Evaluations" rows={enrichedRows.filter((row) => row.meta?.accountType === 'Evaluation - Standard')} executions={dailyImport.executions || []} mode={mode} onUpdateAccount={onUpdateAccount} />
+          <AccountTable title="Bullet Bot" rows={enrichedRows.filter((row) => row.meta?.accountType === 'Evaluation - Bullet Bot')} executions={dailyImport.executions || []} mode={mode} onUpdateAccount={onUpdateAccount} dailyImports={client?.dailyImports} />
+          <AccountTable title="Standard Evaluations" rows={enrichedRows.filter((row) => row.meta?.accountType === 'Evaluation - Standard')} executions={dailyImport.executions || []} mode={mode} onUpdateAccount={onUpdateAccount} dailyImports={client?.dailyImports} />
         </>
       ) : (
-        <AccountTable title={title} rows={enrichedRows} executions={dailyImport.executions || []} mode={mode} onUpdateAccount={onUpdateAccount} />
+        <AccountTable title={title} rows={enrichedRows} executions={dailyImport.executions || []} mode={mode} onUpdateAccount={onUpdateAccount} dailyImports={client?.dailyImports} />
       )}
     </div>
   );

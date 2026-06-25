@@ -1690,3 +1690,8 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
   .playbook-rec-grid { grid-template-columns: repeat(2, 1fr); }
   .sop-ref-grid { grid-template-columns: 1fr; }
 }
+
+/* Account history sparkline */
+.account-history-sparkline { display: flex; flex-direction: column; gap: 4px; }
+.sparkline-labels { display: flex; justify-content: space-between; font-size: 11px; width: 280px; }
+.account-detail > div { min-width: 0; }
