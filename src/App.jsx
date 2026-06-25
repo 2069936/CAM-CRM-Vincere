@@ -997,7 +997,7 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
   return lines.join('\n');
 }
 
-function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onLogout, users = [], onUsersChange, session }) {
+function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onLogout, users = [], onUsersChange, session, onUpdateClientAccount }) {
   const [newCamName, setNewCamName] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', displayName: '', email: '', role: USER_ROLES.CAM, camProfileId: '' });
   const [editUserId, setEditUserId] = useState(null);
@@ -1233,6 +1233,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                         <SortTh col="buffer" label="Buffer" />
                         <SortTh col="targetPct" label="Target" />
                         <th>Payout</th>
+                        <th></th>
                       </tr>
                     );
                   })()}
@@ -1257,6 +1258,15 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                       </td>
                       <td>{row.targetPct !== null ? <div className="target-progress" style={{minWidth:80}}><div className="target-bar"><i style={{width:`${row.targetPct}%`,background:row.targetPct>=100?'var(--green)':row.targetPct>=80?'#f59e0b':'var(--accent)'}}/></div><small>{row.targetPct}%</small></div> : '—'}</td>
                       <td><small className={row.payoutState === 'Clear to trade' ? 'positive' : row.payoutState?.includes('requested') ? '' : 'muted'}>{row.payoutState || '—'}</small></td>
+                      <td onClick={e => e.stopPropagation()}>
+                        {row.bufferPct !== null && row.bufferPct <= 5 && onUpdateClientAccount ? (
+                          <button className="ghost-button" style={{color:'var(--negative)',fontSize:11,padding:'2px 6px',whiteSpace:'nowrap'}}
+                            onClick={() => {
+                              if (!window.confirm(`Mark ${row.alias} as FAILED?\n\nThis sets status=Failed and dateFailed=today. Cannot be undone from this view.`)) return;
+                              onUpdateClientAccount(row.clientId, row.accountName, { status: 'Failed', dateFailed: todayIsoDate() });
+                            }}>✕ Mark Failed</button>
+                        ) : null}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -3915,6 +3925,9 @@ export default function App() {
         users={users}
         onUsersChange={setUsers}
         session={session}
+        onUpdateClientAccount={(clientId, accountName, patch) =>
+          setState((current) => upsertAccountMeta(current, clientId, accountName, patch))
+        }
       />
     );
   }
