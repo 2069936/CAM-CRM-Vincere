@@ -56,6 +56,7 @@ import {
 } from './domain/demoStore';
 import { buildCamOverview } from './domain/camOverview';
 import { recalculateDailyImport, reconcileDailyImport } from './domain/reconcile';
+import { parseNinjaTraderCsvText } from './domain/csvImport';
 import { buildClientMessageReport, buildWeeklyMessageReport, buildDailyReportSummary, formatCurrency } from './domain/report';
 import {
   USER_ROLES,
@@ -1037,6 +1038,8 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const [editUserPatch, setEditUserPatch] = useState({});
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
+  const [showBatchImport, setShowBatchImport] = useState(false);
+  const [batchImportResult, setBatchImportResult] = useState(null);
   const [teamCopyDone, setTeamCopyDone] = useState(false);
   const [fundedSort, setFundedSort] = useState({ col: 'buffer', dir: -1 });
   const [managerSearch, setManagerSearch] = useState('');
@@ -1191,6 +1194,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           </div>
           <div className="header-actions">
             <button className={showPipeline ? 'secondary-button' : 'ghost-button'} onClick={() => setShowPipeline(v => !v)}>📋 Pipeline</button>
+            <button className={showBatchImport ? 'secondary-button' : 'ghost-button'} onClick={() => { setShowBatchImport(v => !v); setBatchImportResult(null); }}>⬆ Batch Import</button>
             <button className="secondary-button" onClick={() => { if (window.confirm('Reset all data to demo state? This will erase any changes made during this session.')) onLoadDemo(); }}><Download size={16} /> Reload Demo</button>
             <button className="ghost-button" onClick={() => {
               const report = buildTeamMessageReport(clients, camProfiles, totals, cams);
@@ -1263,6 +1267,68 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </section>
           );
         })()}
+
+        {showBatchImport && (
+          <section className="panel">
+            <div className="panel-heading"><h3>Batch import — all clients</h3><span className="badge muted">Drop NT CSV files from any client</span></div>
+            <p className="muted" style={{fontSize:12,marginBottom:10}}>Upload accounts + strategies CSVs from multiple clients at once. The system matches each account to its registered client automatically.</p>
+            <div className="batch-drop-zone" onDragOver={e => e.preventDefault()} onDrop={async e => {
+              e.preventDefault();
+              const files = [...e.dataTransfer.files];
+              const today = new Date().toISOString().slice(0, 10);
+              const parsed = [];
+              for (const f of files) {
+                const text = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsText(f); });
+                parsed.push(parseNinjaTraderCsvText(text, f.name));
+              }
+              const grouped = parsed.reduce((acc, p) => { if (p.type !== 'unknown') acc[p.type] = [...(acc[p.type] || []), ...p.rows]; return acc; }, {});
+              const accountNames = new Set((grouped.accounts || []).map(a => a.accountName));
+              const clientMatches = clients.map(client => {
+                const myAccounts = Object.keys(client.accountRegistry || {}).filter(an => accountNames.has(an));
+                if (!myAccounts.length) return null;
+                const filteredGrouped = {
+                  accounts: (grouped.accounts || []).filter(a => myAccounts.includes(a.accountName)),
+                  strategies: (grouped.strategies || []).filter(a => myAccounts.includes(a.accountName)),
+                  orders: (grouped.orders || []).filter(a => myAccounts.includes(a.accountName)),
+                  executions: (grouped.executions || []).filter(a => myAccounts.includes(a.accountName)),
+                };
+                const result = reconcileDailyImport({ clientId: client.id, date: today, registry: client.accountRegistry, parsed: filteredGrouped });
+                return { client, result, accountCount: myAccounts.length };
+              }).filter(Boolean);
+              setBatchImportResult({ clientMatches, unmatched: [...accountNames].filter(an => !clients.some(c => Object.keys(c.accountRegistry || {}).includes(an))), today });
+            }}>
+              <span>Drag & drop NT CSV files here</span>
+              <small className="muted">accounts + strategies + orders + executions from any number of clients</small>
+            </div>
+            {batchImportResult && (
+              <div style={{marginTop:12}}>
+                <p className="muted" style={{fontSize:12}}><strong className="positive">{batchImportResult.clientMatches.length} clients matched</strong>{batchImportResult.unmatched.length > 0 ? <span className="negative"> · {batchImportResult.unmatched.length} unregistered accounts: {batchImportResult.unmatched.join(', ')}</span> : null}</p>
+                <table className="ops-table" style={{marginTop:8}}>
+                  <thead><tr><th>Client</th><th>Accounts found</th><th>Flags</th><th>Action</th></tr></thead>
+                  <tbody>
+                    {batchImportResult.clientMatches.map(({ client, result, accountCount }) => (
+                      <tr key={client.id}>
+                        <td><strong>{client.name}</strong></td>
+                        <td>{accountCount}</td>
+                        <td>{(result.flags || []).filter(f => f.severity === 'Critical').length > 0 ? <span className="negative">{(result.flags || []).filter(f => f.severity === 'Critical').length} critical</span> : <span className="positive">{(result.flags || []).length} flags</span>}</td>
+                        <td><button className="primary-button" style={{padding:'3px 10px',fontSize:11}} onClick={() => {
+                          setState(s => appendDailyImport(s, client.id, result));
+                          setBatchImportResult(prev => ({ ...prev, clientMatches: prev.clientMatches.filter(m => m.client.id !== client.id) }));
+                        }}>Import</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {batchImportResult.clientMatches.length > 1 && (
+                  <button className="secondary-button" style={{marginTop:8}} onClick={() => {
+                    batchImportResult.clientMatches.forEach(({ client, result }) => setState(s => appendDailyImport(s, client.id, result)));
+                    setBatchImportResult(null); setShowBatchImport(false);
+                  }}>Import all {batchImportResult.clientMatches.length} clients</button>
+                )}
+              </div>
+            )}
+          </section>
+        )}
 
         <InsightFeedPanel insights={managerInsights} onSelectClient={onOpenCam} />
 

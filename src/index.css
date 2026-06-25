@@ -2092,3 +2092,8 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .pin-btn:hover { color: var(--warning); }
 .pin-btn.pinned { color: var(--warning); }
 .client-link:not(:hover) .pin-btn:not(.pinned) { opacity: 0; }
+
+/* Batch import drop zone */
+.batch-drop-zone { border: 2px dashed var(--line); border-radius: 10px; padding: 28px; text-align: center; display: flex; flex-direction: column; gap: 6px; cursor: default; transition: border-color 0.2s, background 0.2s; }
+.batch-drop-zone:hover { border-color: var(--accent); background: rgba(var(--accent-rgb, 99,102,241), 0.04); }
+.batch-drop-zone span { font-size: 14px; font-weight: 600; }
