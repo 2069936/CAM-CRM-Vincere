@@ -188,23 +188,25 @@ function buildTodayActions(client, dailyImport) {
 }
 
 function filteredAccountsForTab(client, dailyImport, tab) {
-  const accounts = {
-    ...(dailyImport?.accounts || {}),
-    ...(client?.accountRegistry || {}),
-  };
+  const regCi = mergeRegistryCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
-  const entries = Object.fromEntries(Object.entries(accounts).filter(([, account]) => {
+  const entriesCi = Object.fromEntries(Object.entries(regCi).filter(([, account]) => {
     if (tab === 'Review') return account.accountType === 'Unassigned' || account.accountType === 'Inactive / Ignore';
     if (tab === 'Evaluations') return account.accountType?.startsWith('Evaluation');
     if (tab === 'Funded') return account.accountType === 'Funded';
     if (tab === 'Cash') return account.accountType === 'Cash';
     return true;
   }));
+  // Rebuild original-casing entries for AccountManager (needs original keys for onUpdateAccount)
+  const allMerged = { ...(dailyImport?.accounts || {}), ...(client?.accountRegistry || {}) };
+  const entries = Object.fromEntries(
+    Object.entries(allMerged).filter(([k]) => entriesCi[k.toLowerCase()])
+  );
   return {
     accounts: entries,
     snapshots: snapshots
-      .filter((snapshot) => entries[snapshot.accountName])
-      .map((snapshot) => ({ ...snapshot, meta: entries[snapshot.accountName] || {} })),
+      .filter((snapshot) => entriesCi[snapshot.accountName?.toLowerCase()])
+      .map((snapshot) => ({ ...snapshot, meta: ciMeta(regCi, snapshot.accountName) })),
   };
 }
 
