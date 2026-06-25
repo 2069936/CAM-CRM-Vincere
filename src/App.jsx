@@ -57,7 +57,7 @@ import {
 import { buildCamOverview } from './domain/camOverview';
 import { recalculateDailyImport, reconcileDailyImport } from './domain/reconcile';
 import { parseNinjaTraderCsvText } from './domain/csvImport';
-import { buildClientMessageReport, buildWeeklyMessageReport, buildDailyReportSummary, formatCurrency } from './domain/report';
+import { buildClientMessageReport, buildWeeklyMessageReport, buildDailyReportSummary, buildTeamWeeklyReport, formatCurrency } from './domain/report';
 import {
   USER_ROLES,
   addUser,
@@ -1196,6 +1196,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           <div className="header-actions">
             <button className={showPipeline ? 'secondary-button' : 'ghost-button'} onClick={() => setShowPipeline(v => !v)}>📋 Pipeline</button>
             <button className={showBatchImport ? 'secondary-button' : 'ghost-button'} onClick={() => { setShowBatchImport(v => !v); setBatchImportResult(null); }}>⬆ Batch Import</button>
+            <button className="ghost-button" onClick={() => { const txt = buildTeamWeeklyReport(clients, camProfiles); navigator.clipboard.writeText(txt).then(() => alert('Weekly team summary copied!')); }} title="Copy weekly team summary for Slack / email">📋 Weekly Report</button>
             <button className="secondary-button" onClick={() => { if (window.confirm('Reset all data to demo state? This will erase any changes made during this session.')) onLoadDemo(); }}><Download size={16} /> Reload Demo</button>
             <button className="ghost-button" onClick={() => {
               const report = buildTeamMessageReport(clients, camProfiles, totals, cams);
