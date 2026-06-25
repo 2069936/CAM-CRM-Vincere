@@ -1714,15 +1714,15 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           <section className={riskDist.buckets.Critical.length ? 'panel danger-panel' : 'panel'}>
             <div className="panel-heading">
               <h3>Drawdown risk distribution</h3>
-              <span className="badge muted">{riskDist.total} accounts with DD config</span>
+              <span className="badge muted">{riskDist.total} active accounts</span>
             </div>
             <div className="risk-dist-grid">
               {[
-                { key: 'Critical', color: 'var(--red)', label: 'Critical ≥85%' },
-                { key: 'High',     color: '#f59e0b',   label: 'High 65–85%' },
-                { key: 'Medium',   color: 'var(--yellow)', label: 'Medium 40–65%' },
-                { key: 'Low',      color: 'var(--green)', label: 'Low <40%' },
-                { key: 'Safe',     color: 'var(--muted)', label: 'No limit set' },
+                { key: 'Critical', color: 'var(--red)', label: 'Critical (≥85% / ≤$500)' },
+                { key: 'High',     color: '#f59e0b',   label: 'High (65–85% / ≤$1.2k)' },
+                { key: 'Medium',   color: 'var(--yellow)', label: 'Medium (40–65% / ≤$2.5k)' },
+                { key: 'Low',      color: 'var(--green)', label: 'Low (<40% / >$2.5k)' },
+                { key: 'Safe',     color: 'var(--muted)', label: 'No DD data' },
               ].map(({ key, color, label }) => {
                 const accounts = riskDist.buckets[key];
                 const pct = riskDist.total > 0 ? (accounts.length / riskDist.total) * 100 : 0;
@@ -2766,7 +2766,7 @@ function ClientOverview({ client, dailyImport, allClients = [], onRequestMonthly
                 <div>
                   <strong>
                     {account.alias}
-                    {risk ? <span className={`risk-badge risk-${risk.level.toLowerCase()}`}>{risk.level} risk · {Math.round(risk.pct * 100)}% DD used</span> : null}
+                    {risk ? <span className={`risk-badge risk-${risk.level.toLowerCase()}`}>{risk.level} risk{risk.pct != null ? ` · ${Math.round(risk.pct * 100)}% DD used` : ''}</span> : null}
                   </strong>
                   <span>{account.accountType} · {formatCurrency(account.balance)} balance · {formatCurrency(account.remaining)} remaining</span>
                 </div>
