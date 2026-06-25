@@ -197,10 +197,10 @@ function IncomeProjection({ currentFunded }) {
 }
 
 export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [] }) {
-  const registry = { ...(dailyImport?.accounts || {}), ...(client?.accountRegistry || {}) };
+  const registryCi = mergeRegCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
 
-  const funded = Object.values(registry).filter(
+  const funded = Object.values(registryCi).filter(
     (a) => a.accountType === ACCOUNT_TYPES.FUNDED &&
       a.status !== ACCOUNT_STATUSES.FAILED &&
       a.status !== ACCOUNT_STATUSES.INACTIVE,
@@ -211,12 +211,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [changeNotes, setChangeNotes] = useState({});
 
   function updateStack(accountName, value) {
-    const prev = registry[accountName]?.algoStack || '';
+    const prev = ciMeta(registryCi, accountName)?.algoStack || '';
     if (value === prev) return;
     setLocalStack((s) => ({ ...s, [accountName]: value }));
     const today = new Date().toISOString().slice(0, 10);
     const note = changeNotes[accountName] || '';
-    const existing = registry[accountName]?.algoHistory || [];
+    const existing = ciMeta(registryCi, accountName)?.algoHistory || [];
     const newEntry = { date: today, from: prev || '—', to: value || '—', note };
     onUpdateAccount?.(accountName, { algoStack: value, algoHistory: [...existing, newEntry] });
     setChangeNotes((n) => ({ ...n, [accountName]: '' }));

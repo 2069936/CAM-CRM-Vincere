@@ -179,7 +179,7 @@ function buildTodayActions(client, dailyImport) {
       return active.length === 0;
     });
     for (const s of noStrat.slice(0, 2)) {
-      const alias = registry[s.accountName]?.alias || s.accountName;
+      const alias = ciMeta(registry, s.accountName)?.alias || s.accountName;
       actions.push({ severity: 'warning', icon: '⚙️', text: `No active strategy on ${alias} — check Stack Playbook` });
     }
   }
