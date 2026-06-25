@@ -499,7 +499,7 @@ export function deleteTask(state, clientId, taskId) {
 export function addActivityEntry(state, clientId, entry) {
   return updateClient(state, clientId, (client) => ({
     ...client,
-    activityLog: [entry, ...(client.activityLog || [])],
+    activityLog: [entry, ...(client.activityLog || [])].slice(0, 500),
   }));
 }
 
