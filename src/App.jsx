@@ -1274,15 +1274,19 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             <p className="muted" style={{fontSize:12,marginBottom:10}}>Upload accounts + strategies CSVs from multiple clients at once. The system matches each account to its registered client automatically.</p>
             <div className="batch-drop-zone" onDragOver={e => e.preventDefault()} onDrop={async e => {
               e.preventDefault();
-              const files = [...e.dataTransfer.files];
+              const files = [...e.dataTransfer.files].filter(f => f.name.toLowerCase().endsWith('.csv'));
+              if (!files.length) { setBatchImportResult({ error: 'No CSV files found. Drop NinjaTrader .csv export files here.' }); return; }
               const today = new Date().toISOString().slice(0, 10);
               const parsed = [];
               for (const f of files) {
-                const text = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsText(f); });
-                parsed.push(parseNinjaTraderCsvText(text, f.name));
+                try {
+                  const text = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsText(f); });
+                  parsed.push(parseNinjaTraderCsvText(text, f.name));
+                } catch { /* skip unreadable file */ }
               }
               const grouped = parsed.reduce((acc, p) => { if (p.type !== 'unknown') acc[p.type] = [...(acc[p.type] || []), ...p.rows]; return acc; }, {});
               const accountNames = new Set((grouped.accounts || []).map(a => a.accountName));
+              if (!accountNames.size) { setBatchImportResult({ error: 'No account data found in the uploaded files. Make sure to include the NT Accounts CSV.' }); return; }
               const clientMatches = clients.map(client => {
                 const myAccounts = Object.keys(client.accountRegistry || {}).filter(an => accountNames.has(an));
                 if (!myAccounts.length) return null;
@@ -1292,17 +1296,39 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                   orders: (grouped.orders || []).filter(a => myAccounts.includes(a.accountName)),
                   executions: (grouped.executions || []).filter(a => myAccounts.includes(a.accountName)),
                 };
-                const result = reconcileDailyImport({ clientId: client.id, date: today, registry: client.accountRegistry, parsed: filteredGrouped });
-                return { client, result, accountCount: myAccounts.length };
+                try {
+                  const result = reconcileDailyImport({ clientId: client.id, date: today, registry: client.accountRegistry, parsed: filteredGrouped });
+                  return { client, result, accountCount: myAccounts.length };
+                } catch { return null; }
               }).filter(Boolean);
-              setBatchImportResult({ clientMatches, unmatched: [...accountNames].filter(an => !clients.some(c => Object.keys(c.accountRegistry || {}).includes(an))), today });
+              const unmatched = [...accountNames].filter(an => !clients.some(c => Object.keys(c.accountRegistry || {}).includes(an)));
+              setBatchImportResult({ clientMatches, unmatched, today, filesLoaded: files.length });
             }}>
               <span>Drag & drop NT CSV files here</span>
               <small className="muted">accounts + strategies + orders + executions from any number of clients</small>
+              <label style={{cursor:'pointer',fontSize:12,color:'var(--accent)',marginTop:4}}>
+                or <span style={{textDecoration:'underline'}}>click to browse</span>
+                <input type="file" accept=".csv" multiple style={{display:'none'}} onChange={async ev => {
+                  const files = [...ev.target.files];
+                  ev.target.value = '';
+                  if (!files.length) return;
+                  const today = new Date().toISOString().slice(0, 10);
+                  const parsed = [];
+                  for (const f of files) {
+                    try { const text = await new Promise((res,rej) => { const r=new FileReader(); r.onload=()=>res(String(r.result)); r.onerror=rej; r.readAsText(f); }); parsed.push(parseNinjaTraderCsvText(text, f.name)); } catch {}
+                  }
+                  const grouped = parsed.reduce((acc,p) => { if (p.type!=='unknown') acc[p.type]=[...(acc[p.type]||[]),...p.rows]; return acc; }, {});
+                  const accountNames = new Set((grouped.accounts||[]).map(a=>a.accountName));
+                  if (!accountNames.size) { setBatchImportResult({ error: 'No account data found.' }); return; }
+                  const clientMatches = clients.map(client => { const myAccounts=Object.keys(client.accountRegistry||{}).filter(an=>accountNames.has(an)); if (!myAccounts.length) return null; const fg={accounts:(grouped.accounts||[]).filter(a=>myAccounts.includes(a.accountName)),strategies:(grouped.strategies||[]).filter(a=>myAccounts.includes(a.accountName)),orders:(grouped.orders||[]).filter(a=>myAccounts.includes(a.accountName)),executions:(grouped.executions||[]).filter(a=>myAccounts.includes(a.accountName))}; try { return {client,result:reconcileDailyImport({clientId:client.id,date:today,registry:client.accountRegistry,parsed:fg}),accountCount:myAccounts.length}; } catch { return null; } }).filter(Boolean);
+                  setBatchImportResult({ clientMatches, unmatched:[...accountNames].filter(an=>!clients.some(c=>Object.keys(c.accountRegistry||{}).includes(an))), today, filesLoaded:files.length });
+                }} />
+              </label>
             </div>
-            {batchImportResult && (
+            {batchImportResult?.error && <div className="notice error" style={{marginTop:8}}>{batchImportResult.error}</div>}
+            {batchImportResult && !batchImportResult.error && (
               <div style={{marginTop:12}}>
-                <p className="muted" style={{fontSize:12}}><strong className="positive">{batchImportResult.clientMatches.length} clients matched</strong>{batchImportResult.unmatched.length > 0 ? <span className="negative"> · {batchImportResult.unmatched.length} unregistered accounts: {batchImportResult.unmatched.join(', ')}</span> : null}</p>
+                <p className="muted" style={{fontSize:12}}><strong className="positive">{batchImportResult.clientMatches.length} clients matched</strong>{batchImportResult.unmatched?.length > 0 ? <span className="negative"> · {batchImportResult.unmatched.length} unregistered accounts: {batchImportResult.unmatched.join(', ')}</span> : null}{batchImportResult.filesLoaded ? <span> · {batchImportResult.filesLoaded} files loaded</span> : null}</p>
                 <table className="ops-table" style={{marginTop:8}}>
                   <thead><tr><th>Client</th><th>Accounts found</th><th>Flags</th><th>Action</th></tr></thead>
                   <tbody>
