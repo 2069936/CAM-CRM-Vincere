@@ -1894,3 +1894,12 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .onboarding-step-body { flex: 1; display: flex; flex-direction: column; gap: 1px; }
 .onboarding-step-body strong { font-size: 12px; }
 .onboarding-step-body small { font-size: 11px; }
+
+/* Global recent activity feed in CAM Overview */
+.activity-feed-global { display: flex; flex-direction: column; gap: 2px; }
+.activity-feed-row { display: grid; grid-template-columns: 100px 80px 1fr 70px; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 5px; font-size: 12px; }
+.activity-feed-row:hover { background: var(--hover); }
+.activity-feed-client { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.activity-feed-type { font-size: 11px; }
+.activity-feed-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-feed-date { text-align: right; font-size: 11px; }

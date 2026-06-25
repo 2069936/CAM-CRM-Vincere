@@ -2704,6 +2704,31 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
         )}
       </section>
 
+      {(() => {
+        const allEntries = clients.flatMap(c =>
+          (c.activityLog || []).map(e => ({ ...e, clientName: c.name, clientId: c.id }))
+        ).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 20);
+        if (!allEntries.length) return null;
+        return (
+          <section className="panel">
+            <div className="panel-heading">
+              <h3>Recent activity</h3>
+              <span className="badge muted">Last 20 entries across all clients</span>
+            </div>
+            <div className="activity-feed-global">
+              {allEntries.map((entry, i) => (
+                <div key={entry.id || i} className="activity-feed-row" style={{cursor:'pointer'}} onClick={() => onSelectClient?.(entry.clientId)}>
+                  <span className="activity-feed-client">{entry.clientName}</span>
+                  <span className="activity-feed-type muted">{entry.type}</span>
+                  <span className="activity-feed-text">{entry.text}</span>
+                  <span className="activity-feed-date muted">{entry.createdAt ? new Date(entry.createdAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : ''}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
+
       {camProfiles.length > 0 ? (
         <section className="panel">
           <div className="panel-heading"><h3>Team overview</h3><span className="badge muted">All CAMs</span></div>
