@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { TrendingUp, TrendingDown, Minus, Zap, AlertTriangle, Info, ArrowRight } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES } from '../domain/reconcile';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
@@ -201,10 +201,18 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
 
   const [localStack, setLocalStack] = useState({});
   const [localDll, setLocalDll] = useState({});
+  const [changeNotes, setChangeNotes] = useState({});
 
   function updateStack(accountName, value) {
-    setLocalStack((prev) => ({ ...prev, [accountName]: value }));
-    onUpdateAccount?.(accountName, { algoStack: value });
+    const prev = registry[accountName]?.algoStack || '';
+    if (value === prev) return;
+    setLocalStack((s) => ({ ...s, [accountName]: value }));
+    const today = new Date().toISOString().slice(0, 10);
+    const note = changeNotes[accountName] || '';
+    const existing = registry[accountName]?.algoHistory || [];
+    const newEntry = { date: today, from: prev || '—', to: value || '—', note };
+    onUpdateAccount?.(accountName, { algoStack: value, algoHistory: [...existing, newEntry] });
+    setChangeNotes((n) => ({ ...n, [accountName]: '' }));
   }
   function updateDll(accountName, value) {
     setLocalDll((prev) => ({ ...prev, [accountName]: value }));
@@ -343,16 +351,17 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
         <section className="panel">
           <div className="panel-heading">
             <h3>Account Configuration</h3>
-            <span className="badge muted">Set algo stack + DLL per account</span>
+            <span className="badge muted">Set algo stack + DLL · changes are logged automatically</span>
           </div>
           <div className="table-wrap">
             <table className="ops-table">
               <thead>
                 <tr>
                   <th>Account</th>
-                  <th>Current combo (live)</th>
+                  <th>Live combo</th>
                   <th>Drawdown buffer</th>
                   <th>Assign algo stack</th>
+                  <th>Change note</th>
                   <th>Daily Loss Limit</th>
                 </tr>
               </thead>
@@ -363,6 +372,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                   const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : null;
                   const stackVal = localStack[account.accountName] ?? (account.algoStack || '');
                   const dllVal   = localDll[account.accountName]   ?? (account.dailyLossLimit || '');
+                  const noteVal  = changeNotes[account.accountName] || '';
                   return (
                     <tr key={account.accountName}>
                       <td>
@@ -383,6 +393,14 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                         </select>
                       </td>
                       <td>
+                        <input
+                          className="algo-note-input"
+                          placeholder="Why changing? (optional)"
+                          value={noteVal}
+                          onChange={(e) => setChangeNotes((n) => ({ ...n, [account.accountName]: e.target.value }))}
+                        />
+                      </td>
+                      <td>
                         <select value={dllVal} onChange={(e) => updateDll(account.accountName, e.target.value)}>
                           {DLL_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt || 'None'}</option>)}
                         </select>
@@ -395,6 +413,42 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           </div>
         </section>
       ) : null}
+
+      {/* ── Algo Change History ─────────────────────────────── */}
+      {(() => {
+        const allHistory = funded.flatMap((account) =>
+          (account.algoHistory || []).map((h) => ({ ...h, alias: account.alias || account.accountName }))
+        ).sort((a, b) => b.date.localeCompare(a.date));
+
+        if (!allHistory.length) return null;
+        return (
+          <section className="panel">
+            <div className="panel-heading">
+              <h3>Algo Change History</h3>
+              <Clock size={15} />
+              <span className="badge muted">{allHistory.length} change{allHistory.length !== 1 ? 's' : ''} logged</span>
+            </div>
+            <div className="table-wrap">
+              <table className="ops-table">
+                <thead>
+                  <tr><th>Date</th><th>Account</th><th>From</th><th>To</th><th>Note</th></tr>
+                </thead>
+                <tbody>
+                  {allHistory.map((h, i) => (
+                    <tr key={i}>
+                      <td className="muted">{h.date}</td>
+                      <td><strong>{h.alias}</strong></td>
+                      <td className="muted">{h.from}</td>
+                      <td><span className="badge muted">{h.to}</span></td>
+                      <td className="muted">{h.note || <em>—</em>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+      })()}
 
       {/* ── Income Projection ──────────────────────────────── */}
       <section className="panel">

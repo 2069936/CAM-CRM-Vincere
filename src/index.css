@@ -1821,3 +1821,7 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .insight-sev-warning     { background: rgba(244,187,68,0.15); color: var(--yellow); }
 .insight-sev-info-green  { background: rgba(47,202,115,0.15); color: var(--green); }
 .insight-sev-info        { background: rgba(69,163,255,0.15); color: var(--blue); }
+
+/* Algo note input in stack playbook config table */
+.algo-note-input { font-size: 12px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); width: 100%; min-width: 140px; }
+.algo-note-input::placeholder { color: var(--muted); }
