@@ -1019,6 +1019,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const [editUserId, setEditUserId] = useState(null);
   const [editUserPatch, setEditUserPatch] = useState({});
   const [showUserPanel, setShowUserPanel] = useState(false);
+  const [showPipeline, setShowPipeline] = useState(false);
   const [teamCopyDone, setTeamCopyDone] = useState(false);
   const [fundedSort, setFundedSort] = useState({ col: 'buffer', dir: -1 });
   const [managerSearch, setManagerSearch] = useState('');
@@ -1149,6 +1150,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </div>
           </div>
           <div className="header-actions">
+            <button className={showPipeline ? 'secondary-button' : 'ghost-button'} onClick={() => setShowPipeline(v => !v)}>📋 Pipeline</button>
             <button className="secondary-button" onClick={() => { if (window.confirm('Reset all data to demo state? This will erase any changes made during this session.')) onLoadDemo(); }}><Download size={16} /> Reload Demo</button>
             <button className="ghost-button" onClick={() => {
               const report = buildTeamMessageReport(clients, camProfiles, totals, cams);
@@ -1170,6 +1172,50 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           <div className="metric"><span>Clients</span><strong>{totals.clients}</strong></div>
           <div className="metric"><span>Open flags</span><strong className={totals.flags ? 'negative' : ''}>{totals.flags}</strong></div>
         </div>
+
+        {showPipeline && (() => {
+          const STAGES = ['Onboarding', 'Active', 'At Risk', 'Paused', 'Inactive'];
+          const byStage = {};
+          STAGES.forEach(s => byStage[s] = []);
+          for (const client of clients) {
+            const stage = client.profile?.stage || 'Active';
+            const cam = camProfiles.find(p => (p.clientIds || []).includes(client.id));
+            const latest = client.dailyImports?.at(-1);
+            const pnl = (latest?.snapshots || []).reduce((s, sn) => s + Number(sn.grossRealizedPnl || 0), 0);
+            const openTasks = (client.tasks || []).filter(t => !t.done).length;
+            const openFlags = (latest?.flags || []).filter(f => f.status !== 'Resolved').length;
+            (byStage[stage] || (byStage[stage] = [])).push({ client, cam, pnl, openTasks, openFlags });
+          }
+          return (
+            <section className="panel">
+              <div className="panel-heading"><h3>Client pipeline</h3><span className="badge muted">by stage · click to open</span></div>
+              <div className="pipeline-board">
+                {STAGES.map(stage => {
+                  const cards = byStage[stage] || [];
+                  return (
+                    <div key={stage} className="pipeline-column">
+                      <div className="pipeline-col-header">
+                        <span>{stage}</span>
+                        <span className="count">{cards.length}</span>
+                      </div>
+                      {cards.length === 0 ? <div className="pipeline-empty muted">—</div> : cards.map(({ client, cam, pnl, openTasks, openFlags }) => (
+                        <div key={client.id} className={`pipeline-card${openFlags > 0 ? ' pipeline-card-flag' : ''}`} onClick={() => onOpenCam(cam?.id, client.id)}>
+                          <strong>{client.name}</strong>
+                          <small className="muted">{cam?.name || 'Unassigned'}</small>
+                          <div className="pipeline-card-chips">
+                            <span className={pnl >= 0 ? 'positive' : 'negative'} style={{fontSize:11}}>{formatCurrency(pnl)}</span>
+                            {openFlags > 0 && <span className="task-chip task-chip-high" style={{fontSize:10}}>{openFlags} flag{openFlags !== 1 ? 's' : ''}</span>}
+                            {openTasks > 0 && <span className="task-chip" style={{fontSize:10}}>{openTasks} task{openTasks !== 1 ? 's' : ''}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })()}
 
         <InsightFeedPanel insights={managerInsights} onSelectClient={onOpenCam} />
 

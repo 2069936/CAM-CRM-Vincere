@@ -913,6 +913,50 @@ textarea {
   resize: vertical;
 }
 
+.pipeline-board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.pipeline-column {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pipeline-col-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.pipeline-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pipeline-card:hover { border-color: var(--accent); background: rgba(69,163,255,0.05); }
+.pipeline-card.pipeline-card-flag { border-color: rgba(255,90,105,0.35); }
+.pipeline-card strong { font-size: 13px; }
+.pipeline-card small { font-size: 11px; }
+.pipeline-card-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.pipeline-empty { font-size: 12px; padding: 8px 10px; }
+
 /* Morning briefing */
 .briefing-grid {
   display: grid;
