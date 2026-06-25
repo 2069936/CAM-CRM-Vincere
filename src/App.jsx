@@ -1121,6 +1121,11 @@ function ClientOverview({ client, dailyImport }) {
         </div>
       </section>
 
+      <section className="panel">
+        <div className="panel-heading"><h3>P&amp;L Calendar</h3><span className="badge muted">Last 10 weeks — green = profit, red = loss</span></div>
+        <PnlCalendarHeatmap client={client} />
+      </section>
+
       <section className="overview-grid">
         <div className="panel">
           <div className="panel-heading"><h3>Algorithm temperature</h3><span className="badge muted">Last 3 closes</span></div>
@@ -1225,6 +1230,84 @@ function ClientOverview({ client, dailyImport }) {
           {!overview.passProgress.length ? <p className="muted">No target-bearing accounts for this client.</p> : null}
         </div>
       </section>
+    </div>
+  );
+}
+
+function buildPnlCalendar(client) {
+  const imports = client.dailyImports || [];
+  if (!imports.length) return [];
+  const byDate = {};
+  for (const di of imports) {
+    const pnl = (di.snapshots || []).reduce((s, snap) => s + Number(snap.grossRealizedPnl || 0), 0);
+    byDate[di.date] = { date: di.date, pnl, status: di.status };
+  }
+  // Build a 10-week window ending today
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 69); // 70 days = 10 weeks
+  const weeks = [];
+  let week = [];
+  const cur = new Date(start);
+  // Align to Monday
+  const dow = cur.getDay();
+  cur.setDate(cur.getDate() - (dow === 0 ? 6 : dow - 1));
+  while (cur <= end) {
+    const iso = cur.toISOString().slice(0, 10);
+    week.push({ date: iso, ...(byDate[iso] || { date: iso, pnl: null, status: null }) });
+    if (week.length === 7) { weeks.push(week); week = []; }
+    cur.setDate(cur.getDate() + 1);
+  }
+  if (week.length) weeks.push(week);
+  return weeks;
+}
+
+function PnlCalendarHeatmap({ client }) {
+  const weeks = buildPnlCalendar(client);
+  if (!weeks.length) return null;
+  const allPnls = weeks.flat().map((d) => d.pnl).filter((v) => v !== null);
+  const maxAbs = Math.max(...allPnls.map(Math.abs), 1);
+  const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+
+  function cellColor(day) {
+    if (day.pnl === null) return 'var(--surface-3)';
+    if (day.pnl === 0) return 'var(--surface-2)';
+    const intensity = Math.min(0.9, 0.2 + (Math.abs(day.pnl) / maxAbs) * 0.7);
+    return day.pnl > 0
+      ? `rgba(47, 202, 115, ${intensity})`
+      : `rgba(255, 90, 105, ${intensity})`;
+  }
+
+  return (
+    <div className="pnl-heatmap">
+      <div className="pnl-heatmap-day-labels">
+        {DAY_LABELS.map((l, i) => <span key={i}>{l}</span>)}
+      </div>
+      <div className="pnl-heatmap-grid">
+        {weeks.map((week, wi) => (
+          <div className="pnl-heatmap-week" key={wi}>
+            {week.map((day) => (
+              <div
+                key={day.date}
+                className="pnl-heatmap-cell"
+                style={{ background: cellColor(day) }}
+                title={day.pnl !== null ? `${day.date}: ${day.pnl >= 0 ? '+' : ''}${formatCurrency(day.pnl)}` : day.date}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="pnl-heatmap-legend">
+        <span className="negative">Negative</span>
+        <div className="heatmap-legend-bar">
+          <i style={{ background: 'rgba(255,90,105,0.8)' }} />
+          <i style={{ background: 'rgba(255,90,105,0.4)' }} />
+          <i style={{ background: 'var(--surface-3)' }} />
+          <i style={{ background: 'rgba(47,202,115,0.4)' }} />
+          <i style={{ background: 'rgba(47,202,115,0.8)' }} />
+        </div>
+        <span className="positive">Positive</span>
+      </div>
     </div>
   );
 }
