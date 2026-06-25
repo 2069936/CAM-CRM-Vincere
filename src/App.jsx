@@ -1592,6 +1592,78 @@ function ClientPnlChart({ history = [] }) {
   );
 }
 
+function OnboardingChecklist({ client, onSwitchTab }) {
+  const profile = client.profile || {};
+  const creds = client.credentials || {};
+  const registry = client.accountRegistry || {};
+  const tasks = client.tasks || [];
+
+  const steps = [
+    {
+      done: !!(profile.email || profile.phone || profile.fullName),
+      label: 'Add contact info',
+      detail: 'Name, WhatsApp, email — so you can reach the client from the CRM',
+      action: () => onSwitchTab?.('Profile'),
+      actionLabel: 'Open Profile →',
+    },
+    {
+      done: !!(creds.ip && creds.username),
+      label: 'Save VPS credentials',
+      detail: 'IP, username, password — required for daily check-ins',
+      action: () => onSwitchTab?.('Credentials'),
+      actionLabel: 'Open Credentials →',
+    },
+    {
+      done: Object.keys(registry).length > 0,
+      label: 'Upload first NT CSV',
+      detail: 'Export from NinjaTrader and drag the file here to populate accounts',
+      action: null,
+      actionLabel: null,
+    },
+    {
+      done: Object.values(registry).some(m => m.accountType && m.accountType !== 'Unassigned'),
+      label: 'Classify accounts in registry',
+      detail: 'Set each account as Funded, Evaluation, Cash, or Inactive',
+      action: () => onSwitchTab?.('Account Registry'),
+      actionLabel: 'Open Registry →',
+    },
+    {
+      done: Object.values(registry).some(m => m.accountType === 'Funded' && m.targetProfit),
+      label: 'Set payout target on funded accounts',
+      detail: 'Target profit + max drawdown limit — enables payout alerts and progress tracking',
+      action: () => onSwitchTab?.('Account Registry'),
+      actionLabel: 'Open Registry →',
+    },
+  ];
+
+  const doneCount = steps.filter(s => s.done).length;
+  if (doneCount === steps.length) return null;
+
+  return (
+    <div className="onboarding-checklist">
+      <div className="onboarding-header">
+        <strong>New client setup</strong>
+        <span className="muted">{doneCount}/{steps.length} steps complete</span>
+        <div className="onboarding-bar-wrap"><div className="onboarding-bar" style={{width:`${Math.round(doneCount/steps.length*100)}%`}} /></div>
+      </div>
+      <div className="onboarding-steps">
+        {steps.map((step, i) => (
+          <div key={i} className={`onboarding-step${step.done ? ' onboarding-step-done' : ''}`}>
+            <span className="onboarding-dot">{step.done ? '✓' : i + 1}</span>
+            <div className="onboarding-step-body">
+              <strong>{step.label}</strong>
+              <small className="muted">{step.detail}</small>
+            </div>
+            {!step.done && step.action && (
+              <button className="ghost-button" style={{fontSize:12,whiteSpace:'nowrap'}} onClick={step.action}>{step.actionLabel}</button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PayoutHistoryPanel({ funded, grandTotal, onLogPayout }) {
   const today = todayIsoDate();
   const [logAccountName, setLogAccountName] = useState(null);
@@ -3564,6 +3636,9 @@ export default function App() {
                 </div>
               </div>
 
+              {!dailyImport && selectedClient && !(selectedClient.dailyImports?.length) && (
+                <OnboardingChecklist client={selectedClient} onSwitchTab={setActiveTab} />
+              )}
               {showUpload || !dailyImport ? <UploadArea onParsed={handleParsedFiles} /> : null}
 
               {showQuickLog && selectedClient && (
