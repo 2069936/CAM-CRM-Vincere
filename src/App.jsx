@@ -4007,6 +4007,17 @@ export default function App() {
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [strategySetIndex, setStrategySetIndex] = useState({ status: 'Not loaded', records: [] });
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+
+  useEffect(() => {
+    function onKey(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setGlobalSearchOpen(v => !v); setGlobalSearchQuery(''); }
+      if (e.key === 'Escape') setGlobalSearchOpen(false);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => saveDemoState(state), [state]);
   useEffect(() => saveUsers(users), [users]);
@@ -4340,10 +4351,13 @@ export default function App() {
           <input value={newClientName} placeholder="New client" onChange={(event) => setNewClientName(event.target.value)} />
           <button><Plus size={16} /></button>
         </form>
+        <button className="global-search-trigger" onClick={() => { setGlobalSearchOpen(true); setGlobalSearchQuery(''); }} title="Search all clients (⌘K)">
+          <span>⌕ Search all…</span><kbd>⌘K</kbd>
+        </button>
         <input
           className="client-search"
           value={clientSearch}
-          placeholder="Search clients..."
+          placeholder="Filter sidebar..."
           onChange={(e) => setClientSearch(e.target.value)}
         />
         <nav className="client-list">
@@ -4714,6 +4728,50 @@ export default function App() {
     </div>
     {reportImport ? <ReportPanel client={selectedClient} dailyImport={reportImport} onClose={() => setReportImport(null)} /> : null}
     {monthlyReportMonth ? <MonthlyReportPanel client={selectedClient} month={monthlyReportMonth} onClose={() => setMonthlyReportMonth(null)} /> : null}
+    {globalSearchOpen && (() => {
+      const q = globalSearchQuery.toLowerCase().trim();
+      const clients = state.clients || [];
+      const results = !q ? [] : clients.flatMap(client => {
+        const hits = [];
+        (client.activityLog || []).filter(e => e.text?.toLowerCase().includes(q)).forEach(e => hits.push({ client, kind: 'Activity', text: e.text, sub: e.type + ' · ' + (e.createdAt||'').slice(0,10), tab: 'Activity' }));
+        (client.tasks || []).filter(t => t.text?.toLowerCase().includes(q)).forEach(t => hits.push({ client, kind: 'Task', text: t.text, sub: (t.done ? '✓ Done' : 'Open') + (t.dueDate ? ' · due ' + t.dueDate : ''), tab: 'Tasks' }));
+        const profile = client.profile || {};
+        if ([profile.fullName, profile.email, profile.phone, profile.messenger, profile.notes].some(v => v?.toLowerCase().includes(q))) {
+          hits.push({ client, kind: 'Profile', text: profile.fullName || client.name, sub: 'Profile / notes', tab: 'Credentials & Notes' });
+        }
+        return hits;
+      }).slice(0, 30);
+      return (
+        <div className="global-search-overlay" onClick={e => { if (e.target === e.currentTarget) setGlobalSearchOpen(false); }}>
+          <div className="global-search-modal">
+            <div className="global-search-bar">
+              <span className="global-search-icon">⌕</span>
+              <input autoFocus value={globalSearchQuery} onChange={e => setGlobalSearchQuery(e.target.value)} placeholder="Search all clients — activity, tasks, notes…" className="global-search-input" />
+              <kbd className="global-search-esc" onClick={() => setGlobalSearchOpen(false)}>esc</kbd>
+            </div>
+            <div className="global-search-results">
+              {!q && <div className="global-search-hint muted">Type to search across all clients</div>}
+              {q && !results.length && <div className="global-search-hint muted">No results for "{globalSearchQuery}"</div>}
+              {results.map((r, i) => (
+                <button key={i} className="global-search-result" onClick={() => {
+                  setGlobalSearchOpen(false);
+                  if (platformView !== 'cam') { setPlatformView('cam'); }
+                  setTimeout(() => {
+                    setState(s => ({ ...s, selectedClientId: r.client.id }));
+                    setActiveTab(r.tab);
+                  }, 50);
+                }}>
+                  <span className={`global-search-kind kind-${r.kind.toLowerCase()}`}>{r.kind}</span>
+                  <span className="global-search-text">{r.text}</span>
+                  <span className="global-search-sub muted">{r.client.name} · {r.sub}</span>
+                </button>
+              ))}
+            </div>
+            {q && results.length > 0 && <div className="global-search-footer muted">{results.length} result{results.length !== 1 ? 's' : ''} · click to navigate</div>}
+          </div>
+        </div>
+      );
+    })()}
     </>
     </ErrorBoundary>
   );
