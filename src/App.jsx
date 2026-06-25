@@ -441,6 +441,43 @@ function accountRiskLevel(snapshot, meta) {
   return { level: 'Low', pct };
 }
 
+// Detect consistency rule risk: best day > 30% of total positive P&L on a funded account
+function buildConsistencyWarnings(client) {
+  const warnings = [];
+  const registry = client?.accountRegistry || {};
+  const funded = Object.values(registry).filter((a) => a.accountType === 'Funded' && a.status !== 'Failed' && a.status !== 'Inactive');
+
+  for (const meta of funded) {
+    const pnlByDay = [];
+    for (const di of client.dailyImports || []) {
+      const snap = (di.snapshots || []).find((s) => s.accountName === meta.accountName);
+      if (snap) pnlByDay.push({ date: di.date, pnl: Number(snap.grossRealizedPnl || 0) });
+    }
+    if (pnlByDay.length < 3) continue;
+
+    const positiveDays = pnlByDay.filter((d) => d.pnl > 0);
+    const totalPositive = positiveDays.reduce((s, d) => s + d.pnl, 0);
+    if (totalPositive <= 0) continue;
+
+    const bestDay = positiveDays.reduce((best, d) => d.pnl > best.pnl ? d : best, positiveDays[0]);
+    const ratio = bestDay.pnl / totalPositive;
+
+    if (ratio > 0.30) {
+      warnings.push({
+        id: `consistency-${meta.accountName}`,
+        alias: meta.alias || meta.accountName,
+        accountName: meta.accountName,
+        bestDayPnl: bestDay.pnl,
+        bestDayDate: bestDay.date,
+        totalPositive,
+        ratio: Math.round(ratio * 100),
+        severity: ratio > 0.50 ? 'Critical' : 'Warning',
+      });
+    }
+  }
+  return warnings;
+}
+
 // Detect possible VPS/algo disconnect: enabled strategy + zero P&L when prior avg was positive
 function buildDisconnectAlerts(client) {
   const alerts = [];
@@ -927,6 +964,11 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
               <span>Account has less than $1,200 remaining before its max drawdown limit.</span>
               <small>balance_dd_remaining &lt; 1200</small>
             </div>
+            <div className="exception-card warning">
+              <strong>Consistency rule risk</strong>
+              <span>Funded account's best day represents more than 30% of total positive P&L — may violate prop firm consistency rule.</span>
+              <small>best_day_pnl / total_positive_pnl &gt; 0.30</small>
+            </div>
           </div>
         </section>
 
@@ -1196,6 +1238,7 @@ function ClientOverview({ client, dailyImport }) {
   const overview = buildClientOverview(client, dailyImport);
   const maxDistribution = Math.max(...overview.distribution.map((item) => item.count), 1);
   const disconnectAlerts = buildDisconnectAlerts(client);
+  const consistencyWarnings = buildConsistencyWarnings(client);
   const monthlyByAccount = buildMonthlyByAccount(client);
   const latestRegistry = { ...(dailyImport?.accounts || {}), ...(client?.accountRegistry || {}) };
 
@@ -1265,6 +1308,30 @@ function ClientOverview({ client, dailyImport }) {
                 <div>
                   <strong>Possible VPS / algo disconnect — {alert.alias}</strong>
                   <span>{alert.message}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {consistencyWarnings.length > 0 ? (
+        <section className={consistencyWarnings.some((w) => w.severity === 'Critical') ? 'panel danger-panel' : 'panel'}>
+          <div className="panel-heading">
+            <h3>Consistency Rule Risk</h3>
+            <span className="count">{consistencyWarnings.length}</span>
+            <span className="badge muted">Best day &gt;30% of total gains</span>
+          </div>
+          <div className="flag-list">
+            {consistencyWarnings.map((w) => (
+              <div className={`flag ${w.severity === 'Critical' ? 'critical' : 'warning'}`} key={w.id}>
+                <AlertTriangle size={16} />
+                <div>
+                  <strong>{w.alias} — {w.ratio}% concentration risk</strong>
+                  <span>
+                    Best day ({w.bestDayDate}): {formatCurrency(w.bestDayPnl)} = {w.ratio}% of {formatCurrency(w.totalPositive)} total gains.
+                    {w.severity === 'Critical' ? ' Likely fails consistency rule. Contact client.' : ' Monitor — approaching consistency rule limit.'}
+                  </span>
                 </div>
               </div>
             ))}
