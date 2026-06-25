@@ -814,6 +814,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const lifecycle = buildLifecycleMetrics(clients);
   const riskDist = buildRiskDistribution(clients, camProfiles);
   const camPerf = buildCamPerformance(clients, camProfiles);
+  const managerInsights = buildPortfolioInsights(clients, clients);
 
   function submitCam(event) {
     event.preventDefault();
@@ -874,6 +875,8 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           <div className="metric"><span>Team daily PnL</span><strong className={totals.dailyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(totals.dailyPnl)}</strong></div>
           <div className="metric"><span>Team weekly PnL</span><strong className={totals.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(totals.weeklyPnl)}</strong></div>
         </div>
+
+        <InsightFeedPanel insights={managerInsights} onSelectClient={onOpenCam} />
 
         <section className="panel">
           <div className="panel-heading">
@@ -1156,6 +1159,110 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   );
 }
 
+function MonthlyReportPanel({ client, month, onClose }) {
+  // month = 'YYYY-MM'
+  const registry = client?.accountRegistry || {};
+  const monthImports = (client?.dailyImports || []).filter((di) => di.date?.startsWith(month));
+  const allDays = monthImports.map((di) => {
+    const pnl = (di.snapshots || []).reduce((s, snap) => s + Number(snap.grossRealizedPnl || 0), 0);
+    return { date: di.date, pnl, status: di.status };
+  });
+  const totalPnl = allDays.reduce((s, d) => s + d.pnl, 0);
+  const positiveDays = allDays.filter((d) => d.pnl > 0);
+  const negativeDays = allDays.filter((d) => d.pnl < 0);
+  const bestDay = allDays.length ? allDays.reduce((b, d) => d.pnl > b.pnl ? d : b, allDays[0]) : null;
+  const worstDay = allDays.length ? allDays.reduce((w, d) => d.pnl < w.pnl ? d : w, allDays[0]) : null;
+
+  // Per-account monthly summary
+  const accountMap = {};
+  for (const di of monthImports) {
+    for (const snap of di.snapshots || []) {
+      const meta = registry[snap.accountName] || {};
+      if (meta.accountType === 'Inactive / Ignore') continue;
+      if (!accountMap[snap.accountName]) {
+        accountMap[snap.accountName] = { alias: meta.alias || snap.accountName, type: meta.accountType || '', pnl: 0, days: 0, winDays: 0 };
+      }
+      const pnl = Number(snap.grossRealizedPnl || 0);
+      accountMap[snap.accountName].pnl += pnl;
+      accountMap[snap.accountName].days += 1;
+      if (pnl > 0) accountMap[snap.accountName].winDays += 1;
+    }
+  }
+  const accountRows = Object.values(accountMap).sort((a, b) => b.pnl - a.pnl);
+
+  const sign = (n) => n >= 0 ? '+' : '';
+  const monthLabel = new Date(month + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  return (
+    <div className="report-overlay">
+      <div className="report-sheet">
+        <div className="report-actions no-print">
+          <button className="secondary-button" onClick={() => window.print()}>Print / Save PDF</button>
+          <button className="ghost-button" onClick={onClose}>Close</button>
+        </div>
+        <header className="report-header">
+          <div>
+            <p className="report-firm">Vincere Trading</p>
+            <h1>{client?.name}</h1>
+            <span>Monthly performance report · {monthLabel}</span>
+          </div>
+          <div className="report-header-right">
+            <strong className={totalPnl >= 0 ? 'positive' : 'negative'}>{sign(totalPnl)}{formatCurrency(totalPnl)}</strong>
+            <small>net P&amp;L</small>
+          </div>
+        </header>
+
+        <section className="report-metrics">
+          <div><span>Trading days</span><strong>{allDays.length}</strong></div>
+          <div><span>Positive days</span><strong className="positive">{positiveDays.length}</strong></div>
+          <div><span>Negative days</span><strong className={negativeDays.length ? 'negative' : ''}>{negativeDays.length}</strong></div>
+          <div><span>Win rate</span><strong>{allDays.length ? Math.round(positiveDays.length / allDays.length * 100) : 0}%</strong></div>
+          {bestDay  ? <div><span>Best day</span><strong className="positive">{sign(bestDay.pnl)}{formatCurrency(bestDay.pnl)} <small>({bestDay.date})</small></strong></div> : null}
+          {worstDay ? <div><span>Worst day</span><strong className={worstDay.pnl < 0 ? 'negative' : ''}>{sign(worstDay.pnl)}{formatCurrency(worstDay.pnl)} <small>({worstDay.date})</small></strong></div> : null}
+        </section>
+
+        {accountRows.length > 0 ? (
+          <section>
+            <h2>Account breakdown</h2>
+            <table className="ops-table">
+              <thead><tr><th>Account</th><th>Type</th><th>Monthly P&amp;L</th><th>Trade days</th><th>Win rate</th></tr></thead>
+              <tbody>
+                {accountRows.map((row) => (
+                  <tr key={row.alias}>
+                    <td><strong>{row.alias}</strong></td>
+                    <td>{row.type}</td>
+                    <td className={row.pnl >= 0 ? 'positive' : 'negative'}>{sign(row.pnl)}{formatCurrency(row.pnl)}</td>
+                    <td>{row.days}</td>
+                    <td>{row.days ? Math.round(row.winDays / row.days * 100) : 0}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
+
+        {allDays.length > 0 ? (
+          <section>
+            <h2>Daily P&amp;L</h2>
+            <table className="ops-table">
+              <thead><tr><th>Date</th><th>P&amp;L</th><th>Status</th></tr></thead>
+              <tbody>
+                {allDays.map((d) => (
+                  <tr key={d.date}>
+                    <td>{d.date}</td>
+                    <td className={d.pnl >= 0 ? 'positive' : 'negative'}>{sign(d.pnl)}{formatCurrency(d.pnl)}</td>
+                    <td>{d.status || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function ReportPanel({ client, dailyImport, onClose }) {
   const report = buildDailyReportSummary(client, dailyImport);
   const dailyDelta = report.priorDailyPnl !== null
@@ -1343,7 +1450,7 @@ function ClientPnlChart({ history = [] }) {
   );
 }
 
-function ClientOverview({ client, dailyImport, allClients = [] }) {
+function ClientOverview({ client, dailyImport, allClients = [], onRequestMonthlyReport }) {
   const [monthlyExpanded, setMonthlyExpanded] = useState('');
   const overview = buildClientOverview(client, dailyImport);
   const maxDistribution = Math.max(...overview.distribution.map((item) => item.count), 1);
@@ -1521,7 +1628,15 @@ function ClientOverview({ client, dailyImport, allClients = [] }) {
       ) : null}
 
       <section className="panel">
-        <div className="panel-heading"><h3>Monthly P&amp;L</h3><TrendingUp size={16} /></div>
+        <div className="panel-heading">
+          <h3>Monthly P&amp;L</h3>
+          <TrendingUp size={16} />
+          {monthlyExpanded ? (
+            <button className="ghost-button" style={{ marginLeft: 'auto', fontSize: 12 }} onClick={() => onRequestMonthlyReport?.(monthlyExpanded)}>
+              <FileText size={13} /> Monthly Report
+            </button>
+          ) : null}
+        </div>
         <div className="history-strip">
           {buildMonthlyTotals(client).map((m) => (
             <button
@@ -2619,6 +2734,7 @@ export default function App() {
   const [showOverview, setShowOverview] = useState(false);
   const [showSOP, setShowSOP] = useState(false);
   const [reportImport, setReportImport] = useState(null);
+  const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [strategySetIndex, setStrategySetIndex] = useState({ status: 'Not loaded', records: [] });
 
@@ -2988,7 +3104,7 @@ export default function App() {
                 ))}
               </div>
 
-              {effectiveActiveTab === 'Overview' ? <ClientOverview client={selectedClient} dailyImport={dailyImport} allClients={state.clients || []} /> : null}
+              {effectiveActiveTab === 'Overview' ? <ClientOverview client={selectedClient} dailyImport={dailyImport} allClients={state.clients || []} onRequestMonthlyReport={(month) => setMonthlyReportMonth(month)} /> : null}
               {effectiveActiveTab === 'Activity' ? <ActivityLog client={selectedClient} onAddEntry={handleAddActivity} onDeleteEntry={handleDeleteActivity} /> : null}
               {effectiveActiveTab === 'Tasks' ? <TasksTab client={selectedClient} onAddTask={handleAddTask} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} /> : null}
               {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
@@ -3031,6 +3147,7 @@ export default function App() {
       )}
     </div>
     {reportImport ? <ReportPanel client={selectedClient} dailyImport={reportImport} onClose={() => setReportImport(null)} /> : null}
+    {monthlyReportMonth ? <MonthlyReportPanel client={selectedClient} month={monthlyReportMonth} onClose={() => setMonthlyReportMonth(null)} /> : null}
     </>
   );
 }
