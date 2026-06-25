@@ -1767,3 +1767,14 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .pnl-heatmap-legend { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .heatmap-legend-bar { display: flex; gap: 3px; align-items: center; }
 .heatmap-legend-bar i { display: block; width: 13px; height: 13px; border-radius: 3px; }
+
+/* Account Variance badges */
+.variance-badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.variance-good    { background: rgba(47,202,115,0.15); color: var(--green); }
+.variance-average { background: rgba(144,164,184,0.15); color: var(--muted); }
+.variance-review  { background: rgba(244,187,68,0.15); color: var(--yellow); }
+
+/* Payout alert panel */
+.payout-alert-panel { border-left: 3px solid var(--green); }
+.payout-progress-wrap { height: 4px; background: var(--surface-3); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.payout-progress-bar { height: 4px; border-radius: 2px; transition: width 0.3s; }

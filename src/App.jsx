@@ -429,6 +429,83 @@ function buildMonthlyByAccount(client) {
     }));
 }
 
+// P&L variance analysis: compare each account to the team average for same strategy
+// Returns per-account deviation status (good / average / needs attention)
+function buildPnlVarianceAnalysis(client, allClients = []) {
+  if (!client) return [];
+
+  // Build cross-client strategy averages from last 7 closes
+  const stratAvg = {};
+  for (const c of allClients) {
+    for (const di of (c.dailyImports || []).slice(-7)) {
+      for (const snap of di.snapshots || []) {
+        for (const strat of snap.strategies || []) {
+          if (!strat.enabled) continue;
+          const key = strat.strategyFamily || strat.strategyName || 'Unknown';
+          if (!stratAvg[key]) stratAvg[key] = { total: 0, count: 0 };
+          stratAvg[key].total += Number(strat.realized || 0);
+          stratAvg[key].count += 1;
+        }
+      }
+    }
+  }
+  const avgByStrat = {};
+  for (const [k, v] of Object.entries(stratAvg)) {
+    avgByStrat[k] = v.count ? v.total / v.count : 0;
+  }
+
+  // Now evaluate each account in this client's latest 7 closes
+  const accountMap = {};
+  const registry = { ...(client.accountRegistry || {}) };
+  const recentImports = (client.dailyImports || []).slice(-7);
+
+  for (const di of recentImports) {
+    for (const snap of di.snapshots || []) {
+      const meta = registry[snap.accountName] || {};
+      if (meta.accountType === 'Inactive / Ignore') continue;
+      if (!accountMap[snap.accountName]) {
+        accountMap[snap.accountName] = {
+          accountName: snap.accountName,
+          alias: meta.alias || snap.accountName,
+          accountType: meta.accountType || '',
+          totalActual: 0,
+          totalExpected: 0,
+          days: 0,
+          stratNames: new Set(),
+        };
+      }
+      const entry = accountMap[snap.accountName];
+      entry.totalActual += Number(snap.grossRealizedPnl || 0);
+      entry.days += 1;
+      for (const strat of snap.strategies || []) {
+        if (!strat.enabled) continue;
+        const key = strat.strategyFamily || strat.strategyName || 'Unknown';
+        entry.stratNames.add(key);
+        entry.totalExpected += avgByStrat[key] || 0;
+      }
+    }
+  }
+
+  return Object.values(accountMap)
+    .filter((a) => a.days >= 2 && a.totalExpected !== 0)
+    .map((a) => {
+      const variance = a.totalActual - a.totalExpected;
+      const variancePct = a.totalExpected !== 0 ? (variance / Math.abs(a.totalExpected)) * 100 : 0;
+      let status;
+      if (variancePct >= 10) status = 'good';
+      else if (variancePct >= -15) status = 'average';
+      else status = 'review';
+      return {
+        ...a,
+        strategies: [...a.stratNames].join(' · '),
+        variance,
+        variancePct: Math.round(variancePct),
+        status,
+      };
+    })
+    .sort((a, b) => b.variancePct - a.variancePct);
+}
+
 // Drawdown-based risk level for an account
 function accountRiskLevel(snapshot, meta) {
   const ddLimit = Number(meta?.maxDrawdownLimit || 0);
@@ -560,6 +637,36 @@ function buildRiskDistribution(clients = [], camProfiles = []) {
 
   const total = Object.values(buckets).reduce((s, b) => s + b.length, 0);
   return { buckets, total };
+}
+
+// Detect funded accounts that have reached their target profit — payout should be requested
+function buildPayoutAlerts(client, dailyImport) {
+  if (!client || !dailyImport) return [];
+  const registry = { ...(dailyImport.accounts || {}), ...(client.accountRegistry || {}) };
+  const alerts = [];
+  for (const snap of dailyImport.snapshots || []) {
+    const meta = registry[snap.accountName] || {};
+    if (meta.accountType !== 'Funded') continue;
+    if (meta.status === 'Failed' || meta.status === 'Inactive') continue;
+    const target = Number(meta.targetProfit || 0);
+    if (!target) continue;
+    const balance = Number(snap.accountBalance || 0);
+    const startBalance = Number(meta.startBalance || 0);
+    const profit = startBalance > 0 ? balance - startBalance : 0;
+    const alreadyRequested = meta.payoutState && meta.payoutState !== 'Not requested';
+    if (!alreadyRequested && profit >= target * 0.9) {
+      alerts.push({
+        accountName: snap.accountName,
+        alias: meta.alias || snap.accountName,
+        profit,
+        target,
+        pct: Math.round((profit / target) * 100),
+        payoutState: meta.payoutState || 'Not requested',
+        ready: profit >= target,
+      });
+    }
+  }
+  return alerts.sort((a, b) => b.pct - a.pct);
 }
 
 function buildPayoutPipeline(clients = [], camProfiles = []) {
@@ -1236,12 +1343,14 @@ function ClientPnlChart({ history = [] }) {
   );
 }
 
-function ClientOverview({ client, dailyImport }) {
+function ClientOverview({ client, dailyImport, allClients = [] }) {
   const [monthlyExpanded, setMonthlyExpanded] = useState('');
   const overview = buildClientOverview(client, dailyImport);
   const maxDistribution = Math.max(...overview.distribution.map((item) => item.count), 1);
   const disconnectAlerts = buildDisconnectAlerts(client);
   const consistencyWarnings = buildConsistencyWarnings(client);
+  const varianceRows = buildPnlVarianceAnalysis(client, allClients);
+  const payoutAlerts = buildPayoutAlerts(client, dailyImport);
   const monthlyByAccount = buildMonthlyByAccount(client);
   const latestRegistry = { ...(dailyImport?.accounts || {}), ...(client?.accountRegistry || {}) };
 
@@ -1338,6 +1447,75 @@ function ClientOverview({ client, dailyImport }) {
                 </div>
               </div>
             ))}
+          </div>
+        </section>
+      ) : null}
+
+      {payoutAlerts.length > 0 ? (
+        <section className="panel payout-alert-panel">
+          <div className="panel-heading">
+            <h3>Payout Alerts</h3>
+            <span className="count">{payoutAlerts.length}</span>
+            <span className="badge muted">Accounts near or at target — request payout</span>
+          </div>
+          <div className="flag-list">
+            {payoutAlerts.map((a) => (
+              <div key={a.accountName} className={`flag-item ${a.ready ? 'flag-critical' : 'flag-warning'}`}>
+                <div className="flag-body">
+                  <strong>{a.alias}</strong>
+                  <span>
+                    {a.ready
+                      ? `Ready for payout — profit ${formatCurrency(a.profit)} reached target ${formatCurrency(a.target)}`
+                      : `Approaching target — ${a.pct}% of ${formatCurrency(a.target)} goal (${formatCurrency(a.profit)} profit)`}
+                  </span>
+                </div>
+                <div className="payout-progress-wrap">
+                  <div className="payout-progress-bar" style={{ width: `${Math.min(100, a.pct)}%`, background: a.ready ? 'var(--green)' : 'var(--yellow)' }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {varianceRows.length > 0 ? (
+        <section className="panel">
+          <div className="panel-heading">
+            <h3>Account Variance vs Team Avg</h3>
+            <span className="badge muted">Last 7 closes — actual vs expected by strategy</span>
+          </div>
+          <div className="table-wrap">
+            <table className="ops-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Strategies</th>
+                  <th>Actual P&amp;L</th>
+                  <th>Expected P&amp;L</th>
+                  <th>Variance</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {varianceRows.map((row) => (
+                  <tr key={row.accountName}>
+                    <td><strong>{row.alias}</strong><small>{row.accountType}</small></td>
+                    <td><small className="muted">{row.strategies || '—'}</small></td>
+                    <td className={row.totalActual >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.totalActual)}</td>
+                    <td className="muted">{formatCurrency(row.totalExpected)}</td>
+                    <td className={row.variance >= 0 ? 'positive' : 'negative'}>
+                      {row.variance >= 0 ? '+' : ''}{formatCurrency(row.variance)}
+                      <small className="muted"> ({row.variancePct >= 0 ? '+' : ''}{row.variancePct}%)</small>
+                    </td>
+                    <td>
+                      <span className={`variance-badge variance-${row.status}`}>
+                        {row.status === 'good' ? '✓ Good' : row.status === 'average' ? '~ Average' : '⚠ Review'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       ) : null}
@@ -2599,7 +2777,7 @@ export default function App() {
                 ))}
               </div>
 
-              {effectiveActiveTab === 'Overview' ? <ClientOverview client={selectedClient} dailyImport={dailyImport} /> : null}
+              {effectiveActiveTab === 'Overview' ? <ClientOverview client={selectedClient} dailyImport={dailyImport} allClients={state.clients || []} /> : null}
               {effectiveActiveTab === 'Activity' ? <ActivityLog client={selectedClient} onAddEntry={handleAddActivity} onDeleteEntry={handleDeleteActivity} /> : null}
               {effectiveActiveTab === 'Tasks' ? <TasksTab client={selectedClient} onAddTask={handleAddTask} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} /> : null}
               {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
