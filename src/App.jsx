@@ -3567,6 +3567,12 @@ export default function App() {
     navigator.clipboard.writeText(text).then(() => {
       setCopyDone(true);
       setTimeout(() => setCopyDone(false), 2000);
+      setState((current) => addActivityEntry(current, selectedClient.id, {
+        id: `act-send-${Date.now()}`,
+        type: 'Message',
+        text: `Daily update sent (${dailyImport.date})`,
+        createdAt: new Date().toISOString(),
+      }));
     });
   }
 
@@ -3577,6 +3583,12 @@ export default function App() {
     navigator.clipboard.writeText(text).then(() => {
       setCopyWeekDone(true);
       setTimeout(() => setCopyWeekDone(false), 2000);
+      setState((current) => addActivityEntry(current, selectedClient.id, {
+        id: `act-wsend-${Date.now()}`,
+        type: 'Message',
+        text: `Weekly summary sent`,
+        createdAt: new Date().toISOString(),
+      }));
     });
   }
 
