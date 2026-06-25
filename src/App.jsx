@@ -1082,7 +1082,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </div>
           </div>
           <div className="header-actions">
-            <button className="secondary-button" onClick={onLoadDemo}><Download size={16} /> Reload Demo</button>
+            <button className="secondary-button" onClick={() => { if (window.confirm('Reset all data to demo state? This will erase any changes made during this session.')) onLoadDemo(); }}><Download size={16} /> Reload Demo</button>
             <button className="ghost-button" onClick={() => {
               const report = buildTeamMessageReport(clients, camProfiles, totals, cams);
               navigator.clipboard.writeText(report).then(() => { setTeamCopyDone(true); setTimeout(() => setTeamCopyDone(false), 2000); });
@@ -3584,6 +3584,7 @@ export default function App() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    if (!window.confirm(`Import "${file.name}"? This will replace all current data.`)) return;
     try {
       const text = await file.text();
       const imported = parseImportedState(text);
