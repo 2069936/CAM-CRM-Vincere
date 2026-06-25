@@ -21,6 +21,26 @@ function drawdownDisplay(row) {
   return { label: `${formatCurrency(rawDD)} buffer`, tone: '' };
 }
 
+function fundedRiskLevel(row) {
+  const activeStrats = (row.strategies || []).filter((s) => s.enabled).length;
+  const hasDll = row.meta?.dailyLossLimit && row.meta.dailyLossLimit !== 'None' && row.meta.dailyLossLimit !== '';
+  const ddLimit = Number(row.meta?.maxDrawdownLimit || 0);
+  const rawDD = Number(row.trailingMaxDrawdown || 0);
+  const buffer = ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
+
+  let score = 0;
+  if (activeStrats >= 3) score += 3;
+  else if (activeStrats === 2) score += 2;
+  else if (activeStrats === 1) score += 1;
+  if (!hasDll) score += 2;
+  if (buffer > 0 && buffer < 500) score += 3;
+  else if (buffer > 0 && buffer < 1200) score += 1;
+
+  if (score <= 1) return { label: 'Low', tone: 'positive' };
+  if (score <= 3) return { label: 'Medium', tone: 'warning' };
+  return { label: 'High', tone: 'negative' };
+}
+
 function Metric({ label, value, tone }) {
   return (
     <div className="metric">
@@ -189,7 +209,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount }) {
   if (!rows.length) return null;
   const isCash = mode === 'cash';
   const isFunded = title === 'Funded';
-  const colSpan = isCash ? 5 : isFunded ? 8 : 6;
+  const colSpan = isCash ? 5 : isFunded ? 9 : 6;
 
   return (
     <section className="panel">
@@ -210,6 +230,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount }) {
               {!isCash ? <th>Drawdown</th> : null}
               {isFunded ? <th>Target</th> : null}
               {isFunded ? <th>Payout</th> : null}
+              {isFunded ? <th>Risk</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -264,6 +285,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount }) {
                       </select>
                     </td>
                   ) : null}
+                  {isFunded ? (() => { const r = fundedRiskLevel(row); return <td className={r.tone}>{r.label}</td>; })() : null}
                 </tr>
                 {expandedAccount === row.accountName ? <AccountDetail row={row} executions={executions} colSpan={colSpan} /> : null}
               </Fragment>
