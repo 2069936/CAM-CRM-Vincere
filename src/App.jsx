@@ -3303,6 +3303,53 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
         ) : <div className="notice success"><CheckCircle2 size={16} /> No cross-account deviation alerts.</div>}
       </section>
 
+      {(() => {
+        const fundedRows = clients.flatMap(client => {
+          const latestImport = client.dailyImports?.at(-1);
+          return Object.values(client.accountRegistry || {})
+            .filter(a => a.accountType === 'Funded' && a.status !== 'Failed' && a.status !== 'Ignore')
+            .map(a => {
+              const snap = (latestImport?.snapshots || []).find(s => s.accountName === a.accountName);
+              const todayPnl = snap ? (latestImport?.snapshots || []).filter(s => s.accountName === a.accountName).reduce((t, s) => t + Number(s.grossRealizedPnl || 0), 0) : null;
+              const rawDD = snap ? Number(snap.dailyNetPnl ?? snap.netPnl ?? 0) : null;
+              const ddLimit = Number(a.maxDrawdownLimit || 0);
+              const buffer = ddLimit > 0 && rawDD !== null ? ddLimit - Math.abs(Math.min(0, rawDD)) : null;
+              const bufferPct = buffer !== null && ddLimit > 0 ? Math.round((buffer / ddLimit) * 100) : null;
+              const target = Number(a.targetProfit || 0);
+              const weeklyPnl = snap ? Number(snap.weeklyPnl || 0) : null;
+              const pct = target > 0 && weeklyPnl !== null ? Math.min(100, Math.round((weeklyPnl / target) * 100)) : null;
+              return { client, account: a, todayPnl, buffer, bufferPct, pct, weeklyPnl, target };
+            });
+        });
+        if (!fundedRows.length) return null;
+        return (
+          <section className="panel">
+            <div className="panel-heading"><h3>Funded accounts</h3><span className="count">{fundedRows.length}</span></div>
+            <div className="table-wrap">
+              <table className="ops-table">
+                <thead><tr><th>Account</th><th>Client</th><th>Today P&L</th><th>DD Buffer</th><th>Target %</th><th>Payout</th></tr></thead>
+                <tbody>
+                  {fundedRows.sort((a, b) => (a.bufferPct ?? 999) - (b.bufferPct ?? 999)).map(({ client, account, todayPnl, buffer, bufferPct, pct }) => (
+                    <tr key={account.accountName} style={{cursor:'pointer'}} onClick={() => onSelectClient?.(client.id)}>
+                      <td><strong>{account.alias || account.accountName}</strong><small className="muted">{account.accountName}</small></td>
+                      <td>{client.name}</td>
+                      <td className={todayPnl === null ? 'muted' : todayPnl >= 0 ? 'positive' : 'negative'}>{todayPnl === null ? '—' : (todayPnl >= 0 ? '+' : '') + formatCurrency(todayPnl)}</td>
+                      <td>
+                        {buffer === null ? <span className="muted">—</span> : (
+                          <span className={bufferPct <= 20 ? 'negative' : bufferPct <= 40 ? 'warning' : 'positive'}>{formatCurrency(buffer)} <small className="muted">({bufferPct}%)</small></span>
+                        )}
+                      </td>
+                      <td>{pct === null ? <span className="muted">—</span> : <span className={pct >= 100 ? 'positive' : ''}>{pct}%</span>}</td>
+                      <td><span className="muted" style={{fontSize:11}}>{account.payoutState || '—'}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+      })()}
+
       <section className="panel">
         <div className="panel-heading"><h3>Algorithm rollup</h3><span className="count">{overview.algorithms.length}</span></div>
         {overview.algorithms.length ? (
