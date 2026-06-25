@@ -1031,12 +1031,13 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
   return lines.join('\n');
 }
 
-function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onAddClient, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient, onResolveFlag }) {
+function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onAddClient, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient, onResolveFlag, teamAnnouncement = '', onSetAnnouncement }) {
   const [newCamName, setNewCamName] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', displayName: '', email: '', role: USER_ROLES.CAM, camProfileId: '' });
   const [editUserId, setEditUserId] = useState(null);
   const [editUserPatch, setEditUserPatch] = useState({});
   const [showUserPanel, setShowUserPanel] = useState(false);
+  const [announcementDraft, setAnnouncementDraft] = useState('');
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
   const [batchImportResult, setBatchImportResult] = useState(null);
@@ -1228,6 +1229,18 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </div>
           )}
         </div>
+
+        {teamAnnouncement && (
+          <div className="team-announcement-banner">
+            <span>📢</span>
+            <span style={{flex:1}}>{teamAnnouncement}</span>
+            <button className="ghost-button" style={{fontSize:11}} onClick={() => { onSetAnnouncement?.(''); setAnnouncementDraft(''); }}>✕ Clear</button>
+          </div>
+        )}
+        <form className="team-announcement-form" onSubmit={e => { e.preventDefault(); onSetAnnouncement?.(announcementDraft.trim()); }}>
+          <input value={announcementDraft} onChange={e => setAnnouncementDraft(e.target.value)} placeholder="📢 Post team announcement (visible to all CAMs)…" />
+          {announcementDraft.trim() && <button type="submit" className="primary-button" style={{padding:'5px 12px',fontSize:12}}>Post</button>}
+        </form>
 
         {showNewClient && (
           <section className="panel" style={{maxWidth:480}}>
@@ -4575,6 +4588,8 @@ export default function App() {
         onTransferClient={(clientId, toCamId) =>
           setState((current) => transferClient(current, clientId, toCamId))
         }
+        teamAnnouncement={state.teamAnnouncement || ''}
+        onSetAnnouncement={msg => setState(s => ({ ...s, teamAnnouncement: msg }))}
         onResolveFlag={(clientId, importId, flagId) =>
           setState((current) => resolveFlagInImport(current, clientId, importId, flagId))
         }
@@ -4735,6 +4750,13 @@ export default function App() {
           <DailySOP />
         </main>
       ) : showOverview ? (
+        <>
+        {state.teamAnnouncement && (
+          <div className="team-announcement-banner cam-announcement" style={{margin:'12px 20px 0'}}>
+            <span>📢</span>
+            <span style={{flex:1}}><strong>Manager:</strong> {state.teamAnnouncement}</span>
+          </div>
+        )}
         <CamOverview
           clients={currentCamClients}
           camProfiles={state.camProfiles || []}
@@ -4748,6 +4770,7 @@ export default function App() {
           }}
           onAddClientTask={(clientId, task) => setState((current) => addTask(current, clientId, task))}
         />
+        </>
       ) : (
         <main className="content">
           {!selectedClient ? (
