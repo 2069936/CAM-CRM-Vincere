@@ -368,6 +368,9 @@ export function addClient(state, name, camId = state.accountManager?.id) {
     status: 'Active',
     accountRegistry: {},
     dailyImports: [],
+    activityLog: [],
+    tasks: [],
+    profile: {},
     credentials: {
       ip: '',
       username: '',
