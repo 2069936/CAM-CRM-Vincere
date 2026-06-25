@@ -140,7 +140,7 @@ function buildTodayActions(client, dailyImport) {
   }
 
   // Critical flags
-  const critFlags = (dailyImport?.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved');
+  const critFlags = (dailyImport?.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged');
   for (const f of critFlags.slice(0, 2)) {
     actions.push({ severity: 'critical', icon: '🚨', text: `Flag: ${f.message.slice(0, 90)}${f.message.length > 90 ? '…' : ''}` });
   }
@@ -1189,7 +1189,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
     const unclosed = withUpload.filter(c => getClientImportByDate(c, today)?.status !== 'Closed').length;
     if (withUpload.length) score -= Math.round((unclosed / withUpload.length) * 25);
     // Deduct for critical flags
-    const critFlags = clients.reduce((n, c) => n + ((c.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged').length), 0);
+    const critFlags = clients.reduce((n, c) => n + ((c.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged' && f.status !== 'Acknowledged').length), 0);
     score -= Math.min(critFlags * 5, 25);
     // Deduct for overdue tasks
     const overdueTasks = clients.reduce((n, c) => n + (c.tasks || []).filter(t => !t.done && t.dueDate && t.dueDate < today).length, 0);
@@ -2970,7 +2970,7 @@ function buildTodayBriefing(clients) {
   return clients.map((client) => {
     const todayImport = getClientImportByDate(client, today);
     const latest = client.dailyImports?.at(-1) || null;
-    const criticalFlags = (latest?.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved');
+    const criticalFlags = (latest?.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged');
     const openFlags = (latest?.flags || []).filter((f) => f.status !== 'Resolved' && f.status !== 'Acknowledged');
     const openTasks = (client.tasks || []).filter((t) => !t.done);
     const overdueTasks = openTasks.filter((t) => t.dueDate && t.dueDate < today);
@@ -3288,7 +3288,7 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
   const openTasksToday = clients.reduce((n, c) => n + (c.tasks || []).filter(t => !t.done && t.dueDate === today).length, 0);
   const overdueTotal = clients.reduce((n, c) => n + (c.tasks || []).filter(t => !t.done && t.dueDate && t.dueDate < today).length, 0);
   const criticalFlagsOpen = clients.reduce((n, c) => {
-    return n + (c.dailyImports || []).reduce((m, di) => m + (di.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved').length, 0);
+    return n + (c.dailyImports || []).reduce((m, di) => m + (di.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged').length, 0);
   }, 0);
   const staleContactClients = clients.filter(c => { const d = lastContactDaysAgo(c); return d === null || d >= 7; }).length;
 
@@ -4708,7 +4708,7 @@ export default function App() {
 
   function closeImport() {
     if (!selectedClient || !dailyImport) return;
-    const flags = (dailyImport.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved');
+    const flags = (dailyImport.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged' && f.status !== 'Acknowledged');
     const msg = flags.length
       ? `This close has ${flags.length} unresolved critical flag${flags.length > 1 ? 's' : ''}. Close anyway?`
       : 'Mark this day as closed? This locks the close record.';
@@ -4731,7 +4731,7 @@ export default function App() {
     if (!toClose.length) { window.alert('No open imports for today — all clients are already closed or have no upload.'); return; }
     const critCount = toClose.reduce((n, c) => {
       const imp = getClientImportByDate(c, today);
-      return n + (imp?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved').length;
+      return n + (imp?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged' && f.status !== 'Acknowledged').length;
     }, 0);
     const msg = critCount
       ? `Close today for ${toClose.length} client${toClose.length !== 1 ? 's' : ''}? There are ${critCount} unresolved critical flag${critCount !== 1 ? 's' : ''} across these clients.`
@@ -4854,7 +4854,7 @@ export default function App() {
           {(() => {
             const today = todayIsoDate();
             const urgentCount = currentCamClients.reduce((total, c) => {
-              const critFlags = (c.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved').length;
+              const critFlags = (c.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged').length;
               const overdueTasks = (c.tasks || []).filter(t => !t.done && t.dueDate && t.dueDate < today).length;
               return total + critFlags + overdueTasks;
             }, 0);
@@ -4913,8 +4913,8 @@ export default function App() {
                 };
                 const diff = urgencyScore(a) - urgencyScore(b);
                 if (diff !== 0) return diff;
-                const critA = (a.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved').length;
-                const critB = (b.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved').length;
+                const critA = (a.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged').length;
+                const critB = (b.dailyImports?.at(-1)?.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved' && f.status !== 'Acknowledged').length;
                 return critB - critA;
               }).map((client) => {
                 const badge = deriveClientBadge(client);
