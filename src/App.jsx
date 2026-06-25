@@ -2180,12 +2180,54 @@ function InsightFeedPanel({ insights, onSelectClient }) {
   );
 }
 
+function buildIncomeProjection(clients = []) {
+  const rows = [];
+  for (const client of clients) {
+    const latest = client.dailyImports?.at(-1);
+    if (!latest) continue;
+    const registry = { ...(latest.accounts || {}), ...(client.accountRegistry || {}) };
+    for (const snap of latest.snapshots || []) {
+      const meta = registry[snap.accountName] || {};
+      if (meta.accountType !== 'Funded') continue;
+      const target = Number(meta.targetProfit || 0);
+      const start = Number(meta.startBalance || 0);
+      const balance = Number(snap.accountBalance || 0);
+      if (!target || !start) continue;
+      const profit = balance - start;
+      const needed = target - start;
+      const pct = needed > 0 ? Math.round((profit / needed) * 100) : 0;
+      // velocity from last 7 imports
+      const recent = (client.dailyImports || []).slice(-7);
+      const pnlHistory = recent.map((di) => {
+        const s = (di.snapshots || []).find((x) => x.accountName === snap.accountName);
+        return s ? Number(s.grossRealizedPnl || 0) : 0;
+      }).filter((v) => v !== 0);
+      const avgDaily = pnlHistory.length ? pnlHistory.reduce((s, v) => s + v, 0) / pnlHistory.length : 0;
+      const remaining = needed - profit;
+      const daysLeft = avgDaily > 0 ? Math.ceil(remaining / avgDaily) : null;
+      rows.push({
+        clientId: client.id,
+        clientName: client.name,
+        alias: meta.alias || snap.accountName,
+        pct: Math.min(100, pct),
+        profit,
+        needed,
+        avgDaily,
+        daysLeft,
+        ready: balance >= target,
+      });
+    }
+  }
+  return rows.sort((a, b) => b.pct - a.pct);
+}
+
 function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRecords = [], strategySetIndexStatus, camName = '', onSelectClient }) {
   const [expandedAlgorithm, setExpandedAlgorithm] = useState('');
   const overview = buildCamOverview(clients, strategySetRecords);
   const displayName = camName || 'this workspace';
   const briefing = buildTodayBriefing(clients);
   const insights = buildPortfolioInsights(clients, allClients);
+  const incomeProjection = buildIncomeProjection(clients);
 
   const urgencyCounts = { critical: 0, warning: 0, info: 0, pending: 0, ok: 0 };
   briefing.forEach((b) => { urgencyCounts[b.urgency] = (urgencyCounts[b.urgency] || 0) + 1; });
@@ -2201,6 +2243,53 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
       </div>
 
       <InsightFeedPanel insights={insights} onSelectClient={onSelectClient} />
+
+      {incomeProjection.length > 0 && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h3>Funded account income projection</h3>
+            <span className="badge muted">{incomeProjection.length} accounts · based on 7-day avg P&L</span>
+          </div>
+          <div className="table-wrap">
+            <table className="ops-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Client</th>
+                  <th>Progress</th>
+                  <th>Profit earned</th>
+                  <th>Remaining</th>
+                  <th>Avg daily</th>
+                  <th>Est. days to payout</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incomeProjection.map((row) => (
+                  <tr key={row.alias} style={{cursor:'pointer'}} onClick={() => onSelectClient?.(row.clientId)}>
+                    <td><strong>{row.alias}</strong></td>
+                    <td>{row.clientName}</td>
+                    <td>
+                      <div className="target-progress" style={{minWidth:100}}>
+                        <div className="target-bar"><i style={{width:`${row.pct}%`, background: row.ready ? 'var(--green)' : row.pct >= 80 ? '#f59e0b' : 'var(--accent)'}} /></div>
+                        <small className={row.ready ? 'positive' : ''}>{row.ready ? '✓ Ready' : `${row.pct}%`}</small>
+                      </div>
+                    </td>
+                    <td className={row.profit >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.profit)}</td>
+                    <td className="muted">{formatCurrency(Math.max(0, row.needed - row.profit))}</td>
+                    <td className={row.avgDaily >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.avgDaily)}/day</td>
+                    <td>
+                      {row.ready ? <span className="badge success">Payout eligible</span>
+                        : row.daysLeft !== null && row.daysLeft > 0 ? <span className={row.daysLeft <= 14 ? 'positive' : ''}>{row.daysLeft}d (~{Math.ceil(row.daysLeft / 5)} weeks)</span>
+                        : row.avgDaily <= 0 ? <span className="negative">Trending down</span>
+                        : <span className="muted">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {clients.length > 0 ? (
         <section className={urgencyCounts.critical ? 'panel danger-panel' : 'panel'}>
