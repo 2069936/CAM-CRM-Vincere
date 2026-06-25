@@ -1868,13 +1868,20 @@ function buildPortfolioInsights(clients, allClients = []) {
     const snapshots = latest?.snapshots || [];
     const imports = client.dailyImports || [];
 
+    // Helper: compute remaining buffer from a snapshot + meta
+    function remainingBuffer(s, m) {
+      const ddLimit = Number(m?.maxDrawdownLimit || 0);
+      const rawDD = Number(s?.trailingMaxDrawdown || 0);
+      return ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
+    }
+
     // 1. Drawdown velocity — project breach date from last 7-day buffer consumption
     for (const snap of snapshots) {
       const meta = registry[snap.accountName] || {};
       if (meta.accountType !== 'Funded') continue;
       if (meta.status === 'Failed' || meta.status === 'Inactive') continue;
 
-      const buffer = Number(snap.trailingMaxDrawdown || 0);
+      const buffer = remainingBuffer(snap, meta);
       if (buffer <= 0) continue; // already breached
 
       // Compute daily buffer change over last 7 imports
@@ -1882,12 +1889,12 @@ function buildPortfolioInsights(clients, allClients = []) {
       if (last7.length < 3) continue;
       const buffers = last7.map((di) => {
         const s = (di.snapshots || []).find((x) => x.accountName === snap.accountName);
-        return s ? Number(s.trailingMaxDrawdown || 0) : null;
+        return s ? remainingBuffer(s, meta) : null;
       }).filter((v) => v !== null);
 
       if (buffers.length < 2) continue;
       const dailyChange = (buffers.at(-1) - buffers[0]) / (buffers.length - 1);
-      if (dailyChange >= 0) continue; // buffer growing — no concern
+      if (dailyChange >= 0) continue; // buffer growing or stable — no concern
       const daysToBreech = Math.floor(buffer / Math.abs(dailyChange));
 
       if (daysToBreech <= 5) {
