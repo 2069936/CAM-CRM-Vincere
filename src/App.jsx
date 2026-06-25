@@ -1463,7 +1463,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                 </table>
                 {batchImportResult.clientMatches.length > 1 && (
                   <button className="secondary-button" style={{marginTop:8}} onClick={() => {
-                    batchImportResult.clientMatches.forEach(({ client, result }) => setState(s => appendDailyImport(s, client.id, result)));
+                    setState(s => batchImportResult.clientMatches.reduce((acc, { client, result }) => appendDailyImport(acc, client.id, result), s));
                     setBatchImportResult(null); setShowBatchImport(false);
                   }}>Import all {batchImportResult.clientMatches.length} clients</button>
                 )}
