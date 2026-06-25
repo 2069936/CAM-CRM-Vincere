@@ -512,7 +512,9 @@ export function deleteActivityEntry(state, clientId, entryId) {
 
 export function removeAccountFromRegistry(state, clientId, accountName) {
   return updateClient(state, clientId, (client) => {
-    const { [accountName]: _, ...rest } = client.accountRegistry || {};
+    const registry = client.accountRegistry || {};
+    const existingKey = Object.keys(registry).find(k => k.toLowerCase() === accountName.toLowerCase()) || accountName;
+    const { [existingKey]: _, ...rest } = registry;
     return { ...client, accountRegistry: rest };
   });
 }
