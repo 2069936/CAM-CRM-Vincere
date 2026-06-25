@@ -4810,11 +4810,11 @@ export default function App() {
               {results.map((r, i) => (
                 <button key={i} className="global-search-result" onClick={() => {
                   setGlobalSearchOpen(false);
-                  if (platformView !== 'cam') { setPlatformView('cam'); }
-                  setTimeout(() => {
-                    setState(s => ({ ...s, selectedClientId: r.client.id }));
-                    setActiveTab(r.tab);
-                  }, 50);
+                  setPlatformView('cam');
+                  setState(s => selectClient(s, r.client.id));
+                  setShowOverview(false);
+                  setShowSOP(false);
+                  setActiveTab(r.tab);
                 }}>
                   <span className={`global-search-kind kind-${r.kind.toLowerCase()}`}>{r.kind}</span>
                   <span className="global-search-text">{r.text}</span>
