@@ -228,7 +228,7 @@ function latestImports(clients = []) {
 function buildManagerSummary(clients = []) {
   const imports = latestImports(clients);
   const snapshots = imports.flatMap(({ dailyImport }) => dailyImport?.snapshots || []);
-  const openFlags = imports.flatMap(({ dailyImport }) => dailyImport?.flags || []);
+  const openFlags = imports.flatMap(({ dailyImport }) => (dailyImport?.flags || []).filter(f => f.status !== 'Resolved' && f.status !== 'Acknowledged'));
   const activeStrategies = snapshots.flatMap((snapshot) => snapshot.strategies || []).filter((strategy) => strategy.enabled);
   const weeklyPnl = snapshots.reduce((total, snapshot) => total + Number(snapshot.weeklyPnl || 0), 0);
   const dailyPnl = snapshots.reduce((total, snapshot) => total + Number(snapshot.grossRealizedPnl || 0), 0);
@@ -348,7 +348,7 @@ function buildClientOverview(client, dailyImport) {
       dailyPnl: latestTotal,
       dailyDelta: latestTotal - priorTotal,
       accounts: latestSnapshots.length,
-      openFlags: latest?.flags?.length || 0,
+      openFlags: (latest?.flags || []).filter(f => f.status !== 'Resolved' && f.status !== 'Acknowledged').length,
       hotCount,
       coldCount,
       streakLabel: streak.every((day) => day.dailyPnl >= 0) ? `${streak.length} day positive streak` : streak.every((day) => day.dailyPnl < 0) ? `${streak.length} day cold streak` : 'Mixed streak',
