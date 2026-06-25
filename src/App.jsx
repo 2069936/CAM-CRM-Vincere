@@ -4663,18 +4663,14 @@ export default function App() {
         onOpenCam={openCamWorkspace}
         onLoadDemo={() => setState(createDemoState())}
         onCreateCam={(name, username, password) => {
-          setState((current) => addCamProfile(current, name));
+          const profileId = `am-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+          setState((current) => {
+            const profile = { id: profileId, name, status: 'Active', role: 'Account Manager', clientIds: [] };
+            return { ...current, camProfiles: [...(current.camProfiles || []), profile] };
+          });
           if (username && password) {
-            const newProfile = addCamProfile({ camProfiles: [] }, name).camProfiles[0];
-            // Find the newly created profile by name after state settles
-            setState((current) => {
-              const profile = (current.camProfiles || []).find(p => p.name === name);
-              if (!profile) return current;
-              const already = (users || []).find(u => u.username?.toLowerCase() === username.toLowerCase());
-              if (already) return current;
-              setUsers(u => addUser(u, { username, password, displayName: name, email: '', role: USER_ROLES.CAM, camProfileId: profile.id }));
-              return current;
-            });
+            const already = (users || []).find(u => u.username?.toLowerCase() === username.toLowerCase());
+            if (!already) setUsers(u => addUser(u, { username, password, displayName: name, email: '', role: USER_ROLES.CAM, camProfileId: profileId }));
           }
         }}
         onLogout={() => setSession(null)}
