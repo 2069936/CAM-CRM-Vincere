@@ -1550,10 +1550,24 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                     <th>Monthly P&amp;L</th>
                     <th>Payouts (mo.)</th>
                     <th>Open flags</th>
+                    <th>Last active</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {camPerf.map((cam, i) => (
+                  {camPerf.map((cam, i) => {
+                    const camUser = (users || []).find(u => u.camProfileId === cam.id);
+                    const lastActive = camUser?.lastActiveAt;
+                    const lastActiveLabel = (() => {
+                      if (!lastActive) return '—';
+                      const mins = Math.round((Date.now() - new Date(lastActive)) / 60000);
+                      if (mins < 2) return 'Just now';
+                      if (mins < 60) return `${mins}m ago`;
+                      const hrs = Math.round(mins / 60);
+                      if (hrs < 24) return `${hrs}h ago`;
+                      return `${Math.round(hrs / 24)}d ago`;
+                    })();
+                    const isRecent = lastActive && (Date.now() - new Date(lastActive)) < 3600000;
+                    return (
                     <tr key={cam.id} className={cam.openFlags >= 3 ? 'row-warning' : ''}>
                       <td><span className="rank-badge">{i + 1}</span></td>
                       <td><strong>{cam.name}</strong></td>
@@ -1565,8 +1579,10 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                       <td className={cam.monthlyPnl >= 0 ? 'positive' : 'negative'}><strong>{formatCurrency(cam.monthlyPnl)}</strong></td>
                       <td className="positive">{cam.payoutsThisMonthCount > 0 ? <><strong>{formatCurrency(cam.payoutsThisMonth)}</strong><small className="muted"> ×{cam.payoutsThisMonthCount}</small></> : <span className="muted">—</span>}</td>
                       <td className={cam.openFlags >= 3 ? 'negative' : ''}>{cam.openFlags}</td>
+                      <td><span className={isRecent ? 'positive' : 'muted'} style={{fontSize:12}}>{lastActiveLabel}</span></td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

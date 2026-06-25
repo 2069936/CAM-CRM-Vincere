@@ -33,9 +33,14 @@ export function saveUsers(users) {
 }
 
 export function authenticateUser(username, password, users) {
-  return users.find(
+  const user = users.find(
     (u) => u.username.toLowerCase() === username.toLowerCase() && u.password === password,
   ) || null;
+  if (user) {
+    const updated = users.map(u => u.id === user.id ? { ...u, lastActiveAt: new Date().toISOString() } : u);
+    saveUsers(updated);
+  }
+  return user;
 }
 
 export function addUser(users, userData) {
