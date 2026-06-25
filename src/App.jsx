@@ -60,7 +60,7 @@ import {
   saveUsers,
 } from './domain/userStore';
 
-const STATIC_TABS = ['Activity', 'Tasks', 'Credentials & Notes', 'Price Checks', 'Stack Playbook', 'Daily SOP'];
+const STATIC_TABS = ['Activity', 'Tasks', 'Credentials & Notes', 'Price Checks', 'Stack Playbook'];
 
 function deriveClientBadge(client) {
   const latest = client.dailyImports.at(-1);
@@ -2617,6 +2617,7 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
   const [showUpload, setShowUpload] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
+  const [showSOP, setShowSOP] = useState(false);
   const [reportImport, setReportImport] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [strategySetIndex, setStrategySetIndex] = useState({ status: 'Not loaded', records: [] });
@@ -2660,13 +2661,13 @@ export default function App() {
     event.preventDefault();
     setState((current) => addClient(current, newClientName, current.accountManager?.id));
     setNewClientName('');
-    setShowOverview(false);
+    setShowOverview(false); setShowSOP(false);
   }
 
   function openCamWorkspace(camId = 'am-pedro') {
     setState((current) => selectCam(current, camId));
     setPlatformView('cam');
-    setShowOverview(false);
+    setShowOverview(false); setShowSOP(false);
     setRegistryOpen(false);
   }
 
@@ -2688,7 +2689,7 @@ export default function App() {
       const text = await file.text();
       const imported = parseImportedState(text);
       setState(imported);
-      setShowOverview(false);
+      setShowOverview(false); setShowSOP(false);
     } catch (err) {
       window.alert(err?.message || 'Could not import this file.');
     }
@@ -2856,10 +2857,15 @@ export default function App() {
           onChange={(e) => setClientSearch(e.target.value)}
         />
         <nav className="client-list">
-          <button className={showOverview ? 'client-link active' : 'client-link'} onClick={() => setShowOverview(true)}>
+          <button className={showOverview && !showSOP ? 'client-link active' : 'client-link'} onClick={() => { setShowOverview(true); setShowSOP(false); }}>
             <Users size={16} />
             <span>CAM Overview</span>
             <em>Live</em>
+          </button>
+          <button className={showSOP ? 'client-link active' : 'client-link'} onClick={() => { setShowSOP(true); setShowOverview(false); setShowSOP(false); }}>
+            <CheckSquare size={16} />
+            <span>Daily SOP</span>
+            <em>Checklist</em>
           </button>
           <div className="nav-label">Other CAMs</div>
           {(state.camProfiles || []).filter((profile) => profile.id !== state.accountManager?.id).map((profile) => (
@@ -2878,7 +2884,7 @@ export default function App() {
                   <button
                     key={client.id}
                     className={!showOverview && selectedClient?.id === client.id ? 'client-link client-link-search active' : 'client-link client-link-search'}
-                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setClientSearch(''); }}
+                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setShowSOP(false); setClientSearch(''); }}
                   >
                     <span>{client.name}</span>
                     <div className="search-matches">
@@ -2899,7 +2905,7 @@ export default function App() {
                   <button
                     className={!showOverview && selectedClient?.id === client.id ? 'client-link active' : 'client-link'}
                     key={client.id}
-                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); }}
+                    onClick={() => { setState((current) => selectClient(current, client.id)); setShowOverview(false); setShowSOP(false); }}
                   >
                     <span className={`close-dot close-dot-${closeStatus}`} title={closeStatus === 'no-close' ? 'No files today' : closeStatus === 'closed' ? 'Closed today' : 'Uploaded · not closed'} />
                     <span>{client.name}</span>
@@ -2912,7 +2918,18 @@ export default function App() {
         </nav>
       </aside>
 
-      {showOverview ? (
+      {showSOP ? (
+        <main className="content">
+          <div className="page-header">
+            <div>
+              <span className="eyebrow">CAM workspace</span>
+              <h1>Daily SOP</h1>
+              <p>Morning-to-close checklist — resets every trading day.</p>
+            </div>
+          </div>
+          <DailySOP />
+        </main>
+      ) : showOverview ? (
         <CamOverview
           clients={currentCamClients}
           camProfiles={state.camProfiles || []}
@@ -2922,7 +2939,7 @@ export default function App() {
           camName={currentCamProfile?.name || ''}
           onSelectClient={(clientId) => {
             setState((current) => selectClient(current, clientId));
-            setShowOverview(false);
+            setShowOverview(false); setShowSOP(false);
           }}
         />
       ) : (
@@ -2977,7 +2994,6 @@ export default function App() {
               {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
               {effectiveActiveTab === 'Price Checks' ? <PriceChecksTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
               {effectiveActiveTab === 'Stack Playbook' ? <StackPlaybook client={selectedClient} dailyImport={dailyImport} onUpdateAccount={handleAccountUpdate} allClients={state.clients || []} /> : null}
-              {effectiveActiveTab === 'Daily SOP' ? <DailySOP /> : null}
               {['Review', 'Evaluations', 'Funded', 'Cash'].includes(effectiveActiveTab) ? (
                 <>
                   <Dashboard
