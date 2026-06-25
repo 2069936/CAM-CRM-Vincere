@@ -833,7 +833,7 @@ function buildPayoutPipeline(clients = [], camProfiles = []) {
       });
     }
   }
-  const order = ['Payout eligible', 'Request payout', 'Payout requested', 'Payout approved', 'Clear to trade'];
+  const order = ['Request payout', 'Payout requested', 'Payout approved', 'Clear to trade', 'Not requested'];
   return rows.sort((a, b) => order.indexOf(a.payoutState) - order.indexOf(b.payoutState));
 }
 
@@ -1932,7 +1932,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                         <td>
                           <select value={row.payoutState} style={{fontSize:11,padding:'2px 6px'}}
                             onChange={e => onUpdateClientAccount?.(row.clientId, row.accountName, { payoutState: e.target.value })}>
-                            {['Not requested','Payout eligible','Request payout','Payout requested','Payout approved','Clear to trade'].map(s => <option key={s}>{s}</option>)}
+                            {['Not requested','Request payout','Payout requested','Payout approved','Clear to trade'].map(s => <option key={s}>{s}</option>)}
                           </select>
                         </td>
                         <td className="positive">{formatCurrency(row.balance)}</td>
