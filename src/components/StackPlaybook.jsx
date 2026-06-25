@@ -36,7 +36,8 @@ export function buildAlgoComboPerformance(allClients = []) {
   const combos = {};
 
   for (const client of allClients) {
-    const registry = client.accountRegistry || {};
+    const rawReg = client.accountRegistry || {};
+    const registry = Object.fromEntries(Object.entries(rawReg).map(([k, v]) => [k.toLowerCase(), v]));
     const imports = client.dailyImports || [];
     const n = imports.length;
 
@@ -46,7 +47,7 @@ export function buildAlgoComboPerformance(allClients = []) {
       const isPrior7 = i >= n - 14 && i < n - 7;
 
       for (const snap of di.snapshots || []) {
-        const meta = registry[snap.accountName] || {};
+        const meta = registry[(snap.accountName || '').toLowerCase()] || {};
         if (meta.accountType !== ACCOUNT_TYPES.FUNDED) continue;
         if (meta.status === ACCOUNT_STATUSES.FAILED || meta.status === ACCOUNT_STATUSES.INACTIVE) continue;
 
