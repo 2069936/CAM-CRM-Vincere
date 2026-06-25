@@ -1085,8 +1085,11 @@ textarea {
 
 .login-screen {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
   padding: 24px;
   background:
     linear-gradient(180deg, rgba(69, 163, 255, 0.08), transparent 36%),
@@ -1470,6 +1473,14 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 }
 
 /* Auth */
+.login-brand { display: flex; align-items: center; gap: 12px; }
+.login-logo-mark { width: 44px; height: 44px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 22px; font-weight: 900; display: grid; place-items: center; }
+.login-brand-name { font-size: 18px; font-weight: 700; }
+.login-brand-tagline { font-size: 12px; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+.login-role-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.login-role-pill { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.login-footer { font-size: 11px; color: var(--muted); opacity: .6; }
+
 .login-hints {
   display: flex;
   flex-direction: column;

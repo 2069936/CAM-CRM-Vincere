@@ -841,10 +841,17 @@ function LoginScreen({ onLogin, users }) {
 
   return (
     <main className="login-screen">
+      <div className="login-brand">
+        <div className="login-logo-mark">V</div>
+        <div>
+          <div className="login-brand-name">Vincere Trading</div>
+          <div className="login-brand-tagline">Drive Insight</div>
+        </div>
+      </div>
       <section className="login-panel">
-        <span className="eyebrow">Vincere Trading</span>
-        <h1>CAM CRM</h1>
-        <p>Client Account Manager platform. Sign in to continue.</p>
+        <span className="eyebrow">Client Account Manager Platform</span>
+        <h1>Sign in</h1>
+        <p>Access your workspace to monitor clients, accounts, and daily performance.</p>
         <form onSubmit={submit} className="login-form">
           <label>
             Username
@@ -864,13 +871,20 @@ function LoginScreen({ onLogin, users }) {
             />
           </label>
           {error ? <p className="auth-error">{error}</p> : null}
-          <button className="primary-button">Sign in</button>
+          <button className="primary-button" style={{marginTop:4}}>Sign in →</button>
         </form>
-        <div className="login-hints">
-          <small><strong>Manager:</strong> manager / demo</small>
-          <small><strong>CAM:</strong> pedro / pedro123 · amanda / amanda123</small>
+        <div className="login-role-pills">
+          <div className="login-role-pill">
+            <span className="sidebar-role-badge manager-badge">Manager</span>
+            <code>manager</code> / <code>demo</code>
+          </div>
+          <div className="login-role-pill">
+            <span className="sidebar-role-badge cam-badge">CAM</span>
+            <code>pedro</code> / <code>pedro123</code>
+          </div>
         </div>
       </section>
+      <div className="login-footer">Vincere CRM · {new Date().getFullYear()} · Drive Insight</div>
     </main>
   );
 }
