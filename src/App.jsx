@@ -161,7 +161,7 @@ function buildTodayActions(client, dailyImport) {
   // Unclassified accounts
   if (dailyImport) {
     const unassigned = (dailyImport.snapshots || []).filter((s) => {
-      const meta = { ...(dailyImport.accounts || {}), ...(client.accountRegistry || {}) }[s.accountName];
+      const meta = ciMeta(mergeRegistryCi(dailyImport.accounts, client.accountRegistry), s.accountName);
       return !meta || meta.accountType === 'Unassigned' || !meta.accountType;
     });
     if (unassigned.length) {
@@ -2553,7 +2553,7 @@ function ClientOverview({ client, dailyImport, allClients = [], onRequestMonthly
   const varianceRows = buildPnlVarianceAnalysis(client, allClients);
   const payoutAlerts = buildPayoutAlerts(client, dailyImport);
   const monthlyByAccount = buildMonthlyByAccount(client);
-  const latestRegistry = { ...(dailyImport?.accounts || {}), ...(client?.accountRegistry || {}) };
+  const latestRegistry = mergeRegistryCi(dailyImport?.accounts, client?.accountRegistry);
 
   const profile = client.profile || {};
   const hasContact = profile.email || profile.phone || profile.messenger || profile.timezone || profile.propFirm || profile.preferredChannel || profile.country;
@@ -2795,7 +2795,7 @@ function ClientOverview({ client, dailyImport, allClients = [], onRequestMonthly
         <div className="target-list">
           {overview.passProgress.slice(0, 6).map((account) => {
             const snapshot = (dailyImport?.snapshots || []).find((s) => s.accountName === account.accountName);
-            const meta = latestRegistry[account.accountName] || {};
+            const meta = ciMeta(latestRegistry, account.accountName);
             const risk = accountRiskLevel(snapshot, meta);
             return (
               <div className="target-row" key={account.accountName}>
@@ -3084,9 +3084,9 @@ function buildPortfolioInsights(clients, allClients = []) {
 
     // 4. Strategy cooling — algo was positive last week, now negative 3+ days
     if (latest) {
-      const latestRegistry = { ...(latest.accounts || {}), ...registry };
+      const latestRegistryCi = mergeRegistryCi(latest.accounts, registry);
       for (const snap of snapshots) {
-        const meta = latestRegistry[snap.accountName] || {};
+        const meta = ciMeta(latestRegistryCi, snap.accountName);
         if (!['Funded', 'Evaluation - Standard'].includes(meta.accountType)) continue;
         const enabledStrats = (snap.strategies || []).filter(s => s.enabled);
         if (!enabledStrats.length) continue;
