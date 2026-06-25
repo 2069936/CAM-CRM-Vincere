@@ -585,7 +585,7 @@ export function replaceDailyImport(state, clientId, importResult) {
 
 export function getLatestClientImport(client) {
   if (!client?.dailyImports?.length) return null;
-  return [...client.dailyImports].sort((a, b) => String(b.importedAt || '').localeCompare(String(a.importedAt || '')))[0];
+  return [...client.dailyImports].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
 }
 
 export function getClientImportByDate(client, date) {
