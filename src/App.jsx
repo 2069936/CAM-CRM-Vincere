@@ -4212,6 +4212,30 @@ export default function App() {
                 );
               })()}
 
+              {(() => {
+                const note = selectedClient.pinnedNote;
+                const [editing, setEditing] = React.useState(false);
+                const [draft, setDraft] = React.useState(note || '');
+                if (!editing && !note) return (
+                  <button className="ghost-button" style={{fontSize:11,marginBottom:4,alignSelf:'flex-start',color:'var(--muted)'}} onClick={() => { setDraft(''); setEditing(true); }}>📌 Pin a note…</button>
+                );
+                if (editing) return (
+                  <div className="pinned-note editing">
+                    <span>📌</span>
+                    <textarea autoFocus value={draft} onChange={e => setDraft(e.target.value)} rows={2} placeholder="Pinned note — always visible (VPS IP, client quirks, warnings…)" style={{flex:1,background:'transparent',border:'none',color:'var(--text)',fontSize:13,resize:'vertical',outline:'none'}} onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) { handleUpdateClient({ pinnedNote: draft.trim() }); setEditing(false); } if (e.key === 'Escape') setEditing(false); }} />
+                    <button className="primary-button" style={{padding:'3px 10px',fontSize:12}} onClick={() => { handleUpdateClient({ pinnedNote: draft.trim() }); setEditing(false); }}>Save</button>
+                    <button className="ghost-button" style={{fontSize:12}} onClick={() => setEditing(false)}>Cancel</button>
+                  </div>
+                );
+                return (
+                  <div className="pinned-note" onClick={() => { setDraft(note); setEditing(true); }} title="Click to edit pinned note">
+                    <span>📌</span>
+                    <span style={{flex:1,fontSize:13}}>{note}</span>
+                    <button className="ghost-button" style={{fontSize:11,padding:'2px 6px'}} onClick={e => { e.stopPropagation(); handleUpdateClient({ pinnedNote: '' }); }}>✕</button>
+                  </div>
+                );
+              })()}
+
               <div className="tabs">
                 {visibleTabs.map((tab) => (
                   <button className={effectiveActiveTab === tab ? 'active' : ''} key={tab} onClick={() => setActiveTab(tab)}>{tab}</button>

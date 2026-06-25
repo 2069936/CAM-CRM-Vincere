@@ -336,6 +336,24 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .ghost-button { background: transparent; }
 .link-button { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 2px; }
 
+.pinned-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(244, 187, 68, 0.08);
+  border: 1px solid rgba(244, 187, 68, 0.3);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.15s;
+}
+.pinned-note:hover { background: rgba(244, 187, 68, 0.14); }
+.pinned-note.editing { cursor: default; align-items: center; }
+.pinned-note.editing:hover { background: rgba(244, 187, 68, 0.08); }
+
 .tabs {
   display: flex;
   gap: 6px;
