@@ -1530,7 +1530,7 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
 .monthly-breakdown-head,
 .monthly-breakdown-row {
   display: grid;
-  grid-template-columns: 1fr 120px 50px;
+  grid-template-columns: 1fr 1fr 120px 50px;
   gap: 8px;
   padding: 5px 4px;
   font-size: 13px;

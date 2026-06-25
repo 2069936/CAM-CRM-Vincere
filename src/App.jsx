@@ -339,7 +339,7 @@ function buildLifecycleMetrics(clients = []) {
   };
 }
 
-// Monthly P&L grouped by account
+// Monthly P&L grouped by account — includes active strategy families per account
 function buildMonthlyByAccount(client) {
   const byMonth = {};
   for (const di of client.dailyImports || []) {
@@ -349,17 +349,23 @@ function buildMonthlyByAccount(client) {
     for (const snapshot of di.snapshots || []) {
       const alias = registry[snapshot.accountName]?.alias || snapshot.accountName;
       if (!byMonth[month][snapshot.accountName]) {
-        byMonth[month][snapshot.accountName] = { accountName: snapshot.accountName, alias, pnl: 0, days: 0 };
+        byMonth[month][snapshot.accountName] = { accountName: snapshot.accountName, alias, pnl: 0, days: 0, strategySet: new Set() };
       }
       byMonth[month][snapshot.accountName].pnl += Number(snapshot.grossRealizedPnl || 0);
       byMonth[month][snapshot.accountName].days += 1;
+      for (const strat of snapshot.strategies || []) {
+        const name = strat.strategyFamily || strat.strategyName;
+        if (name) byMonth[month][snapshot.accountName].strategySet.add(name);
+      }
     }
   }
   return Object.entries(byMonth)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([month, accounts]) => ({
       month,
-      accounts: Object.values(accounts).sort((a, b) => b.pnl - a.pnl),
+      accounts: Object.values(accounts)
+        .map((a) => ({ ...a, strategies: [...a.strategySet].join(' · ') }))
+        .sort((a, b) => b.pnl - a.pnl),
     }));
 }
 
@@ -1181,11 +1187,12 @@ function ClientOverview({ client, dailyImport }) {
         {monthlyExpanded ? (
           <div className="monthly-account-breakdown">
             <div className="monthly-breakdown-head">
-              <span>Account</span><span>Monthly P&amp;L</span><span>Days</span>
+              <span>Account</span><span>Algo Stack</span><span>Monthly P&amp;L</span><span>Days</span>
             </div>
             {(monthlyByAccount.find((m) => m.month === monthlyExpanded)?.accounts || []).map((row) => (
               <div className="monthly-breakdown-row" key={row.accountName}>
                 <span>{row.alias}</span>
+                <small className="muted">{row.strategies || '—'}</small>
                 <strong className={row.pnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.pnl)}</strong>
                 <small>{row.days}d</small>
               </div>
