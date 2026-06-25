@@ -31,6 +31,7 @@ import {
   addActivityEntry,
   addClient,
   removeClient,
+  transferClient,
   addCamProfile,
   addTask,
   appendDailyImport,
@@ -1012,7 +1013,7 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
   return lines.join('\n');
 }
 
-function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onLogout, users = [], onUsersChange, session, onUpdateClientAccount }) {
+function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient }) {
   const [newCamName, setNewCamName] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', displayName: '', email: '', role: USER_ROLES.CAM, camProfileId: '' });
   const [editUserId, setEditUserId] = useState(null);
@@ -1477,6 +1478,58 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </div>
           </section>
         ) : null}
+
+        {clients.length > 0 && (() => {
+          const roster = clients.map(client => {
+            const cam = camProfiles.find(p => (p.clientIds || []).includes(client.id));
+            const latest = client.dailyImports?.at(-1);
+            const dailyPnl = (latest?.snapshots || []).reduce((s, sn) => s + Number(sn.grossRealizedPnl || 0), 0);
+            const funded = Object.values(client.accountRegistry || {}).filter(a => a.accountType === 'Funded' && a.status !== 'Failed').length;
+            return { client, cam, dailyPnl, funded };
+          }).sort((a, b) => (a.cam?.name || 'zzz').localeCompare(b.cam?.name || 'zzz'));
+          return (
+            <section className="panel">
+              <div className="panel-heading">
+                <h3>Client roster</h3>
+                <span className="badge muted">{clients.length} clients · drag or reassign CAM</span>
+              </div>
+              <div className="table-wrap">
+                <table className="ops-table">
+                  <thead><tr><th>Client</th><th>CAM</th><th>Funded</th><th>Daily P&L</th><th>Stage</th><th>Reassign</th></tr></thead>
+                  <tbody>
+                    {roster.map(({ client, cam, dailyPnl, funded }) => (
+                      <tr key={client.id} style={{cursor:'pointer'}} onClick={() => onOpenCam(cam?.id, client.id)}>
+                        <td><strong>{client.name}</strong></td>
+                        <td><small>{cam?.name || <span className="negative">Unassigned</span>}</small></td>
+                        <td>{funded || '—'}</td>
+                        <td className={dailyPnl >= 0 ? 'positive' : 'negative'}><small>{formatCurrency(dailyPnl)}</small></td>
+                        <td><small className="muted">{client.profile?.stage || 'Active'}</small></td>
+                        <td onClick={e => e.stopPropagation()}>
+                          <select
+                            value={cam?.id || ''}
+                            style={{fontSize:12,padding:'2px 6px'}}
+                            onChange={e => {
+                              if (!e.target.value || e.target.value === cam?.id) return;
+                              const targetCam = camProfiles.find(p => p.id === e.target.value);
+                              if (window.confirm(`Move ${client.name} → ${targetCam?.name}?`)) {
+                                onTransferClient(client.id, e.target.value);
+                              } else {
+                                e.target.value = cam?.id || '';
+                              }
+                            }}
+                          >
+                            <option value="">— Unassigned —</option>
+                            {camProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          );
+        })()}
 
         <section className="panel">
           <div className="panel-heading"><h3>Exception rules</h3><span className="badge muted">Auto-detected flags</span></div>
@@ -4067,6 +4120,9 @@ export default function App() {
         session={session}
         onUpdateClientAccount={(clientId, accountName, patch) =>
           setState((current) => upsertAccountMeta(current, clientId, accountName, patch))
+        }
+        onTransferClient={(clientId, toCamId) =>
+          setState((current) => transferClient(current, clientId, toCamId))
         }
       />
     );

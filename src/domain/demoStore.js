@@ -404,6 +404,16 @@ export function removeClient(state, clientId) {
   };
 }
 
+export function transferClient(state, clientId, toCamId) {
+  return {
+    ...state,
+    camProfiles: (state.camProfiles || []).map(p => {
+      if (p.id === toCamId) return { ...p, clientIds: [...new Set([...(p.clientIds || []), clientId])] };
+      return { ...p, clientIds: (p.clientIds || []).filter(id => id !== clientId) };
+    }),
+  };
+}
+
 export function addCamProfile(state, name) {
   const trimmed = String(name || '').trim();
   if (!trimmed) return state;
