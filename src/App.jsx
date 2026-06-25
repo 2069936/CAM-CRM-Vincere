@@ -2811,7 +2811,7 @@ export default function App() {
               {effectiveActiveTab === 'Tasks' ? <TasksTab client={selectedClient} onAddTask={handleAddTask} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} /> : null}
               {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
               {effectiveActiveTab === 'Price Checks' ? <PriceChecksTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
-              {effectiveActiveTab === 'Stack Playbook' ? <StackPlaybook client={selectedClient} dailyImport={dailyImport} onUpdateAccount={handleAccountUpdate} /> : null}
+              {effectiveActiveTab === 'Stack Playbook' ? <StackPlaybook client={selectedClient} dailyImport={dailyImport} onUpdateAccount={handleAccountUpdate} allClients={state.clients || []} /> : null}
               {effectiveActiveTab === 'Daily SOP' ? <DailySOP /> : null}
               {['Review', 'Evaluations', 'Funded', 'Cash'].includes(effectiveActiveTab) ? (
                 <>

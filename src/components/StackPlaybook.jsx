@@ -1,171 +1,203 @@
 import { useState } from 'react';
-import { AlertTriangle, CheckCircle2, Info, TrendingUp, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, Zap, AlertTriangle, Info, ArrowRight } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES } from '../domain/reconcile';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
 
-function getRecommendation(activeFunded, freshEvals) {
-  if (activeFunded === 0) {
-    return {
-      stack: 'No funded accounts',
-      dll: 'N/A',
-      bulletBot: freshEvals > 0 ? 'Run Bullet Bot on fresh evals' : 'No accounts ready',
-      riskLevel: 'none',
-      notes: 'Focus on passing evaluation accounts first.',
-    };
-  }
-  if (activeFunded === 1) {
-    return {
-      stack: 'URGO',
-      dll: 'None (single account)',
-      bulletBot: freshEvals >= 1 ? `${freshEvals} eval(s) ready for Bullet Bot` : 'No fresh evals',
-      riskLevel: 'low',
-      notes: 'Single funded account. Run URGO only. No DLL needed.',
-    };
-  }
-  if (activeFunded === 2) {
-    return {
-      stack: 'URGO on Acct 1 · IFSP on Acct 2',
-      dll: 'Optional — set if P&L variance is high',
-      bulletBot: freshEvals >= 1 ? `${freshEvals} eval(s) ready for Bullet Bot` : 'No fresh evals',
-      riskLevel: 'medium',
-      notes: 'Diversify stacks. URGO primary, IFSP secondary for decorrelation.',
-    };
-  }
-  if (activeFunded === 3) {
-    return {
-      stack: 'URGO + IFSP spread across accounts',
-      dll: 'Recommended — $500–$600 per account',
-      bulletBot: freshEvals >= 1 ? `${freshEvals} eval(s) ready for Bullet Bot` : 'No fresh evals',
-      riskLevel: 'medium',
-      notes: '3 accounts: spread stacks. Set DLL to protect daily gains. Monitor correlation.',
-    };
-  }
-  return {
-    stack: 'URGO + IFSP mixed — rotate per account',
-    dll: 'Required — $500–$700 per account',
-    bulletBot: freshEvals >= 1 ? `${freshEvals} eval(s) ready for Bullet Bot` : 'No fresh evals',
-    riskLevel: 'high',
-    notes: `${activeFunded} funded accounts: full stack diversification. DLL is mandatory at this scale to protect daily variance.`,
-  };
+function fmt(n) {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(n || 0));
 }
 
-function riskColor(level) {
-  if (level === 'none') return 'muted';
-  if (level === 'low') return 'positive';
-  if (level === 'medium') return 'warning';
-  if (level === 'high') return 'negative';
-  return '';
+// Normalize algo combo string from strategy names in a snapshot
+function comboFromStrategies(strategies = []) {
+  const active = strategies
+    .filter((s) => s.enabled)
+    .map((s) => {
+      const name = (s.strategyFamily || s.strategyName || '').toUpperCase();
+      if (name.includes('URGO')) return 'URGO';
+      if (name.includes('IFSP')) return 'IFSP';
+      if (name.includes('BULLET')) return 'Bullet';
+      return name.slice(0, 8) || 'Unknown';
+    })
+    .sort();
+  const unique = [...new Set(active)];
+  return unique.join(' + ') || 'Unknown';
 }
 
-function getRiskScore(account, snapshots) {
-  const stackCount = (account.algoStack || '').split('+').filter(Boolean).length;
-  const hasDll = account.dailyLossLimit && Number(account.dailyLossLimit) > 0;
-  const snap = snapshots.find((s) => s.accountName === account.accountName);
-  const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : 0;
+// Aggregate algo combo performance across ALL clients' historical closes
+export function buildAlgoComboPerformance(allClients = []) {
+  const combos = {};
 
-  let score = 0;
-  if (stackCount >= 3) score += 3;
-  else if (stackCount === 2) score += 2;
-  else if (stackCount === 1) score += 1;
+  for (const client of allClients) {
+    const registry = client.accountRegistry || {};
+    const imports = client.dailyImports || [];
+    const n = imports.length;
 
-  if (!hasDll) score += 2;
+    for (let i = 0; i < n; i++) {
+      const di = imports[i];
+      const isRecent7 = i >= n - 7;
+      const isPrior7 = i >= n - 14 && i < n - 7;
 
-  if (buffer > 0 && buffer < 500) score += 3;
-  else if (buffer > 0 && buffer < 1200) score += 1;
+      for (const snap of di.snapshots || []) {
+        const meta = registry[snap.accountName] || {};
+        if (meta.accountType !== ACCOUNT_TYPES.FUNDED) continue;
+        if (meta.status === ACCOUNT_STATUSES.FAILED || meta.status === ACCOUNT_STATUSES.INACTIVE) continue;
 
-  if (score <= 1) return { label: 'Low', tone: 'positive' };
-  if (score <= 3) return { label: 'Medium', tone: 'warning' };
-  return { label: 'High', tone: 'negative' };
+        const combo = comboFromStrategies(snap.strategies || []);
+        if (combo === 'Unknown' || combo === '') continue;
+
+        if (!combos[combo]) {
+          combos[combo] = {
+            combo,
+            totalPnl: 0,
+            days: 0,
+            winDays: 0,
+            recent7Pnl: 0,
+            recent7Days: 0,
+            prior7Pnl: 0,
+            prior7Days: 0,
+            accountSet: new Set(),
+            clientSet: new Set(),
+          };
+        }
+
+        const pnl = Number(snap.grossRealizedPnl || 0);
+        const entry = combos[combo];
+        entry.totalPnl += pnl;
+        entry.days += 1;
+        if (pnl > 0) entry.winDays += 1;
+        entry.accountSet.add(`${client.id}::${snap.accountName}`);
+        entry.clientSet.add(client.id);
+        if (isRecent7) { entry.recent7Pnl += pnl; entry.recent7Days += 1; }
+        if (isPrior7)  { entry.prior7Pnl += pnl; entry.prior7Days += 1; }
+      }
+    }
+  }
+
+  return Object.values(combos)
+    .map((c) => {
+      const avgPnl = c.days ? c.totalPnl / c.days : 0;
+      const recent7Avg = c.recent7Days ? c.recent7Pnl / c.recent7Days : null;
+      const prior7Avg  = c.prior7Days  ? c.prior7Pnl  / c.prior7Days  : null;
+      let trend = 'stable';
+      if (recent7Avg !== null && prior7Avg !== null) {
+        if (recent7Avg > prior7Avg * 1.1) trend = 'up';
+        else if (recent7Avg < prior7Avg * 0.9) trend = 'down';
+      }
+      return {
+        combo: c.combo,
+        avgPnl,
+        winRate: c.days ? Math.round((c.winDays / c.days) * 100) : 0,
+        totalDays: c.days,
+        accounts: c.accountSet.size,
+        clients: c.clientSet.size,
+        trend,
+        recent7Avg,
+        prior7Avg,
+      };
+    })
+    .sort((a, b) => b.avgPnl - a.avgPnl);
 }
 
-function formatUSD(n) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+// For a specific client's funded accounts, compare their combo vs team avg and suggest better option
+function buildClientComboInsights(client, dailyImport, comboPerf) {
+  if (!client || !comboPerf.length) return [];
+  const registry = { ...(dailyImport?.accounts || {}), ...(client.accountRegistry || {}) };
+  const snapshots = dailyImport?.snapshots || [];
+  const perfByCombo = Object.fromEntries(comboPerf.map((c) => [c.combo, c]));
+  const best = comboPerf[0];
+
+  return snapshots
+    .filter((s) => {
+      const meta = registry[s.accountName] || {};
+      return meta.accountType === ACCOUNT_TYPES.FUNDED &&
+        meta.status !== ACCOUNT_STATUSES.FAILED &&
+        meta.status !== ACCOUNT_STATUSES.INACTIVE;
+    })
+    .map((s) => {
+      const meta = registry[s.accountName] || {};
+      const currentCombo = comboFromStrategies(s.strategies || []);
+      const teamData = perfByCombo[currentCombo];
+      const accountPnl7 = (client.dailyImports || [])
+        .slice(-7)
+        .reduce((sum, di) => {
+          const snap = (di.snapshots || []).find((x) => x.accountName === s.accountName);
+          return sum + Number(snap?.grossRealizedPnl || 0);
+        }, 0);
+      const accountAvg7 = accountPnl7 / 7;
+      const teamAvg7 = teamData?.recent7Avg ?? teamData?.avgPnl ?? null;
+      const delta = teamAvg7 !== null ? accountAvg7 - teamAvg7 : null;
+      const suggestion = best.combo !== currentCombo && best.avgPnl > (teamData?.avgPnl || 0) * 1.15
+        ? best.combo
+        : null;
+
+      return {
+        accountName: s.accountName,
+        alias: meta.alias || s.accountName,
+        currentCombo,
+        accountAvg7,
+        teamAvg7,
+        delta,
+        suggestion,
+        bestCombo: best.combo,
+        bestAvg: best.avgPnl,
+        teamData,
+      };
+    });
+}
+
+function TrendIcon({ trend }) {
+  if (trend === 'up')   return <TrendingUp  size={14} className="positive" />;
+  if (trend === 'down') return <TrendingDown size={14} className="negative" />;
+  return <Minus size={14} className="muted" />;
 }
 
 function IncomeProjection({ currentFunded }) {
   const [avgPerAccount, setAvgPerAccount] = useState(800);
   const [targetMonthly, setTargetMonthly] = useState(10000);
-
   const accountsNeeded = avgPerAccount > 0 ? Math.ceil(targetMonthly / avgPerAccount) : '—';
   const currentMonthly = currentFunded * avgPerAccount;
   const gap = targetMonthly - currentMonthly;
-
   return (
     <div className="income-projection">
       <div className="income-inputs">
         <div>
-          <label>Avg monthly P&L per funded account</label>
-          <input
-            type="number"
-            value={avgPerAccount}
-            min={100}
-            step={100}
-            onChange={(e) => setAvgPerAccount(Number(e.target.value))}
-          />
+          <label>Avg monthly P&amp;L per funded account</label>
+          <input type="number" value={avgPerAccount} min={100} step={100} onChange={(e) => setAvgPerAccount(Number(e.target.value))} />
         </div>
         <div>
           <label>Monthly income target</label>
-          <input
-            type="number"
-            value={targetMonthly}
-            min={1000}
-            step={1000}
-            onChange={(e) => setTargetMonthly(Number(e.target.value))}
-          />
+          <input type="number" value={targetMonthly} min={1000} step={1000} onChange={(e) => setTargetMonthly(Number(e.target.value))} />
         </div>
       </div>
       <div className="income-results">
+        <div className="income-result-card"><span>Accounts needed</span><strong>{accountsNeeded}</strong></div>
+        <div className="income-result-card"><span>Current funded</span><strong>{currentFunded}</strong></div>
+        <div className="income-result-card"><span>Projected monthly</span><strong className={currentMonthly >= targetMonthly ? 'positive' : ''}>{fmt(currentMonthly)}</strong></div>
         <div className="income-result-card">
-          <span>Accounts needed for target</span>
-          <strong>{accountsNeeded}</strong>
-        </div>
-        <div className="income-result-card">
-          <span>Current funded accounts</span>
-          <strong>{currentFunded}</strong>
-        </div>
-        <div className="income-result-card">
-          <span>Current projected monthly</span>
-          <strong className={currentMonthly >= targetMonthly ? 'positive' : ''}>{formatUSD(currentMonthly)}</strong>
-        </div>
-        <div className="income-result-card">
-          <span>{gap > 0 ? 'Gap to target' : 'Surplus above target'}</span>
-          <strong className={gap <= 0 ? 'positive' : 'warning'}>{formatUSD(Math.abs(gap))}</strong>
+          <span>{gap > 0 ? 'Gap to target' : 'Surplus'}</span>
+          <strong className={gap <= 0 ? 'positive' : 'warning'}>{fmt(Math.abs(gap))}</strong>
         </div>
       </div>
-      {gap > 0 && currentFunded > 0 ? (
-        <p className="income-note muted">
-          Need {accountsNeeded - currentFunded} more funded account{accountsNeeded - currentFunded !== 1 ? 's' : ''} to reach {formatUSD(targetMonthly)}/mo at {formatUSD(avgPerAccount)}/account avg.
-        </p>
-      ) : gap <= 0 && currentFunded > 0 ? (
-        <p className="income-note positive">
-          On track. {currentFunded} funded accounts generating ~{formatUSD(currentMonthly)}/mo at {formatUSD(avgPerAccount)}/account avg.
-        </p>
-      ) : null}
+      {gap > 0 && currentFunded > 0
+        ? <p className="income-note muted">Need {accountsNeeded - currentFunded} more funded account{accountsNeeded - currentFunded !== 1 ? 's' : ''} to reach {fmt(targetMonthly)}/mo.</p>
+        : gap <= 0 && currentFunded > 0
+          ? <p className="income-note positive">On track — {currentFunded} funded accounts generating ~{fmt(currentMonthly)}/mo.</p>
+          : null}
     </div>
   );
 }
 
-export default function StackPlaybook({ client, dailyImport, onUpdateAccount }) {
-  const registry = {
-    ...(dailyImport?.accounts || {}),
-    ...(client?.accountRegistry || {}),
-  };
+export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [] }) {
+  const registry = { ...(dailyImport?.accounts || {}), ...(client?.accountRegistry || {}) };
   const snapshots = dailyImport?.snapshots || [];
 
   const funded = Object.values(registry).filter(
-    (a) => a.accountType === ACCOUNT_TYPES.FUNDED && a.status !== ACCOUNT_STATUSES.FAILED && a.status !== ACCOUNT_STATUSES.INACTIVE,
+    (a) => a.accountType === ACCOUNT_TYPES.FUNDED &&
+      a.status !== ACCOUNT_STATUSES.FAILED &&
+      a.status !== ACCOUNT_STATUSES.INACTIVE,
   );
-
-  const freshEvals = Object.values(registry).filter((a) => {
-    if (!a.accountType?.startsWith('Evaluation')) return false;
-    const snap = snapshots.find((s) => s.accountName === a.accountName);
-    const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : 0;
-    return buffer >= 2000;
-  });
-
-  const rec = getRecommendation(funded.length, freshEvals.length);
 
   const [localStack, setLocalStack] = useState({});
   const [localDll, setLocalDll] = useState({});
@@ -174,103 +206,187 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount }) 
     setLocalStack((prev) => ({ ...prev, [accountName]: value }));
     onUpdateAccount?.(accountName, { algoStack: value });
   }
-
   function updateDll(accountName, value) {
     setLocalDll((prev) => ({ ...prev, [accountName]: value }));
     onUpdateAccount?.(accountName, { dailyLossLimit: value });
   }
 
+  // Build team intelligence using ALL clients
+  const teamClients = allClients.length ? allClients : (client ? [client] : []);
+  const comboPerf = buildAlgoComboPerformance(teamClients);
+  const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf);
+
+  const hasSuggestions = clientInsights.some((i) => i.suggestion);
+  const totalTeamAccounts = comboPerf.reduce((s, c) => s + c.accounts, 0);
+
   return (
     <div className="stack-playbook">
+
+      {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
         <div className="panel-heading">
-          <h3>Stack Recommendation</h3>
-          <span className="badge muted">{funded.length} active funded · {freshEvals.length} fresh evals</span>
+          <h3>Team Algo Performance</h3>
+          <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs · all history</span>
         </div>
-
-        <div className="playbook-rec-grid">
-          <div className="playbook-rec-card">
-            <div className="playbook-rec-label"><TrendingUp size={14} /> Recommended Stack</div>
-            <div className="playbook-rec-value">{rec.stack}</div>
-          </div>
-          <div className="playbook-rec-card">
-            <div className="playbook-rec-label"><Zap size={14} /> Daily Loss Limit</div>
-            <div className="playbook-rec-value">{rec.dll}</div>
-          </div>
-          <div className="playbook-rec-card">
-            <div className="playbook-rec-label"><CheckCircle2 size={14} /> Bullet Bot</div>
-            <div className="playbook-rec-value">{rec.bulletBot}</div>
-          </div>
-          <div className="playbook-rec-card">
-            <div className="playbook-rec-label"><AlertTriangle size={14} /> Risk Level</div>
-            <div className={`playbook-rec-value ${riskColor(rec.riskLevel)}`}>{rec.riskLevel.charAt(0).toUpperCase() + rec.riskLevel.slice(1)}</div>
-          </div>
-        </div>
-
-        {rec.notes ? (
-          <div className="playbook-notes">
-            <Info size={14} />
-            <span>{rec.notes}</span>
-          </div>
-        ) : null}
+        {comboPerf.length === 0 ? (
+          <p className="muted" style={{ padding: '12px 0' }}>No strategy data across clients yet — upload daily closes to populate.</p>
+        ) : (
+          <>
+            <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+              <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+              Aggregated from every client running each algo combination. Use this to evaluate what's working across the portfolio — not a per-client guarantee.
+            </p>
+            <div className="table-wrap">
+              <table className="ops-table">
+                <thead>
+                  <tr>
+                    <th>Combo</th>
+                    <th>Avg P&amp;L / day</th>
+                    <th>Win rate</th>
+                    <th>Trend (7d)</th>
+                    <th>Last 7d avg</th>
+                    <th>Accounts</th>
+                    <th>Clients</th>
+                    <th>Total days</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comboPerf.map((row, i) => (
+                    <tr key={row.combo} className={i === 0 ? 'row-highlight' : ''}>
+                      <td>
+                        <strong>{row.combo}</strong>
+                        {i === 0 ? <span className="badge success" style={{ marginLeft: 6 }}>Best</span> : null}
+                      </td>
+                      <td className={row.avgPnl >= 0 ? 'positive' : 'negative'}>
+                        {row.avgPnl >= 0 ? '+' : ''}{fmt(row.avgPnl)}
+                      </td>
+                      <td>{row.winRate}%</td>
+                      <td style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <TrendIcon trend={row.trend} />
+                        <span className={row.trend === 'up' ? 'positive' : row.trend === 'down' ? 'negative' : 'muted'}>
+                          {row.trend}
+                        </span>
+                      </td>
+                      <td className={row.recent7Avg != null ? (row.recent7Avg >= 0 ? 'positive' : 'negative') : 'muted'}>
+                        {row.recent7Avg != null ? `${row.recent7Avg >= 0 ? '+' : ''}${fmt(row.recent7Avg)}` : '—'}
+                      </td>
+                      <td>{row.accounts}</td>
+                      <td>{row.clients}</td>
+                      <td className="muted">{row.totalDays}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </section>
 
-      {funded.length > 0 ? (
-        <section className="panel">
+      {/* ── Client Config vs Team ───────────────────────────── */}
+      {clientInsights.length > 0 ? (
+        <section className={`panel ${hasSuggestions ? 'playbook-has-suggestions' : ''}`}>
           <div className="panel-heading">
-            <h3>Funded Account Configuration</h3>
-            <span className="badge muted">Algo stack + DLL per account</span>
+            <h3>Client Config vs Team Avg</h3>
+            {hasSuggestions
+              ? <span className="badge warning"><AlertTriangle size={12} /> Consider updating</span>
+              : <span className="badge success">On best combos</span>}
           </div>
           <div className="table-wrap">
             <table className="ops-table">
               <thead>
                 <tr>
                   <th>Account</th>
-                  <th>Status</th>
-                  <th>Drawdown Buffer</th>
-                  <th>Algo Stack</th>
+                  <th>Current combo</th>
+                  <th>This acct 7d avg</th>
+                  <th>Team avg (same combo)</th>
+                  <th>vs Team</th>
+                  <th>Insight</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clientInsights.map((row) => (
+                  <tr key={row.accountName}>
+                    <td><strong>{row.alias}</strong></td>
+                    <td><span className="badge muted">{row.currentCombo}</span></td>
+                    <td className={row.accountAvg7 >= 0 ? 'positive' : 'negative'}>
+                      {row.accountAvg7 >= 0 ? '+' : ''}{fmt(row.accountAvg7)}
+                    </td>
+                    <td className="muted">
+                      {row.teamAvg7 != null ? `${row.teamAvg7 >= 0 ? '+' : ''}${fmt(row.teamAvg7)}` : '—'}
+                    </td>
+                    <td className={row.delta == null ? 'muted' : row.delta >= 0 ? 'positive' : 'negative'}>
+                      {row.delta != null ? `${row.delta >= 0 ? '+' : ''}${fmt(row.delta)}` : '—'}
+                    </td>
+                    <td>
+                      {row.suggestion ? (
+                        <span className="playbook-suggestion">
+                          <ArrowRight size={12} />
+                          Consider <strong>{row.suggestion}</strong> — team avg {fmt(row.bestAvg)}/day
+                        </span>
+                      ) : (
+                        <span className="muted" style={{ fontSize: 12 }}>On best known combo</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted" style={{ fontSize: 12, padding: '8px 0 0' }}>
+            Suggestions are based on team aggregate data — market conditions vary. Use as insight, not instruction.
+          </p>
+        </section>
+      ) : null}
+
+      {/* ── Per-account config editor ───────────────────────── */}
+      {funded.length > 0 ? (
+        <section className="panel">
+          <div className="panel-heading">
+            <h3>Account Configuration</h3>
+            <span className="badge muted">Set algo stack + DLL per account</span>
+          </div>
+          <div className="table-wrap">
+            <table className="ops-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Current combo (live)</th>
+                  <th>Drawdown buffer</th>
+                  <th>Assign algo stack</th>
                   <th>Daily Loss Limit</th>
-                  <th>Risk Level</th>
                 </tr>
               </thead>
               <tbody>
                 {funded.map((account) => {
                   const snap = snapshots.find((s) => s.accountName === account.accountName);
+                  const liveCombo = snap ? comboFromStrategies(snap.strategies || []) : '—';
                   const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : null;
-                  const risk = getRiskScore(account, snapshots);
                   const stackVal = localStack[account.accountName] ?? (account.algoStack || '');
-                  const dllVal = localDll[account.accountName] ?? (account.dailyLossLimit || '');
+                  const dllVal   = localDll[account.accountName]   ?? (account.dailyLossLimit || '');
                   return (
                     <tr key={account.accountName}>
                       <td>
                         <strong>{account.alias || account.accountName}</strong>
                         <small>{account.accountName}</small>
                       </td>
-                      <td>{account.status || 'Active'}</td>
+                      <td><span className="badge muted">{liveCombo}</span></td>
                       <td>
                         {buffer !== null
-                          ? (buffer <= 0
+                          ? buffer <= 0
                             ? <span className="negative">BREACHED</span>
-                            : <span className={buffer <= 1200 ? 'warning' : ''}>${buffer.toLocaleString()}</span>)
+                            : <span className={buffer < 1200 ? 'warning' : ''}>${buffer.toLocaleString()}</span>
                           : <span className="muted">—</span>}
                       </td>
                       <td>
-                        <select
-                          value={stackVal}
-                          onChange={(e) => updateStack(account.accountName, e.target.value)}
-                        >
+                        <select value={stackVal} onChange={(e) => updateStack(account.accountName, e.target.value)}>
                           {ALGO_STACKS.map((opt) => <option key={opt} value={opt}>{opt || 'Not set'}</option>)}
                         </select>
                       </td>
                       <td>
-                        <select
-                          value={dllVal}
-                          onChange={(e) => updateDll(account.accountName, e.target.value)}
-                        >
+                        <select value={dllVal} onChange={(e) => updateDll(account.accountName, e.target.value)}>
                           {DLL_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt || 'None'}</option>)}
                         </select>
                       </td>
-                      <td className={risk.tone}>{risk.label}</td>
                     </tr>
                   );
                 })}
@@ -280,104 +396,15 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount }) 
         </section>
       ) : null}
 
-      {freshEvals.length > 0 ? (
-        <section className="panel">
-          <div className="panel-heading">
-            <h3>Bullet Bot Ready</h3>
-            <span className="badge muted">Evals with ≥$2,000 drawdown buffer</span>
-          </div>
-          <div className="table-wrap">
-            <table className="ops-table">
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Type</th>
-                  <th>Drawdown Buffer</th>
-                  <th>Pass Type</th>
-                  <th>Direction</th>
-                </tr>
-              </thead>
-              <tbody>
-                {freshEvals.map((account) => {
-                  const snap = snapshots.find((s) => s.accountName === account.accountName);
-                  const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : 0;
-                  return (
-                    <tr key={account.accountName}>
-                      <td>
-                        <strong>{account.alias || account.accountName}</strong>
-                        <small>{account.accountName}</small>
-                      </td>
-                      <td>{account.accountType}</td>
-                      <td className="positive">${buffer.toLocaleString()}</td>
-                      <td>{account.bulletBotPassType || <span className="muted">Not set</span>}</td>
-                      <td>{account.bulletBotDirection || <span className="muted">Not set</span>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
-
+      {/* ── Income Projection ──────────────────────────────── */}
       <section className="panel">
         <div className="panel-heading">
           <h3>Income Projection</h3>
-          <span className="badge muted">How many accounts to hit a monthly target?</span>
+          <span className="badge muted">How many accounts to hit monthly target?</span>
         </div>
         <IncomeProjection currentFunded={funded.length} />
       </section>
 
-      <section className="panel">
-        <div className="panel-heading">
-          <h3>Stack Rules Reference</h3>
-          <span className="badge muted">Decision guide</span>
-        </div>
-        <div className="table-wrap">
-          <table className="ops-table">
-            <thead>
-              <tr>
-                <th># Funded Active</th>
-                <th>Recommended Stack</th>
-                <th>Daily Loss Limit</th>
-                <th>Risk Level</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>0</td>
-                <td className="muted">Run Bullet Bot on fresh evals</td>
-                <td className="muted">N/A</td>
-                <td className="muted">None</td>
-              </tr>
-              <tr>
-                <td>1</td>
-                <td>URGO</td>
-                <td>None</td>
-                <td className="positive">Low</td>
-              </tr>
-              <tr>
-                <td>2</td>
-                <td>URGO + IFSP (split)</td>
-                <td>Optional</td>
-                <td className="warning">Medium</td>
-              </tr>
-              <tr>
-                <td>3</td>
-                <td>URGO + IFSP spread</td>
-                <td>Recommended ($500–$600)</td>
-                <td className="warning">Medium</td>
-              </tr>
-              <tr>
-                <td>4+</td>
-                <td>Mixed — rotate per account</td>
-                <td>Required ($500–$700)</td>
-                <td className="negative">High</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
     </div>
   );
 }
