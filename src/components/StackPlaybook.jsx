@@ -9,6 +9,12 @@ function fmt(n) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(n || 0));
 }
 
+function mergeRegCi(importAccounts, clientRegistry) {
+  const merged = { ...(importAccounts || {}), ...(clientRegistry || {}) };
+  return Object.fromEntries(Object.entries(merged).map(([k, v]) => [k.toLowerCase(), v]));
+}
+function ciMeta(reg, name) { return reg[(name || '').toLowerCase()] || {}; }
+
 // Normalize algo combo string from strategy names in a snapshot
 function comboFromStrategies(strategies = []) {
   const active = strategies
@@ -103,26 +109,27 @@ export function buildAlgoComboPerformance(allClients = []) {
 // For a specific client's funded accounts, compare their combo vs team avg and suggest better option
 function buildClientComboInsights(client, dailyImport, comboPerf) {
   if (!client || !comboPerf.length) return [];
-  const registry = { ...(dailyImport?.accounts || {}), ...(client.accountRegistry || {}) };
+  const registry = mergeRegCi(dailyImport?.accounts, client.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
   const perfByCombo = Object.fromEntries(comboPerf.map((c) => [c.combo, c]));
   const best = comboPerf[0];
 
   return snapshots
     .filter((s) => {
-      const meta = registry[s.accountName] || {};
+      const meta = ciMeta(registry, s.accountName);
       return meta.accountType === ACCOUNT_TYPES.FUNDED &&
         meta.status !== ACCOUNT_STATUSES.FAILED &&
         meta.status !== ACCOUNT_STATUSES.INACTIVE;
     })
     .map((s) => {
-      const meta = registry[s.accountName] || {};
+      const meta = ciMeta(registry, s.accountName);
       const currentCombo = comboFromStrategies(s.strategies || []);
       const teamData = perfByCombo[currentCombo];
+      const sNameLower = (s.accountName || '').toLowerCase();
       const accountPnl7 = (client.dailyImports || [])
         .slice(-7)
         .reduce((sum, di) => {
-          const snap = (di.snapshots || []).find((x) => x.accountName === s.accountName);
+          const snap = (di.snapshots || []).find((x) => x.accountName?.toLowerCase() === sNameLower);
           return sum + Number(snap?.grossRealizedPnl || 0);
         }, 0);
       const accountAvg7 = accountPnl7 / 7;
@@ -367,7 +374,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               </thead>
               <tbody>
                 {funded.map((account) => {
-                  const snap = snapshots.find((s) => s.accountName === account.accountName);
+                  const snap = snapshots.find((s) => s.accountName?.toLowerCase() === account.accountName?.toLowerCase());
                   const liveCombo = snap ? comboFromStrategies(snap.strategies || []) : '—';
                   const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : null;
                   const stackVal = localStack[account.accountName] ?? (account.algoStack || '');
