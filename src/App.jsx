@@ -790,18 +790,16 @@ function buildPayoutAlerts(client, dailyImport) {
     const target = Number(meta.targetProfit || 0);
     if (!target) continue;
     const balance = Number(snap.accountBalance || 0);
-    const startBalance = Number(meta.startBalance || 0);
-    const profit = startBalance > 0 ? balance - startBalance : 0;
     const alreadyRequested = meta.payoutState && meta.payoutState !== 'Not requested';
-    if (!alreadyRequested && profit >= target * 0.9) {
+    if (!alreadyRequested && balance >= target * 0.9) {
       alerts.push({
         accountName: snap.accountName,
         alias: meta.alias || snap.accountName,
-        profit,
+        profit: balance,
         target,
-        pct: Math.round((profit / target) * 100),
+        pct: Math.round((balance / target) * 100),
         payoutState: meta.payoutState || 'Not requested',
-        ready: profit >= target,
+        ready: balance >= target,
       });
     }
   }
