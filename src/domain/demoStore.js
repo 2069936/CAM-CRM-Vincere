@@ -602,6 +602,7 @@ export function parseImportedState(text) {
     throw new Error('File is not a valid CAM backup.');
   }
   return {
+    ...data,
     accountManager: data.accountManager,
     demoVersion: data.demoVersion || 0,
     camProfiles: data.camProfiles || [],
