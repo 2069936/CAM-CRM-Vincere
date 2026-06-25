@@ -2753,6 +2753,26 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
   const [dueDate, setDueDate] = useState('');
   const [priority, setPriority] = useState('Normal');
   const [accountName, setAccountName] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState('');
+  const [editDue, setEditDue] = useState('');
+  const [editPriority, setEditPriority] = useState('Normal');
+
+  function startEdit(task) {
+    setEditingId(task.id);
+    setEditText(task.text);
+    setEditDue(task.dueDate || '');
+    setEditPriority(task.priority || 'Normal');
+  }
+
+  function saveEdit(taskId) {
+    if (editText.trim()) {
+      onUpdateTask(taskId, { text: editText.trim(), dueDate: editDue, priority: editPriority });
+    }
+    setEditingId(null);
+  }
+
+  function cancelEdit() { setEditingId(null); }
   const tasks = (client.tasks || []).sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
     if (a.priority === 'High' && b.priority !== 'High') return -1;
@@ -2828,25 +2848,37 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
               ? (accounts.find((a) => a.accountName === task.accountName)?.alias || task.accountName)
               : null;
             return (
-              <div className={`task-row${task.done ? ' task-done' : ''}${task.priority === 'High' && !task.done ? ' task-high' : ''}`} key={task.id}>
-                <button
-                  className="task-checkbox"
-                  title={task.done ? 'Mark open' : 'Mark done'}
-                  onClick={() => onUpdateTask(task.id, { done: !task.done })}
-                >
-                  <CheckSquare size={16} className={task.done ? 'task-checked' : 'task-unchecked'} />
-                </button>
-                <div className="task-body">
-                  <span className="task-text">{task.text}</span>
-                  <div className="task-chips">
-                    {task.priority === 'High' && !task.done ? <span className="task-chip task-chip-high">High</span> : null}
-                    {alias ? <span className="task-chip">{alias}</span> : null}
-                    {due ? <span className={`task-chip task-chip-due ${due.tone}`}>{due.label}</span> : null}
+              <div className={`task-row${task.done ? ' task-done' : ''}${task.priority === 'High' && !task.done ? ' task-high' : ''}${editingId === task.id ? ' task-editing' : ''}`} key={task.id}>
+                {editingId === task.id ? (
+                  <div className="task-edit-inline">
+                    <input className="task-text-input" value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveEdit(task.id); if (e.key === 'Escape') cancelEdit(); }} autoFocus />
+                    <div className="task-form-meta">
+                      <input type="date" value={editDue} onChange={e => setEditDue(e.target.value)} />
+                      <select value={editPriority} onChange={e => setEditPriority(e.target.value)}>
+                        {TASK_PRIORITIES.map(p => <option key={p}>{p}</option>)}
+                      </select>
+                      <button className="primary-button" onClick={() => saveEdit(task.id)}>Save</button>
+                      <button className="ghost-button" onClick={cancelEdit}>Cancel</button>
+                    </div>
                   </div>
-                </div>
-                <button className="ghost-button icon-only" onClick={() => onDeleteTask(task.id)} title="Delete task">
-                  <Trash2 size={13} />
-                </button>
+                ) : (
+                  <>
+                    <button className="task-checkbox" title={task.done ? 'Mark open' : 'Mark done'} onClick={() => onUpdateTask(task.id, { done: !task.done })}>
+                      <CheckSquare size={16} className={task.done ? 'task-checked' : 'task-unchecked'} />
+                    </button>
+                    <div className="task-body" style={{cursor:'pointer'}} onClick={() => !task.done && startEdit(task)} title={task.done ? '' : 'Click to edit'}>
+                      <span className="task-text">{task.text}</span>
+                      <div className="task-chips">
+                        {task.priority === 'High' && !task.done ? <span className="task-chip task-chip-high">High</span> : null}
+                        {alias ? <span className="task-chip">{alias}</span> : null}
+                        {due ? <span className={`task-chip task-chip-due ${due.tone}`}>{due.label}</span> : null}
+                      </div>
+                    </div>
+                    <button className="ghost-button icon-only" onClick={() => onDeleteTask(task.id)} title="Delete task">
+                      <Trash2 size={13} />
+                    </button>
+                  </>
+                )}
               </div>
             );
           })}
