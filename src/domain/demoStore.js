@@ -595,14 +595,20 @@ export function updateImportStatus(state, clientId, importId, status) {
 }
 
 export function replaceDailyImport(state, clientId, importResult) {
-  return updateClient(state, clientId, (client) => ({
-    ...client,
-    accountRegistry: {
-      ...client.accountRegistry,
-      ...importResult.accounts,
-    },
-    dailyImports: client.dailyImports.map((item) => (item.id === importResult.id ? importResult : item)),
-  }));
+  return updateClient(state, clientId, (client) => {
+    const base = { ...client.accountRegistry };
+    for (const [importKey, importVal] of Object.entries(importResult.accounts || {})) {
+      const existingKey = Object.keys(base).find(k => k.toLowerCase() === importKey.toLowerCase()) || importKey;
+      const existingVal = base[existingKey];
+      if (existingKey !== importKey) delete base[existingKey];
+      base[importKey] = { ...importVal, ...existingVal };
+    }
+    return {
+      ...client,
+      accountRegistry: base,
+      dailyImports: client.dailyImports.map((item) => (item.id === importResult.id ? importResult : item)),
+    };
+  });
 }
 
 export function getLatestClientImport(client) {
