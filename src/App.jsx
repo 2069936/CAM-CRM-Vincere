@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import React, { Fragment, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
@@ -65,6 +65,22 @@ import {
   loadUsers,
   saveUsers,
 } from './domain/userStore';
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('Panel error:', error, info); }
+  render() {
+    if (this.state.error) return (
+      <div className="panel" style={{margin:16,padding:24,borderColor:'var(--negative)'}}>
+        <strong style={{color:'var(--negative)'}}>Something went wrong in this panel.</strong>
+        <p className="muted" style={{marginTop:6,fontSize:12}}>{String(this.state.error)}</p>
+        <button className="secondary-button" style={{marginTop:10}} onClick={() => this.setState({ error: null })}>Try again</button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
 
 const STATIC_TABS = ['Activity', 'Tasks', 'Credentials & Notes', 'Price Checks', 'Stack Playbook'];
 
@@ -4185,6 +4201,7 @@ export default function App() {
 
   if (platformView === 'manager') {
     return (
+      <ErrorBoundary>
       <ManagerOverview
         clients={state.clients}
         camProfiles={state.camProfiles}
@@ -4205,10 +4222,12 @@ export default function App() {
           setState((current) => resolveFlagInImport(current, clientId, importId, flagId))
         }
       />
+      </ErrorBoundary>
     );
   }
 
   return (
+    <ErrorBoundary>
     <>
     <div className="app-shell">
       <aside className="sidebar">
@@ -4607,5 +4626,6 @@ export default function App() {
     {reportImport ? <ReportPanel client={selectedClient} dailyImport={reportImport} onClose={() => setReportImport(null)} /> : null}
     {monthlyReportMonth ? <MonthlyReportPanel client={selectedClient} month={monthlyReportMonth} onClose={() => setMonthlyReportMonth(null)} /> : null}
     </>
+    </ErrorBoundary>
   );
 }
