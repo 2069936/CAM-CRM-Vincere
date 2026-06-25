@@ -263,7 +263,8 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
   if (!rows.length) return null;
   const isCash = mode === 'cash';
   const isFunded = title === 'Funded';
-  const colSpan = isCash ? 5 : isFunded ? 9 : 6;
+  const isEval = title === 'Standard Evaluations' || title === 'Bullet Bot';
+  const colSpan = isCash ? 5 : isFunded ? 9 : isEval ? 7 : 6;
 
   return (
     <section className="panel">
@@ -285,6 +286,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
               {isFunded ? <th>Target</th> : null}
               {isFunded ? <th>Payout</th> : null}
               {isFunded ? <th>Risk</th> : null}
+              {isEval ? <th>Phase target</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -340,6 +342,28 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                     </td>
                   ) : null}
                   {isFunded ? (() => { const r = fundedRiskLevel(row); return <td className={r.tone}>{r.label}</td>; })() : null}
+                  {isEval ? (() => {
+                    const target = Number(row.meta?.targetProfit || 0);
+                    const start = Number(row.meta?.startBalance || 0);
+                    const balance = Number(row.accountBalance || 0);
+                    if (!target) return <td className="muted">—</td>;
+                    const base = start || (target * 0.97);
+                    const profit = balance - base;
+                    const needed = target - base;
+                    const pct = needed > 0 ? Math.min(100, Math.max(0, Math.round((profit / needed) * 100))) : 0;
+                    const passed = balance >= target;
+                    return (
+                      <td className="target-cell">
+                        <div className="target-progress">
+                          <div className="target-bar">
+                            <i style={{ width: `${pct}%`, background: passed ? 'var(--green)' : pct >= 80 ? '#f59e0b' : 'var(--accent)' }} />
+                          </div>
+                          <small className={passed ? 'positive' : ''}>{passed ? '✓ Passed' : `${pct}%`}</small>
+                        </div>
+                        <small className="muted">{formatCurrency(profit)} / {formatCurrency(needed)}</small>
+                      </td>
+                    );
+                  })() : null}
                 </tr>
                 {expandedAccount === row.accountName ? <AccountDetail row={row} executions={executions} colSpan={colSpan} dailyImports={dailyImports} /> : null}
               </Fragment>

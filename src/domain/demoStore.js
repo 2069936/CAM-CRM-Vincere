@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'cam_crm_demo_state_v1';
-const DEMO_STATE_VERSION = 10;
+const DEMO_STATE_VERSION = 11;
 
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -190,7 +190,7 @@ export function createDemoState() {
       registry: {
         ROME5298: { accountName: 'ROME5298', alias: 'Live - 5298', connection: 'Live', accountType: 'Cash', status: 'Active', payoutState: 'Not requested', notes: 'Cash account: daily, weekly, balance only.', dateAdded: '2026-01-15' },
         ROME7045: { accountName: 'ROME7045', alias: 'BlueSky - 7045', connection: 'BlueSky', accountType: 'Funded', status: 'Active', payoutState: 'Not requested', targetProfit: 52000, startBalance: 50000, maxDrawdownLimit: 2500, dateAdded: '2026-02-10', dateFunded: '2026-02-24', payoutCount: 2, dateLastPayout: '2026-05-12' },
-        ROME8801: { accountName: 'ROME8801', alias: 'Lucid - 8801', connection: 'Lucid', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 53000, maxDrawdownLimit: 2000, dateAdded: '2026-05-20' },
+        ROME8801: { accountName: 'ROME8801', alias: 'Lucid - 8801', connection: 'Lucid', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 53000, startBalance: 50000, maxDrawdownLimit: 2000, dateAdded: '2026-05-20' },
         ROME9002: { accountName: 'ROME9002', alias: 'Tradovate - 9002', connection: 'Tradovate', accountType: 'Funded', status: 'Active', payoutState: 'Not requested', targetProfit: 52500, startBalance: 50000, maxDrawdownLimit: 4000, dateAdded: '2026-04-01', dateFunded: '2026-04-15' },
       },
       snapshots: [
@@ -280,7 +280,7 @@ export function createDemoState() {
       name: 'Blanco Family',
       registry: {
         BLAN3301: { accountName: 'BLAN3301', alias: 'Legends - 3301', connection: 'The Legends Trading', accountType: 'Funded', status: 'Active', payoutState: 'Not requested', targetProfit: 153000, startBalance: 150000, maxDrawdownLimit: 6000, dateAdded: '2026-01-05', dateFunded: '2026-01-20', payoutCount: 4, dateLastPayout: '2026-05-28' },
-        BLAN3302: { accountName: 'BLAN3302', alias: 'Legends - 3302', connection: 'The Legends Trading', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 103000, maxDrawdownLimit: 3000, dateAdded: '2026-05-10' },
+        BLAN3302: { accountName: 'BLAN3302', alias: 'Legends - 3302', connection: 'The Legends Trading', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 103000, startBalance: 100000, maxDrawdownLimit: 3000, dateAdded: '2026-05-10' },
       },
       snapshots: [
         demoSnapshot({ accountName: 'BLAN3301', connection: 'The Legends Trading', grossRealizedPnl: 140, weeklyPnl: 410, balance: 150620, drawdown: -4400, strategies: [rbo] }),
@@ -317,7 +317,7 @@ export function createDemoState() {
       id: 'client-sarah-training',
       name: 'Sarah Training Pool',
       registry: {
-        SARH4101: { accountName: 'SARH4101', alias: 'Apex - 4101', connection: 'Apex', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 53000, maxDrawdownLimit: 2000, dateAdded: '2026-06-10' },
+        SARH4101: { accountName: 'SARH4101', alias: 'Apex - 4101', connection: 'Apex', accountType: 'Evaluation - Standard', status: 'Active', payoutState: 'Not requested', targetProfit: 53000, startBalance: 50000, maxDrawdownLimit: 2000, dateAdded: '2026-06-10' },
         SARH4102: { accountName: 'SARH4102', alias: 'Lucid - 4102', connection: 'Lucid', accountType: 'Funded', status: 'Active', payoutState: 'Clear to trade', targetProfit: 52000, startBalance: 50000, maxDrawdownLimit: 2500, dateAdded: '2026-04-20', dateFunded: '2026-05-05', payoutCount: 1, dateLastPayout: '2026-06-05' },
         SARH4103: { accountName: 'SARH4103', alias: 'BlueSky - 4103', connection: 'BlueSky', accountType: 'Evaluation - Bullet Bot', status: 'Reserve', payoutState: 'Not requested', bulletBotPassType: '2 Day Pass', bulletBotDirection: '', maxDrawdownLimit: 1200, dateAdded: '2026-06-18' },
       },
