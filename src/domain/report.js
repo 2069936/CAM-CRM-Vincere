@@ -162,7 +162,7 @@ export function buildDailyReportSummary(client, dailyImport) {
   const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash];
   const { totals } = summarizeAccountRows(allVisible);
 
-  const openFlags = (dailyImport?.flags || []).filter((f) => f.status !== 'Resolved');
+  const openFlags = (dailyImport?.flags || []).filter((f) => f.status !== 'Resolved' && f.status !== 'Acknowledged');
   const criticalFlags = openFlags.filter((f) => f.severity === 'Critical');
 
   // Prior close for delta
