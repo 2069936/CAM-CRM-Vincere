@@ -171,9 +171,9 @@ function buildTodayActions(client, dailyImport) {
 
   // Funded accounts with no active strategy
   if (dailyImport) {
-    const registry = { ...(dailyImport.accounts || {}), ...(client.accountRegistry || {}) };
+    const registry = mergeRegistryCi(dailyImport.accounts, client.accountRegistry);
     const noStrat = (dailyImport.snapshots || []).filter((s) => {
-      const meta = registry[s.accountName];
+      const meta = ciMeta(registry, s.accountName);
       if (meta?.accountType !== 'Funded') return false;
       const active = (s.strategies || []).filter((st) => st.enabled);
       return active.length === 0;
@@ -287,7 +287,7 @@ function buildClientOverview(client, dailyImport) {
   const history = clientDailyTotals(client);
   const latest = dailyImport || client?.dailyImports?.at(-1) || null;
   const latestSnapshots = latest?.snapshots || [];
-  const registry = { ...(latest?.accounts || {}), ...(client?.accountRegistry || {}) };
+  const registry = mergeRegistryCi(latest?.accounts, client?.accountRegistry);
   const strategyTotals = new Map();
   const distribution = new Map();
 
@@ -326,7 +326,7 @@ function buildClientOverview(client, dailyImport) {
 
   const passProgress = latestSnapshots
     .map((snapshot) => {
-      const meta = registry[snapshot.accountName] || {};
+      const meta = ciMeta(registry, snapshot.accountName);
       if (meta.accountType === 'Cash' || meta.accountType === 'Inactive / Ignore') return null;
       const startingBalance = Number(snapshot.accountBalance || 0) >= 90000 ? 100000 : 50000;
       const target = Number(meta.targetProfit || 0) || startingBalance + (meta.accountType === 'Funded' ? 2000 : 3000);
@@ -556,9 +556,9 @@ function buildMonthlyByAccount(client) {
   for (const di of client.dailyImports || []) {
     const month = di.date.slice(0, 7);
     if (!byMonth[month]) byMonth[month] = {};
-    const registry = { ...(di.accounts || {}), ...(client.accountRegistry || {}) };
+    const registry = mergeRegistryCi(di.accounts, client.accountRegistry);
     for (const snapshot of di.snapshots || []) {
-      const alias = registry[snapshot.accountName]?.alias || snapshot.accountName;
+      const alias = ciMeta(registry, snapshot.accountName)?.alias || snapshot.accountName;
       if (!byMonth[month][snapshot.accountName]) {
         byMonth[month][snapshot.accountName] = { accountName: snapshot.accountName, alias, pnl: 0, days: 0, strategySet: new Set() };
       }
@@ -811,10 +811,10 @@ function buildRiskDistribution(clients = [], camProfiles = []) {
 // Detect funded accounts that have reached their target profit — payout should be requested
 function buildPayoutAlerts(client, dailyImport) {
   if (!client || !dailyImport) return [];
-  const registry = { ...(dailyImport.accounts || {}), ...(client.accountRegistry || {}) };
+  const registry = mergeRegistryCi(dailyImport.accounts, client.accountRegistry);
   const alerts = [];
   for (const snap of dailyImport.snapshots || []) {
-    const meta = registry[snap.accountName] || {};
+    const meta = ciMeta(registry, snap.accountName);
     if (meta.accountType !== 'Funded') continue;
     if (meta.status === 'Failed' || meta.status === 'Inactive') continue;
     const target = Number(meta.targetProfit || 0);
