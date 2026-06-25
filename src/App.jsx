@@ -1042,6 +1042,34 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const managerInsights = buildPortfolioInsights(clients, clients);
   const allFunded = buildAllFundedAccounts(clients, camProfiles);
 
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const monthlyKpis = (() => {
+    let monthlyPnl = 0, payoutAmount = 0, payoutCount = 0, fundedActive = 0;
+    const today = todayIsoDate();
+    let closedToday = 0, withUploadToday = 0;
+    for (const client of clients) {
+      for (const di of client.dailyImports || []) {
+        if (di.date?.startsWith(currentMonth)) {
+          monthlyPnl += (di.snapshots || []).reduce((s, sn) => s + Number(sn.grossRealizedPnl || 0), 0);
+        }
+        if (di.date === today) {
+          withUploadToday++;
+          if (di.status === 'Closed') closedToday++;
+        }
+      }
+      for (const acct of Object.values(client.accountRegistry || {})) {
+        if (acct.accountType === 'Funded' && acct.status !== 'Failed' && acct.status !== 'Inactive') fundedActive++;
+        for (const p of acct.payoutHistory || []) {
+          if (p.date?.startsWith(currentMonth)) {
+            payoutAmount += Number(p.amount || 0);
+            payoutCount++;
+          }
+        }
+      }
+    }
+    return { monthlyPnl, payoutAmount, payoutCount, fundedActive, closedToday, withUploadToday };
+  })();
+
   function submitCam(event) {
     event.preventDefault();
     onCreateCam(newCamName);
@@ -1132,12 +1160,14 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
         </div>
 
         <div className="metric-grid">
-          <div className="metric"><span>CAMs</span><strong>{cams.length}</strong></div>
+          <div className="metric"><span>Team daily P&L</span><strong className={totals.dailyPnl >= 0 ? 'positive' : 'negative'} style={{fontSize:22}}>{formatCurrency(totals.dailyPnl)}</strong></div>
+          <div className="metric"><span>Team weekly P&L</span><strong className={totals.weeklyPnl >= 0 ? 'positive' : 'negative'} style={{fontSize:22}}>{formatCurrency(totals.weeklyPnl)}</strong></div>
+          <div className="metric"><span>Monthly P&L ({currentMonth})</span><strong className={monthlyKpis.monthlyPnl >= 0 ? 'positive' : 'negative'} style={{fontSize:22}}>{formatCurrency(monthlyKpis.monthlyPnl)}</strong></div>
+          <div className="metric"><span>Payouts this month</span><strong className="positive" style={{fontSize:22}}>{formatCurrency(monthlyKpis.payoutAmount)}</strong><small className="muted">×{monthlyKpis.payoutCount}</small></div>
+          <div className="metric"><span>Funded accounts active</span><strong style={{fontSize:22}}>{monthlyKpis.fundedActive}</strong></div>
+          <div className="metric"><span>Closes today</span><strong style={{fontSize:22}}>{monthlyKpis.closedToday}<span style={{fontSize:14,fontWeight:400,color:'var(--muted)'}}> / {monthlyKpis.withUploadToday}</span></strong></div>
           <div className="metric"><span>Clients</span><strong>{totals.clients}</strong></div>
-          <div className="metric"><span>Accounts</span><strong>{totals.accounts}</strong></div>
           <div className="metric"><span>Open flags</span><strong className={totals.flags ? 'negative' : ''}>{totals.flags}</strong></div>
-          <div className="metric"><span>Team daily PnL</span><strong className={totals.dailyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(totals.dailyPnl)}</strong></div>
-          <div className="metric"><span>Team weekly PnL</span><strong className={totals.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(totals.weeklyPnl)}</strong></div>
         </div>
 
         <InsightFeedPanel insights={managerInsights} onSelectClient={onOpenCam} />
