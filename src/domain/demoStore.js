@@ -548,7 +548,19 @@ export function appendDailyImport(state, clientId, importResult) {
     const merged = { ...importResult, status };
     return {
       ...client,
-      accountRegistry: { ...client.accountRegistry, ...importResult.accounts },
+      accountRegistry: (() => {
+        // Merge import accounts into registry with case-insensitive key matching
+        // to prevent duplicate entries when NT CSV casing differs from stored registry keys
+        const base = { ...client.accountRegistry };
+        for (const [importKey, importVal] of Object.entries(importResult.accounts || {})) {
+          const existingKey = Object.keys(base).find(k => k.toLowerCase() === importKey.toLowerCase()) || importKey;
+          const existingVal = base[existingKey];
+          if (existingKey !== importKey) delete base[existingKey];
+          // Registry metadata (user-configured: alias, accountType, targets) takes precedence over import
+          base[importKey] = { ...importVal, ...existingVal };
+        }
+        return base;
+      })(),
       dailyImports: [
         ...client.dailyImports.filter(d => d.date !== importResult.date),
         merged,
