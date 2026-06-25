@@ -202,12 +202,12 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               ) : null}
               {!isCash ? (
                 <td>
-                  <input
-                    type="number"
-                    value={account.lastPayoutAmount ?? ''}
-                    placeholder="e.g. 2500"
-                    onChange={(event) => onUpdateAccount(account.accountName, { lastPayoutAmount: event.target.value })}
-                  />
+                  {(() => {
+                    const last = (account.payoutHistory || []).at(-1);
+                    return last
+                      ? <span style={{fontSize:12}}>${Number(last.amount || 0).toLocaleString()}</span>
+                      : <span className="muted" style={{fontSize:11}}>—</span>;
+                  })()}
                 </td>
               ) : null}
               {!isCash ? (
