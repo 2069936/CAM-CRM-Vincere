@@ -289,6 +289,7 @@ function buildClientOverview(client, dailyImport) {
         current.realized += Number(strategy.realized || 0);
         current.days += 1;
         current.lastThree.push(Number(strategy.realized || 0));
+        if (current.lastThree.length > 3) current.lastThree.shift();
         strategyTotals.set(key, current);
       }
     }
