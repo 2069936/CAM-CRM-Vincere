@@ -1472,7 +1472,10 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           </section>
         )}
 
-        <InsightFeedPanel insights={managerInsights} onSelectClient={onOpenCam} />
+        <InsightFeedPanel insights={managerInsights} onSelectClient={(clientId) => {
+          const cam = camProfiles.find(p => (p.clientIds || []).includes(clientId));
+          onOpenCam(cam?.id, clientId);
+        }} />
 
         {(() => {
           const allFlags = clients.flatMap(c =>
