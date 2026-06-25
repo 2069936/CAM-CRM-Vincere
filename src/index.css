@@ -1657,3 +1657,36 @@ tr:nth-child(2) .rank-badge { background: #6b728022; color: var(--text); }
   .report-overlay { position: static; padding: 0; background: #ffffff; }
   .report-sheet { width: 100%; max-height: none; box-shadow: none; border-radius: 0; }
 }
+
+/* Stack Playbook */
+.stack-playbook { display: flex; flex-direction: column; gap: 16px; }
+.playbook-rec-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px; }
+.playbook-rec-card { background: var(--surface-3); border-radius: 8px; padding: 14px 16px; }
+.playbook-rec-label { display: flex; align-items: center; gap: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+.playbook-rec-value { font-size: 15px; font-weight: 600; color: var(--text); }
+.playbook-notes { display: flex; align-items: flex-start; gap: 8px; padding: 10px 16px 14px; font-size: 13px; color: var(--muted); }
+
+/* Daily SOP */
+.daily-sop { display: flex; flex-direction: column; gap: 16px; }
+.sop-progress-bar-wrap { height: 4px; background: var(--surface-3); border-radius: 2px; margin: 0 16px 4px; }
+.sop-progress-bar { height: 100%; border-radius: 2px; transition: width 0.3s; }
+.sop-progress-label { font-size: 12px; color: var(--muted); padding: 0 16px 12px; }
+.sop-section { padding: 0 16px 12px; }
+.sop-section-header { display: flex; align-items: center; gap: 10px; padding: 10px 0 6px; border-top: 1px solid var(--line); }
+.sop-section-title { font-size: 13px; font-weight: 600; }
+.sop-section-time { font-size: 11px; flex: 1; }
+.sop-section-count { font-size: 11px; }
+.sop-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.sop-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1.4; transition: background 0.15s; }
+.sop-item:hover { background: var(--surface-3); }
+.sop-item.sop-done { opacity: 0.5; text-decoration: line-through; }
+.sop-ref-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 16px; }
+.sop-ref-card { background: var(--surface-3); border-radius: 8px; padding: 14px 16px; }
+.sop-ref-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--blue); margin-bottom: 10px; }
+.sop-ref-steps { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.sop-ref-steps li { color: var(--text); }
+
+@media (max-width: 980px) {
+  .playbook-rec-grid { grid-template-columns: repeat(2, 1fr); }
+  .sop-ref-grid { grid-template-columns: 1fr; }
+}

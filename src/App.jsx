@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import AccountManager from './components/AccountManager';
 import Dashboard from './components/Dashboard';
+import DailySOP from './components/DailySOP';
+import StackPlaybook from './components/StackPlaybook';
 import UploadArea from './components/UploadArea';
 import {
   addActivityEntry,
@@ -57,7 +59,7 @@ import {
   saveUsers,
 } from './domain/userStore';
 
-const STATIC_TABS = ['Activity', 'Tasks', 'Credentials & Notes', 'Price Checks'];
+const STATIC_TABS = ['Activity', 'Tasks', 'Credentials & Notes', 'Price Checks', 'Stack Playbook', 'Daily SOP'];
 
 function deriveClientBadge(client) {
   const latest = client.dailyImports.at(-1);
@@ -2318,6 +2320,8 @@ export default function App() {
               {effectiveActiveTab === 'Tasks' ? <TasksTab client={selectedClient} onAddTask={handleAddTask} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} /> : null}
               {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
               {effectiveActiveTab === 'Price Checks' ? <PriceChecksTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
+              {effectiveActiveTab === 'Stack Playbook' ? <StackPlaybook client={selectedClient} dailyImport={dailyImport} onUpdateAccount={handleAccountUpdate} /> : null}
+              {effectiveActiveTab === 'Daily SOP' ? <DailySOP /> : null}
               {['Review', 'Evaluations', 'Funded', 'Cash'].includes(effectiveActiveTab) ? (
                 <>
                   <Dashboard
