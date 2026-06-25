@@ -25,6 +25,69 @@ export function summarizeAccountRows(rows = []) {
   };
 }
 
+export function buildClientMessageReport(client, dailyImport) {
+  const snapshots = dailyImport?.snapshots || [];
+  const registry = {
+    ...(dailyImport?.accounts || {}),
+    ...(client?.accountRegistry || {}),
+  };
+
+  const funded = snapshots.filter((s) => registry[s.accountName]?.accountType === 'Funded');
+  const evals = snapshots.filter((s) => registry[s.accountName]?.accountType?.startsWith('Evaluation'));
+
+  const totalDaily = snapshots.reduce((sum, s) => sum + Number(s.grossRealizedPnl || 0), 0);
+  const totalWeekly = snapshots.reduce((sum, s) => sum + Number(s.weeklyPnl || 0), 0);
+
+  const sign = (n) => (n >= 0 ? '+' : '');
+  const fmt = (n) => formatCurrency(n);
+  const date = dailyImport?.date || new Date().toISOString().slice(0, 10);
+
+  const lines = [];
+  lines.push(`📊 *Daily Update — ${date}*`);
+  lines.push(`👤 ${client?.name || 'Client'}`);
+  lines.push('');
+  lines.push(`💰 *Daily P&L:* ${sign(totalDaily)}${fmt(totalDaily)}`);
+  lines.push(`📈 *Weekly P&L:* ${sign(totalWeekly)}${fmt(totalWeekly)}`);
+  lines.push('');
+
+  if (funded.length) {
+    lines.push(`✅ *Funded Accounts (${funded.length}):*`);
+    for (const s of funded) {
+      const meta = registry[s.accountName] || {};
+      const alias = meta.alias || s.accountName;
+      const dd = Number(s.trailingMaxDrawdown || 0);
+      const pnl = Number(s.grossRealizedPnl || 0);
+      const strats = (s.strategies || []).filter((st) => st.enabled).map((st) => st.strategyFamily || st.strategyName).join(', ');
+      lines.push(`  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily${dd > 0 ? ` | Buffer: ${fmt(dd)}` : ''}${strats ? ` | ${strats}` : ''}`);
+    }
+    lines.push('');
+  }
+
+  if (evals.length) {
+    lines.push(`🔄 *Evaluations (${evals.length}):*`);
+    for (const s of evals) {
+      const meta = registry[s.accountName] || {};
+      const alias = meta.alias || s.accountName;
+      const pnl = Number(s.grossRealizedPnl || 0);
+      lines.push(`  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily`);
+    }
+    lines.push('');
+  }
+
+  const openFlags = (dailyImport?.flags || []).filter((f) => f.status !== 'Resolved');
+  if (openFlags.length) {
+    lines.push(`⚠️ *Notes:*`);
+    for (const f of openFlags.slice(0, 3)) {
+      lines.push(`  • ${f.message}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('_Any questions? Reply to this message._');
+
+  return lines.join('\n');
+}
+
 export function buildDailyReportSummary(client, dailyImport) {
   const snapshots = dailyImport?.snapshots || [];
   const registry = {

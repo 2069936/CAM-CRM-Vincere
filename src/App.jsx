@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CheckSquare,
   ChevronDown,
+  Copy,
   Download,
   FileText,
   Lock,
@@ -49,7 +50,7 @@ import {
 } from './domain/demoStore';
 import { buildCamOverview } from './domain/camOverview';
 import { recalculateDailyImport, reconcileDailyImport } from './domain/reconcile';
-import { buildDailyReportSummary, formatCurrency } from './domain/report';
+import { buildClientMessageReport, buildDailyReportSummary, formatCurrency } from './domain/report';
 import {
   USER_ROLES,
   addUser,
@@ -2216,6 +2217,17 @@ export default function App() {
     setState((current) => deleteTask(current, selectedClient.id, taskId));
   }
 
+  const [copyDone, setCopyDone] = useState(false);
+
+  function copyClientReport() {
+    if (!selectedClient || !dailyImport) return;
+    const text = buildClientMessageReport(selectedClient, dailyImport);
+    navigator.clipboard.writeText(text).then(() => {
+      setCopyDone(true);
+      setTimeout(() => setCopyDone(false), 2000);
+    });
+  }
+
   function closeImport() {
     if (!selectedClient || !dailyImport) return;
     const flags = (dailyImport.flags || []).filter((f) => f.severity === 'Critical' && f.status !== 'Resolved');
@@ -2389,6 +2401,9 @@ export default function App() {
                 <div className="header-actions">
                   <label className="date-control"><CalendarDays size={16} /><input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} /></label>
                   <button className="secondary-button" onClick={() => setShowUpload((value) => !value)}><Upload size={16} /> Upload Daily Files</button>
+                  <button className="ghost-button" disabled={!dailyImport} onClick={copyClientReport} title="Copy pre-formatted update for WhatsApp/Telegram">
+                    <Copy size={16} />{copyDone ? ' Copied!' : ' Copy Update'}
+                  </button>
                   <button className="primary-button" disabled={!dailyImport} onClick={() => setReportImport(dailyImport)}><FileText size={16} /> Build Daily Report</button>
                   {dailyImport?.status === 'Closed'
                     ? <button className="ghost-button" onClick={reopenImport}><RefreshCw size={16} /> Reopen Day</button>
