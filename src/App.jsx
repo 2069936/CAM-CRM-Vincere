@@ -561,14 +561,15 @@ function buildMonthlyByAccount(client) {
     const registry = mergeRegistryCi(di.accounts, client.accountRegistry);
     for (const snapshot of di.snapshots || []) {
       const alias = ciMeta(registry, snapshot.accountName)?.alias || snapshot.accountName;
-      if (!byMonth[month][snapshot.accountName]) {
-        byMonth[month][snapshot.accountName] = { accountName: snapshot.accountName, alias, pnl: 0, days: 0, strategySet: new Set() };
+      const acctKey = (snapshot.accountName || '').toLowerCase();
+      if (!byMonth[month][acctKey]) {
+        byMonth[month][acctKey] = { accountName: snapshot.accountName, alias, pnl: 0, days: 0, strategySet: new Set() };
       }
-      byMonth[month][snapshot.accountName].pnl += Number(snapshot.grossRealizedPnl || 0);
-      byMonth[month][snapshot.accountName].days += 1;
+      byMonth[month][acctKey].pnl += Number(snapshot.grossRealizedPnl || 0);
+      byMonth[month][acctKey].days += 1;
       for (const strat of snapshot.strategies || []) {
         const name = strat.strategyFamily || strat.strategyName;
-        if (name) byMonth[month][snapshot.accountName].strategySet.add(name);
+        if (name) byMonth[month][acctKey].strategySet.add(name);
       }
     }
   }
