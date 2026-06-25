@@ -1970,7 +1970,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                   <thead><tr><th>Account</th><th>Client</th><th>CAM</th><th>State</th><th>Balance</th><th>Payouts</th></tr></thead>
                   <tbody>
                     {pipeline.map((row) => (
-                      <tr key={`${row.clientName}-${row.accountName}`}>
+                      <tr key={`${row.clientId}-${row.accountName}`}>
                         <td><strong>{row.alias}</strong><small>{row.accountName}</small></td>
                         <td style={{cursor:'pointer'}} onClick={() => { const cam = camProfiles.find(c => c.clientIds?.includes(row.clientId)); onOpenCam(cam?.id, row.clientId); }}>{row.clientName}</td>
                         <td>{row.camName}</td>
