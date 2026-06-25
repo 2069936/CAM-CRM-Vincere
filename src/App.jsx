@@ -3151,6 +3151,9 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
   }, 0);
   const openTasksToday = clients.reduce((n, c) => n + (c.tasks || []).filter(t => !t.done && t.dueDate === today).length, 0);
   const overdueTotal = clients.reduce((n, c) => n + (c.tasks || []).filter(t => !t.done && t.dueDate && t.dueDate < today).length, 0);
+  const criticalFlagsOpen = clients.reduce((n, c) => {
+    return n + (c.dailyImports || []).reduce((m, di) => m + (di.flags || []).filter(f => f.severity === 'Critical' && f.status !== 'Resolved').length, 0);
+  }, 0);
 
   return (
     <main className="content">
@@ -3173,6 +3176,12 @@ function CamOverview({ clients, camProfiles = [], allClients = [], strategySetRe
             <span>Portfolio P&L today</span>
             <strong className={todayPortfolioPnl >= 0 ? 'positive' : 'negative'} style={{fontSize:22}}>{formatCurrency(todayPortfolioPnl)}</strong>
           </div>
+          {criticalFlagsOpen > 0 && (
+            <div className="metric" style={{textAlign:'right'}}>
+              <span>Critical flags</span>
+              <strong className="negative" style={{fontSize:20}}>{criticalFlagsOpen}</strong>
+            </div>
+          )}
           {(openTasksToday > 0 || overdueTotal > 0) && (
             <div className="metric" style={{textAlign:'right'}}>
               <span>Tasks</span>
