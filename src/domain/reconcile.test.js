@@ -159,4 +159,16 @@ describe('reconcileDailyImport', () => {
     const missingFlags = result.flags.filter((f) => f.type === 'Missing account');
     expect(missingFlags).toHaveLength(0);
   });
+
+  it('handles undefined registry without throwing (new client with no accounts yet)', () => {
+    const parsed = {
+      accounts: [{ accountName: 'BRAND1', connection: 'Live', grossRealizedPnl: 50, accountBalance: 50100, weeklyPnl: 100 }],
+      strategies: [],
+      orders: [],
+      executions: [],
+    };
+    expect(() => reconcileDailyImport({ clientId: 'new-client', date: '2026-06-25', registry: undefined, parsed })).not.toThrow();
+    const result = reconcileDailyImport({ clientId: 'new-client', date: '2026-06-25', registry: undefined, parsed });
+    expect(result.snapshots).toHaveLength(1);
+  });
 });
