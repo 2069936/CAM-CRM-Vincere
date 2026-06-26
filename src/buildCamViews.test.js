@@ -138,6 +138,29 @@ describe('buildTodayBriefing', () => {
     expect(briefing.closeStatus).toBe('uploaded');
   });
 
+  it('assigns info urgency when last activity was 7+ days ago (stale contact)', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
+    const staleClient = {
+      id: 'c-stale', name: 'Stale', accountRegistry: {}, tasks: [], dailyImports: [],
+      activityLog: [{ id: 'a1', text: 'call', createdAt: new Date(`2026-06-18T12:00:00`).toISOString() }], // 7 days before TODAY
+    };
+    const [briefing] = buildTodayBriefing([staleClient]);
+    expect(briefing.staleContact).toBe(true);
+    expect(briefing.urgency).toBe('info');
+    vi.useRealTimers();
+  });
+
+  it('staleContact is false when last contact was recent (< 7 days)', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
+    const freshClient = {
+      id: 'c-fresh', name: 'Fresh', accountRegistry: {}, tasks: [], dailyImports: [],
+      activityLog: [{ id: 'a1', text: 'call', createdAt: new Date(`2026-06-24T12:00:00`).toISOString() }], // 1 day ago
+    };
+    const [briefing] = buildTodayBriefing([freshClient]);
+    expect(briefing.staleContact).toBe(false);
+    vi.useRealTimers();
+  });
+
   it('sorts results with critical first, ok last', () => {
     const critClient = makeClient({ flags: [{ id: 'f1', severity: 'Critical', status: 'Open', message: 'X' }] });
     critClient.name = 'Crit';
