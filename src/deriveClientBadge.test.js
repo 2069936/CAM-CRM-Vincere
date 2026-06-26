@@ -64,4 +64,38 @@ describe('deriveClientBadge', () => {
     expect(badge.tone).not.toBe('danger');
     expect(badge.tone).not.toBe('warning');
   });
+
+  it('shows overdue task count when no open flags exist', () => {
+    const client = {
+      ...makeClient([]),
+      tasks: [
+        { id: 't1', text: 'Follow up', done: false, dueDate: '2026-06-20' }, // past date = overdue
+      ],
+    };
+    const badge = deriveClientBadge(client);
+    expect(badge.tone).toBe('warning');
+    expect(badge.label).toContain('overdue');
+  });
+
+  it('shows open task count when no flags and no overdue tasks', () => {
+    const client = {
+      ...makeClient([]),
+      tasks: [
+        { id: 't1', text: 'Review account', done: false, dueDate: '2027-01-01' }, // future = not overdue
+        { id: 't2', text: 'Send report', done: false, dueDate: '2027-02-01' },
+      ],
+    };
+    const badge = deriveClientBadge(client);
+    expect(badge.label).toContain('tasks');
+    expect(badge.tone).toBe('muted');
+  });
+
+  it('shows Ready/success when no flags and no open tasks', () => {
+    const client = {
+      ...makeClient([]),
+      tasks: [{ id: 't1', text: 'Done', done: true, dueDate: '2026-06-01' }],
+    };
+    const badge = deriveClientBadge(client);
+    expect(badge.tone).toBe('success');
+  });
 });
