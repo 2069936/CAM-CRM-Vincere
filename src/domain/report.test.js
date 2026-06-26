@@ -34,7 +34,6 @@ describe('buildDailyReportSummary', () => {
     expect(report.grouped.funded).toHaveLength(1);
     expect(report.grouped.evaluations).toHaveLength(0);
   });
-});
 
   it('groups snapshots into funded even when registry key casing differs from snapshot accountName', () => {
     const client = {
