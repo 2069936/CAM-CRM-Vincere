@@ -1,17 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   addActivityEntry,
+  addCamProfile,
   addClient,
   addTask,
   appendDailyImport,
   deleteActivityEntry,
   deleteTask,
+  getClientImportByDate,
   getLatestClientImport,
+  isLikelyDemoData,
   parseImportedState,
   removeAccountFromRegistry,
   removeClient,
+  replaceDailyImport,
   resolveFlagInImport,
+  selectCam,
+  selectClient,
+  togglePinClient,
   transferClient,
+  updateCamProfile,
+  updateImportStatus,
   updateTask,
   upsertAccountMeta,
 } from './demoStore';
@@ -258,5 +267,147 @@ describe('removeAccountFromRegistry', () => {
     state = upsertAccountMeta(state, clientId, 'APEX1234', { accountType: 'Funded' });
     const next = removeAccountFromRegistry(state, clientId, 'apex1234'); // lowercase
     expect(next.clients[0].accountRegistry).not.toHaveProperty('APEX1234');
+  });
+});
+
+// ── addCamProfile ─────────────────────────────────────────────────────────────
+
+describe('addCamProfile', () => {
+  it('adds a new CAM profile with empty clientIds', () => {
+    const state = { camProfiles: [] };
+    const next = addCamProfile(state, 'Maria');
+    expect(next.camProfiles).toHaveLength(1);
+    expect(next.camProfiles[0].name).toBe('Maria');
+    expect(next.camProfiles[0].clientIds).toEqual([]);
+  });
+
+  it('trims whitespace from name', () => {
+    const next = addCamProfile({ camProfiles: [] }, '  Ana  ');
+    expect(next.camProfiles[0].name).toBe('Ana');
+  });
+
+  it('returns unchanged state for blank name', () => {
+    const state = { camProfiles: [] };
+    expect(addCamProfile(state, '  ')).toBe(state);
+  });
+});
+
+// ── updateCamProfile ──────────────────────────────────────────────────────────
+
+describe('updateCamProfile', () => {
+  it('patches only the targeted CAM', () => {
+    const state = {
+      camProfiles: [
+        { id: 'cam-1', name: 'A', status: 'Active' },
+        { id: 'cam-2', name: 'B', status: 'Active' },
+      ],
+    };
+    const next = updateCamProfile(state, 'cam-1', { name: 'Alpha' });
+    expect(next.camProfiles[0].name).toBe('Alpha');
+    expect(next.camProfiles[1].name).toBe('B');
+  });
+});
+
+// ── togglePinClient ───────────────────────────────────────────────────────────
+
+describe('togglePinClient', () => {
+  it('toggles pinned flag', () => {
+    let state = addClient(emptyState(), 'Trader X');
+    const clientId = state.clients[0].id;
+    state = togglePinClient(state, clientId);
+    expect(state.clients[0].pinned).toBe(true);
+    state = togglePinClient(state, clientId);
+    expect(state.clients[0].pinned).toBe(false);
+  });
+});
+
+// ── updateImportStatus ────────────────────────────────────────────────────────
+
+describe('updateImportStatus', () => {
+  it('updates the status of the matching import', () => {
+    let state = addClient(emptyState(), 'Trader');
+    const clientId = state.clients[0].id;
+    const imp = { id: 'di-1', date: '2026-06-25', accounts: {}, snapshots: [], flags: [], status: 'Needs review' };
+    state = appendDailyImport(state, clientId, imp);
+    const next = updateImportStatus(state, clientId, 'di-1', 'Closed');
+    const updatedImport = next.clients[0].dailyImports.find(d => d.id === 'di-1');
+    expect(updatedImport.status).toBe('Closed');
+  });
+});
+
+// ── replaceDailyImport ────────────────────────────────────────────────────────
+
+describe('replaceDailyImport', () => {
+  it('replaces the matching import by id', () => {
+    let state = addClient(emptyState(), 'Trader');
+    const clientId = state.clients[0].id;
+    const imp = { id: 'di-1', date: '2026-06-25', accounts: {}, snapshots: [], flags: [], status: 'Needs review' };
+    state = appendDailyImport(state, clientId, imp);
+    const updated = { ...imp, status: 'Closed', snapshots: [{ accountName: 'A1', grossRealizedPnl: 200 }] };
+    const next = replaceDailyImport(state, clientId, updated);
+    const result = next.clients[0].dailyImports.find(d => d.id === 'di-1');
+    expect(result.status).toBe('Closed');
+    expect(result.snapshots).toHaveLength(1);
+  });
+
+  it('merges import accounts into registry (registry wins on conflict)', () => {
+    let state = addClient(emptyState(), 'Trader');
+    const clientId = state.clients[0].id;
+    state = upsertAccountMeta(state, clientId, 'ACC1', { accountType: 'Funded', alias: 'My Alias' });
+    const imp = { id: 'di-1', date: '2026-06-25', accounts: { ACC1: { accountType: 'Unassigned' } }, snapshots: [], flags: [] };
+    state = appendDailyImport(state, clientId, imp);
+    const next = replaceDailyImport(state, clientId, imp);
+    // Registry-set accountType should win
+    expect(next.clients[0].accountRegistry['ACC1'].alias).toBe('My Alias');
+  });
+});
+
+// ── selectCam ─────────────────────────────────────────────────────────────────
+
+describe('selectCam', () => {
+  it('sets accountManager and selects first client of the CAM', () => {
+    const state = {
+      clients: [{ id: 'c1', name: 'Pedro', dailyImports: [], accountRegistry: {} }],
+      camProfiles: [{ id: 'cam-1', name: 'Maria', clientIds: ['c1'] }],
+      selectedClientId: null,
+    };
+    const next = selectCam(state, 'cam-1');
+    expect(next.accountManager.id).toBe('cam-1');
+    expect(next.accountManager.name).toBe('Maria');
+    expect(next.selectedClientId).toBe('c1');
+  });
+});
+
+// ── selectClient ──────────────────────────────────────────────────────────────
+
+describe('selectClient', () => {
+  it('sets selectedClientId', () => {
+    const state = { selectedClientId: null };
+    expect(selectClient(state, 'c5').selectedClientId).toBe('c5');
+  });
+});
+
+// ── getClientImportByDate ─────────────────────────────────────────────────────
+
+describe('getClientImportByDate', () => {
+  it('returns the import matching the date', () => {
+    const client = { dailyImports: [
+      { id: 'd1', date: '2026-06-24' },
+      { id: 'd2', date: '2026-06-25' },
+    ]};
+    expect(getClientImportByDate(client, '2026-06-25').id).toBe('d2');
+  });
+
+  it('returns null when no match', () => {
+    expect(getClientImportByDate({ dailyImports: [] }, '2026-06-25')).toBeNull();
+  });
+});
+
+// ── isLikelyDemoData ──────────────────────────────────────────────────────────
+
+describe('isLikelyDemoData', () => {
+  it('returns false for state with non-demo client names', () => {
+    const state = { clients: [{ name: 'Completely Custom Name XYZ' }] };
+    expect(isLikelyDemoData(state)).toBe(false);
   });
 });
