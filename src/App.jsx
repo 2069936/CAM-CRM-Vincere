@@ -772,7 +772,7 @@ export function buildDisconnectAlerts(client) {
   return alerts;
 }
 
-function buildRiskDistribution(clients = [], camProfiles = []) {
+export function buildRiskDistribution(clients = [], camProfiles = []) {
   const camById = Object.fromEntries(camProfiles.map((p) => [p.id, p]));
   const clientCam = {};
   for (const cam of camProfiles) {
@@ -2852,7 +2852,7 @@ function ClientOverview({ client, dailyImport, allClients = [], onRequestMonthly
   );
 }
 
-function buildPnlCalendar(client) {
+export function buildPnlCalendar(client) {
   const imports = client.dailyImports || [];
   if (!imports.length) return [];
   const byDate = {};
