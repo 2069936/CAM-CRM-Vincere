@@ -1172,6 +1172,8 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   function submitNewUser(event) {
     event.preventDefault();
     if (!newUser.username || !newUser.password || !newUser.displayName) return;
+    const isDuplicate = (users || []).some(u => u.username?.toLowerCase() === newUser.username.toLowerCase());
+    if (isDuplicate) { alert(`Username "${newUser.username}" is already taken. Choose a different username.`); return; }
     onUsersChange(addUser(users, newUser));
     setNewUser({ username: '', password: '', displayName: '', email: '', role: USER_ROLES.CAM, camProfileId: '' });
   }

@@ -44,6 +44,9 @@ export function authenticateUser(username, password, users) {
 }
 
 export function addUser(users, userData) {
+  if (!userData.username?.trim()) return users;
+  const duplicate = users.some(u => u.username.toLowerCase() === userData.username.toLowerCase());
+  if (duplicate) return users;
   const id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   return [...users, { ...userData, id }];
 }
