@@ -4295,7 +4295,7 @@ const DEFAULT_PRICE_CHECK_ROWS = [
 ];
 
 function PriceChecksTab({ client, onUpdateClient }) {
-  const nextRowId = useRef((client.priceChecks?.length || DEFAULT_PRICE_CHECK_ROWS.length) + 1);
+  const nextRowId = useRef(Date.now());
   const checks = client.priceChecks?.length ? client.priceChecks : DEFAULT_PRICE_CHECK_ROWS;
   const today = todayIsoDate();
   const lastReset = client.priceChecksDate;
