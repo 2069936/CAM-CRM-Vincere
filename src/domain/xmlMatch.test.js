@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildStrategySignature,
+  enrichStrategyWithSetMatch,
   matchStrategySet,
   parseSetFileName,
   parseStrategySetXml,
@@ -153,5 +154,64 @@ describe('matchStrategySet', () => {
       matched: false,
       reason: 'Strategy parameters not parsed',
     });
+  });
+});
+
+// ── buildStrategySignature ────────────────────────────────────────────────────
+
+describe('buildStrategySignature', () => {
+  it('normalizes direction to title case', () => {
+    expect(buildStrategySignature({ direction: 'LONG' }).direction).toBe('Long');
+    expect(buildStrategySignature({ direction: 'short' }).direction).toBe('Short');
+    expect(buildStrategySignature({ direction: 'both' }).direction).toBe('Both');
+  });
+
+  it('coerces posSizes and profitTargets arrays to numbers preserving order', () => {
+    const sig = buildStrategySignature({ posSizes: ['3', '1', '2'], profitTargets: ['200', '100'] });
+    expect(sig.posSizes).toEqual([3, 1, 2]);
+    expect(sig.profitTargets).toEqual([200, 100]);
+  });
+
+  it('returns empty arrays and null for missing inputs', () => {
+    const sig = buildStrategySignature({});
+    expect(sig.posSizes).toEqual([]);
+    expect(sig.profitTargets).toEqual([]);
+    expect(sig.stopLossTicks).toBeNull();
+  });
+
+  it('coerces stopLossTicks to a number', () => {
+    expect(buildStrategySignature({ stopLossTicks: '105' }).stopLossTicks).toBe(105);
+  });
+});
+
+// ── enrichStrategyWithSetMatch ────────────────────────────────────────────────
+
+describe('enrichStrategyWithSetMatch', () => {
+  it('returns strategy with configMatch.matched = false when no records', () => {
+    const strategy = { strategyFamily: 'RBO', params: { parsed: true, direction: 'Long', posSizes: [2], profitTargets: [155], stopLossTicks: 100 } };
+    const result = enrichStrategyWithSetMatch(strategy, []);
+    expect(result.configMatch).toBeDefined();
+    expect(result.configMatch.matched).toBe(false);
+  });
+
+  it('preserves all original strategy fields', () => {
+    const strategy = { strategyFamily: 'RBO', strategyName: '1-RBO', enabled: true, realized: 250, params: { parsed: false } };
+    const result = enrichStrategyWithSetMatch(strategy, []);
+    expect(result.strategyName).toBe('1-RBO');
+    expect(result.enabled).toBe(true);
+    expect(result.realized).toBe(250);
+  });
+
+  it('attaches matched XML metadata when a record matches', () => {
+    const params = { parsed: true, direction: 'Long', posSizes: [2, 2, 2], profitTargets: [155, 175, 250], stopLossTicks: 105 };
+    const strategy = { strategyFamily: 'RBO', strategyName: '2-RBO', params };
+    const record = {
+      family: 'RBO', period: '2', risk: 'Low Risk', riskTier: 1, setVersion: 'v4',
+      signature: buildStrategySignature(params),
+    };
+    const result = enrichStrategyWithSetMatch(strategy, [record]);
+    expect(result.configMatch.matched).toBe(true);
+    expect(result.configMatch.risk).toBe('Low Risk');
+    expect(result.configMatch.setVersion).toBe('v4');
   });
 });
