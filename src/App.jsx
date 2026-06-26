@@ -4134,7 +4134,7 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
                     <button className="task-checkbox" title={task.done ? 'Mark open' : 'Mark done'} onClick={() => onUpdateTask(task.id, { done: !task.done })}>
                       <CheckSquare size={16} className={task.done ? 'task-checked' : 'task-unchecked'} />
                     </button>
-                    <div className="task-body" style={{cursor:'pointer'}} onClick={() => !task.done && startEdit(task)} title={task.done ? '' : 'Click to edit'}>
+                    <div className="task-body" role="button" tabIndex={task.done ? -1 : 0} style={{cursor: task.done ? 'default' : 'pointer'}} onClick={() => !task.done && startEdit(task)} onKeyDown={(e) => { if (!task.done && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); startEdit(task); } }} title={task.done ? '' : 'Click to edit'}>
                       <span className="task-text">{task.text}</span>
                       <div className="task-chips">
                         {task.priority === 'High' && !task.done ? <span className="task-chip task-chip-high">High</span> : null}
@@ -5187,7 +5187,7 @@ export default function App() {
                   </div>
                 );
                 return (
-                  <div className="pinned-note" onClick={() => { setDraft(note); setEditing(true); }} title="Click to edit pinned note">
+                  <div className="pinned-note" role="button" tabIndex={0} onClick={() => { setDraft(note); setEditing(true); }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDraft(note); setEditing(true); } }} title="Click to edit pinned note">
                     <span>📌</span>
                     <span style={{flex:1,fontSize:13}}>{note}</span>
                     <button className="ghost-button" style={{fontSize:11,padding:'2px 6px'}} onClick={e => { e.stopPropagation(); handleUpdateClient({ pinnedNote: '' }); }}>✕</button>
