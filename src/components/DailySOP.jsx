@@ -124,9 +124,12 @@ export default function DailySOP() {
   const doneItems = Object.values(checked).filter(Boolean).length;
   const pct = totalItems ? Math.round((doneItems / totalItems) * 100) : 0;
   const isComplete = pct === 100;
-  const currentStreak = streak.lastDate === today ? streak.count : (
-    (() => { const y = new Date(); y.setDate(y.getDate() - 1); return streak.lastDate === y.toISOString().slice(0, 10) ? streak.count : 0; })()
-  );
+  const currentStreak = (() => {
+    if (streak.lastDate === today) return streak.count;
+    const prev = new Date();
+    do { prev.setDate(prev.getDate() - 1); } while ([0, 6].includes(prev.getDay()));
+    return streak.lastDate === prev.toISOString().slice(0, 10) ? streak.count : 0;
+  })();
 
   // Determine which section is currently active (first incomplete)
   const activeSectionIdx = SOP_SECTIONS.findIndex((s, sIdx) =>
