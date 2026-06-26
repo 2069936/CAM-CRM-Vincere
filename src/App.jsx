@@ -115,7 +115,7 @@ export function deriveClientBadge(client) {
   return { label: latest.status || 'Ready', tone: 'success' };
 }
 
-function lastContactDaysAgo(client) {
+export function lastContactDaysAgo(client) {
   const log = client.activityLog || [];
   if (!log.length) return null;
   // Log is prepended on insert so index 0 is always the most recent entry
@@ -272,7 +272,7 @@ export function buildTeamHistory(clients = []) {
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function clientDailyTotals(client) {
+export function clientDailyTotals(client) {
   return (client?.dailyImports || []).map((dailyImport) => {
     const snapshots = dailyImport.snapshots || [];
     return {
@@ -3018,7 +3018,7 @@ export function buildTodayBriefing(clients) {
 
 // ── Insight Feed ─────────────────────────────────────────────────────────────
 // Aggregates all notable signals across a CAM's portfolio into one prioritized list
-function remainingBuffer(s, m) {
+export function remainingBuffer(s, m) {
   const ddLimit = Number(m?.maxDrawdownLimit || 0);
   const rawDD = Number(s?.trailingMaxDrawdown || 0);
   return ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
