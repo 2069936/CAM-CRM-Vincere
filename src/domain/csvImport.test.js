@@ -4,7 +4,31 @@ import {
   parseNinjaTraderCsvText,
   parseStrategyParameters,
   parseStrategyVersion,
+  parseCurrency,
 } from './csvImport';
+
+describe('parseCurrency', () => {
+  it('parses plain numbers', () => {
+    expect(parseCurrency('1234.56')).toBe(1234.56);
+    expect(parseCurrency(1234.56)).toBe(1234.56);
+  });
+
+  it('strips dollar signs and commas', () => {
+    expect(parseCurrency('$1,234.56')).toBe(1234.56);
+    expect(parseCurrency('$50,000')).toBe(50000);
+  });
+
+  it('converts accounting parentheses negatives used in NT exports', () => {
+    expect(parseCurrency('(1,234.56)')).toBe(-1234.56);
+    expect(parseCurrency('($500)')).toBe(-500);
+  });
+
+  it('returns 0 for empty or non-numeric input', () => {
+    expect(parseCurrency('')).toBe(0);
+    expect(parseCurrency(null)).toBe(0);
+    expect(parseCurrency('N/A')).toBe(0);
+  });
+});
 
 describe('parseStrategyVersion', () => {
   it('extracts the trailing version number from a strategy name', () => {
