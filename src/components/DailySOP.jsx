@@ -66,22 +66,31 @@ const SOP_SECTIONS = [
   },
 ];
 
-function getStreak() {
+export function getStreak() {
   try {
     const raw = localStorage.getItem('cam-sop-streak');
     return raw ? JSON.parse(raw) : { count: 0, lastDate: '' };
   } catch { return { count: 0, lastDate: '' }; }
 }
 
+export function prevTradingDay(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  do { d.setDate(d.getDate() - 1); } while ([0, 6].includes(d.getDay()));
+  return d.toISOString().slice(0, 10);
+}
+
+export function computeNewStreak(today, currentStreak, wasComplete, isNowComplete) {
+  if (!isNowComplete || wasComplete) return currentStreak;
+  const prev = prevTradingDay(today);
+  const newCount = currentStreak.lastDate === prev ? currentStreak.count + 1 : 1;
+  return { count: newCount, lastDate: today };
+}
+
 function updateStreak(today, wasComplete, isNowComplete) {
   if (!isNowComplete || wasComplete) return;
   const streak = getStreak();
-  // Step back to previous trading day (skip weekends) so Mon streak continues from Fri
-  const prev = new Date();
-  do { prev.setDate(prev.getDate() - 1); } while ([0, 6].includes(prev.getDay()));
-  const prevTradingDay = prev.toISOString().slice(0, 10);
-  const newCount = streak.lastDate === prevTradingDay ? streak.count + 1 : 1;
-  localStorage.setItem('cam-sop-streak', JSON.stringify({ count: newCount, lastDate: today }));
+  const next = computeNewStreak(today, streak, wasComplete, isNowComplete);
+  localStorage.setItem('cam-sop-streak', JSON.stringify(next));
 }
 
 export default function DailySOP() {
