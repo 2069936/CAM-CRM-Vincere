@@ -1095,18 +1095,18 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const [showNewClient, setShowNewClient] = useState(false);
   const [fundedSort, setFundedSort] = useState({ col: 'buffer', dir: -1 });
   const [managerSearch, setManagerSearch] = useState('');
-  const teamHistory = buildTeamHistory(clients).slice(-10);
-  const cams = (camProfiles.length ? camProfiles : createDemoState().camProfiles).map((profile) => {
+  const teamHistory = useMemo(() => buildTeamHistory(clients).slice(-10), [clients]);
+  const cams = useMemo(() => (camProfiles.length ? camProfiles : createDemoState().camProfiles).map((profile) => {
     const summary = buildManagerSummary(clientsForCam(clients, profile));
     return { ...profile, ...summary, flags: summary.openFlags };
-  });
-  const totals = cams.reduce((acc, cam) => ({
+  }), [clients, camProfiles]);
+  const totals = useMemo(() => cams.reduce((acc, cam) => ({
     clients: acc.clients + cam.clients,
     accounts: acc.accounts + cam.accounts,
     weeklyPnl: acc.weeklyPnl + cam.weeklyPnl,
     dailyPnl: acc.dailyPnl + cam.dailyPnl,
     flags: acc.flags + cam.flags,
-  }), { clients: 0, accounts: 0, weeklyPnl: 0, dailyPnl: 0, flags: 0 });
+  }), { clients: 0, accounts: 0, weeklyPnl: 0, dailyPnl: 0, flags: 0 }), [cams]);
 
   const strategies = useMemo(() => buildStrategyAnalyzer(clients), [clients]);
   const strategyEffectiveness = useMemo(() => buildStrategyEffectiveness(clients), [clients]);
