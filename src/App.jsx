@@ -1014,7 +1014,7 @@ function buildAllFundedAccounts(clients = [], camProfiles = []) {
       const start = Number(meta.startBalance || 0);
       const balance = Number(snap.accountBalance || 0);
       const profit = start ? balance - start : null;
-      const targetPct = (target && start) ? Math.min(100, Math.round(((balance - start) / (target - start)) * 100)) : null;
+      const targetPct = (target && start && target > start) ? Math.min(100, Math.round(((balance - start) / (target - start)) * 100)) : null;
       rows.push({
         clientId: client.id,
         clientName: client.name,
