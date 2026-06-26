@@ -286,7 +286,7 @@ function clientDailyTotals(client) {
   }).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function buildClientOverview(client, dailyImport) {
+export function buildClientOverview(client, dailyImport) {
   const history = clientDailyTotals(client);
   const latest = dailyImport || client?.dailyImports?.at(-1) || null;
   const latestSnapshots = latest?.snapshots || [];
