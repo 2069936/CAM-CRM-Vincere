@@ -3024,7 +3024,7 @@ function remainingBuffer(s, m) {
   return ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
 }
 
-function buildPortfolioInsights(clients, allClients = []) {
+export function buildPortfolioInsights(clients, allClients = []) {
   const insights = [];
   const today = todayIsoDate();
 
