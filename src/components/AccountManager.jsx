@@ -24,7 +24,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
 
   const rows = Object.values(accounts || {}).map((account) => ({
     ...account,
-    snapshot: (snapshots || []).find((item) => item.accountName === account.accountName),
+    snapshot: (snapshots || []).find((item) => item.accountName?.toLowerCase() === account.accountName?.toLowerCase()),
   }));
 
   function submitAdd(e) {
