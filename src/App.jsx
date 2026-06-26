@@ -1183,7 +1183,10 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
       const conflict = (users || []).some(u => u.id !== userId && u.username?.toLowerCase() === editUserPatch.username.toLowerCase());
       if (conflict) { alert(`Username "${editUserPatch.username}" is already taken.`); return; }
     }
-    onUsersChange(updateUser(users, userId, editUserPatch));
+    // Don't overwrite password with empty string — only update if a new value was typed
+    const patch = { ...editUserPatch };
+    if (!patch.password) delete patch.password;
+    onUsersChange(updateUser(users, userId, patch));
     setEditUserId(null);
     setEditUserPatch({});
   }
