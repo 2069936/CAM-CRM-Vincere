@@ -33,7 +33,7 @@ export default function UploadArea({ onParsed }) {
 
       const grouped = parsed.reduce(
         (acc, item) => {
-          if (item.type !== 'unknown') acc[item.type] = item.rows;
+          if (item.type !== 'unknown') acc[item.type] = [...acc[item.type], ...item.rows];
           return acc;
         },
         { accounts: [], strategies: [], orders: [], executions: [] },
