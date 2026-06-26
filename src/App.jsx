@@ -1540,8 +1540,8 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           <form className="inline-create-form" style={{flexWrap:'wrap',marginBottom:8}} onSubmit={submitCam}>
             <input value={newCamName} placeholder="CAM display name" onChange={e => setNewCamName(e.target.value)} style={{minWidth:140}} />
             {showCamUserFields && <>
-              <input value={newCamUsername} placeholder="username" onChange={e => setNewCamUsername(e.target.value)} style={{minWidth:110}} />
-              <input type="password" value={newCamPassword} placeholder="password" onChange={e => setNewCamPassword(e.target.value)} style={{minWidth:110}} />
+              <input value={newCamUsername} placeholder="username" autoComplete="off" onChange={e => setNewCamUsername(e.target.value)} style={{minWidth:110}} />
+              <input type="password" value={newCamPassword} placeholder="password" autoComplete="new-password" onChange={e => setNewCamPassword(e.target.value)} style={{minWidth:110}} />
             </>}
             <button type="button" className="ghost-button" style={{fontSize:11}} onClick={() => setShowCamUserFields(v => !v)}>{showCamUserFields ? '− no login' : '+ login'}</button>
             <button className="secondary-button" disabled={!newCamName.trim()}><Plus size={14} /> Create</button>
