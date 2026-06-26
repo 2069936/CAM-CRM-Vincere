@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildLifetimeStats, buildMonthlyTotals } from './App';
 
 function makeClient(dailyPnls) {
@@ -58,6 +58,26 @@ describe('buildLifetimeStats', () => {
     const client = makeClient([100, 200, 300]);
     const stats = buildLifetimeStats(client);
     expect(stats.avgDay).toBeCloseTo(200, 5);
+  });
+
+  it('computes daysSinceStart from first import date when profile.startDate absent', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-06-25T12:00:00'));
+    // makeClient creates dates starting at 2026-06-01
+    const stats = buildLifetimeStats(makeClient([100]));
+    // 2026-06-25 - 2026-06-01 = 24 days
+    expect(stats.daysSinceStart).toBe(24);
+    expect(stats.startDate).toBe('2026-06-01');
+    vi.useRealTimers();
+  });
+
+  it('uses profile.startDate over first import date', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-06-25T12:00:00'));
+    const client = { profile: { startDate: '2026-06-15' }, dailyImports: [{ id: 'd1', date: '2026-06-20', snapshots: [{ accountName: 'A1', grossRealizedPnl: 100 }] }] };
+    const stats = buildLifetimeStats(client);
+    // 2026-06-25 - 2026-06-15 = 10 days
+    expect(stats.daysSinceStart).toBe(10);
+    expect(stats.startDate).toBe('2026-06-15');
+    vi.useRealTimers();
   });
 });
 
