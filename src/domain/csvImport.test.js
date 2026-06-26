@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   detectNinjaTraderFileType,
+  normalizeHeader,
+  normalizeStrategyFamily,
   parseNinjaTraderCsvText,
   parseStrategyParameters,
   parseStrategyVersion,
@@ -156,7 +158,7 @@ describe('csvImport', () => {
     });
   });
 
-  it('detects executions files by entry exit headers', () => {
+  it('detects executions files by entry/exit headers', () => {
     const csv = [
       'Account display name,E/X,Instrument,Action,Quantity,Price,Time,Order ID,Name,Connection',
       'ACC1,Entry,NQ JUN26,Buy,2,19000,6/2/2026 9:30:00 AM,99,Enter Long,Lucid',
@@ -171,5 +173,46 @@ describe('csvImport', () => {
       price: 19000,
       quantity: 2,
     });
+  });
+});
+
+describe('normalizeHeader', () => {
+  it('lowercases and removes spaces, dots, and special chars', () => {
+    expect(normalizeHeader('Gross Realized P&L')).toBe('grossrealizedpl');
+    expect(normalizeHeader('Account Display Name')).toBe('accountdisplayname');
+    expect(normalizeHeader('Entry/Exit')).toBe('entryexit');
+  });
+
+  it('handles null and empty input without throwing', () => {
+    expect(normalizeHeader(null)).toBe('');
+    expect(normalizeHeader('')).toBe('');
+    expect(normalizeHeader(undefined)).toBe('');
+  });
+});
+
+describe('normalizeStrategyFamily', () => {
+  it('extracts known family from NT-prefixed name', () => {
+    expect(normalizeStrategyFamily('0 - RBO-1.8')).toBe('RBO');
+    expect(normalizeStrategyFamily('2 - IFSP-2.0')).toBe('IFSP');
+    expect(normalizeStrategyFamily('1 - OGX-1.0')).toBe('OGX');
+  });
+
+  it('normalizes PF suffix to FAMILY_PF format', () => {
+    expect(normalizeStrategyFamily('0 - RBO-PF-1.8')).toBe('RBO_PF');
+    expect(normalizeStrategyFamily('1 - IFSP-PF-2.0')).toBe('IFSP_PF');
+  });
+
+  it('identifies Bullet Bot by keyword regardless of prefix', () => {
+    expect(normalizeStrategyFamily('0 - BulletBot-3.0')).toBe('Bullet Bot');
+    expect(normalizeStrategyFamily('Bullet Bot v2')).toBe('Bullet Bot');
+  });
+
+  it('uppercases unknown families instead of returning Unknown', () => {
+    expect(normalizeStrategyFamily('0 - CUSTOM-1.0')).toBe('CUSTOM');
+  });
+
+  it('returns Unknown for empty or null input', () => {
+    expect(normalizeStrategyFamily('')).toBe('Unknown');
+    expect(normalizeStrategyFamily(null)).toBe('Unknown');
   });
 });
