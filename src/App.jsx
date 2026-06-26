@@ -56,6 +56,7 @@ import {
   getStorageUsageKB,
   updateCamProfile,
   removeAccountFromRegistry,
+  isLikelyDemoData,
 } from './domain/demoStore';
 import { buildCamOverview } from './domain/camOverview';
 import { recalculateDailyImport, reconcileDailyImport } from './domain/reconcile';
@@ -4540,6 +4541,7 @@ export default function App() {
 
   const currentCamProfile = (state.camProfiles || []).find((profile) => profile.id === state.accountManager?.id) || state.camProfiles?.[0] || null;
   const currentCamClients = clientsForCam(state.clients, currentCamProfile);
+  const showDemoBanner = isLikelyDemoData(state);
   const selectedClient = currentCamClients.find((client) => client.id === state.selectedClientId) || currentCamClients[0] || null;
   const dailyImport = selectedClient ? getClientImportByDate(selectedClient, selectedDate) : null;
   const visibleTabs = selectedClient ? buildVisibleTabs(selectedClient, dailyImport) : STATIC_TABS;
@@ -4865,6 +4867,21 @@ export default function App() {
           placeholder="Filter sidebar..."
           onChange={(e) => setClientSearch(e.target.value)}
         />
+        {showDemoBanner && (
+          <div className="demo-banner" style={{margin:'6px 0',padding:'8px 10px',background:'var(--yellow-bg,rgba(245,200,60,0.12))',border:'1px solid var(--yellow,#e6b800)',borderRadius:6,fontSize:12,lineHeight:1.45}}>
+            <strong style={{display:'block',marginBottom:3}}>🎯 Demo data loaded</strong>
+            <span className="muted">Replace with your real clients or&nbsp;</span>
+            <button
+              className="ghost-button"
+              style={{fontSize:12,padding:'0 4px',color:'var(--red)',borderColor:'var(--red)'}}
+              onClick={() => {
+                if (window.confirm('Clear all demo data and start fresh? This cannot be undone — export a backup first if you need it.')) {
+                  setState(s => ({ ...s, clients: [], selectedClientId: null }));
+                }
+              }}
+            >clear &amp; start fresh</button>
+          </div>
+        )}
         <nav className="client-list">
           {(() => {
             const today = todayIsoDate();
