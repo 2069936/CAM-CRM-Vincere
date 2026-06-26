@@ -375,7 +375,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
   );
 }
 
-export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onUpdateAccount, strategySetRecords = [], client }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, strategySetRecords = [], client }) {
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -409,6 +409,16 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
         <div className="panel-heading">
           <h3>Action required</h3>
           <div className="inline-actions">
+            {onBulkResolveFlags && flags.some(f => f.status !== 'Resolved' && f.status !== 'Acknowledged') && (
+              <>
+                <button className="ghost-button" style={{fontSize:12}} title="Mark all open flags as acknowledged" onClick={() => onBulkResolveFlags('Acknowledged')}>
+                  Ack all
+                </button>
+                <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags('Resolved')}>
+                  Resolve all
+                </button>
+              </>
+            )}
             <button className="secondary-button" onClick={onRecalculate}>
               <RefreshCw size={16} /> Recalculate
             </button>

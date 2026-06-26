@@ -4664,6 +4664,27 @@ export default function App() {
     });
   }
 
+  function handleBulkResolveFlags(status = 'Acknowledged') {
+    if (!selectedClient || !dailyImport) return;
+    const openFlags = (dailyImport.flags || []).filter(f => f.status !== 'Resolved' && f.status !== 'Acknowledged');
+    if (!openFlags.length) return;
+    setState((current) => {
+      let next = current;
+      for (const flag of openFlags) {
+        next = resolveFlagInImport(next, selectedClient.id, dailyImport.id, flag.id, status);
+      }
+      const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
+      const entry = {
+        id: `act-${Date.now()}-bulk`,
+        type: 'Alert',
+        text: `Bulk ${verb} ${openFlags.length} flag${openFlags.length !== 1 ? 's' : ''}`,
+        accountName: '',
+        createdAt: new Date().toISOString(),
+      };
+      return addActivityEntry(next, selectedClient.id, entry);
+    });
+  }
+
   function handleAddActivity(entry) {
     if (!selectedClient) return;
     setState((current) => addActivityEntry(current, selectedClient.id, entry));
@@ -5249,6 +5270,7 @@ export default function App() {
                     onBuildReport={() => setReportImport(dailyImport)}
                     onRecalculate={recalculateImport}
                     onResolveFlag={handleResolveFlag}
+                    onBulkResolveFlags={handleBulkResolveFlags}
                     onUpdateAccount={handleAccountUpdate}
                     strategySetRecords={strategySetIndex.records}
                     client={selectedClient}
