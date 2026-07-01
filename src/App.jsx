@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import AccountManager from './components/AccountManager';
 import Dashboard from './components/Dashboard';
+import DatabaseCheck from './components/DatabaseCheck';
 import DailySOP from './components/DailySOP';
 import StackPlaybook from './components/StackPlaybook';
 import UploadArea from './components/UploadArea';
@@ -71,6 +72,32 @@ import {
   loadUsers,
   saveUsers,
 } from './domain/userStore';
+import {
+  authenticateSupabaseAppUser,
+  getSupabaseSessionAppUser,
+  signOutSupabase,
+} from './domain/supabaseAuth';
+import { isSupabaseConfigured } from './lib/supabaseClient';
+import {
+  createSupabaseSopItem,
+  createSupabaseSopSection,
+  deleteSupabaseActivity,
+  deleteSupabaseTask,
+  deleteSupabaseTradingAccount,
+  insertSupabaseActivity,
+  insertSupabasePayoutEvent,
+  insertSupabaseTask,
+  loadSupabaseCrmState,
+  loadSupabaseDailySopTemplate,
+  replaceSupabaseOperationalFlags,
+  updateSupabaseDailyImportStatus,
+  updateSupabaseOperationalFlag,
+  updateSupabaseSopItem,
+  updateSupabaseSopSection,
+  updateSupabaseTask,
+  updateSupabaseTradingAccount,
+  upsertSupabaseTradingAccount,
+} from './domain/supabaseStore';
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -885,16 +912,26 @@ function LoginScreen({ onLogin, users }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    const user = authenticateUser(username, password, users);
-    if (!user) {
-      setError('Invalid username or password.');
-      return;
-    }
     setError('');
-    onLogin(user);
+    setIsSubmitting(true);
+    try {
+      const user = isSupabaseConfigured
+        ? await authenticateSupabaseAppUser(username, password)
+        : authenticateUser(username, password, users);
+      if (!user) {
+        setError('Invalid username or password.');
+        return;
+      }
+      onLogin(user);
+    } catch (err) {
+      setError(err?.message || 'Invalid username or password.');
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -929,16 +966,18 @@ function LoginScreen({ onLogin, users }) {
             />
           </label>
           {error ? <p className="auth-error">{error}</p> : null}
-          <button className="primary-button" style={{marginTop:4}}>Sign in →</button>
+          <button className="primary-button" disabled={isSubmitting} style={{marginTop:4}}>
+            {isSubmitting ? 'Signing in...' : 'Sign in →'}
+          </button>
         </form>
         <div className="login-role-pills">
           <div className="login-role-pill">
             <span className="sidebar-role-badge manager-badge">Manager</span>
-            <code>manager</code> / <code>demo</code>
+            <code>{isSupabaseConfigured ? 'manager@vinceretrading.com' : 'manager'}</code>
           </div>
           <div className="login-role-pill">
             <span className="sidebar-role-badge cam-badge">CAM</span>
-            <code>pedro</code> / <code>pedro123</code>
+            <code>{isSupabaseConfigured ? 'pedro@vinceretrading.com' : 'pedro'}</code>
           </div>
         </div>
       </section>
@@ -1076,7 +1115,219 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
   return lines.join('\n');
 }
 
-function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onAddClient, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient, onResolveFlag, teamAnnouncement = '', onSetAnnouncement }) {
+function SopBuilderPanel() {
+  const [template, setTemplate] = useState(null);
+  const [status, setStatus] = useState('loading');
+  const [error, setError] = useState('');
+  const [sectionDraft, setSectionDraft] = useState({ title: '', time: '', emoji: '' });
+  const [itemDrafts, setItemDrafts] = useState({});
+  const [editingSections, setEditingSections] = useState({});
+  const [editingItems, setEditingItems] = useState({});
+
+  function loadTemplate() {
+    setStatus('loading');
+    setError('');
+    loadSupabaseDailySopTemplate()
+      .then((data) => {
+        setTemplate(data);
+        setStatus(data ? 'ready' : 'empty');
+      })
+      .catch((err) => {
+        console.error('[CRM] Failed to load SOP template:', err);
+        setError(err.message || 'Could not load SOP template.');
+        setStatus('error');
+      });
+  }
+
+  useEffect(() => { loadTemplate(); }, []);
+
+  async function addSection(event) {
+    event.preventDefault();
+    if (!template?.id || !sectionDraft.title.trim()) return;
+    const displayOrder = Math.max(-1, ...(template.sections || []).map((section) => Number(section.displayOrder || 0))) + 1;
+    try {
+      await createSupabaseSopSection(template.id, {
+        key: `section-${Date.now()}`,
+        title: sectionDraft.title.trim(),
+        time: sectionDraft.time.trim(),
+        emoji: sectionDraft.emoji.trim(),
+        displayOrder,
+      });
+      setSectionDraft({ title: '', time: '', emoji: '' });
+      loadTemplate();
+    } catch (err) {
+      window.alert(`Could not add SOP section: ${err.message}`);
+    }
+  }
+
+  async function saveSection(sectionId) {
+    const draft = editingSections[sectionId];
+    if (!draft?.title?.trim()) return;
+    try {
+      await updateSupabaseSopSection(sectionId, {
+        title: draft.title.trim(),
+        time: draft.time || '',
+        emoji: draft.emoji || '',
+        displayOrder: draft.displayOrder,
+      });
+      setEditingSections((current) => ({ ...current, [sectionId]: null }));
+      loadTemplate();
+    } catch (err) {
+      window.alert(`Could not save SOP section: ${err.message}`);
+    }
+  }
+
+  async function deactivateSection(section) {
+    if (!window.confirm(`Hide section "${section.title}" and its items from the Daily SOP?`)) return;
+    try {
+      await updateSupabaseSopSection(section.id, { isActive: false });
+      loadTemplate();
+    } catch (err) {
+      window.alert(`Could not hide SOP section: ${err.message}`);
+    }
+  }
+
+  async function addItem(section) {
+    const text = itemDrafts[section.id]?.trim();
+    if (!text) return;
+    const displayOrder = Math.max(-1, ...(section.items || []).map((item) => Number(item.displayOrder || 0))) + 1;
+    try {
+      await createSupabaseSopItem(section.id, {
+        key: `${section.key || 'item'}-${Date.now()}`,
+        text,
+        displayOrder,
+      });
+      setItemDrafts((current) => ({ ...current, [section.id]: '' }));
+      loadTemplate();
+    } catch (err) {
+      window.alert(`Could not add SOP item: ${err.message}`);
+    }
+  }
+
+  async function saveItem(itemId) {
+    const draft = editingItems[itemId];
+    if (!draft?.text?.trim()) return;
+    try {
+      await updateSupabaseSopItem(itemId, {
+        text: draft.text.trim(),
+        displayOrder: draft.displayOrder,
+      });
+      setEditingItems((current) => ({ ...current, [itemId]: null }));
+      loadTemplate();
+    } catch (err) {
+      window.alert(`Could not save SOP item: ${err.message}`);
+    }
+  }
+
+  async function deactivateItem(item) {
+    if (!window.confirm(`Hide this SOP item?\n\n${item.text}`)) return;
+    try {
+      await updateSupabaseSopItem(item.id, { isActive: false });
+      loadTemplate();
+    } catch (err) {
+      window.alert(`Could not hide SOP item: ${err.message}`);
+    }
+  }
+
+  return (
+    <section className="panel sop-builder-panel">
+      <div className="panel-heading">
+        <h3>SOP Builder</h3>
+        <span className="badge muted">{template?.name || 'Daily CAM Checklist'}</span>
+        <span className="badge muted">Manager edit</span>
+        <button className="ghost-button" style={{ marginLeft: 'auto', fontSize: 12 }} onClick={loadTemplate}>
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </div>
+
+      {status === 'loading' ? <p className="muted" style={{ fontSize: 12 }}>Loading SOP template...</p> : null}
+      {status === 'error' ? <div className="notice error">{error}</div> : null}
+      {status === 'empty' ? <div className="notice warning">No active SOP template found. Run `supabase/step_6_daily_sop.sql` first.</div> : null}
+
+      {template ? (
+        <>
+          <form className="inline-create-form sop-builder-add-section" onSubmit={addSection}>
+            <input value={sectionDraft.emoji} placeholder="Icon" maxLength={4} onChange={(event) => setSectionDraft((draft) => ({ ...draft, emoji: event.target.value }))} />
+            <input value={sectionDraft.title} placeholder="New section title" onChange={(event) => setSectionDraft((draft) => ({ ...draft, title: event.target.value }))} />
+            <input value={sectionDraft.time} placeholder="Time label" onChange={(event) => setSectionDraft((draft) => ({ ...draft, time: event.target.value }))} />
+            <button className="secondary-button" disabled={!sectionDraft.title.trim()}><Plus size={14} /> Section</button>
+          </form>
+
+          <div className="sop-builder-sections">
+            {(template.sections || []).map((section) => {
+              const sectionEdit = editingSections[section.id];
+              return (
+                <div className="sop-builder-section" key={section.id}>
+                  <div className="sop-builder-section-head">
+                    {sectionEdit ? (
+                      <>
+                        <input value={sectionEdit.emoji || ''} maxLength={4} onChange={(event) => setEditingSections((current) => ({ ...current, [section.id]: { ...sectionEdit, emoji: event.target.value } }))} />
+                        <input value={sectionEdit.title || ''} onChange={(event) => setEditingSections((current) => ({ ...current, [section.id]: { ...sectionEdit, title: event.target.value } }))} />
+                        <input value={sectionEdit.time || ''} onChange={(event) => setEditingSections((current) => ({ ...current, [section.id]: { ...sectionEdit, time: event.target.value } }))} />
+                        <input type="number" value={sectionEdit.displayOrder ?? 0} onChange={(event) => setEditingSections((current) => ({ ...current, [section.id]: { ...sectionEdit, displayOrder: event.target.value } }))} />
+                        <button className="primary-button" type="button" onClick={() => saveSection(section.id)}>Save</button>
+                        <button className="ghost-button" type="button" onClick={() => setEditingSections((current) => ({ ...current, [section.id]: null }))}>Cancel</button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="sop-builder-icon">{section.emoji || '□'}</span>
+                        <strong>{section.title}</strong>
+                        <span className="muted">{section.time || 'No time label'}</span>
+                        <span className="count">{section.items?.length || 0}</span>
+                        <button className="ghost-button icon-only" title="Edit section" onClick={() => setEditingSections((current) => ({ ...current, [section.id]: { title: section.title, time: section.time, emoji: section.emoji, displayOrder: section.displayOrder } }))}>
+                          <Edit3 size={13} />
+                        </button>
+                        <button className="ghost-button icon-only" title="Hide section" onClick={() => deactivateSection(section)}>
+                          <Trash2 size={13} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="sop-builder-items">
+                    {(section.items || []).map((item) => {
+                      const itemEdit = editingItems[item.id];
+                      return (
+                        <div className="sop-builder-item" key={item.id}>
+                          {itemEdit ? (
+                            <>
+                              <input value={itemEdit.text || ''} onChange={(event) => setEditingItems((current) => ({ ...current, [item.id]: { ...itemEdit, text: event.target.value } }))} />
+                              <input type="number" value={itemEdit.displayOrder ?? 0} onChange={(event) => setEditingItems((current) => ({ ...current, [item.id]: { ...itemEdit, displayOrder: event.target.value } }))} />
+                              <button className="primary-button" type="button" onClick={() => saveItem(item.id)}>Save</button>
+                              <button className="ghost-button" type="button" onClick={() => setEditingItems((current) => ({ ...current, [item.id]: null }))}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="muted">{item.key}</span>
+                              <span>{item.text}</span>
+                              <button className="ghost-button icon-only" title="Edit item" onClick={() => setEditingItems((current) => ({ ...current, [item.id]: { text: item.text, displayOrder: item.displayOrder } }))}>
+                                <Edit3 size={13} />
+                              </button>
+                              <button className="ghost-button icon-only" title="Hide item" onClick={() => deactivateItem(item)}>
+                                <Trash2 size={13} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <form className="inline-create-form sop-builder-add-item" onSubmit={(event) => { event.preventDefault(); addItem(section); }}>
+                    <input value={itemDrafts[section.id] || ''} placeholder={`Add item to ${section.title}`} onChange={(event) => setItemDrafts((current) => ({ ...current, [section.id]: event.target.value }))} />
+                    <button className="secondary-button" disabled={!itemDrafts[section.id]?.trim()}><Plus size={14} /> Item</button>
+                  </form>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onCreateCam, onAddClient, onAppendDailyImport, onLogout, users = [], onUsersChange, session, onUpdateClientAccount, onTransferClient, onResolveFlag, teamAnnouncement = '', onSetAnnouncement }) {
   const [newCamName, setNewCamName] = useState('');
   const [newCamUsername, setNewCamUsername] = useState('');
   const [newCamPassword, setNewCamPassword] = useState('');
@@ -1093,6 +1344,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
   const [teamCopyDone, setTeamCopyDone] = useState(false);
   const [newClientForm, setNewClientForm] = useState({ name: '', camId: '', stage: 'Active' });
   const [showNewClient, setShowNewClient] = useState(false);
+  const [showSopBuilder, setShowSopBuilder] = useState(false);
   const [fundedSort, setFundedSort] = useState({ col: 'buffer', dir: -1 });
   const [managerSearch, setManagerSearch] = useState('');
   const teamHistory = useMemo(() => buildTeamHistory(clients).slice(-10), [clients]);
@@ -1277,6 +1529,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
           </div>
           <div className="header-actions">
             <button className={showNewClient ? 'secondary-button' : 'ghost-button'} onClick={() => setShowNewClient(v => !v)}>+ New Client</button>
+            <button className={showSopBuilder ? 'secondary-button' : 'ghost-button'} onClick={() => setShowSopBuilder(v => !v)}><Plus size={14} /> SOP Item</button>
             <button className={showPipeline ? 'secondary-button' : 'ghost-button'} onClick={() => setShowPipeline(v => !v)}>📋 Pipeline</button>
             <button className={showBatchImport ? 'secondary-button' : 'ghost-button'} onClick={() => { setShowBatchImport(v => !v); setBatchImportResult(null); }}>⬆ Batch Import</button>
             <button className="ghost-button" onClick={() => { const txt = buildTeamWeeklyReport(clients, camProfiles); navigator.clipboard.writeText(txt).then(() => alert('Weekly team summary copied!')); }} title="Copy weekly team summary for Slack / email">📋 Weekly Report</button>
@@ -1350,6 +1603,8 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
             </form>
           </section>
         )}
+
+        {showSopBuilder && <SopBuilderPanel />}
 
         {showPipeline && (() => {
           const STAGES = ['Onboarding', 'Active', 'At Risk', 'Paused', 'Inactive'];
@@ -1466,7 +1721,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                         <td>{accountCount}</td>
                         <td>{(result.flags || []).filter(f => f.severity === 'Critical').length > 0 ? <span className="negative">{(result.flags || []).filter(f => f.severity === 'Critical').length} critical</span> : <span className="positive">{(result.flags || []).length} flags</span>}</td>
                         <td><button className="primary-button" style={{padding:'3px 10px',fontSize:11}} onClick={() => {
-                          setState(s => appendDailyImport(s, client.id, result));
+                          onAppendDailyImport?.(client.id, result);
                           setBatchImportResult(prev => ({ ...prev, clientMatches: prev.clientMatches.filter(m => m.client.id !== client.id) }));
                         }}>Import</button></td>
                       </tr>
@@ -1475,7 +1730,7 @@ function ManagerOverview({ clients, camProfiles = [], onOpenCam, onLoadDemo, onC
                 </table>
                 {batchImportResult.clientMatches.length > 1 && (
                   <button className="secondary-button" style={{marginTop:8}} onClick={() => {
-                    setState(s => batchImportResult.clientMatches.reduce((acc, { client, result }) => appendDailyImport(acc, client.id, result), s));
+                    batchImportResult.clientMatches.forEach(({ client, result }) => onAppendDailyImport?.(client.id, result));
                     setBatchImportResult(null); setShowBatchImport(false);
                   }}>Import all {batchImportResult.clientMatches.length} clients</button>
                 )}
@@ -4471,6 +4726,9 @@ function PinnedNote({ note, onSave }) {
 export default function App() {
   const [state, setState] = useState(() => loadDemoState());
   const [users, setUsers] = useState(() => loadUsers());
+  const [remoteStatus, setRemoteStatus] = useState(() => (
+    isSupabaseConfigured ? { source: 'supabase', status: 'loading', message: 'Connecting to Supabase...' } : { source: 'local', status: 'idle', message: 'Local demo mode' }
+  ));
   const [session, setSession] = useState(() => {
     try { const raw = sessionStorage.getItem('cam_crm_session'); return raw ? JSON.parse(raw) : null; } catch { return null; }
   });
@@ -4478,18 +4736,48 @@ export default function App() {
     setSession(user);
     try { if (user) sessionStorage.setItem('cam_crm_session', JSON.stringify(user)); else sessionStorage.removeItem('cam_crm_session'); } catch {}
   }
+  async function handleLogout() {
+    try {
+      if (isSupabaseConfigured) await signOutSupabase();
+    } catch (err) {
+      console.error('[CRM] Supabase sign out failed:', err);
+    }
+    persistSession(null);
+    setPlatformView('manager');
+  }
   const [platformView, setPlatformView] = useState('manager');
   // On mount: if session was restored, re-validate and restore workspace
   useEffect(() => {
-    if (!session) return;
-    const live = (users || []).find(u => u.id === session.id);
-    if (!live) { persistSession(null); return; } // user deleted
-    const fresh = { ...live };
-    persistSession(fresh);
-    if (fresh.role === USER_ROLES.CAM && fresh.camProfileId) {
-      openCamWorkspace(fresh.camProfileId);
-    } else {
-      setPlatformView('manager');
+    if (isSupabaseConfigured) {
+      getSupabaseSessionAppUser()
+        .then((fresh) => {
+          if (!fresh) {
+            persistSession(null);
+            return;
+          }
+          persistSession(fresh);
+          if (fresh.role === USER_ROLES.CAM && fresh.camProfileId) {
+            openCamWorkspace(fresh.camProfileId);
+          } else {
+            setPlatformView('manager');
+          }
+        })
+        .catch((err) => {
+          console.error('[CRM] Supabase session restore failed:', err);
+          persistSession(null);
+        });
+      return;
+    }
+    if (session) {
+      const live = (users || []).find(u => u.id === session.id);
+      if (!live) { persistSession(null); return; } // user deleted
+      const fresh = { ...live };
+      persistSession(fresh);
+      if (fresh.role === USER_ROLES.CAM && fresh.camProfileId) {
+        openCamWorkspace(fresh.camProfileId);
+      } else {
+        setPlatformView('manager');
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -4522,6 +4810,25 @@ export default function App() {
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [globalSearchIdx, setGlobalSearchIdx] = useState(0);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    loadSupabaseCrmState({ preferredCamProfileId: session?.camProfileId || state.accountManager?.id || 'am-pedro' })
+      .then((remoteState) => {
+        if (cancelled) return;
+        setState(remoteState);
+        setRemoteStatus({ source: 'supabase', status: 'connected', message: 'Connected to Supabase' });
+        if (session?.role === USER_ROLES.CAM && session.camProfileId) setPlatformView('cam');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('[CRM] Supabase load failed:', error);
+        setRemoteStatus({ source: 'local', status: 'error', message: `Supabase unavailable: ${error.message}` });
+      });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     function onKey(e) {
@@ -4577,6 +4884,8 @@ export default function App() {
 
   const currentCamProfile = (state.camProfiles || []).find((profile) => profile.id === state.accountManager?.id) || state.camProfiles?.[0] || null;
   const currentCamClients = clientsForCam(state.clients, currentCamProfile);
+  const isManagerSession = session?.role === USER_ROLES.MANAGER;
+  const accessibleClients = isManagerSession ? (state.clients || []) : currentCamClients;
   const showDemoBanner = isLikelyDemoData(state);
   const selectedClient = currentCamClients.find((client) => client.id === state.selectedClientId) || currentCamClients[0] || null;
 
@@ -4660,7 +4969,15 @@ export default function App() {
 
   function handleAccountUpdate(accountName, patch) {
     if (!selectedClient) return;
-    setState((current) => upsertAccountMeta(current, selectedClient.id, accountName, patch));
+    persistAccountUpdate(selectedClient.id, accountName, patch);
+  }
+
+  function persistAccountUpdate(clientId, accountName, patch) {
+    setState((current) => upsertAccountMeta(current, clientId, accountName, patch));
+    updateSupabaseTradingAccount(clientId, accountName, patch).catch((error) => {
+      console.error('[CRM] Failed to update trading account:', error);
+      window.alert(`Could not save "${accountName}" to Supabase: ${error.message}`);
+    });
   }
 
   function handleLogPayout(accountName, entry) {
@@ -4678,6 +4995,15 @@ export default function App() {
         dateLastPayout: entry.date,
       });
     });
+    insertSupabasePayoutEvent(selectedClient.id, accountName, entry)
+      .then(() => updateSupabaseTradingAccount(selectedClient.id, accountName, {
+        payoutCount: (selectedClient.accountRegistry?.[accountName]?.payoutCount || 0) + 1,
+        dateLastPayout: entry.date,
+      }))
+      .catch((error) => {
+        console.error('[CRM] Failed to log payout:', error);
+        window.alert(`Could not save payout for "${accountName}" to Supabase: ${error.message}`);
+      });
   }
 
   function handleUpdateClient(patch) {
@@ -4694,67 +5020,107 @@ export default function App() {
   function handleResolveFlag(flagId, status = 'Resolved') {
     if (!selectedClient || !dailyImport) return;
     const flag = (dailyImport.flags || []).find((f) => f.id === flagId);
+    let entry = null;
+    if (flag && (status === 'Resolved' || status === 'Acknowledged')) {
+      const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
+      entry = {
+        id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: 'Alert',
+        text: `Flag ${verb}: [${flag.type}] ${flag.message}`,
+        accountName: flag.accountName || '',
+        createdAt: new Date().toISOString(),
+      };
+    }
     setState((current) => {
       let next = resolveFlagInImport(current, selectedClient.id, dailyImport.id, flagId, status);
-      if (flag && (status === 'Resolved' || status === 'Acknowledged')) {
-        const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
-        const entry = {
-          id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          type: 'Alert',
-          text: `Flag ${verb}: [${flag.type}] ${flag.message}`,
-          accountName: flag.accountName || '',
-          createdAt: new Date().toISOString(),
-        };
-        next = addActivityEntry(next, selectedClient.id, entry);
-      }
+      if (entry) next = addActivityEntry(next, selectedClient.id, entry);
       return next;
     });
+    updateSupabaseOperationalFlag(flagId, status).catch((error) => {
+      console.error('[CRM] Failed to update flag:', error);
+      window.alert(`Could not update flag in Supabase: ${error.message}`);
+    });
+    if (entry) insertSupabaseActivity(selectedClient.id, entry).catch((error) => console.error('[CRM] Failed to save flag activity:', error));
   }
 
   function handleBulkResolveFlags(status = 'Acknowledged') {
     if (!selectedClient || !dailyImport) return;
     const openFlags = (dailyImport.flags || []).filter(f => f.status !== 'Resolved' && f.status !== 'Acknowledged');
     if (!openFlags.length) return;
+    const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
+    const entry = {
+      id: `act-${Date.now()}-bulk`,
+      type: 'Alert',
+      text: `Bulk ${verb} ${openFlags.length} flag${openFlags.length !== 1 ? 's' : ''}`,
+      accountName: '',
+      createdAt: new Date().toISOString(),
+    };
     setState((current) => {
       let next = current;
       for (const flag of openFlags) {
         next = resolveFlagInImport(next, selectedClient.id, dailyImport.id, flag.id, status);
       }
-      const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
-      const entry = {
-        id: `act-${Date.now()}-bulk`,
-        type: 'Alert',
-        text: `Bulk ${verb} ${openFlags.length} flag${openFlags.length !== 1 ? 's' : ''}`,
-        accountName: '',
-        createdAt: new Date().toISOString(),
-      };
       return addActivityEntry(next, selectedClient.id, entry);
     });
+    Promise.all(openFlags.map((flag) => updateSupabaseOperationalFlag(flag.id, status)))
+      .then(() => insertSupabaseActivity(selectedClient.id, entry))
+      .catch((error) => {
+        console.error('[CRM] Failed to bulk update flags:', error);
+        window.alert(`Could not update flags in Supabase: ${error.message}`);
+      });
   }
 
   function handleAddActivity(entry) {
     if (!selectedClient) return;
-    setState((current) => addActivityEntry(current, selectedClient.id, entry));
+    persistActivity(selectedClient.id, entry);
   }
 
   function handleDeleteActivity(entryId) {
     if (!selectedClient) return;
     setState((current) => deleteActivityEntry(current, selectedClient.id, entryId));
+    deleteSupabaseActivity(entryId).catch((error) => {
+      console.error('[CRM] Failed to delete activity:', error);
+      window.alert(`Could not delete activity from Supabase: ${error.message}`);
+    });
   }
 
   function handleAddTask(task) {
     if (!selectedClient) return;
-    setState((current) => addTask(current, selectedClient.id, task));
+    persistTask(selectedClient.id, task);
   }
 
   function handleUpdateTask(taskId, patch) {
     if (!selectedClient) return;
     setState((current) => updateTask(current, selectedClient.id, taskId, patch));
+    updateSupabaseTask(taskId, patch).catch((error) => {
+      console.error('[CRM] Failed to update task:', error);
+      window.alert(`Could not save task to Supabase: ${error.message}`);
+    });
   }
 
   function handleDeleteTask(taskId) {
     if (!selectedClient) return;
     setState((current) => deleteTask(current, selectedClient.id, taskId));
+    deleteSupabaseTask(taskId).catch((error) => {
+      console.error('[CRM] Failed to delete task:', error);
+      window.alert(`Could not delete task from Supabase: ${error.message}`);
+    });
+  }
+
+  function persistActivity(clientId, entry) {
+    setState((current) => addActivityEntry(current, clientId, entry));
+    insertSupabaseActivity(clientId, entry).catch((error) => {
+      console.error('[CRM] Failed to save activity:', error);
+      window.alert(`Could not save activity to Supabase: ${error.message}`);
+    });
+  }
+
+  function persistTask(clientId, task) {
+    setState((current) => addTask(current, clientId, task));
+    insertSupabaseTask(clientId, task).catch((error) => {
+      console.error('[CRM] Failed to save task:', error);
+      window.alert(`Could not save task to Supabase: ${error.message}`);
+    });
   }
 
   const [copyDone, setCopyDone] = useState(false);
@@ -4767,12 +5133,14 @@ export default function App() {
     navigator.clipboard.writeText(text).then(() => {
       setCopyDone(true);
       setTimeout(() => setCopyDone(false), 2000);
-      setState((current) => addActivityEntry(current, selectedClient.id, {
+      const entry = {
         id: `act-send-${Date.now()}`,
         type: 'Message',
         text: `Daily update sent (${dailyImport.date})`,
         createdAt: new Date().toISOString(),
-      }));
+      };
+      setState((current) => addActivityEntry(current, selectedClient.id, entry));
+      insertSupabaseActivity(selectedClient.id, entry).catch((error) => console.error('[CRM] Failed to save report activity:', error));
     });
   }
 
@@ -4783,12 +5151,14 @@ export default function App() {
     navigator.clipboard.writeText(text).then(() => {
       setCopyWeekDone(true);
       setTimeout(() => setCopyWeekDone(false), 2000);
-      setState((current) => addActivityEntry(current, selectedClient.id, {
+      const entry = {
         id: `act-wsend-${Date.now()}`,
         type: 'Message',
         text: `Weekly summary sent`,
         createdAt: new Date().toISOString(),
-      }));
+      };
+      setState((current) => addActivityEntry(current, selectedClient.id, entry));
+      insertSupabaseActivity(selectedClient.id, entry).catch((error) => console.error('[CRM] Failed to save weekly activity:', error));
     });
   }
 
@@ -4800,12 +5170,20 @@ export default function App() {
       : 'Mark this day as closed? This locks the close record.';
     if (!window.confirm(msg)) return;
     setState((current) => updateImportStatus(current, selectedClient.id, dailyImport.id, 'Closed'));
+    updateSupabaseDailyImportStatus(dailyImport.id, 'Closed').catch((error) => {
+      console.error('[CRM] Failed to close day:', error);
+      window.alert(`Could not close day in Supabase: ${error.message}`);
+    });
   }
 
   function reopenImport() {
     if (!selectedClient || !dailyImport) return;
     if (!window.confirm('Reopen this day? The close will return to "Needs review" status.')) return;
     setState((current) => updateImportStatus(current, selectedClient.id, dailyImport.id, 'Needs review'));
+    updateSupabaseDailyImportStatus(dailyImport.id, 'Needs review').catch((error) => {
+      console.error('[CRM] Failed to reopen day:', error);
+      window.alert(`Could not reopen day in Supabase: ${error.message}`);
+    });
   }
 
   function closeAllToday() {
@@ -4827,6 +5205,13 @@ export default function App() {
       const imp = getClientImportByDate(c, today);
       return imp ? updateImportStatus(s, c.id, imp.id, 'Closed') : s;
     }, current));
+    Promise.all(toClose.map((client) => {
+      const imp = getClientImportByDate(client, today);
+      return imp ? updateSupabaseDailyImportStatus(imp.id, 'Closed') : Promise.resolve();
+    })).catch((error) => {
+      console.error('[CRM] Failed to close all today:', error);
+      window.alert(`Could not close all days in Supabase: ${error.message}`);
+    });
   }
 
   function recalculateImport() {
@@ -4836,7 +5221,20 @@ export default function App() {
       registry: selectedClient.accountRegistry,
     });
     setState((current) => replaceDailyImport(current, selectedClient.id, recalculated));
+    replaceSupabaseOperationalFlags(selectedClient.id, dailyImport.id, recalculated.flags || [], recalculated.status)
+      .then((savedFlags) => {
+        setState((current) => replaceDailyImport(current, selectedClient.id, {
+          ...recalculated,
+          flags: savedFlags,
+        }));
+      })
+      .catch((error) => {
+        console.error('[CRM] Failed to recalculate flags in Supabase:', error);
+        window.alert(`Could not recalculate flags in Supabase: ${error.message}`);
+      });
   }
+
+  if (window.location.pathname === '/database') return <DatabaseCheck />;
 
   if (!session) {
     return (
@@ -4852,6 +5250,10 @@ export default function App() {
         }}
       />
     );
+  }
+
+  if (platformView === 'manager' && !isManagerSession) {
+    return null;
   }
 
   if (platformView === 'manager') {
@@ -4873,21 +5275,23 @@ export default function App() {
             if (!already) setUsers(u => addUser(u, { username, password, displayName: name, email: '', role: USER_ROLES.CAM, camProfileId: profileId }));
           }
         }}
-        onLogout={() => persistSession(null)}
+        onLogout={handleLogout}
         users={users}
         onUsersChange={setUsers}
         session={session}
-        onUpdateClientAccount={(clientId, accountName, patch) =>
-          setState((current) => upsertAccountMeta(current, clientId, accountName, patch))
-        }
+        onUpdateClientAccount={persistAccountUpdate}
         onTransferClient={(clientId, toCamId) =>
           setState((current) => transferClient(current, clientId, toCamId))
         }
         teamAnnouncement={state.teamAnnouncement || ''}
         onSetAnnouncement={msg => setState(s => ({ ...s, teamAnnouncement: msg }))}
-        onResolveFlag={(clientId, importId, flagId, status = 'Resolved') =>
-          setState((current) => resolveFlagInImport(current, clientId, importId, flagId, status))
-        }
+        onResolveFlag={(clientId, importId, flagId, status = 'Resolved') => {
+          setState((current) => resolveFlagInImport(current, clientId, importId, flagId, status));
+          updateSupabaseOperationalFlag(flagId, status).catch((error) => {
+            console.error('[CRM] Failed to update manager flag:', error);
+            window.alert(`Could not update flag in Supabase: ${error.message}`);
+          });
+        }}
         onAddClient={(name, camId, stage) => setState(current => {
           const withClient = addClient(current, name, camId || null);
           const newClient = withClient.clients.find(c => c.name === name && !(current.clients.find(x => x.id === c.id)));
@@ -4896,6 +5300,7 @@ export default function App() {
           }
           return withClient;
         })}
+        onAppendDailyImport={(clientId, result) => setState((current) => appendDailyImport(current, clientId, result))}
       />
       </ErrorBoundary>
     );
@@ -4909,12 +5314,17 @@ export default function App() {
         <div className="sidebar-header">
           <div className="sidebar-role-row">
             <span className="sidebar-role-badge cam-badge">CAM</span>
-            <button className="sidebar-logout-btn" onClick={() => persistSession(null)} title="Sign out"><LogOut size={14} /></button>
+            <button className="sidebar-logout-btn" onClick={handleLogout} title="Sign out"><LogOut size={14} /></button>
           </div>
           <strong>{currentCamProfile?.name || state.accountManager.name}</strong>
           <small className="sidebar-role-sub">{session?.displayName || session?.username || ''} · {session?.role || 'CAM'}</small>
+          <small className={`sidebar-role-sub ${remoteStatus.status === 'error' ? 'negative' : remoteStatus.status === 'connected' ? 'positive' : ''}`}>
+            Data: {remoteStatus.status === 'connected' ? 'Supabase' : remoteStatus.status === 'loading' ? 'Connecting...' : 'Local'}
+          </small>
           <div className="backup-actions">
-            <button className="ghost-button" onClick={() => setPlatformView('manager')}><Users size={14} /> Team</button>
+            {isManagerSession ? (
+              <button className="ghost-button" onClick={() => setPlatformView('manager')}><Users size={14} /> Team</button>
+            ) : null}
             <button className="ghost-button" onClick={handleExport}><Download size={14} /> Export</button>
             <label className="ghost-button">
               <Upload size={14} /> Import
@@ -4927,8 +5337,8 @@ export default function App() {
           <input value={newClientName} placeholder="New client" onChange={(event) => setNewClientName(event.target.value)} />
           <button><Plus size={16} /></button>
         </form>
-        <button className="global-search-trigger" onClick={() => { setGlobalSearchOpen(true); setGlobalSearchQuery(''); }} title="Search all clients (⌘K)">
-          <span>⌕ Search all…</span><kbd>⌘K</kbd>
+        <button className="global-search-trigger" onClick={() => { setGlobalSearchOpen(true); setGlobalSearchQuery(''); }} title={isManagerSession ? 'Search all clients (⌘K)' : 'Search your clients (⌘K)'}>
+          <span>{isManagerSession ? '⌕ Search all…' : '⌕ Search clients…'}</span><kbd>⌘K</kbd>
         </button>
         <input
           className="client-search"
@@ -4980,14 +5390,18 @@ export default function App() {
             <span>Daily SOP</span>
             <em>Checklist</em>
           </button>
-          <div className="nav-label">Other CAMs</div>
-          {(state.camProfiles || []).filter((profile) => profile.id !== state.accountManager?.id).map((profile) => (
-            <button className="client-link" key={profile.id} onClick={() => openCamWorkspace(profile.id)}>
-              <Users size={16} />
-              <span>{profile.name} CAM</span>
-              <em>{profile.status || 'Active'}</em>
-            </button>
-          ))}
+          {isManagerSession ? (
+            <>
+              <div className="nav-label">Other CAMs</div>
+              {(state.camProfiles || []).filter((profile) => profile.id !== state.accountManager?.id).map((profile) => (
+                <button className="client-link" key={profile.id} onClick={() => openCamWorkspace(profile.id)}>
+                  <Users size={16} />
+                  <span>{profile.name} CAM</span>
+                  <em>{profile.status || 'Active'}</em>
+                </button>
+              ))}
+            </>
+          ) : null}
           {clientSearch.length >= 2 ? (() => {
             const searchResults = searchClients(currentCamClients, clientSearch);
             return searchResults.length ? (
@@ -5076,7 +5490,7 @@ export default function App() {
               <p>Morning-to-close checklist — resets every trading day.</p>
             </div>
           </div>
-          <DailySOP />
+          <DailySOP camProfileId={currentCamProfile?.id} />
         </main>
       ) : showOverview ? (
         <>
@@ -5089,7 +5503,7 @@ export default function App() {
         <CamOverview
           clients={currentCamClients}
           camProfiles={state.camProfiles || []}
-          allClients={state.clients || []}
+          allClients={accessibleClients}
           strategySetRecords={strategySetIndex.records}
           strategySetIndexStatus={strategySetIndex.status}
           camName={currentCamProfile?.name || ''}
@@ -5097,9 +5511,16 @@ export default function App() {
             setState((current) => selectClient(current, clientId));
             setShowOverview(false); setShowSOP(false);
           }}
-          onAddClientTask={(clientId, task) => setState((current) => addTask(current, clientId, task))}
-          onLogClientActivity={(clientId, entry) => setState((current) => addActivityEntry(current, clientId, entry))}
-          onCompleteTask={(clientId, taskId) => setState((current) => updateTask(current, clientId, taskId, { done: true, doneAt: new Date().toISOString() }))}
+          onAddClientTask={persistTask}
+          onLogClientActivity={persistActivity}
+          onCompleteTask={(clientId, taskId) => {
+            const patch = { done: true, doneAt: new Date().toISOString() };
+            setState((current) => updateTask(current, clientId, taskId, patch));
+            updateSupabaseTask(taskId, patch).catch((error) => {
+              console.error('[CRM] Failed to complete task:', error);
+              window.alert(`Could not complete task in Supabase: ${error.message}`);
+            });
+          }}
           monthlyGoal={currentCamProfile?.monthlyGoal || 0}
           onSetMonthlyGoal={goal => setState(s => updateCamProfile(s, currentCamProfile?.id, { monthlyGoal: goal }))}
         />
@@ -5288,12 +5709,12 @@ export default function App() {
                 ))}
               </div>
 
-              {effectiveActiveTab === 'Overview' ? <ClientOverview client={selectedClient} dailyImport={dailyImport} allClients={state.clients || []} onRequestMonthlyReport={(month) => setMonthlyReportMonth(month)} onLogPayout={handleLogPayout} /> : null}
+              {effectiveActiveTab === 'Overview' ? <ClientOverview client={selectedClient} dailyImport={dailyImport} allClients={accessibleClients} onRequestMonthlyReport={(month) => setMonthlyReportMonth(month)} onLogPayout={handleLogPayout} /> : null}
               {effectiveActiveTab === 'Activity' ? <ActivityLog client={selectedClient} onAddEntry={handleAddActivity} onDeleteEntry={handleDeleteActivity} /> : null}
               {effectiveActiveTab === 'Tasks' ? <TasksTab client={selectedClient} onAddTask={handleAddTask} onUpdateTask={handleUpdateTask} onDeleteTask={handleDeleteTask} /> : null}
               {effectiveActiveTab === 'Credentials & Notes' ? <CredentialsTab client={selectedClient} onUpdateClient={handleUpdateClient} onDeleteClient={handleDeleteClient} /> : null}
               {effectiveActiveTab === 'Price Checks' ? <PriceChecksTab client={selectedClient} onUpdateClient={handleUpdateClient} /> : null}
-              {effectiveActiveTab === 'Stack Playbook' ? <StackPlaybook client={selectedClient} dailyImport={dailyImport} onUpdateAccount={handleAccountUpdate} allClients={state.clients || []} /> : null}
+              {effectiveActiveTab === 'Stack Playbook' ? <StackPlaybook client={selectedClient} dailyImport={dailyImport} onUpdateAccount={handleAccountUpdate} allClients={accessibleClients} /> : null}
               {['Review', 'Evaluations', 'Funded', 'Cash'].includes(effectiveActiveTab) ? (
                 <>
                   <Dashboard
@@ -5324,11 +5745,19 @@ export default function App() {
                         onAddAccount={(accountName, meta) => {
                           if (!selectedClient || !accountName.trim()) return;
                           setState((current) => upsertAccountMeta(current, selectedClient.id, accountName.trim(), meta));
+                          upsertSupabaseTradingAccount(selectedClient.id, accountName.trim(), meta).catch((error) => {
+                            console.error('[CRM] Failed to add trading account:', error);
+                            window.alert(`Could not save "${accountName}" to Supabase: ${error.message}`);
+                          });
                         }}
                         onRemoveAccount={(accountName) => {
                           if (!selectedClient) return;
                           if (!window.confirm(`Remove "${accountName}" from the registry? Historical import data is kept, but the account metadata (type, alias, targets) will be deleted.`)) return;
                           setState((current) => removeAccountFromRegistry(current, selectedClient.id, accountName));
+                          deleteSupabaseTradingAccount(selectedClient.id, accountName).catch((error) => {
+                            console.error('[CRM] Failed to remove trading account:', error);
+                            window.alert(`Could not remove "${accountName}" from Supabase: ${error.message}`);
+                          });
                         }}
                       />
                     ) : null}
@@ -5359,7 +5788,7 @@ export default function App() {
     )}
     {globalSearchOpen && (() => {
       const q = globalSearchQuery.toLowerCase().trim();
-      const clients = state.clients || [];
+      const clients = accessibleClients;
       const results = !q ? [] : clients.flatMap(client => {
         const hits = [];
         (client.activityLog || []).filter(e => e.text?.toLowerCase().includes(q)).forEach(e => hits.push({ client, kind: 'Activity', text: e.text, sub: e.type + ' · ' + (e.createdAt||'').slice(0,10), tab: 'Activity' }));
@@ -5381,7 +5810,7 @@ export default function App() {
           <div className="global-search-modal">
             <div className="global-search-bar">
               <span className="global-search-icon">⌕</span>
-              <input autoFocus value={globalSearchQuery} onChange={e => { setGlobalSearchQuery(e.target.value); setGlobalSearchIdx(0); }} placeholder="Search all clients — activity, tasks, notes…" className="global-search-input" onKeyDown={e => {
+              <input autoFocus value={globalSearchQuery} onChange={e => { setGlobalSearchQuery(e.target.value); setGlobalSearchIdx(0); }} placeholder={isManagerSession ? 'Search all clients — activity, tasks, notes…' : 'Search your clients — activity, tasks, notes…'} className="global-search-input" onKeyDown={e => {
                 if (e.key === 'Escape') { setGlobalSearchOpen(false); }
                 else if (e.key === 'ArrowDown') { e.preventDefault(); setGlobalSearchIdx(i => Math.min(i + 1, results.length - 1)); }
                 else if (e.key === 'ArrowUp') { e.preventDefault(); setGlobalSearchIdx(i => Math.max(i - 1, 0)); }
@@ -5389,7 +5818,7 @@ export default function App() {
                   e.preventDefault();
                   const r = results[globalSearchIdx];
                   setGlobalSearchOpen(false);
-                  const ownerCam = (state.camProfiles || []).find(p => (p.clientIds || []).includes(r.client.id));
+                  const ownerCam = isManagerSession ? (state.camProfiles || []).find(p => (p.clientIds || []).includes(r.client.id)) : currentCamProfile;
                   setState(s => { const withCam = ownerCam ? selectCam(s, ownerCam.id) : s; return selectClient(withCam, r.client.id); });
                   setPlatformView('cam'); setShowOverview(false); setShowSOP(false); setActiveTab(r.tab);
                 }
@@ -5397,12 +5826,12 @@ export default function App() {
               <kbd className="global-search-esc" onClick={() => setGlobalSearchOpen(false)}>esc</kbd>
             </div>
             <div className="global-search-results">
-              {!q && <div className="global-search-hint muted">Type to search across all clients</div>}
+              {!q && <div className="global-search-hint muted">{isManagerSession ? 'Type to search across all clients' : 'Type to search your assigned clients'}</div>}
               {q && !results.length && <div className="global-search-hint muted">No results for "{globalSearchQuery}"</div>}
               {results.map((r, i) => (
                 <button key={i} className={`global-search-result${i === globalSearchIdx ? ' global-search-active' : ''}`} onClick={() => {
                   setGlobalSearchOpen(false);
-                  const ownerCam = (state.camProfiles || []).find(p => (p.clientIds || []).includes(r.client.id));
+                  const ownerCam = isManagerSession ? (state.camProfiles || []).find(p => (p.clientIds || []).includes(r.client.id)) : currentCamProfile;
                   setState(s => {
                     const withCam = ownerCam ? selectCam(s, ownerCam.id) : s;
                     return selectClient(withCam, r.client.id);

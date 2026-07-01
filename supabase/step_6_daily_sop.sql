@@ -1,0 +1,181 @@
+-- Step 6: Persist Daily CAM Checklist template and progress.
+-- Run this after the main schema/seed files.
+
+create table if not exists public.sop_templates (
+  id uuid primary key default gen_random_uuid(),
+  legacy_key text not null unique,
+  name text not null,
+  description text default '',
+  is_active boolean not null default false,
+  editable_by_role text not null default 'Manager',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.sop_sections (
+  id uuid primary key default gen_random_uuid(),
+  template_id uuid not null references public.sop_templates(id) on delete cascade,
+  section_key text not null,
+  title text not null,
+  time_label text default '',
+  emoji text default '',
+  display_order integer not null default 0,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (template_id, section_key)
+);
+
+create table if not exists public.sop_items (
+  id uuid primary key default gen_random_uuid(),
+  section_id uuid not null references public.sop_sections(id) on delete cascade,
+  item_key text not null,
+  text text not null,
+  display_order integer not null default 0,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (section_id, item_key)
+);
+
+create index if not exists idx_sop_sections_template_order
+  on public.sop_sections(template_id, display_order);
+
+create index if not exists idx_sop_items_section_order
+  on public.sop_items(section_id, display_order);
+
+create table if not exists public.daily_sop_checklists (
+  id uuid primary key default gen_random_uuid(),
+  cam_profile_id uuid not null references public.cam_profiles(id) on delete cascade,
+  template_id uuid references public.sop_templates(id) on delete set null,
+  checklist_date date not null,
+  checked_items jsonb not null default '{}'::jsonb,
+  streak_count integer not null default 0,
+  streak_last_date date,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (cam_profile_id, checklist_date)
+);
+
+create index if not exists idx_daily_sop_cam_date
+  on public.daily_sop_checklists(cam_profile_id, checklist_date desc);
+
+alter table public.daily_sop_checklists
+  add column if not exists template_id uuid references public.sop_templates(id) on delete set null;
+
+insert into public.sop_templates (legacy_key, name, description, is_active, editable_by_role)
+values (
+  'cam-daily-v1',
+  'Daily CAM Checklist',
+  'Default daily operating checklist for CAM users.',
+  true,
+  'Manager'
+)
+on conflict (legacy_key) do update set
+  name = excluded.name,
+  description = excluded.description,
+  is_active = excluded.is_active,
+  editable_by_role = excluded.editable_by_role,
+  updated_at = now();
+
+with template as (
+  select id from public.sop_templates where legacy_key = 'cam-daily-v1'
+)
+insert into public.sop_sections (template_id, section_key, title, time_label, emoji, display_order, is_active)
+select template.id, section_key, title, time_label, emoji, display_order, true
+from template
+cross join (
+  values
+    ('morning-open', 'Morning Open', '8:00-9:00 AM', '🌅', 0),
+    ('market-hours', 'Market Hours Check-In', 'Every ~1 hour', '📡', 1),
+    ('mid-session', 'Mid-Session Review', '12:00-1:00 PM', '🔍', 2),
+    ('market-close', 'Market Close & Report', 'After market close', '📊', 3),
+    ('end-of-day', 'End of Day Admin', 'End of session', '✅', 4)
+) as seed(section_key, title, time_label, emoji, display_order)
+on conflict (template_id, section_key) do update set
+  title = excluded.title,
+  time_label = excluded.time_label,
+  emoji = excluded.emoji,
+  display_order = excluded.display_order,
+  is_active = excluded.is_active,
+  updated_at = now();
+
+with template as (
+  select id from public.sop_templates where legacy_key = 'cam-daily-v1'
+),
+section_rows as (
+  select s.id, s.section_key
+  from public.sop_sections s
+  join template t on t.id = s.template_id
+),
+seed_items(section_key, item_key, text, display_order) as (
+  values
+    ('morning-open', '0-0', 'Log in to VPS for each client — confirm not frozen', 0),
+    ('morning-open', '0-1', 'Verify all algos are active (green status in NT)', 1),
+    ('morning-open', '0-2', 'Check for overnight disconnections in activity log', 2),
+    ('morning-open', '0-3', 'Review open positions — no stale trades', 3),
+    ('morning-open', '0-4', 'Check drawdown status on all funded accounts', 4),
+    ('market-hours', '1-0', 'Verify algos still running (no silent crashes)', 0),
+    ('market-hours', '1-1', 'Check P&L progress vs daily target', 1),
+    ('market-hours', '1-2', 'Confirm VPS not frozen or CPU-spiked', 2),
+    ('market-hours', '1-3', 'Review any new flags generated by the system', 3),
+    ('market-hours', '1-4', 'Note client questions received via message — log in activity', 4),
+    ('mid-session', '2-0', 'Check if any account hit daily loss limit', 0),
+    ('mid-session', '2-1', 'Review drawdown buffer on funded accounts — warning if <$1,200', 1),
+    ('mid-session', '2-2', 'Verify Bullet Bot pass in progress (if applicable)', 2),
+    ('mid-session', '2-3', 'Log any strategy changes or observations in activity', 3),
+    ('mid-session', '2-4', 'Respond to client check-ins with status update', 4),
+    ('market-close', '3-0', 'Import NT CSV export for each client', 0),
+    ('market-close', '3-1', 'Review and classify any Unassigned accounts', 1),
+    ('market-close', '3-2', 'Resolve or acknowledge auto-generated flags', 2),
+    ('market-close', '3-3', 'Record daily P&L, drawdown, and strategy used in report', 3),
+    ('market-close', '3-4', 'Update payout status if target profit reached', 4),
+    ('market-close', '3-5', 'Send client update (daily P&L + any notes)', 5),
+    ('market-close', '3-6', 'Close day — confirm no unresolved critical flags', 6),
+    ('end-of-day', '4-0', 'Log completed tasks and update task status', 0),
+    ('end-of-day', '4-1', 'Note any issues or anomalies in activity log', 1),
+    ('end-of-day', '4-2', 'Flag accounts approaching drawdown limits for tomorrow', 2),
+    ('end-of-day', '4-3', 'Review tomorrow''s price checks or scheduled events', 3),
+    ('end-of-day', '4-4', 'Confirm VPS still running — algos off after market hours', 4)
+)
+insert into public.sop_items (section_id, item_key, text, display_order, is_active)
+select section_rows.id, seed_items.item_key, seed_items.text, seed_items.display_order, true
+from seed_items
+join section_rows on section_rows.section_key = seed_items.section_key
+on conflict (section_id, item_key) do update set
+  text = excluded.text,
+  display_order = excluded.display_order,
+  is_active = excluded.is_active,
+  updated_at = now();
+
+-- Smoke check: latest SOP rows, if any.
+select
+  cp.name as cam_name,
+  st.name as template_name,
+  dsc.checklist_date,
+  dsc.checked_items,
+  dsc.streak_count,
+  dsc.streak_last_date,
+  dsc.completed_at,
+  dsc.updated_at
+from public.daily_sop_checklists dsc
+join public.cam_profiles cp on cp.id = dsc.cam_profile_id
+left join public.sop_templates st on st.id = dsc.template_id
+order by dsc.updated_at desc
+limit 20;
+
+-- Smoke check: active template content.
+select
+  st.name as template_name,
+  ss.display_order as section_order,
+  ss.title as section_title,
+  ss.time_label,
+  si.display_order as item_order,
+  si.item_key,
+  si.text as item_text
+from public.sop_templates st
+join public.sop_sections ss on ss.template_id = st.id and ss.is_active = true
+join public.sop_items si on si.section_id = ss.id and si.is_active = true
+where st.legacy_key = 'cam-daily-v1'
+order by ss.display_order, si.display_order;

@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckSquare, Square, RotateCcw, Zap } from 'lucide-react';
+import { isSupabaseConfigured } from '../lib/supabaseClient';
+import { loadSupabaseDailySop, loadSupabaseDailySopTemplate, saveSupabaseDailySop } from '../domain/supabaseStore';
+import { computeNewStreak, getStreak } from './dailySopUtils';
 
-const SOP_SECTIONS = [
+const FALLBACK_SOP_SECTIONS = [
   {
     title: 'Morning Open',
     time: '8:00–9:00 AM',
@@ -66,37 +69,36 @@ const SOP_SECTIONS = [
   },
 ];
 
-export function getStreak() {
-  try {
-    const raw = localStorage.getItem('cam-sop-streak');
-    return raw ? JSON.parse(raw) : { count: 0, lastDate: '' };
-  } catch { return { count: 0, lastDate: '' }; }
+function normalizeSections(sections = []) {
+  return (sections || []).map((section, sIdx) => ({
+    ...section,
+    key: section.key || String(sIdx),
+    time: section.time || '',
+    items: (section.items || []).map((item, iIdx) => {
+      if (typeof item === 'string') {
+        return { key: `${sIdx}-${iIdx}`, text: item };
+      }
+      return {
+        key: item.key || item.item_key || `${sIdx}-${iIdx}`,
+        text: item.text || '',
+      };
+    }),
+  }));
 }
 
-export function prevTradingDay(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  do { d.setDate(d.getDate() - 1); } while ([0, 6].includes(d.getDay()));
-  return d.toISOString().slice(0, 10);
-}
+const DEFAULT_SECTIONS = normalizeSections(FALLBACK_SOP_SECTIONS);
 
-export function computeNewStreak(today, currentStreak, wasComplete, isNowComplete) {
-  if (!isNowComplete || wasComplete) return currentStreak;
-  const prev = prevTradingDay(today);
-  const newCount = currentStreak.lastDate === prev ? currentStreak.count + 1 : 1;
-  return { count: newCount, lastDate: today };
-}
-
-function updateStreak(today, wasComplete, isNowComplete) {
-  if (!isNowComplete || wasComplete) return;
-  const streak = getStreak();
-  const next = computeNewStreak(today, streak, wasComplete, isNowComplete);
-  localStorage.setItem('cam-sop-streak', JSON.stringify(next));
-}
-
-export default function DailySOP() {
+export default function DailySOP({ camProfileId = '' }) {
   const today = new Date().toISOString().slice(0, 10);
   const storageKey = `cam-sop-${today}`;
-  const totalItems = SOP_SECTIONS.reduce((sum, s) => sum + s.items.length, 0);
+  const [template, setTemplate] = useState(() => ({
+    id: null,
+    name: 'Daily CAM Checklist',
+    editableByRole: 'Manager',
+    sections: DEFAULT_SECTIONS,
+  }));
+  const sections = template.sections?.length ? template.sections : DEFAULT_SECTIONS;
+  const totalItems = sections.reduce((sum, s) => sum + s.items.length, 0);
 
   const [checked, setChecked] = useState(() => {
     try {
@@ -108,17 +110,66 @@ export default function DailySOP() {
     } catch { return {}; }
   });
   const [justCompleted, setJustCompleted] = useState(false);
-  const streak = getStreak();
+  const [streak, setStreak] = useState(() => getStreak());
+  const [remoteStatus, setRemoteStatus] = useState(() => (
+    isSupabaseConfigured && camProfileId ? 'loading' : 'local'
+  ));
 
-  function toggle(sectionIdx, itemIdx) {
-    const key = `${sectionIdx}-${itemIdx}`;
+  useEffect(() => {
+    if (!isSupabaseConfigured || !camProfileId) {
+      return;
+    }
+    let cancelled = false;
+    Promise.all([
+      loadSupabaseDailySopTemplate(),
+      loadSupabaseDailySop(camProfileId, today),
+    ])
+      .then(([loadedTemplate, row]) => {
+        if (cancelled) return;
+        if (loadedTemplate?.sections?.length) {
+          setTemplate({
+            ...loadedTemplate,
+            sections: normalizeSections(loadedTemplate.sections),
+          });
+        }
+        if (row) {
+          setChecked(row.checked_items || {});
+          setStreak({
+            count: Number(row.streak_count || 0),
+            lastDate: row.streak_last_date || '',
+          });
+        }
+        setRemoteStatus('connected');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('[CRM] Failed to load Daily SOP from Supabase:', error);
+        setRemoteStatus('error');
+      });
+    return () => { cancelled = true; };
+  }, [camProfileId, today]);
+
+  function persistDailySop(nextChecked, nextStreak, completedAt = null) {
+    localStorage.setItem(storageKey, JSON.stringify(nextChecked));
+    localStorage.setItem('cam-sop-streak', JSON.stringify(nextStreak));
+    if (!isSupabaseConfigured || !camProfileId) return;
+    saveSupabaseDailySop(camProfileId, today, nextChecked, nextStreak, completedAt, template.id).catch((error) => {
+      console.error('[CRM] Failed to save Daily SOP to Supabase:', error);
+      setRemoteStatus('error');
+    });
+  }
+
+  function toggle(itemKey) {
     setChecked((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      localStorage.setItem(storageKey, JSON.stringify(next));
+      const next = { ...prev, [itemKey]: !prev[itemKey] };
       const doneCount = Object.values(next).filter(Boolean).length;
       const wasComplete = Object.values(prev).filter(Boolean).length === totalItems;
       const isNowComplete = doneCount === totalItems;
-      updateStreak(today, wasComplete, isNowComplete);
+      const nextStreak = isNowComplete && !wasComplete
+        ? computeNewStreak(today, streak, wasComplete, isNowComplete)
+        : streak;
+      setStreak(nextStreak);
+      persistDailySop(next, nextStreak, isNowComplete ? new Date().toISOString() : null);
       if (isNowComplete && !wasComplete) setJustCompleted(true);
       return next;
     });
@@ -128,6 +179,7 @@ export default function DailySOP() {
     setChecked({});
     setJustCompleted(false);
     localStorage.removeItem(storageKey);
+    persistDailySop({}, streak, null);
   }
 
   const doneItems = Object.values(checked).filter(Boolean).length;
@@ -141,16 +193,19 @@ export default function DailySOP() {
   })();
 
   // Determine which section is currently active (first incomplete)
-  const activeSectionIdx = SOP_SECTIONS.findIndex((s, sIdx) =>
-    s.items.some((_, iIdx) => !checked[`${sIdx}-${iIdx}`])
+  const activeSectionIdx = sections.findIndex((section) =>
+    section.items.some((item) => !checked[item.key])
   );
 
   return (
     <div className="daily-sop">
       <section className={`panel${isComplete ? ' sop-complete-panel' : ''}`}>
         <div className="panel-heading">
-          <h3>Daily CAM Checklist</h3>
+          <h3>{template.name || 'Daily CAM Checklist'}</h3>
           <span className="badge muted">{today}</span>
+          {remoteStatus === 'connected' ? <span className="badge positive">Supabase</span> : null}
+          {remoteStatus === 'loading' ? <span className="badge muted">Syncing</span> : null}
+          {remoteStatus === 'error' ? <span className="badge negative">Local fallback</span> : null}
           <span className="count">{doneItems}/{totalItems}</span>
           {currentStreak > 1 && (
             <span className="sop-streak-badge"><Zap size={12} />{currentStreak} day streak</span>
@@ -187,12 +242,12 @@ export default function DailySOP() {
           </div>
         )}
 
-        {SOP_SECTIONS.map((section, sIdx) => {
-          const sectionDone = section.items.filter((_, iIdx) => checked[`${sIdx}-${iIdx}`]).length;
+        {sections.map((section, sIdx) => {
+          const sectionDone = section.items.filter((item) => checked[item.key]).length;
           const sectionComplete = sectionDone === section.items.length;
           const isActive = sIdx === activeSectionIdx;
           return (
-            <div className={`sop-section${sectionComplete ? ' sop-section-done' : isActive ? ' sop-section-active' : ''}`} key={section.title}>
+            <div className={`sop-section${sectionComplete ? ' sop-section-done' : isActive ? ' sop-section-active' : ''}`} key={section.key || section.title}>
               <div className="sop-section-header">
                 <span className="sop-section-emoji">{sectionComplete ? '✅' : section.emoji}</span>
                 <span className="sop-section-title">{section.title}</span>
@@ -204,16 +259,15 @@ export default function DailySOP() {
               </div>
               <ul className="sop-list">
                 {section.items.map((item, iIdx) => {
-                  const key = `${sIdx}-${iIdx}`;
-                  const done = !!checked[key];
+                  const done = !!checked[item.key];
                   return (
                     <li
-                      key={iIdx}
+                      key={item.key || iIdx}
                       className={`sop-item${done ? ' sop-done' : ''}`}
-                      onClick={() => toggle(sIdx, iIdx)}
+                      onClick={() => toggle(item.key)}
                     >
                       {done ? <CheckSquare size={15} className="positive" /> : <Square size={15} className="muted" />}
-                      <span>{item}</span>
+                      <span>{item.text}</span>
                     </li>
                   );
                 })}

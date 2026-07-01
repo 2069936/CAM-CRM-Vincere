@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeNewStreak, prevTradingDay } from './DailySOP';
+import { computeNewStreak, prevTradingDay } from './dailySopUtils';
 
 // ── prevTradingDay ────────────────────────────────────────────────────────────
 
