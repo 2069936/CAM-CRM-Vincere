@@ -48,4 +48,3 @@ public/strategy-set-index.json
 # Local CRM backups
 cam-backup-*.json
 .vercel
-.env*
