@@ -231,29 +231,36 @@ async function createUser(admin, payload) {
   });
   if (authError) throw authError;
 
-  const wantsCamProfile = role === 'CAM' && Boolean(payload.hasCamProfile || payload.camProfileId);
-  const camUuid = payload.camProfileId
-    ? await getCamProfileId(admin, payload.camProfileId)
-    : wantsCamProfile
-      ? await createCamProfileForUser(admin, { username, displayName, status: 'Active' })
-      : null;
-  const { data, error } = await admin
-    .from('app_users')
-    .upsert({
-      legacy_key: legacyUserKey(username),
-      auth_user_id: authData.user.id,
-      username,
-      display_name: displayName,
-      email,
-      role,
-      status: 'Active',
-      cam_profile_id: camUuid,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'auth_user_id' })
-    .select('*, cam_profiles(legacy_key, name)')
-    .single();
-  if (error) throw error;
-  return mapUser(data);
+  try {
+    const wantsCamProfile = role === 'CAM' && Boolean(payload.hasCamProfile || payload.camProfileId);
+    const camUuid = payload.camProfileId
+      ? await getCamProfileId(admin, payload.camProfileId)
+      : wantsCamProfile
+        ? await createCamProfileForUser(admin, { username, displayName, status: 'Active' })
+        : null;
+    const { data, error } = await admin
+      .from('app_users')
+      .upsert({
+        legacy_key: legacyUserKey(username),
+        auth_user_id: authData.user.id,
+        username,
+        display_name: displayName,
+        email,
+        role,
+        status: 'Active',
+        cam_profile_id: camUuid,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'auth_user_id' })
+      .select('*, cam_profiles(legacy_key, name)')
+      .single();
+    if (error) throw error;
+    return mapUser(data);
+  } catch (err) {
+    // Roll back the freshly-created Auth user so a later failure doesn't strand
+    // an orphan (Auth user with no app_users row) that blocks re-creating the email.
+    await admin.auth.admin.deleteUser(authData.user.id).catch(() => {});
+    throw err;
+  }
 }
 
 async function updateUser(admin, payload) {
@@ -284,6 +291,21 @@ async function updateUser(admin, payload) {
 
   if (!username || !email || !displayName) {
     throw Object.assign(new Error('Display name, username, and email are required.'), { status: 400 });
+  }
+
+  // Catch a colliding username/email up front (excluding this user) so a duplicate
+  // returns a clean 409 instead of a late DB constraint error after Auth/CAM are
+  // already mutated below, which would leave the account half-updated.
+  const { data: conflict, error: conflictError } = await admin
+    .from('app_users')
+    .select('id')
+    .or(`username.eq.${username},email.eq.${email}`)
+    .neq('id', appUserId)
+    .limit(1)
+    .maybeSingle();
+  if (conflictError) throw conflictError;
+  if (conflict?.id) {
+    throw Object.assign(new Error('Username or email is already in use.'), { status: 409 });
   }
 
   if (role !== 'CAM' || !wantsCamProfile) {
