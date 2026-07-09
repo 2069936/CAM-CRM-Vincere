@@ -3392,77 +3392,13 @@ function ManagerOverview({
                 {totals.accounts} accounts tracked
               </span>
               {totals.flags > 0 && (
-                <span className="negative">
-                  · {totals.flags} open flag{totals.flags !== 1 ? "s" : ""}
+                <span className="badge danger">
+                  {totals.flags} open flag{totals.flags !== 1 ? "s" : ""}
                 </span>
               )}
             </div>
           </div>
-          <div className="header-actions">
-            <button
-              className={showNewClient ? "secondary-button" : "ghost-button"}
-              onClick={() => setShowNewClient((v) => !v)}
-            >
-              <UserPlus size={14} /> New Client
-            </button>
-            <button
-              className={showSopBuilder ? "secondary-button" : "ghost-button"}
-              onClick={() => setShowSopBuilder((v) => !v)}
-            >
-              <ListChecks size={14} /> SOP Item
-            </button>
-            <button
-              className={showPipeline ? "secondary-button" : "ghost-button"}
-              onClick={() => setShowPipeline((v) => !v)}
-            >
-              <Kanban size={14} /> Pipeline
-            </button>
-            <button
-              className={showBatchImport ? "secondary-button" : "ghost-button"}
-              onClick={() => {
-                setShowBatchImport((v) => !v);
-                setBatchImportResult(null);
-              }}
-            >
-              <FileUp size={14} /> Batch Import
-            </button>
-            <button
-              className={showDataTools ? "secondary-button" : "ghost-button"}
-              onClick={() => setShowDataTools((value) => !value)}
-            >
-              <Download size={14} /> Data Tools
-            </button>
-            <button
-              className="ghost-button"
-              onClick={() => {
-                const txt = buildTeamWeeklyReport(clients, activeCamProfiles);
-                navigator.clipboard
-                  .writeText(txt)
-                  .then(() => alert("Weekly team summary copied!"));
-              }}
-              title="Copy weekly team summary for Slack / email"
-            >
-              <ClipboardList size={14} /> Weekly Report
-            </button>
-            <button
-              className="ghost-button"
-              onClick={() => {
-                const report = buildTeamMessageReport(
-                  clients,
-                  activeCamProfiles,
-                  totals,
-                  cams,
-                );
-                navigator.clipboard.writeText(report).then(() => {
-                  setTeamCopyDone(true);
-                  setTimeout(() => setTeamCopyDone(false), 2000);
-                });
-              }}
-              title="Copy team daily report for WhatsApp/Telegram"
-            >
-              <Copy size={16} />
-              {teamCopyDone ? " Copied!" : " Copy Team Report"}
-            </button>
+          <div className="header-actions operations-primary-actions">
             <button
               className="primary-button workspace-open-button"
               onClick={() => onOpenCam(cams[0]?.id || "am-pedro")}
@@ -3470,7 +3406,75 @@ function ManagerOverview({
               <BarChart3 size={16} /> Open {cams[0]?.name || "Pedro"}'s
               Workspace
             </button>
+            <button
+              className={showNewClient ? "secondary-button" : "ghost-button"}
+              onClick={() => setShowNewClient((v) => !v)}
+            >
+              <UserPlus size={14} /> New Client
+            </button>
           </div>
+        </div>
+
+        <div className="operations-toolbar" aria-label="Operations tools">
+          <span className="operations-toolbar-label">Tools</span>
+          <button
+            className={showSopBuilder ? "secondary-button" : "ghost-button"}
+            onClick={() => setShowSopBuilder((v) => !v)}
+          >
+            <ListChecks size={14} /> SOP Item
+          </button>
+          <button
+            className={showPipeline ? "secondary-button" : "ghost-button"}
+            onClick={() => setShowPipeline((v) => !v)}
+          >
+            <Kanban size={14} /> Pipeline
+          </button>
+          <button
+            className={showBatchImport ? "secondary-button" : "ghost-button"}
+            onClick={() => {
+              setShowBatchImport((v) => !v);
+              setBatchImportResult(null);
+            }}
+          >
+            <FileUp size={14} /> Batch Import
+          </button>
+          <button
+            className={showDataTools ? "secondary-button" : "ghost-button"}
+            onClick={() => setShowDataTools((value) => !value)}
+          >
+            <Download size={14} /> Data Tools
+          </button>
+          <button
+            className="ghost-button"
+            onClick={() => {
+              const txt = buildTeamWeeklyReport(clients, activeCamProfiles);
+              navigator.clipboard
+                .writeText(txt)
+                .then(() => alert("Weekly team summary copied!"));
+            }}
+            title="Copy weekly team summary for Slack / email"
+          >
+            <ClipboardList size={14} /> Weekly Report
+          </button>
+          <button
+            className="ghost-button"
+            onClick={() => {
+              const report = buildTeamMessageReport(
+                clients,
+                activeCamProfiles,
+                totals,
+                cams,
+              );
+              navigator.clipboard.writeText(report).then(() => {
+                setTeamCopyDone(true);
+                setTimeout(() => setTeamCopyDone(false), 2000);
+              });
+            }}
+            title="Copy team daily report for WhatsApp/Telegram"
+          >
+            <Copy size={14} />
+            {teamCopyDone ? "Copied!" : "Copy Team Report"}
+          </button>
         </div>
 
         {unassignedClients.length > 0 && (

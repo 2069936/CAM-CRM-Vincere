@@ -58,3 +58,11 @@ The app may use shadcn/ui as the component baseline while preserving the CAM CRM
 3. Client roster table and assignment controls.
 4. CAM workspace header, primary action row, and tab navigation.
 5. Credentials/Profile forms and repeated credential panels.
+
+### Deferred Layout Direction
+
+For the next Manager Operations header pass, use a command header with grouped actions:
+- Keep the left side focused on brand/date, page title, operational counts, and alert badges.
+- Keep only high-priority actions in the header right side: open primary CAM workspace and create a new client.
+- Move secondary tools into a quiet toolbar below the header: SOP Item, Pipeline, Batch Import, Data Tools, Weekly Report, and Copy Team Report.
+- Preserve all existing handlers and visibility toggles; this is a layout hierarchy change, not a workflow change.
