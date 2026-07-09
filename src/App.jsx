@@ -10,8 +10,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  ClipboardList,
   Download,
   Edit3,
+  FileUp,
   FileText,
   Building2,
   Clock3,
@@ -20,7 +22,9 @@ import {
   Lock,
   LogOut,
   Globe2,
+  Kanban,
   Languages,
+  ListChecks,
   Plus,
   RefreshCw,
   MessageCircle,
@@ -30,6 +34,7 @@ import {
   Trash2,
   TrendingUp,
   Upload,
+  UserPlus,
   Users,
   History,
   Mail,
@@ -3398,19 +3403,19 @@ function ManagerOverview({
               className={showNewClient ? "secondary-button" : "ghost-button"}
               onClick={() => setShowNewClient((v) => !v)}
             >
-              + New Client
+              <UserPlus size={14} /> New Client
             </button>
             <button
               className={showSopBuilder ? "secondary-button" : "ghost-button"}
               onClick={() => setShowSopBuilder((v) => !v)}
             >
-              <Plus size={14} /> SOP Item
+              <ListChecks size={14} /> SOP Item
             </button>
             <button
               className={showPipeline ? "secondary-button" : "ghost-button"}
               onClick={() => setShowPipeline((v) => !v)}
             >
-              📋 Pipeline
+              <Kanban size={14} /> Pipeline
             </button>
             <button
               className={showBatchImport ? "secondary-button" : "ghost-button"}
@@ -3419,7 +3424,7 @@ function ManagerOverview({
                 setBatchImportResult(null);
               }}
             >
-              ⬆ Batch Import
+              <FileUp size={14} /> Batch Import
             </button>
             <button
               className={showDataTools ? "secondary-button" : "ghost-button"}
@@ -3437,7 +3442,7 @@ function ManagerOverview({
               }}
               title="Copy weekly team summary for Slack / email"
             >
-              📋 Weekly Report
+              <ClipboardList size={14} /> Weekly Report
             </button>
             <button
               className="ghost-button"
@@ -3459,7 +3464,7 @@ function ManagerOverview({
               {teamCopyDone ? " Copied!" : " Copy Team Report"}
             </button>
             <button
-              className="primary-button"
+              className="primary-button workspace-open-button"
               onClick={() => onOpenCam(cams[0]?.id || "am-pedro")}
             >
               <BarChart3 size={16} /> Open {cams[0]?.name || "Pedro"}'s
@@ -3560,7 +3565,7 @@ function ManagerOverview({
         </div>
 
         {showNewClient && (
-          <section className="panel" style={{ maxWidth: 480 }}>
+          <section className="panel manager-new-client-panel">
             <div className="panel-heading">
               <h3>Add new client</h3>
             </div>
@@ -4157,7 +4162,7 @@ function ManagerOverview({
             (f) => f.severity === "Critical",
           ).length;
           return (
-            <section className="panel">
+            <section className="panel open-flags-panel">
               <div className="panel-heading">
                 <h3>Open flags — all clients</h3>
                 <span className={`badge ${critCount ? "danger" : "warning"}`}>
@@ -5577,7 +5582,7 @@ function MonthlyReportPanel({ client, month, onClose }) {
               });
             }}
           >
-            {copied ? "✓ Copied!" : "📋 Copy WhatsApp"}
+            <Copy size={14} /> {copied ? "Copied!" : "Copy WhatsApp"}
           </button>
           <button className="ghost-button" onClick={onClose}>
             Close
@@ -7319,14 +7324,14 @@ function InsightFeedPanel({ insights, onSelectClient }) {
   const warningCount = insights.filter((i) => i.severity === "warning").length;
 
   const severityConfig = {
-    critical: { label: "Critical", cls: "insight-critical", dot: "#ff5a69" },
-    warning: { label: "Warning", cls: "insight-warning", dot: "#f4bb44" },
+    critical: { label: "Critical", cls: "insight-critical", dot: "var(--error)" },
+    warning: { label: "Warning", cls: "insight-warning", dot: "var(--warning)" },
     "info-green": {
       label: "Opportunity",
       cls: "insight-opportunity",
-      dot: "#2fca73",
+      dot: "var(--success)",
     },
-    info: { label: "Info", cls: "insight-info", dot: "#45a3ff" },
+    info: { label: "Info", cls: "insight-info", dot: "var(--info)" },
   };
 
   return (
@@ -12166,7 +12171,7 @@ export default function App() {
                         onClick={() => setShowTemplates((v) => !v)}
                         title="Message templates for WhatsApp/Telegram"
                       >
-                        📋 Templates
+                        <ClipboardList size={16} /> Templates
                       </button>
                       <button
                         className="secondary-button"
@@ -12382,7 +12387,7 @@ export default function App() {
                                   });
                                 }}
                               >
-                                📋 {t.label}
+                                <Copy size={12} /> {t.label}
                               </button>
                             ))}
                           </div>
@@ -12416,9 +12421,16 @@ export default function App() {
                     onSave={(v) => handleUpdateClient({ pinnedNote: v })}
                   />
 
-                  <div className="tabs">
+                  <div
+                    className="tabs"
+                    role="tablist"
+                    aria-label="Client workspace sections"
+                  >
                     {visibleTabs.map((tab) => (
                       <button
+                        type="button"
+                        role="tab"
+                        aria-selected={effectiveActiveTab === tab}
                         className={effectiveActiveTab === tab ? "active" : ""}
                         key={tab}
                         onClick={() => setActiveTab(tab)}
@@ -12428,176 +12440,182 @@ export default function App() {
                     ))}
                   </div>
 
-                  {effectiveActiveTab === "Overview" ? (
-                    <ClientOverview
-                      client={selectedClient}
-                      dailyImport={dailyImport}
-                      allClients={accessibleClients}
-                      onRequestMonthlyReport={(month) =>
-                        setMonthlyReportMonth(month)
-                      }
-                      onLogPayout={handleLogPayout}
-                    />
-                  ) : null}
-                  {effectiveActiveTab === "Activity" ? (
-                    <ActivityLog
-                      client={selectedClient}
-                      onAddEntry={handleAddActivity}
-                      onDeleteEntry={handleDeleteActivity}
-                    />
-                  ) : null}
-                  {effectiveActiveTab === "Tasks" ? (
-                    <TasksTab
-                      client={selectedClient}
-                      onAddTask={handleAddTask}
-                      onUpdateTask={handleUpdateTask}
-                      onDeleteTask={handleDeleteTask}
-                    />
-                  ) : null}
-                  {effectiveActiveTab === "Credentials & Notes" ? (
-                    <CredentialsTab
-                      client={selectedClient}
-                      onUpdateClient={handleUpdateClient}
-                      onDeleteClient={handleDeleteClient}
-                      canDeleteClient={canCreateDeleteClients}
-                    />
-                  ) : null}
-                  {effectiveActiveTab === "Price Checks" ? (
-                    <PriceChecksTab
-                      client={selectedClient}
-                      onUpdateClient={handleUpdateClient}
-                    />
-                  ) : null}
-                  {effectiveActiveTab === "Stack Playbook" ? (
-                    <StackPlaybook
-                      client={selectedClient}
-                      dailyImport={dailyImport}
-                      onUpdateAccount={handleAccountUpdate}
-                      allClients={accessibleClients}
-                    />
-                  ) : null}
-                  {["Review", "Evaluations", "Funded", "Cash"].includes(
-                    effectiveActiveTab,
-                  ) ? (
-                    <>
-                      <Dashboard
-                        dailyImport={dailyImport}
-                        rows={currentTabData.snapshots}
-                        title={effectiveActiveTab}
-                        mode={tabMode(effectiveActiveTab)}
-                        onBuildReport={() => setReportImport(dailyImport)}
-                        onRecalculate={recalculateImport}
-                        onResolveFlag={handleResolveFlag}
-                        onBulkResolveFlags={handleBulkResolveFlags}
-                        onUpdateAccount={handleAccountUpdate}
-                        strategySetRecords={strategySetIndex.records}
+                  <div
+                    className="tab-content"
+                    role="tabpanel"
+                    aria-label={effectiveActiveTab}
+                  >
+                    {effectiveActiveTab === "Overview" ? (
+                      <ClientOverview
                         client={selectedClient}
+                        dailyImport={dailyImport}
+                        allClients={accessibleClients}
+                        onRequestMonthlyReport={(month) =>
+                          setMonthlyReportMonth(month)
+                        }
+                        onLogPayout={handleLogPayout}
                       />
-                      <section className="panel">
-                        <button
-                          className="registry-toggle"
-                          onClick={() => setRegistryOpen((value) => !value)}
-                        >
-                          <ChevronDown
-                            className={
-                              registryOpen ? "chevron open" : "chevron"
-                            }
-                            size={16}
-                          />
-                          <h3>Account Registry</h3>
-                          <span className="muted">
-                            Manual classification persists across days.
-                          </span>
-                          <span className="count">
-                            {Object.keys(currentTabData.accounts).length}
-                          </span>
-                        </button>
-                        {registryOpen ? (
-                          <AccountManager
-                            {...currentTabData}
-                            mode={tabMode(effectiveActiveTab)}
-                            onUpdateAccount={handleAccountUpdate}
-                            onAddAccount={(accountName, meta) => {
-                              if (!selectedClient || !accountName.trim())
-                                return;
-                              setState((current) =>
-                                upsertAccountMeta(
-                                  current,
+                    ) : null}
+                    {effectiveActiveTab === "Activity" ? (
+                      <ActivityLog
+                        client={selectedClient}
+                        onAddEntry={handleAddActivity}
+                        onDeleteEntry={handleDeleteActivity}
+                      />
+                    ) : null}
+                    {effectiveActiveTab === "Tasks" ? (
+                      <TasksTab
+                        client={selectedClient}
+                        onAddTask={handleAddTask}
+                        onUpdateTask={handleUpdateTask}
+                        onDeleteTask={handleDeleteTask}
+                      />
+                    ) : null}
+                    {effectiveActiveTab === "Credentials & Notes" ? (
+                      <CredentialsTab
+                        client={selectedClient}
+                        onUpdateClient={handleUpdateClient}
+                        onDeleteClient={handleDeleteClient}
+                        canDeleteClient={canCreateDeleteClients}
+                      />
+                    ) : null}
+                    {effectiveActiveTab === "Price Checks" ? (
+                      <PriceChecksTab
+                        client={selectedClient}
+                        onUpdateClient={handleUpdateClient}
+                      />
+                    ) : null}
+                    {effectiveActiveTab === "Stack Playbook" ? (
+                      <StackPlaybook
+                        client={selectedClient}
+                        dailyImport={dailyImport}
+                        onUpdateAccount={handleAccountUpdate}
+                        allClients={accessibleClients}
+                      />
+                    ) : null}
+                    {["Review", "Evaluations", "Funded", "Cash"].includes(
+                      effectiveActiveTab,
+                    ) ? (
+                      <>
+                        <Dashboard
+                          dailyImport={dailyImport}
+                          rows={currentTabData.snapshots}
+                          title={effectiveActiveTab}
+                          mode={tabMode(effectiveActiveTab)}
+                          onBuildReport={() => setReportImport(dailyImport)}
+                          onRecalculate={recalculateImport}
+                          onResolveFlag={handleResolveFlag}
+                          onBulkResolveFlags={handleBulkResolveFlags}
+                          onUpdateAccount={handleAccountUpdate}
+                          strategySetRecords={strategySetIndex.records}
+                          client={selectedClient}
+                        />
+                        <section className="panel">
+                          <button
+                            className="registry-toggle"
+                            onClick={() => setRegistryOpen((value) => !value)}
+                          >
+                            <ChevronDown
+                              className={
+                                registryOpen ? "chevron open" : "chevron"
+                              }
+                              size={16}
+                            />
+                            <h3>Account Registry</h3>
+                            <span className="muted">
+                              Manual classification persists across days.
+                            </span>
+                            <span className="count">
+                              {Object.keys(currentTabData.accounts).length}
+                            </span>
+                          </button>
+                          {registryOpen ? (
+                            <AccountManager
+                              {...currentTabData}
+                              mode={tabMode(effectiveActiveTab)}
+                              onUpdateAccount={handleAccountUpdate}
+                              onAddAccount={(accountName, meta) => {
+                                if (!selectedClient || !accountName.trim())
+                                  return;
+                                setState((current) =>
+                                  upsertAccountMeta(
+                                    current,
+                                    selectedClient.id,
+                                    accountName.trim(),
+                                    meta,
+                                  ),
+                                );
+                                upsertSupabaseTradingAccount(
                                   selectedClient.id,
                                   accountName.trim(),
                                   meta,
-                                ),
-                              );
-                              upsertSupabaseTradingAccount(
-                                selectedClient.id,
-                                accountName.trim(),
-                                meta,
-                              ).then((savedAccount) => {
-                                auditSilently({
-                                  entityType: "trading_account",
-                                  entityId: savedAccount?.id || accountName.trim(),
-                                  action: "account.create",
-                                  afterData: {
-                                    clientId: selectedClient.id,
-                                    clientName: selectedClient.name,
-                                    accountName: accountName.trim(),
-                                    meta,
-                                  },
+                                ).then((savedAccount) => {
+                                  auditSilently({
+                                    entityType: "trading_account",
+                                    entityId: savedAccount?.id || accountName.trim(),
+                                    action: "account.create",
+                                    afterData: {
+                                      clientId: selectedClient.id,
+                                      clientName: selectedClient.name,
+                                      accountName: accountName.trim(),
+                                      meta,
+                                    },
+                                  });
+                                }).catch((error) => {
+                                  console.error(
+                                    "[CRM] Failed to add trading account:",
+                                    error,
+                                  );
+                                  window.alert(
+                                    `Could not save "${accountName}" to Supabase: ${error.message}`,
+                                  );
                                 });
-                              }).catch((error) => {
-                                console.error(
-                                  "[CRM] Failed to add trading account:",
-                                  error,
-                                );
-                                window.alert(
-                                  `Could not save "${accountName}" to Supabase: ${error.message}`,
-                                );
-                              });
-                            }}
-                            onRemoveAccount={(accountName) => {
-                              if (!selectedClient) return;
-                              if (
-                                !window.confirm(
-                                  `Remove "${accountName}" from the registry? Historical import data is kept, but the account metadata (type, alias, targets) will be deleted.`,
+                              }}
+                              onRemoveAccount={(accountName) => {
+                                if (!selectedClient) return;
+                                if (
+                                  !window.confirm(
+                                    `Remove "${accountName}" from the registry? Historical import data is kept, but the account metadata (type, alias, targets) will be deleted.`,
+                                  )
                                 )
-                              )
-                                return;
-                              setState((current) =>
-                                removeAccountFromRegistry(
-                                  current,
+                                  return;
+                                setState((current) =>
+                                  removeAccountFromRegistry(
+                                    current,
+                                    selectedClient.id,
+                                    accountName,
+                                  ),
+                                );
+                                deleteSupabaseTradingAccount(
                                   selectedClient.id,
                                   accountName,
-                                ),
-                              );
-                              deleteSupabaseTradingAccount(
-                                selectedClient.id,
-                                accountName,
-                              ).then(() => {
-                                auditSilently({
-                                  entityType: "trading_account",
-                                  entityId: accountName,
-                                  action: "account.delete",
-                                  afterData: {
-                                    clientId: selectedClient.id,
-                                    clientName: selectedClient.name,
-                                    accountName,
-                                  },
+                                ).then(() => {
+                                  auditSilently({
+                                    entityType: "trading_account",
+                                    entityId: accountName,
+                                    action: "account.delete",
+                                    afterData: {
+                                      clientId: selectedClient.id,
+                                      clientName: selectedClient.name,
+                                      accountName,
+                                    },
+                                  });
+                                }).catch((error) => {
+                                  console.error(
+                                    "[CRM] Failed to remove trading account:",
+                                    error,
+                                  );
+                                  window.alert(
+                                    `Could not remove "${accountName}" from Supabase: ${error.message}`,
+                                  );
                                 });
-                              }).catch((error) => {
-                                console.error(
-                                  "[CRM] Failed to remove trading account:",
-                                  error,
-                                );
-                                window.alert(
-                                  `Could not remove "${accountName}" from Supabase: ${error.message}`,
-                                );
-                              });
-                            }}
-                          />
-                        ) : null}
-                      </section>
-                    </>
-                  ) : null}
+                              }}
+                            />
+                          ) : null}
+                        </section>
+                      </>
+                    ) : null}
+                  </div>
                 </>
               )}
             </main>
