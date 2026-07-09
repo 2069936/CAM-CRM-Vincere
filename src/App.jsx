@@ -1880,7 +1880,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
         </button>
       </div>
 
-      {status === "error" && <div className="notice warning">{error}</div>}
+      {status === "error" && <div className="notice error">{error}</div>}
 
       <section className="panel">
         <div className="panel-heading">
@@ -2078,7 +2078,7 @@ function AuditLogsPanel() {
         </button>
       </div>
 
-      {status === "error" ? <div className="notice warning">{error}</div> : null}
+      {status === "error" ? <div className="notice error">{error}</div> : null}
 
       <section className="panel">
         <div className="panel-heading">
@@ -2501,14 +2501,14 @@ function DataToolsPanel({ clients = [], camProfiles = [], onImportClient, sessio
               ) : null}
             </div>
           ) : null}
-          {importError ? <div className="notice warning">{importError}</div> : null}
+          {importError ? <div className="notice error">{importError}</div> : null}
           <button className="primary-button" onClick={importClients} disabled={!newRows.length || isImporting}>
             <Upload size={14} /> {isImporting ? "Importing..." : `Import ${newRows.length || ""}`.trim()}
           </button>
         </div>
       </div>
       {message ? (
-        <div className={`notice ${status === "error" ? "warning" : ""}`}>
+        <div className={`notice ${status === "error" ? "error" : "info"}`}>
           {message}
         </div>
       ) : null}
@@ -3245,11 +3245,11 @@ function ManagerOverview({
             : "At Risk";
     const color =
       clamped >= 85
-        ? "var(--green)"
+        ? "var(--success)"
         : clamped >= 70
           ? "var(--accent)"
           : clamped >= 50
-            ? "#f59e0b"
+            ? "var(--warning)"
             : "var(--negative)";
     return { score: clamped, label, color };
   })();
@@ -3469,7 +3469,7 @@ function ManagerOverview({
         </div>
 
         {unassignedClients.length > 0 && (
-          <div className="notice danger">
+          <div className="notice warning">
             <AlertTriangle size={16} />
             <span>
               <strong>{unassignedClients.length} client{unassignedClients.length !== 1 ? "s" : ""} unassigned</strong>
@@ -4489,9 +4489,9 @@ function ManagerOverview({
                                     width: `${row.targetPct}%`,
                                     background:
                                       row.targetPct >= 100
-                                        ? "var(--green)"
+                                        ? "var(--success)"
                                         : row.targetPct >= 80
-                                          ? "#f59e0b"
+                                          ? "var(--warning)"
                                           : "var(--accent)",
                                   }}
                                 />
@@ -4804,22 +4804,22 @@ function ManagerOverview({
               {[
                 {
                   key: "Critical",
-                  color: "var(--red)",
+                  color: "var(--error)",
                   label: "Critical (≥85% / ≤$500)",
                 },
                 {
                   key: "High",
-                  color: "#f59e0b",
+                  color: "var(--warning)",
                   label: "High (65–85% / ≤$1.2k)",
                 },
                 {
                   key: "Medium",
-                  color: "var(--yellow)",
+                  color: "var(--warning)",
                   label: "Medium (40–65% / ≤$2.5k)",
                 },
                 {
                   key: "Low",
-                  color: "var(--green)",
+                  color: "var(--success)",
                   label: "Low (<40% / >$2.5k)",
                 },
                 { key: "Safe", color: "var(--muted)", label: "No DD data" },
@@ -6679,7 +6679,7 @@ function ClientOverview({
                     className="payout-progress-bar"
                     style={{
                       width: `${Math.min(100, a.pct)}%`,
-                      background: a.ready ? "var(--green)" : "var(--yellow)",
+                      background: a.ready ? "var(--success)" : "var(--warning)",
                     }}
                   />
                 </div>
@@ -6953,8 +6953,8 @@ function PnlCalendarHeatmap({ client }) {
       0.25 + (Math.abs(day.pnl) / maxAbs) * 0.67,
     );
     return day.pnl > 0
-      ? `rgba(47, 202, 115, ${intensity})`
-      : `rgba(255, 90, 105, ${intensity})`;
+      ? `rgba(var(--success-rgb), ${intensity})`
+      : `rgba(var(--error-rgb), ${intensity})`;
   }
 
   return (
@@ -7589,7 +7589,7 @@ function CamOverview({
               style={{
                 height: "100%",
                 width: `${closePct}%`,
-                background: closePct === 100 ? "var(--green)" : "var(--accent)",
+                background: closePct === 100 ? "var(--success)" : "var(--accent)",
                 transition: "width .4s ease",
                 borderRadius: 4,
               }}
@@ -7721,7 +7721,7 @@ function CamOverview({
                       height: "100%",
                       width: `${goalPct}%`,
                       background:
-                        goalPct >= 100 ? "var(--green)" : "var(--accent)",
+                        goalPct >= 100 ? "var(--success)" : "var(--accent)",
                       borderRadius: 4,
                       transition: "width .4s",
                     }}
@@ -7998,9 +7998,9 @@ function CamOverview({
                             style={{
                               width: `${row.pct}%`,
                               background: row.ready
-                                ? "var(--green)"
+                                ? "var(--success)"
                                 : row.pct >= 80
-                                  ? "#f59e0b"
+                                  ? "var(--warning)"
                                   : "var(--accent)",
                             }}
                           />
@@ -8166,7 +8166,7 @@ function CamOverview({
                       !staleContact ? (
                         <span
                           className="task-chip"
-                          style={{ color: "var(--green)" }}
+                          style={{ color: "var(--success)" }}
                         >
                           Clean
                         </span>
@@ -9310,7 +9310,7 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
             <button
               className={`ghost-button${taskFilter === "overdue" ? " active" : ""}`}
               onClick={() => setTaskFilter("overdue")}
-              style={{ color: "var(--red)" }}
+              style={{ color: "var(--error)" }}
             >
               Overdue ({overdueCount})
             </button>
@@ -10051,7 +10051,7 @@ function CredentialsTab({
       {canDeleteClient ? (
         <section
           className="panel"
-          style={{ borderColor: "var(--red)", opacity: 0.8 }}
+          style={{ borderColor: "var(--error)", opacity: 0.8 }}
         >
           <div className="panel-heading">
             <h3>Danger zone</h3>
@@ -10074,8 +10074,8 @@ function CredentialsTab({
             <button
               className="secondary-button"
               style={{
-                color: "var(--red)",
-                borderColor: "var(--red)",
+                color: "var(--error)",
+                borderColor: "var(--error)",
                 flexShrink: 0,
               }}
               onClick={onDeleteClient}
@@ -11841,7 +11841,7 @@ export default function App() {
                                   title={`Last contact ${d}d ago`}
                                   style={{
                                     background:
-                                      d > 7 ? "var(--red)" : "var(--yellow)",
+                                      d > 7 ? "var(--error)" : "var(--warning)",
                                   }}
                                 />
                               ) : null;
