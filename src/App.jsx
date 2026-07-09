@@ -25,6 +25,7 @@ import {
   Kanban,
   Languages,
   ListChecks,
+  LoaderCircle,
   Plus,
   RefreshCw,
   MessageCircle,
@@ -46,6 +47,15 @@ import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
 import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import {
   addActivityEntry,
   addClient,
@@ -134,6 +144,63 @@ import {
   upsertSupabaseDailyImport,
   upsertSupabaseTradingAccount,
 } from "./domain/supabaseStore";
+
+function InlineSpinner({ size = 14 }) {
+  return <LoaderCircle className="spin" size={size} aria-hidden="true" />;
+}
+
+function ConfirmActionDialog({
+  action,
+  busy = false,
+  onCancel,
+  onConfirm,
+}) {
+  if (!action) return null;
+  const isDanger = action.variant === "danger";
+  return (
+    <Dialog open={Boolean(action)} onOpenChange={(open) => {
+      if (!busy && !open) onCancel?.();
+    }}>
+      <DialogContent
+        className={`confirm-dialog ${isDanger ? "danger" : ""}`}
+        showCloseButton={!busy}
+      >
+        <DialogHeader>
+          <DialogTitle>{action.title}</DialogTitle>
+          {action.description ? (
+            <DialogDescription>{action.description}</DialogDescription>
+          ) : null}
+        </DialogHeader>
+        {action.details?.length ? (
+          <div className="confirm-dialog-details">
+            {action.details.map((detail) => (
+              <span key={detail}>{detail}</span>
+            ))}
+          </div>
+        ) : null}
+        <DialogFooter className="confirm-dialog-footer">
+          <button
+            className="ghost-button"
+            type="button"
+            disabled={busy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className={isDanger ? "danger-button" : "primary-button"}
+            type="button"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? <InlineSpinner /> : action.icon || null}
+            {busy ? action.busyLabel || "Working..." : action.confirmLabel}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -1667,8 +1734,13 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
   });
   const [editUserId, setEditUserId] = useState(null);
   const [editUserPatch, setEditUserPatch] = useState({});
+  const [pendingAction, setPendingAction] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
+  const actionBusy = Boolean(pendingAction);
+  const isPending = (type, id = null) =>
+    pendingAction?.type === type && (id === null || pendingAction.id === id);
 
   function refreshUsers() {
     setStatus("loading");
@@ -1704,8 +1776,19 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
     return (clients || []).filter((client) => ids.has(client.id));
   }
 
+  function closeConfirmAction() {
+    if (!actionBusy) setConfirmAction(null);
+  }
+
+  async function runConfirmAction() {
+    if (!confirmAction?.onConfirm) return;
+    await confirmAction.onConfirm();
+    setConfirmAction(null);
+  }
+
   async function submitNewUser(event) {
     event.preventDefault();
+    if (actionBusy) return;
     if (!newUser.username || !newUser.password || !newUser.displayName || !newUser.email) return;
     const isDuplicate = (users || []).some(
       (u) => u.username?.toLowerCase() === newUser.username.toLowerCase(),
@@ -1715,6 +1798,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       return;
     }
     try {
+      setPendingAction({ type: "create" });
       setError("");
       const payload = {
         ...newUser,
@@ -1749,12 +1833,16 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       window.alert(`Could not create user: ${err.message}`);
       setStatus("error");
       setError(err.message);
+    } finally {
+      setPendingAction(null);
     }
   }
 
-  async function saveUserEdit(user) {
+  function requestUserSave(user) {
+    if (actionBusy) return;
     const patch = { ...editUserPatch };
     if (!patch.password) delete patch.password;
+    const passwordChanged = Boolean(patch.password);
     const nextUser = {
       appUserId: user.appUserId,
       username: patch.username ?? user.username,
@@ -1768,13 +1856,26 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       password: patch.password,
     };
     if (!nextUser.username || !nextUser.displayName || !nextUser.email) return;
-    if (user.camProfileId && !nextUser.hasCamProfile) {
-      const assigned = assignedClientsForUser(user);
-      if (assigned.length && !window.confirm(
-        `Turn off CAM profile for "${user.displayName}"? ${assigned.length} client${assigned.length !== 1 ? "s" : ""} will become Unassigned: ${assigned.map((client) => client.name).join(", ")}`,
-      )) return;
-    }
+    const assigned = user.camProfileId && !nextUser.hasCamProfile
+      ? assignedClientsForUser(user)
+      : [];
+    setConfirmAction({
+      type: "save",
+      id: user.id,
+      title: `Save changes for ${user.displayName}?`,
+      description: assigned.length
+        ? `${assigned.length} client${assigned.length !== 1 ? "s" : ""} will become Unassigned because CAM profile is being turned off.`
+        : "This will update the user's profile, role, status, CAM profile access, or password if changed.",
+      details: assigned.length ? assigned.map((client) => client.name) : [],
+      confirmLabel: "Save changes",
+      busyLabel: "Saving...",
+      onConfirm: () => performUserSave(user, nextUser, passwordChanged),
+    });
+  }
+
+  async function performUserSave(user, nextUser, passwordChanged = false) {
     try {
+      setPendingAction({ type: "save", id: user.id });
       setError("");
       if (!user.appUserId) throw new Error("Supabase app user ID is missing.");
       const remoteUsers = await updateSupabaseManagedUser(nextUser);
@@ -1798,7 +1899,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
           role: nextUser.role,
           hasCamProfile: nextUser.hasCamProfile,
           status: nextUser.status || "Active",
-          passwordChanged: Boolean(patch.password),
+          passwordChanged,
         },
       });
       await onRefreshState?.();
@@ -1809,13 +1910,29 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       window.alert(`Could not save user: ${err.message}`);
       setStatus("error");
       setError(err.message);
+    } finally {
+      setPendingAction(null);
     }
   }
 
-  async function deactivateUser(user) {
+  function requestDeactivateUser(user) {
     if (user.role === USER_ROLES.MANAGER) return;
-    if (!window.confirm(`Deactivate user "${user.displayName}"? They will no longer be able to sign in.`)) return;
+    if (actionBusy) return;
+    setConfirmAction({
+      type: "deactivate",
+      id: user.id,
+      title: `Deactivate ${user.displayName}?`,
+      description: "They will no longer be able to sign in, but their record stays listed for history.",
+      confirmLabel: "Deactivate user",
+      busyLabel: "Deactivating...",
+      variant: "danger",
+      onConfirm: () => performDeactivateUser(user),
+    });
+  }
+
+  async function performDeactivateUser(user) {
     try {
+      setPendingAction({ type: "deactivate", id: user.id });
       setError("");
       if (!user.appUserId) throw new Error("Supabase app user ID is missing.");
       const remoteUsers = await deactivateSupabaseManagedUser(user.appUserId);
@@ -1833,17 +1950,33 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       window.alert(`Could not deactivate user: ${err.message}`);
       setStatus("error");
       setError(err.message);
+    } finally {
+      setPendingAction(null);
     }
   }
 
-  async function deleteUser(user) {
+  function requestDeleteUser(user) {
     if (user.role === USER_ROLES.MANAGER) return;
+    if (actionBusy) return;
     const assigned = assignedClientsForUser(user);
-    const assignmentNote = assigned.length
-      ? ` ${assigned.length} client${assigned.length !== 1 ? "s" : ""} will become Unassigned: ${assigned.map((client) => client.name).join(", ")}.`
-      : "";
-    if (!window.confirm(`Delete user "${user.displayName}" everywhere? This removes their login and linked CAM profile.${assignmentNote}`)) return;
+    setConfirmAction({
+      type: "delete",
+      id: user.id,
+      title: `Delete ${user.displayName} everywhere?`,
+      description: assigned.length
+        ? `This removes their login and linked CAM profile. ${assigned.length} client${assigned.length !== 1 ? "s" : ""} will become Unassigned.`
+        : "This removes their login and linked CAM profile. This cannot be undone from the app.",
+      details: assigned.length ? assigned.map((client) => client.name) : [],
+      confirmLabel: "Delete user",
+      busyLabel: "Deleting...",
+      variant: "danger",
+      onConfirm: () => performDeleteUser(user, assigned),
+    });
+  }
+
+  async function performDeleteUser(user, assigned = []) {
     try {
+      setPendingAction({ type: "delete", id: user.id });
       setError("");
       if (!user.appUserId) throw new Error("Supabase app user ID is missing.");
       const remoteUsers = await deleteSupabaseManagedUser(user.appUserId);
@@ -1865,6 +1998,8 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       window.alert(`Could not delete user: ${err.message}`);
       setStatus("error");
       setError(err.message);
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -1880,8 +2015,13 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
             {status === "connected" ? <span className="positive">· Supabase synced</span> : null}
           </div>
         </div>
-        <button className="ghost-button" onClick={refreshUsers} disabled={!isSupabaseConfigured}>
-          <RefreshCw size={14} /> Refresh
+        <button
+          className="ghost-button"
+          onClick={refreshUsers}
+          disabled={!isSupabaseConfigured || status === "loading" || actionBusy}
+        >
+          {status === "loading" ? <InlineSpinner /> : <RefreshCw size={14} />}
+          {status === "loading" ? "Refreshing..." : "Refresh"}
         </button>
       </div>
 
@@ -1910,6 +2050,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
               {users.map((u) => {
                 const isEditing = editUserId === u.id;
                 const patch = editUserPatch;
+                const camProfileEnabled = patch.hasCamProfile ?? Boolean(u.camProfileId);
                 return (
                   <tr key={u.id} className={u.status === "Inactive" ? "row-muted" : ""}>
                     <td>
@@ -1948,13 +2089,17 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                     <td>
                       {isEditing ? (
                         (patch.role ?? u.role) === USER_ROLES.CAM ? (
-                          <label className="inline-toggle">
-                            <input
-                              type="checkbox"
-                              checked={patch.hasCamProfile ?? Boolean(u.camProfileId)}
-                              onChange={(e) => setEditUserPatch((p) => ({ ...p, hasCamProfile: e.target.checked }))}
+                          <label className="inline-toggle switch-field">
+                            <Switch
+                              id={`cam-profile-${u.id}`}
+                              type="button"
+                              checked={camProfileEnabled}
+                              onCheckedChange={(checked) => setEditUserPatch((p) => ({ ...p, hasCamProfile: checked }))}
                             />
-                            <span>{(patch.hasCamProfile ?? Boolean(u.camProfileId)) ? "Yes" : "No"}</span>
+                            <span>CAM profile</span>
+                            <strong className={camProfileEnabled ? "positive" : "muted"}>
+                              {camProfileEnabled ? "On" : "Off"}
+                            </strong>
                           </label>
                         ) : "—"
                       ) : (
@@ -1981,14 +2126,49 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                     <td style={{ display: "flex", gap: 4 }}>
                       {isEditing ? (
                         <>
-                          <button className="primary-button" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => saveUserEdit(u)}>Save</button>
-                          <button className="ghost-button" onClick={() => { setEditUserId(null); setEditUserPatch({}); }}>Cancel</button>
+                          <button
+                            className="primary-button"
+                            disabled={actionBusy}
+                            style={{ fontSize: 12, padding: "2px 8px" }}
+                            onClick={() => requestUserSave(u)}
+                          >
+                            {isPending("save", u.id) ? <InlineSpinner /> : null}
+                            {isPending("save", u.id) ? "Saving..." : "Save"}
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={actionBusy}
+                            onClick={() => { setEditUserId(null); setEditUserPatch({}); }}
+                          >
+                            Cancel
+                          </button>
                         </>
                       ) : (
                         <>
-                          <button className="ghost-button" title="Edit" onClick={() => { setEditUserId(u.id); setEditUserPatch({}); }}><Edit3 size={13} /></button>
-                          <button className="ghost-button" disabled={u.role === USER_ROLES.MANAGER || u.status === "Inactive"} title="Deactivate user" onClick={() => deactivateUser(u)}><EyeOff size={13} /></button>
-                          <button className="ghost-button" disabled={u.role === USER_ROLES.MANAGER} title="Delete user everywhere" onClick={() => deleteUser(u)}><Trash2 size={13} /></button>
+                          <button
+                            className="ghost-button"
+                            disabled={actionBusy}
+                            title="Edit"
+                            onClick={() => { setEditUserId(u.id); setEditUserPatch({}); }}
+                          >
+                            <Edit3 size={13} />
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={actionBusy || u.role === USER_ROLES.MANAGER || u.status === "Inactive"}
+                            title="Deactivate user"
+                            onClick={() => requestDeactivateUser(u)}
+                          >
+                            {isPending("deactivate", u.id) ? <InlineSpinner /> : <EyeOff size={13} />}
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={actionBusy || u.role === USER_ROLES.MANAGER}
+                            title="Delete user everywhere"
+                            onClick={() => requestDeleteUser(u)}
+                          >
+                            {isPending("delete", u.id) ? <InlineSpinner /> : <Trash2 size={13} />}
+                          </button>
                         </>
                       )}
                     </td>
@@ -2020,18 +2200,31 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
           >
             {Object.values(USER_ROLES).map((role) => <option key={role}>{role}</option>)}
           </select>
-          <label className="inline-toggle">
-            <input
-              type="checkbox"
+          <label className={`inline-toggle switch-field ${newUser.role !== USER_ROLES.CAM ? "disabled" : ""}`}>
+            <Switch
+              id="new-user-cam-profile"
+              type="button"
               checked={newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile)}
               disabled={newUser.role !== USER_ROLES.CAM}
-              onChange={(e) => setNewUser((v) => ({ ...v, hasCamProfile: e.target.checked }))}
+              onCheckedChange={(checked) => setNewUser((v) => ({ ...v, hasCamProfile: checked }))}
             />
             <span>CAM profile</span>
+            <strong className={newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile) ? "positive" : "muted"}>
+              {newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile) ? "On" : "Off"}
+            </strong>
           </label>
-          <button className="secondary-button"><Plus size={14} /> Add user</button>
+          <button className="secondary-button" disabled={actionBusy}>
+            {isPending("create") ? <InlineSpinner /> : <Plus size={14} />}
+            {isPending("create") ? "Creating..." : "Add user"}
+          </button>
         </form>
       </section>
+      <ConfirmActionDialog
+        action={confirmAction}
+        busy={actionBusy}
+        onCancel={closeConfirmAction}
+        onConfirm={runConfirmAction}
+      />
     </>
   );
 }
@@ -3270,7 +3463,13 @@ function ManagerOverview({
           </small>
         </div>
         <div className="manager-sidebar-main">
-          <button className={showUserPanel ? "client-link" : "client-link active"} onClick={() => setShowUserPanel(false)}>
+          <button
+            className={!showUserPanel && !showAuditPanel ? "client-link active" : "client-link"}
+            onClick={() => {
+              setShowUserPanel(false);
+              setShowAuditPanel(false);
+            }}
+          >
             <Users size={16} />
             <span>Operations</span>
             <em>Live</em>
@@ -4263,42 +4462,49 @@ function ManagerOverview({
             </button>
           </form>
           <div className="cam-card-grid">
-            {cams.map((cam) => (
-              <div
-                className="cam-card live"
-                key={cam.id || cam.name}
-              >
-                <button
-                  className="cam-card-open"
-                  type="button"
-                  onClick={() => onOpenCam(cam.id)}
+            {cams.map((cam) => {
+              const canManageClients = Boolean(cam.canManageClients);
+              return (
+                <div
+                  className="cam-card live"
+                  key={cam.id || cam.name}
                 >
-                  <strong>{cam.name}</strong>
-                </button>
-                <span>
-                  {cam.role} · {cam.status || "Active"}
-                </span>
-                <small>
-                  {cam.clients} clients · {cam.accounts} accounts · {cam.flags}{" "}
-                  flags
-                </small>
-                <em className={cam.weeklyPnl >= 0 ? "positive" : "negative"}>
-                  {formatCurrency(cam.weeklyPnl)} weekly
-                </em>
-                <label className="toggle-field cam-permission-toggle">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(cam.canManageClients)}
-                    onChange={(event) =>
-                      onUpdateCamProfile?.(cam.id, {
-                        canManageClients: event.target.checked,
-                      })
-                    }
-                  />
-                  <span>Create/delete clients</span>
-                </label>
-              </div>
-            ))}
+                  <button
+                    className="cam-card-open"
+                    type="button"
+                    onClick={() => onOpenCam(cam.id)}
+                  >
+                    <strong>{cam.name}</strong>
+                  </button>
+                  <span>
+                    {cam.role} · {cam.status || "Active"}
+                  </span>
+                  <small>
+                    {cam.clients} clients · {cam.accounts} accounts · {cam.flags}{" "}
+                    flags
+                  </small>
+                  <em className={cam.weeklyPnl >= 0 ? "positive" : "negative"}>
+                    {formatCurrency(cam.weeklyPnl)} weekly
+                  </em>
+                  <label className="toggle-field cam-permission-toggle switch-field">
+                    <Switch
+                      id={`cam-client-permission-${cam.id}`}
+                      type="button"
+                      checked={canManageClients}
+                      onCheckedChange={(checked) =>
+                        onUpdateCamProfile?.(cam.id, {
+                          canManageClients: checked,
+                        })
+                      }
+                    />
+                    <span>Create/delete clients</span>
+                    <strong className={canManageClients ? "positive" : "muted"}>
+                      {canManageClients ? "On" : "Off"}
+                    </strong>
+                  </label>
+                </div>
+              );
+            })}
           </div>
         </section>
 
@@ -6046,26 +6252,83 @@ function ClientPnlChart({ history = [] }) {
   });
   const points = nodes.map((node) => `${node.x},${node.y}`).join(" ");
   const zeroY = 150 - ((0 - min) / spread) * 120;
+  const areaPoints = `0,150 ${points} 600,150`;
+  const netPnl = nodes.reduce((total, node) => total + node.value, 0);
+  const bestDay = nodes.reduce(
+    (best, node) => (node.value > best.value ? node : best),
+    nodes[0],
+  );
+  const lastDay = nodes[nodes.length - 1];
 
   return (
     <div className="client-chart">
+      <div className="client-chart-summary" aria-label="Client PnL summary">
+        <div>
+          <span>Net PnL</span>
+          <strong className={netPnl >= 0 ? "positive" : "negative"}>
+            {formatCurrency(netPnl)}
+          </strong>
+        </div>
+        <div>
+          <span>Best day</span>
+          <strong className={bestDay.value >= 0 ? "positive" : "negative"}>
+            {formatCurrency(bestDay.value)}
+          </strong>
+        </div>
+        <div>
+          <span>Last day</span>
+          <strong className={lastDay.value >= 0 ? "positive" : "negative"}>
+            {formatCurrency(lastDay.value)}
+          </strong>
+        </div>
+      </div>
       <svg
         viewBox="0 0 600 180"
         role="img"
         aria-label="Client daily PnL history"
       >
-        <line x1="0" x2="600" y1={zeroY} y2={zeroY} />
+        <defs>
+          <linearGradient id="clientPnlLine" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="var(--info)" />
+            <stop offset="55%" stopColor="var(--primary-action)" />
+            <stop offset="100%" stopColor="var(--success)" />
+          </linearGradient>
+          <linearGradient id="clientPnlArea" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="rgba(var(--info-rgb), 0.22)" />
+            <stop offset="100%" stopColor="rgba(var(--info-rgb), 0)" />
+          </linearGradient>
+        </defs>
+        {[30, 70, 110, 150].map((y) => (
+          <line
+            className="client-chart-guide"
+            key={y}
+            x1="0"
+            x2="600"
+            y1={y}
+            y2={y}
+          />
+        ))}
+        <polygon className="client-chart-area" points={areaPoints} />
+        <line
+          className="client-chart-zero"
+          x1="0"
+          x2="600"
+          y1={zeroY}
+          y2={zeroY}
+        />
         <polyline
+          className="client-chart-line"
           points={points}
           fill="none"
-          stroke="currentColor"
           strokeWidth="4"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
         {nodes.map((node) => (
           <circle
-            className="chart-node chart-node-large"
+            className={`chart-node chart-node-large ${
+              node.value >= 0 ? "chart-node-positive" : "chart-node-negative"
+            }`}
             key={node.date}
             cx={node.x}
             cy={node.y}
@@ -6077,7 +6340,13 @@ function ClientPnlChart({ history = [] }) {
       </svg>
       <div className="chart-axis">
         {history.map((day) => (
-          <span key={day.date}>{day.date.slice(5)}</span>
+          <span
+            key={day.date}
+            className={Number(day.dailyPnl || 0) >= 0 ? "positive" : "negative"}
+            title={`${day.date} · ${formatCurrency(day.dailyPnl)}`}
+          >
+            {day.date.slice(5)}
+          </span>
         ))}
       </div>
     </div>
@@ -10410,6 +10679,8 @@ export default function App() {
       return null;
     }
   });
+  const [logoutConfirmAction, setLogoutConfirmAction] = useState(null);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   function persistSession(user) {
     setSession(user);
     try {
@@ -10417,11 +10688,26 @@ export default function App() {
       else sessionStorage.removeItem("cam_crm_session");
     } catch {}
   }
-  async function handleLogout() {
+  function handleLogout() {
+    if (logoutBusy) return;
+    setLogoutConfirmAction({
+      title: "Sign out of Vincere CRM?",
+      description: "Your current workspace session will close. Unsaved form changes on this screen may be lost.",
+      confirmLabel: "Sign out",
+      busyLabel: "Signing out...",
+      variant: "danger",
+      onConfirm: performLogout,
+    });
+  }
+  async function performLogout() {
     try {
+      setLogoutBusy(true);
       if (isSupabaseConfigured) await signOutSupabase();
     } catch (err) {
       console.error("[CRM] Supabase sign out failed:", err);
+    } finally {
+      setLogoutBusy(false);
+      setLogoutConfirmAction(null);
     }
     persistSession(null);
     setPlatformView("manager");
@@ -10454,6 +10740,7 @@ export default function App() {
   }, []);
   const [newClientName, setNewClientName] = useState("");
   const [clientSearch, setClientSearch] = useState("");
+  const isFilteringClientList = clientSearch.trim().length >= 2;
   const [viewedClientIds, setViewedClientIds] = useState(() => {
     try {
       const raw = sessionStorage.getItem("cam_viewed_clients");
@@ -11351,159 +11638,169 @@ export default function App() {
   if (platformView === "manager") {
     return (
       <ErrorBoundary>
-        <ManagerOverview
-          clients={state.clients}
-          camProfiles={state.camProfiles}
-          onOpenCam={openCamWorkspace}
-          onCreateCam={(name) => {
-            createSupabaseCamProfile(name)
-              .then((savedProfile) => {
-                auditSilently({
-                  entityType: "cam_profile",
-                  entityId: savedProfile?.id || null,
-                  action: "cam_profile.create",
-                  afterData: { name },
+        <>
+          <ManagerOverview
+            clients={state.clients}
+            camProfiles={state.camProfiles}
+            onOpenCam={openCamWorkspace}
+            onCreateCam={(name) => {
+              createSupabaseCamProfile(name)
+                .then((savedProfile) => {
+                  auditSilently({
+                    entityType: "cam_profile",
+                    entityId: savedProfile?.id || null,
+                    action: "cam_profile.create",
+                    afterData: { name },
+                  });
+                  return reloadSupabaseState();
+                })
+                .catch((error) => {
+                  console.error("[CRM] Failed to create CAM profile:", error);
+                  window.alert(`Could not save CAM profile to Supabase: ${error.message}`);
                 });
-                return reloadSupabaseState();
-              })
-              .catch((error) => {
-                console.error("[CRM] Failed to create CAM profile:", error);
-                window.alert(`Could not save CAM profile to Supabase: ${error.message}`);
-              });
-          }}
-          onUpdateCamProfile={(camProfileId, patch) => {
-            setState((current) => ({
-              ...current,
-              camProfiles: (current.camProfiles || []).map((profile) =>
-                profile.id === camProfileId ? { ...profile, ...patch } : profile,
-              ),
-            }));
-            updateSupabaseCamProfile(camProfileId, patch)
-              .then(() => {
-                auditSilently({
-                  entityType: "cam_profile",
-                  entityId: camProfileId,
-                  action: "cam_profile.permissions.update",
-                  afterData: { camProfileId, patch, source: "manager" },
+            }}
+            onUpdateCamProfile={(camProfileId, patch) => {
+              setState((current) => ({
+                ...current,
+                camProfiles: (current.camProfiles || []).map((profile) =>
+                  profile.id === camProfileId ? { ...profile, ...patch } : profile,
+                ),
+              }));
+              updateSupabaseCamProfile(camProfileId, patch)
+                .then(() => {
+                  auditSilently({
+                    entityType: "cam_profile",
+                    entityId: camProfileId,
+                    action: "cam_profile.permissions.update",
+                    afterData: { camProfileId, patch, source: "manager" },
+                  });
+                })
+                .catch((error) => {
+                  console.error("[CRM] Failed to update CAM permissions:", error);
+                  window.alert(`Could not save CAM permission to Supabase: ${error.message}`);
                 });
-              })
-              .catch((error) => {
-                console.error("[CRM] Failed to update CAM permissions:", error);
-                window.alert(`Could not save CAM permission to Supabase: ${error.message}`);
-              });
-          }}
-          onLogout={handleLogout}
-          users={users}
-          onUsersChange={setUsers}
-          onRefreshState={() => reloadSupabaseState(null)}
-          session={session}
-          onUpdateClientAccount={persistAccountUpdate}
-          onTransferClient={(clientId, toCamId) => {
-            setState((current) => transferClient(current, clientId, toCamId));
-            transferSupabaseClient(clientId, toCamId)
-              .then(() => {
-                auditSilently({
-                  entityType: "client_assignment",
-                  entityId: clientId,
-                  action: "client.transfer",
-                  afterData: { clientId, toCamId },
+            }}
+            onLogout={handleLogout}
+            users={users}
+            onUsersChange={setUsers}
+            onRefreshState={() => reloadSupabaseState(null)}
+            session={session}
+            onUpdateClientAccount={persistAccountUpdate}
+            onTransferClient={(clientId, toCamId) => {
+              setState((current) => transferClient(current, clientId, toCamId));
+              transferSupabaseClient(clientId, toCamId)
+                .then(() => {
+                  auditSilently({
+                    entityType: "client_assignment",
+                    entityId: clientId,
+                    action: "client.transfer",
+                    afterData: { clientId, toCamId },
+                  });
+                  return reloadSupabaseState(toCamId);
+                })
+                .catch((error) => {
+                  console.error("[CRM] Failed to transfer client:", error);
+                  window.alert(`Could not transfer client in Supabase: ${error.message}`);
                 });
-                return reloadSupabaseState(toCamId);
-              })
-              .catch((error) => {
-                console.error("[CRM] Failed to transfer client:", error);
-                window.alert(`Could not transfer client in Supabase: ${error.message}`);
+            }}
+            onResolveFlag={(clientId, importId, flagId, status = "Resolved") => {
+              setState((current) =>
+                resolveFlagInImport(current, clientId, importId, flagId, status),
+              );
+              updateSupabaseOperationalFlag(flagId, status).then(() => {
+                auditSilently({
+                  entityType: "operational_flag",
+                  entityId: flagId,
+                  action: status === "Resolved" ? "flag.resolve" : "flag.acknowledge",
+                  afterData: { clientId, importId, flagId, status, source: "manager" },
+                });
+              }).catch((error) => {
+                console.error("[CRM] Failed to update manager flag:", error);
+                window.alert(
+                  `Could not update flag in Supabase: ${error.message}`,
+                );
               });
-          }}
-          onResolveFlag={(clientId, importId, flagId, status = "Resolved") => {
-            setState((current) =>
-              resolveFlagInImport(current, clientId, importId, flagId, status),
-            );
-            updateSupabaseOperationalFlag(flagId, status).then(() => {
+            }}
+            onAddClient={(name, camId, stage) => {
+              const clientName = String(name || "").trim();
+              if (!clientName) return;
+              setState((current) => {
+                const withClient = addClient(current, clientName, camId || null);
+                const newClient = withClient.clients.find(
+                  (c) =>
+                    c.name === clientName &&
+                    !current.clients.find((x) => x.id === c.id),
+                );
+                if (newClient && stage && stage !== "Active") {
+                  return {
+                    ...withClient,
+                    clients: withClient.clients.map((c) =>
+                      c.id === newClient.id
+                        ? { ...c, profile: { ...c.profile, stage } }
+                        : c,
+                    ),
+                  };
+                }
+                return withClient;
+              });
+              createSupabaseClient(clientName, camId || null, stage || "Active")
+                .then((savedClient) => {
+                  auditSilently({
+                    entityType: "client",
+                    entityId: savedClient?.id || null,
+                    action: "client.create",
+                    afterData: { clientName, camProfileId: camId || null, stage: stage || "Active", source: "manager" },
+                  });
+                  return reloadSupabaseState(camId || null);
+                })
+                .catch((error) => {
+                  console.error("[CRM] Failed to create manager client:", error);
+                  window.alert(`Could not save client "${clientName}" to Supabase: ${error.message}`);
+                });
+            }}
+            onImportClient={async (row, camId) => {
+              const savedClient = await createSupabaseClient(row.name, camId || null, row.stage || "Active");
+              await updateSupabaseClient(savedClient.id, {
+                profile: {
+                  stage: row.stage || "Active",
+                  fullName: row.name,
+                  email: row.email,
+                  additionalEmails: row.additionalEmails || [],
+                  phone: row.phone,
+                  timezone: row.timezone,
+                  country: row.country,
+                  startDate: row.startDate,
+                  preferredChannel: row.preferredChannel,
+                  language: row.language,
+                  productKey: row.productKey,
+                  propFirm: row.propFirm,
+                  messenger: row.messenger,
+                },
+                credentials: row.credentials || undefined,
+                propFirms: row.propFirms || [],
+                notes: row.notes,
+              });
               auditSilently({
-                entityType: "operational_flag",
-                entityId: flagId,
-                action: status === "Resolved" ? "flag.resolve" : "flag.acknowledge",
-                afterData: { clientId, importId, flagId, status, source: "manager" },
+                entityType: "client",
+                entityId: savedClient.id,
+                action: "client.import",
+                afterData: { ...row, camProfileId: camId || null },
               });
-            }).catch((error) => {
-              console.error("[CRM] Failed to update manager flag:", error);
-              window.alert(
-                `Could not update flag in Supabase: ${error.message}`,
-              );
-            });
-          }}
-          onAddClient={(name, camId, stage) => {
-            const clientName = String(name || "").trim();
-            if (!clientName) return;
-            setState((current) => {
-              const withClient = addClient(current, clientName, camId || null);
-              const newClient = withClient.clients.find(
-                (c) =>
-                  c.name === clientName &&
-                  !current.clients.find((x) => x.id === c.id),
-              );
-              if (newClient && stage && stage !== "Active") {
-                return {
-                  ...withClient,
-                  clients: withClient.clients.map((c) =>
-                    c.id === newClient.id
-                      ? { ...c, profile: { ...c.profile, stage } }
-                      : c,
-                  ),
-                };
-              }
-              return withClient;
-            });
-            createSupabaseClient(clientName, camId || null, stage || "Active")
-              .then((savedClient) => {
-                auditSilently({
-                  entityType: "client",
-                  entityId: savedClient?.id || null,
-                  action: "client.create",
-                  afterData: { clientName, camProfileId: camId || null, stage: stage || "Active", source: "manager" },
-                });
-                return reloadSupabaseState(camId || null);
-              })
-              .catch((error) => {
-                console.error("[CRM] Failed to create manager client:", error);
-                window.alert(`Could not save client "${clientName}" to Supabase: ${error.message}`);
-              });
-          }}
-          onImportClient={async (row, camId) => {
-            const savedClient = await createSupabaseClient(row.name, camId || null, row.stage || "Active");
-            await updateSupabaseClient(savedClient.id, {
-              profile: {
-                stage: row.stage || "Active",
-                fullName: row.name,
-                email: row.email,
-                additionalEmails: row.additionalEmails || [],
-                phone: row.phone,
-                timezone: row.timezone,
-                country: row.country,
-                startDate: row.startDate,
-                preferredChannel: row.preferredChannel,
-                language: row.language,
-                productKey: row.productKey,
-                propFirm: row.propFirm,
-                messenger: row.messenger,
-              },
-              credentials: row.credentials || undefined,
-              propFirms: row.propFirms || [],
-              notes: row.notes,
-            });
-            auditSilently({
-              entityType: "client",
-              entityId: savedClient.id,
-              action: "client.import",
-              afterData: { ...row, camProfileId: camId || null },
-            });
-            await reloadSupabaseState(camId || null);
-          }}
-          onAppendDailyImport={(clientId, result) =>
-            persistDailyImport(clientId, result)
-          }
-        />
+              await reloadSupabaseState(camId || null);
+            }}
+            onAppendDailyImport={(clientId, result) =>
+              persistDailyImport(clientId, result)
+            }
+          />
+          <ConfirmActionDialog
+            action={logoutConfirmAction}
+            busy={logoutBusy}
+            onCancel={() => {
+              if (!logoutBusy) setLogoutConfirmAction(null);
+            }}
+            onConfirm={performLogout}
+          />
+        </>
       </ErrorBoundary>
     );
   }
@@ -11586,7 +11883,7 @@ export default function App() {
               <input
                 className="client-search"
                 value={clientSearch}
-                placeholder="Filter sidebar..."
+                placeholder="Filter client list..."
                 onChange={(e) => setClientSearch(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
@@ -11602,76 +11899,80 @@ export default function App() {
               />
             </div>
             <nav className="client-list">
-              {(() => {
-                const today = todayIsoDate();
-                const urgentCount = currentCamClients.reduce((total, c) => {
-                  const critFlags = (
-                    c.dailyImports?.at(-1)?.flags || []
-                  ).filter(
-                    (f) =>
-                      f.severity === "Critical" &&
-                      f.status !== "Resolved" &&
-                      f.status !== "Acknowledged",
-                  ).length;
-                  const overdueTasks = (c.tasks || []).filter(
-                    (t) => !t.done && t.dueDate && t.dueDate < today,
-                  ).length;
-                  return total + critFlags + overdueTasks;
-                }, 0);
-                return (
-                  <button
-                    className={
-                      showOverview && !showSOP
-                        ? "client-link active"
-                        : "client-link"
-                    }
-                    onClick={() => {
-                      setShowOverview(true);
-                      setShowSOP(false);
-                    }}
-                  >
-                    <Users size={16} />
-                    <span>CAM Overview</span>
-                    {urgentCount > 0 ? (
-                      <em className="danger">{urgentCount} urgent</em>
-                    ) : (
-                      <em>Live</em>
-                    )}
-                  </button>
-                );
-              })()}
-              <button
-                className={showSOP ? "client-link active" : "client-link"}
-                onClick={() => {
-                  setShowSOP(true);
-                  setShowOverview(false);
-                }}
-              >
-                <CheckSquare size={16} />
-                <span>Daily SOP</span>
-                <em>Checklist</em>
-              </button>
-              {isManagerSession ? (
+              {!isFilteringClientList ? (
                 <>
-                  <div className="nav-label">Other CAMs</div>
-                  {visibleCamProfiles
-                    .filter(
-                      (profile) => profile.id !== state.accountManager?.id,
-                    )
-                    .map((profile) => (
+                  {(() => {
+                    const today = todayIsoDate();
+                    const urgentCount = currentCamClients.reduce((total, c) => {
+                      const critFlags = (
+                        c.dailyImports?.at(-1)?.flags || []
+                      ).filter(
+                        (f) =>
+                          f.severity === "Critical" &&
+                          f.status !== "Resolved" &&
+                          f.status !== "Acknowledged",
+                      ).length;
+                      const overdueTasks = (c.tasks || []).filter(
+                        (t) => !t.done && t.dueDate && t.dueDate < today,
+                      ).length;
+                      return total + critFlags + overdueTasks;
+                    }, 0);
+                    return (
                       <button
-                        className="client-link"
-                        key={profile.id}
-                        onClick={() => openCamWorkspace(profile.id)}
+                        className={
+                          showOverview && !showSOP
+                            ? "client-link active"
+                            : "client-link"
+                        }
+                        onClick={() => {
+                          setShowOverview(true);
+                          setShowSOP(false);
+                        }}
                       >
                         <Users size={16} />
-                        <span>{profile.name} CAM</span>
-                        <em>{profile.status || "Active"}</em>
+                        <span>CAM Overview</span>
+                        {urgentCount > 0 ? (
+                          <em className="danger">{urgentCount} urgent</em>
+                        ) : (
+                          <em>Live</em>
+                        )}
                       </button>
-                    ))}
+                    );
+                  })()}
+                  <button
+                    className={showSOP ? "client-link active" : "client-link"}
+                    onClick={() => {
+                      setShowSOP(true);
+                      setShowOverview(false);
+                    }}
+                  >
+                    <CheckSquare size={16} />
+                    <span>Daily SOP</span>
+                    <em>Checklist</em>
+                  </button>
+                  {isManagerSession ? (
+                    <>
+                      <div className="nav-label">Other CAMs</div>
+                      {visibleCamProfiles
+                        .filter(
+                          (profile) => profile.id !== state.accountManager?.id,
+                        )
+                        .map((profile) => (
+                          <button
+                            className="client-link"
+                            key={profile.id}
+                            onClick={() => openCamWorkspace(profile.id)}
+                          >
+                            <Users size={16} />
+                            <span>{profile.name} CAM</span>
+                            <em>{profile.status || "Active"}</em>
+                          </button>
+                        ))}
+                    </>
+                  ) : null}
                 </>
               ) : null}
-              {clientSearch.length >= 2 ? (
+              {isFilteringClientList ? (
                 (() => {
                   const searchResults = searchClients(
                     currentCamClients,
@@ -12126,8 +12427,8 @@ export default function App() {
                           : "No close loaded for this date"}
                       </p>
                     </div>
-                    <div className="header-actions">
-                      <div className="date-nav">
+                    <div className="header-actions client-primary-actions">
+                      <div className="date-nav client-date-nav">
                         <button
                           className="ghost-button icon-only"
                           title="Previous day"
@@ -12162,7 +12463,19 @@ export default function App() {
                         </button>
                       </div>
                       <button
-                        className="ghost-button"
+                        className="primary-button workspace-open-button"
+                        disabled={!dailyImport}
+                        onClick={() => setReportImport(dailyImport)}
+                      >
+                        <FileText size={16} /> Build Daily Report
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="operations-toolbar client-toolbar" aria-label="Client tools">
+                    <span className="operations-toolbar-label">Tools</span>
+                      <button
+                        className={showQuickLog ? "secondary-button" : "ghost-button"}
                         disabled={!selectedClient}
                         onClick={() => setShowQuickLog((v) => !v)}
                         title="Quick Log (Alt+L)"
@@ -12170,7 +12483,7 @@ export default function App() {
                         <Plus size={16} /> Quick Log
                       </button>
                       <button
-                        className="ghost-button"
+                        className={showTemplates ? "secondary-button" : "ghost-button"}
                         disabled={!selectedClient}
                         onClick={() => setShowTemplates((v) => !v)}
                         title="Message templates for WhatsApp/Telegram"
@@ -12178,7 +12491,7 @@ export default function App() {
                         <ClipboardList size={16} /> Templates
                       </button>
                       <button
-                        className="secondary-button"
+                        className={showUpload || !dailyImport ? "secondary-button" : "ghost-button"}
                         onClick={() => setShowUpload((value) => !value)}
                         title="Upload NT CSV files (Alt+U)"
                       >
@@ -12201,13 +12514,6 @@ export default function App() {
                       >
                         <Copy size={16} />
                         {copyWeekDone ? " Copied!" : " Copy Week"}
-                      </button>
-                      <button
-                        className="primary-button"
-                        disabled={!dailyImport}
-                        onClick={() => setReportImport(dailyImport)}
-                      >
-                        <FileText size={16} /> Build Daily Report
                       </button>
                       {dailyImport?.status === "Closed" ? (
                         <button className="ghost-button" onClick={reopenImport}>
@@ -12238,9 +12544,8 @@ export default function App() {
                             <CheckCircle2 size={16} /> Close all (
                             {openToday.length})
                           </button>
-                        );
-                      })()}
-                    </div>
+                          );
+                        })()}
                   </div>
 
                   {!dailyImport &&
@@ -12898,6 +13203,14 @@ export default function App() {
               </div>
             );
           })()}
+        <ConfirmActionDialog
+          action={logoutConfirmAction}
+          busy={logoutBusy}
+          onCancel={() => {
+            if (!logoutBusy) setLogoutConfirmAction(null);
+          }}
+          onConfirm={performLogout}
+        />
       </>
     </ErrorBoundary>
   );
