@@ -40,6 +40,7 @@ import {
   History,
   Mail,
   Phone,
+  SquarePen,
 } from "lucide-react";
 import AccountManager from "./components/AccountManager";
 import Dashboard from "./components/Dashboard";
@@ -4429,7 +4430,7 @@ function ManagerOverview({
                                 onResolveFlag(f.clientId, f.importId, f.id)
                               }
                             >
-                              ✓ Resolve
+                              <CheckCircle2 size={13} /> Resolve
                             </button>
                           )}
                         </td>
@@ -6510,7 +6511,13 @@ function PayoutHistoryPanel({ funded, grandTotal, onLogPayout }) {
                     setLogAccountName(isLogging ? null : m.accountName)
                   }
                 >
-                  {isLogging ? "Cancel" : "+ Log payout"}
+                  {isLogging ? (
+                    "Cancel"
+                  ) : (
+                    <>
+                      <SquarePen size={13} /> Log payout
+                    </>
+                  )}
                 </button>
               </div>
               {isLogging && (
@@ -9321,7 +9328,7 @@ function ActivityLog({ client, onAddEntry, onDeleteEntry }) {
               a.click();
             }}
           >
-            ⬇ Export CSV
+            <Download size={13} /> Export CSV
           </button>
         )}
       </div>
@@ -9343,7 +9350,9 @@ function ActivityLog({ client, onAddEntry, onDeleteEntry }) {
               </option>
             ))}
           </select>
-          <button className="primary-button">+ Log</button>
+          <button className="primary-button">
+            <SquarePen size={14} /> Add Log
+          </button>
         </div>
         <textarea
           value={text}
@@ -9654,7 +9663,7 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
             ))}
           </select>
           <button className="primary-button">
-            <Plus size={14} /> Add task
+            <ListChecks size={14} /> Add task
           </button>
         </div>
       </form>
@@ -10681,6 +10690,7 @@ export default function App() {
   });
   const [logoutConfirmAction, setLogoutConfirmAction] = useState(null);
   const [logoutBusy, setLogoutBusy] = useState(false);
+  const [workspaceConfirmAction, setWorkspaceConfirmAction] = useState(null);
   function persistSession(user) {
     setSession(user);
     try {
@@ -10711,6 +10721,12 @@ export default function App() {
     }
     persistSession(null);
     setPlatformView("manager");
+  }
+  function runWorkspaceConfirmAction() {
+    const action = workspaceConfirmAction;
+    if (!action?.onConfirm) return;
+    action.onConfirm();
+    setWorkspaceConfirmAction(null);
   }
   const [platformView, setPlatformView] = useState("manager");
   // On mount: if session was restored, re-validate and restore workspace
@@ -11093,6 +11109,52 @@ export default function App() {
     );
   }
 
+  function requestRemoveAccount(accountName) {
+    if (!selectedClient) return;
+    const client = selectedClient;
+    setWorkspaceConfirmAction({
+      title: `Remove ${accountName}?`,
+      description: "Historical import data is kept, but account metadata such as type, alias, and targets will be deleted.",
+      confirmLabel: "Remove account",
+      busyLabel: "Removing...",
+      variant: "danger",
+      onConfirm: () => performRemoveAccount(client, accountName),
+    });
+  }
+
+  function performRemoveAccount(client, accountName) {
+    setState((current) =>
+      removeAccountFromRegistry(
+        current,
+        client.id,
+        accountName,
+      ),
+    );
+    deleteSupabaseTradingAccount(
+      client.id,
+      accountName,
+    ).then(() => {
+      auditSilently({
+        entityType: "trading_account",
+        entityId: accountName,
+        action: "account.delete",
+        afterData: {
+          clientId: client.id,
+          clientName: client.name,
+          accountName,
+        },
+      });
+    }).catch((error) => {
+      console.error(
+        "[CRM] Failed to remove trading account:",
+        error,
+      );
+      window.alert(
+        `Could not remove "${accountName}" from Supabase: ${error.message}`,
+      );
+    });
+  }
+
   function handleLogPayout(accountName, entry) {
     if (!selectedClient) return;
     setState((current) => {
@@ -11189,27 +11251,33 @@ export default function App() {
       window.alert("This CAM does not have permission to delete clients. Ask a Manager to enable client management access.");
       return;
     }
-    if (
-      !window.confirm(
-        `Remove "${selectedClient.name}" from this workspace? This cannot be undone. Confirm the data is no longer needed before deleting.`,
-      )
-    )
-      return;
-    setState((current) => removeClient(current, selectedClient.id));
-    softDeleteSupabaseClient(selectedClient.id)
+    const clientToDelete = selectedClient;
+    setWorkspaceConfirmAction({
+      title: `Remove ${clientToDelete.name}?`,
+      description: "This removes the client from the active workspace. Confirm the data is no longer needed before deleting.",
+      confirmLabel: "Remove client",
+      busyLabel: "Removing...",
+      variant: "danger",
+      onConfirm: () => performDeleteClient(clientToDelete),
+    });
+  }
+
+  function performDeleteClient(clientToDelete) {
+    setState((current) => removeClient(current, clientToDelete.id));
+    softDeleteSupabaseClient(clientToDelete.id)
       .then(() => {
         auditSilently({
           entityType: "client",
-          entityId: selectedClient.id,
+          entityId: clientToDelete.id,
           action: "client.deactivate",
-          beforeData: { clientName: selectedClient.name, status: selectedClient.status },
-          afterData: { clientId: selectedClient.id, clientName: selectedClient.name, status: "Inactive" },
+          beforeData: { clientName: clientToDelete.name, status: clientToDelete.status },
+          afterData: { clientId: clientToDelete.id, clientName: clientToDelete.name, status: "Inactive" },
         });
         return reloadSupabaseState(currentCamProfile?.id || state.accountManager?.id);
       })
       .catch((error) => {
         console.error("[CRM] Failed to delete client:", error);
-        window.alert(`Could not deactivate "${selectedClient.name}" in Supabase: ${error.message}`);
+        window.alert(`Could not deactivate "${clientToDelete.name}" in Supabase: ${error.message}`);
       });
   }
 
@@ -11460,20 +11528,31 @@ export default function App() {
         f.status !== "Resolved" &&
         f.status !== "Acknowledged",
     );
-    const msg = flags.length
-      ? `This close has ${flags.length} unresolved critical flag${flags.length > 1 ? "s" : ""}. Close anyway?`
-      : "Mark this day as closed? This locks the close record.";
-    if (!window.confirm(msg)) return;
+    const client = selectedClient;
+    const importRecord = dailyImport;
+    setWorkspaceConfirmAction({
+      title: `Close ${client.name} for ${importRecord.date}?`,
+      description: flags.length
+        ? `This close has ${flags.length} unresolved critical flag${flags.length > 1 ? "s" : ""}. Closing locks the close record.`
+        : "This marks the day as closed and locks the close record.",
+      confirmLabel: "Close day",
+      busyLabel: "Closing...",
+      variant: flags.length ? "danger" : undefined,
+      onConfirm: () => performCloseImport(client, importRecord),
+    });
+  }
+
+  function performCloseImport(client, importRecord) {
     setState((current) =>
-      updateImportStatus(current, selectedClient.id, dailyImport.id, "Closed"),
+      updateImportStatus(current, client.id, importRecord.id, "Closed"),
     );
-    updateSupabaseDailyImportStatus(dailyImport.id, "Closed").then(() => {
+    updateSupabaseDailyImportStatus(importRecord.id, "Closed").then(() => {
       auditSilently({
         entityType: "daily_import",
-        entityId: dailyImport.id,
+        entityId: importRecord.id,
         action: "daily_import.close",
-        beforeData: { status: dailyImport.status },
-        afterData: { clientId: selectedClient.id, clientName: selectedClient.name, dailyImportId: dailyImport.id, status: "Closed" },
+        beforeData: { status: importRecord.status },
+        afterData: { clientId: client.id, clientName: client.name, dailyImportId: importRecord.id, status: "Closed" },
       });
     }).catch((error) => {
       console.error("[CRM] Failed to close day:", error);
@@ -11483,27 +11562,33 @@ export default function App() {
 
   function reopenImport() {
     if (!selectedClient || !dailyImport) return;
-    if (
-      !window.confirm(
-        'Reopen this day? The close will return to "Needs review" status.',
-      )
-    )
-      return;
+    const client = selectedClient;
+    const importRecord = dailyImport;
+    setWorkspaceConfirmAction({
+      title: `Reopen ${client.name} for ${importRecord.date}?`,
+      description: 'The close will return to "Needs review" status.',
+      confirmLabel: "Reopen day",
+      busyLabel: "Reopening...",
+      onConfirm: () => performReopenImport(client, importRecord),
+    });
+  }
+
+  function performReopenImport(client, importRecord) {
     setState((current) =>
       updateImportStatus(
         current,
-        selectedClient.id,
-        dailyImport.id,
+        client.id,
+        importRecord.id,
         "Needs review",
       ),
     );
-    updateSupabaseDailyImportStatus(dailyImport.id, "Needs review").then(() => {
+    updateSupabaseDailyImportStatus(importRecord.id, "Needs review").then(() => {
       auditSilently({
         entityType: "daily_import",
-        entityId: dailyImport.id,
+        entityId: importRecord.id,
         action: "daily_import.reopen",
-        beforeData: { status: dailyImport.status },
-        afterData: { clientId: selectedClient.id, clientName: selectedClient.name, dailyImportId: dailyImport.id, status: "Needs review" },
+        beforeData: { status: importRecord.status },
+        afterData: { clientId: client.id, clientName: client.name, dailyImportId: importRecord.id, status: "Needs review" },
       });
     }).catch(
       (error) => {
@@ -11537,10 +11622,19 @@ export default function App() {
         ).length
       );
     }, 0);
-    const msg = critCount
-      ? `Close today for ${toClose.length} client${toClose.length !== 1 ? "s" : ""}? There are ${critCount} unresolved critical flag${critCount !== 1 ? "s" : ""} across these clients.`
-      : `Close today for ${toClose.length} client${toClose.length !== 1 ? "s" : ""}?`;
-    if (!window.confirm(msg)) return;
+    setWorkspaceConfirmAction({
+      title: `Close today for ${toClose.length} client${toClose.length !== 1 ? "s" : ""}?`,
+      description: critCount
+        ? `There are ${critCount} unresolved critical flag${critCount !== 1 ? "s" : ""} across these clients.`
+        : "This marks today's uploaded imports as closed.",
+      confirmLabel: "Close all",
+      busyLabel: "Closing...",
+      variant: critCount ? "danger" : undefined,
+      onConfirm: () => performCloseAllToday(toClose, today),
+    });
+  }
+
+  function performCloseAllToday(toClose, today) {
     setState((current) =>
       toClose.reduce((s, c) => {
         const imp = getClientImportByDate(c, today);
@@ -12606,7 +12700,7 @@ export default function App() {
                         onChange={(e) => setQuickLogText(e.target.value)}
                       />
                       <button className="primary-button" type="submit">
-                        <Plus size={14} /> Log
+                        <SquarePen size={14} /> Add Log
                       </button>
                       <button
                         className="ghost-button"
@@ -12881,43 +12975,7 @@ export default function App() {
                                 });
                               }}
                               onRemoveAccount={(accountName) => {
-                                if (!selectedClient) return;
-                                if (
-                                  !window.confirm(
-                                    `Remove "${accountName}" from the registry? Historical import data is kept, but the account metadata (type, alias, targets) will be deleted.`,
-                                  )
-                                )
-                                  return;
-                                setState((current) =>
-                                  removeAccountFromRegistry(
-                                    current,
-                                    selectedClient.id,
-                                    accountName,
-                                  ),
-                                );
-                                deleteSupabaseTradingAccount(
-                                  selectedClient.id,
-                                  accountName,
-                                ).then(() => {
-                                  auditSilently({
-                                    entityType: "trading_account",
-                                    entityId: accountName,
-                                    action: "account.delete",
-                                    afterData: {
-                                      clientId: selectedClient.id,
-                                      clientName: selectedClient.name,
-                                      accountName,
-                                    },
-                                  });
-                                }).catch((error) => {
-                                  console.error(
-                                    "[CRM] Failed to remove trading account:",
-                                    error,
-                                  );
-                                  window.alert(
-                                    `Could not remove "${accountName}" from Supabase: ${error.message}`,
-                                  );
-                                });
+                                requestRemoveAccount(accountName);
                               }}
                             />
                           ) : null}
@@ -13203,6 +13261,11 @@ export default function App() {
               </div>
             );
           })()}
+        <ConfirmActionDialog
+          action={workspaceConfirmAction}
+          onCancel={() => setWorkspaceConfirmAction(null)}
+          onConfirm={runWorkspaceConfirmAction}
+        />
         <ConfirmActionDialog
           action={logoutConfirmAction}
           busy={logoutBusy}
