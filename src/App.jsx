@@ -3464,13 +3464,6 @@ function ManagerOverview({
               <Copy size={16} />
               {teamCopyDone ? " Copied!" : " Copy Team Report"}
             </button>
-            <button
-              className="primary-button"
-              onClick={() => onOpenCam(cams[0]?.id || "am-pedro")}
-            >
-              <BarChart3 size={16} /> Open {cams[0]?.name || "Pedro"}'s
-              Workspace
-            </button>
           </div>
         </div>
 
