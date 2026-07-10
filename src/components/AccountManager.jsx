@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES } from '../domain/reconcile';
 
 const ACCOUNT_TYPE_OPTIONS = [
@@ -51,7 +52,9 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
         <select value={newType} onChange={e => setNewType(e.target.value)}>
           {ACCOUNT_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}
         </select>
-        <button type="submit" className="primary-button">+ Add account</button>
+        <button type="submit" className="primary-button">
+          <Plus size={14} /> Add account
+        </button>
       </form>
     )}
     {!rows.length ? (
@@ -236,7 +239,11 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
                 />
               </td>
               {onRemoveAccount ? (
-                <td><button className="ghost-button" style={{color:'var(--negative)',fontSize:11,padding:'2px 6px'}} title="Remove from registry" onClick={() => onRemoveAccount(account.accountName)}>✕</button></td>
+                <td>
+                  <button className="ghost-button icon-only registry-remove-btn" title="Remove from registry" onClick={() => onRemoveAccount(account.accountName)}>
+                    <Trash2 size={13} />
+                  </button>
+                </td>
               ) : null}
             </tr>
           ))}
