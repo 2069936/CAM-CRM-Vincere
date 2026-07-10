@@ -1713,7 +1713,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       setError("");
       const payload = {
         ...newUser,
-        hasCamProfile: newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile),
+        hasCamProfile: Boolean(newUser.hasCamProfile),
       };
       const remoteUsers = await createSupabaseManagedUser(payload);
       onUsersChange(remoteUsers);
@@ -1756,9 +1756,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       displayName: patch.displayName ?? user.displayName,
       email: patch.email ?? user.email,
       role: patch.role ?? user.role,
-      hasCamProfile: (patch.role ?? user.role) === USER_ROLES.CAM
-        ? (patch.hasCamProfile ?? Boolean(user.camProfileId))
-        : false,
+      hasCamProfile: patch.hasCamProfile ?? Boolean(user.camProfileId),
       status: patch.status ?? user.status ?? "Active",
       password: patch.password,
     };
@@ -1929,9 +1927,6 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                           onChange={(e) => setEditUserPatch((p) => ({
                             ...p,
                             role: e.target.value,
-                            hasCamProfile: e.target.value === USER_ROLES.CAM
-                              ? (p.hasCamProfile ?? Boolean(u.camProfileId))
-                              : false,
                           }))}
                         >
                           {Object.values(USER_ROLES).map((role) => <option key={role}>{role}</option>)}
@@ -1942,20 +1937,16 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                     </td>
                     <td>
                       {isEditing ? (
-                        (patch.role ?? u.role) === USER_ROLES.CAM ? (
-                          <label className="inline-toggle">
-                            <input
-                              type="checkbox"
-                              checked={patch.hasCamProfile ?? Boolean(u.camProfileId)}
-                              onChange={(e) => setEditUserPatch((p) => ({ ...p, hasCamProfile: e.target.checked }))}
-                            />
-                            <span>{(patch.hasCamProfile ?? Boolean(u.camProfileId)) ? "Yes" : "No"}</span>
-                          </label>
-                        ) : "—"
+                        <label className="inline-toggle">
+                          <input
+                            type="checkbox"
+                            checked={patch.hasCamProfile ?? Boolean(u.camProfileId)}
+                            onChange={(e) => setEditUserPatch((p) => ({ ...p, hasCamProfile: e.target.checked }))}
+                          />
+                          <span>{(patch.hasCamProfile ?? Boolean(u.camProfileId)) ? "Yes" : "No"}</span>
+                        </label>
                       ) : (
-                        u.role === USER_ROLES.CAM
-                          ? <span className={u.camProfileId ? "badge success" : "badge muted"}>{u.camProfileId ? "Yes" : "No"}</span>
-                          : "—"
+                        <span className={u.camProfileId ? "badge success" : "badge muted"}>{u.camProfileId ? "Yes" : "No"}</span>
                       )}
                     </td>
                     <td>
@@ -2010,7 +2001,6 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
             onChange={(e) => setNewUser((v) => ({
               ...v,
               role: e.target.value,
-              hasCamProfile: e.target.value === USER_ROLES.CAM ? v.hasCamProfile : false,
             }))}
           >
             {Object.values(USER_ROLES).map((role) => <option key={role}>{role}</option>)}
@@ -2018,8 +2008,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
           <label className="inline-toggle">
             <input
               type="checkbox"
-              checked={newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile)}
-              disabled={newUser.role !== USER_ROLES.CAM}
+              checked={Boolean(newUser.hasCamProfile)}
               onChange={(e) => setNewUser((v) => ({ ...v, hasCamProfile: e.target.checked }))}
             />
             <span>CAM profile</span>

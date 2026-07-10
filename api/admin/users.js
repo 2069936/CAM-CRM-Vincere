@@ -232,7 +232,7 @@ async function createUser(admin, payload) {
   if (authError) throw authError;
 
   try {
-    const wantsCamProfile = role === 'CAM' && Boolean(payload.hasCamProfile || payload.camProfileId);
+    const wantsCamProfile = Boolean(payload.hasCamProfile || payload.camProfileId);
     const camUuid = payload.camProfileId
       ? await getCamProfileId(admin, payload.camProfileId)
       : wantsCamProfile
@@ -280,7 +280,7 @@ async function updateUser(admin, payload) {
   const displayName = payload.displayName != null ? String(payload.displayName || '').trim() : existing.display_name;
   const role = payload.role === 'Manager' ? 'Manager' : payload.role === 'CAM' ? 'CAM' : existing.role;
   const status = payload.status === 'Inactive' ? 'Inactive' : 'Active';
-  const wantsCamProfile = role === 'CAM' && (
+  const wantsCamProfile = (
     'hasCamProfile' in payload
       ? Boolean(payload.hasCamProfile)
       : 'camProfileId' in payload
@@ -308,7 +308,7 @@ async function updateUser(admin, payload) {
     throw Object.assign(new Error('Username or email is already in use.'), { status: 409 });
   }
 
-  if (role !== 'CAM' || !wantsCamProfile) {
+  if (!wantsCamProfile) {
     await deleteCamProfile(admin, existing.cam_profile_id);
     camUuid = null;
   } else if (payload.camProfileId && payload.camProfileId !== existing.cam_profile_id) {
