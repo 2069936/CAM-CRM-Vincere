@@ -222,7 +222,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
                     const last = (account.payoutHistory || []).at(-1);
                     return last
                       ? <span style={{fontSize:12}}>${Number(last.amount || 0).toLocaleString()}</span>
-                      : <span className="muted" style={{fontSize:11}}>—</span>;
+                      : <span className="muted" style={{fontSize:11}}>-</span>;
                   })()}
                 </td>
               ) : null}

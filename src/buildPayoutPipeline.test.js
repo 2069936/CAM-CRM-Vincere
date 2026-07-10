@@ -93,7 +93,7 @@ describe('buildCamPerformance', () => {
       snapshots: [
         { accountName: 'A1', grossRealizedPnl: 200, weeklyPnl: 800 },
         { accountName: 'A2', grossRealizedPnl: 100, weeklyPnl: 400 },
-        { accountName: 'A3', grossRealizedPnl: 50, weeklyPnl: 200 }, // Ignore — excluded
+        { accountName: 'A3', grossRealizedPnl: 50, weeklyPnl: 200 }, // Ignore - excluded
       ],
     });
     const result = buildCamPerformance([client], [cam]);

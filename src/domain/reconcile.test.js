@@ -143,7 +143,7 @@ describe('reconcileDailyImport', () => {
   });
 
   it('does not raise Missing account when CSV casing differs from registry key casing', () => {
-    // Registry has uppercase key; CSV exports lowercase — must not produce a false "Missing account" flag
+    // Registry has uppercase key; CSV exports lowercase - must not produce a false "Missing account" flag
     const registry = {
       APEX1234: { accountName: 'APEX1234', accountType: 'Funded', status: 'Active', alias: 'My Account' },
     };
@@ -356,7 +356,7 @@ describe('recalculateDailyImport', () => {
       snapshots: [{ accountName: 'ACC1', grossRealizedPnl: 200, accountBalance: 51200, trailingMaxDrawdown: -1900, weeklyPnl: 800 }],
       strategies: [{ accountName: 'ACC1', strategyName: '1-RBO', enabled: true }],
       orders: [], executions: [], accounts: {},
-      flags: [], // start with no flags — recalculate should generate them
+      flags: [], // start with no flags - recalculate should generate them
     };
     const result = recalculateDailyImport({ dailyImport, registry });
     // drawdown used = 1900 / 2000 = 95% → Critical

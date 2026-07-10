@@ -26,6 +26,7 @@ import {
   Languages,
   ListChecks,
   LoaderCircle,
+  Pin,
   Plus,
   RefreshCw,
   MessageCircle,
@@ -41,6 +42,7 @@ import {
   Mail,
   Phone,
   SquarePen,
+  X,
 } from "lucide-react";
 import AccountManager from "./components/AccountManager";
 import Dashboard from "./components/Dashboard";
@@ -372,7 +374,7 @@ export function buildTodayActions(client, dailyImport) {
       actions.push({
         severity: "warning",
         icon: "📂",
-        text: `${unassigned.length} account${unassigned.length > 1 ? "s" : ""} unclassified — go to Review tab to assign type`,
+        text: `${unassigned.length} account${unassigned.length > 1 ? "s" : ""} unclassified - go to Review tab to assign type`,
       });
     }
   }
@@ -394,7 +396,7 @@ export function buildTodayActions(client, dailyImport) {
       actions.push({
         severity: "warning",
         icon: "⚙️",
-        text: `No active strategy on ${alias} — check Stack Playbook`,
+        text: `No active strategy on ${alias} - check Stack Playbook`,
       });
     }
   }
@@ -802,7 +804,7 @@ export function buildStrategyAnalyzer(clients = []) {
     .sort((a, b) => b.totalRealized - a.totalRealized);
 }
 
-// Full historical strategy effectiveness — aggregates across all dailyImports
+// Full historical strategy effectiveness - aggregates across all dailyImports
 export function buildStrategyEffectiveness(clients = []) {
   // stratName → { totalPnl, days: [{date,pnl}], winDays, lossDays, accountSet, clientSet, last7Pnl }
   const stratMap = new Map();
@@ -931,7 +933,7 @@ export function buildLifecycleMetrics(clients = []) {
   };
 }
 
-// Monthly P&L grouped by account — includes active strategy families per account
+// Monthly P&L grouped by account - includes active strategy families per account
 export function buildMonthlyByAccount(client) {
   const byMonth = {};
   for (const di of client.dailyImports || []) {
@@ -1061,7 +1063,7 @@ function accountRiskLevel(snapshot, meta) {
   const ddLimit = Number(meta?.maxDrawdownLimit || 0);
   const rawDD = Number(snapshot?.trailingMaxDrawdown || 0);
   if (ddLimit > 0) {
-    // Model 1: configured limit — rawDD is cumulative loss (abs = used)
+    // Model 1: configured limit - rawDD is cumulative loss (abs = used)
     const used = Math.abs(rawDD);
     const pct = used / ddLimit;
     if (pct >= 0.85) return { level: "Critical", pct };
@@ -1070,7 +1072,7 @@ function accountRiskLevel(snapshot, meta) {
     return { level: "Low", pct };
   }
   if (rawDD > 0) {
-    // Model 2: no configured limit — rawDD IS the remaining buffer
+    // Model 2: no configured limit - rawDD IS the remaining buffer
     // Use thresholds: Critical ≤ $500, High ≤ $1200, Medium ≤ $2500
     if (rawDD <= 500) return { level: "Critical", pct: null };
     if (rawDD <= 1200) return { level: "High", pct: null };
@@ -1200,7 +1202,7 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
     if (!latest) continue;
     const registry = mergeRegistryCi(latest.accounts, client.accountRegistry);
     const camId = clientCam[client.id];
-    const camName = camById[camId]?.name || "—";
+    const camName = camById[camId]?.name || "-";
 
     for (const snapshot of latest.snapshots || []) {
       const meta = ciMeta(registry, snapshot.accountName);
@@ -1233,7 +1235,7 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
   return { buckets, total };
 }
 
-// Detect funded accounts that have reached their target profit — payout should be requested
+// Detect funded accounts that have reached their target profit - payout should be requested
 export function buildPayoutAlerts(client, dailyImport) {
   if (!client || !dailyImport) return [];
   const registry = mergeRegistryCi(
@@ -1274,7 +1276,7 @@ export function buildPayoutPipeline(clients = [], camProfiles = []) {
   const rows = [];
   for (const client of clients) {
     const camId = clientCam[client.id];
-    const camName = camById[camId]?.name || "—";
+    const camName = camById[camId]?.name || "-";
     for (const meta of Object.values(client.accountRegistry || {})) {
       if (!meta.payoutState || meta.payoutState === "Not requested") continue;
       const latest = client.dailyImports?.at(-1);
@@ -1511,7 +1513,7 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
       rows.push({
         clientId: client.id,
         clientName: client.name,
-        camName: clientCam[client.id] || "—",
+        camName: clientCam[client.id] || "-",
         accountName: snap.accountName,
         alias: meta.alias || snap.accountName,
         connection: meta.connection || "",
@@ -1563,7 +1565,7 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
       maximumFractionDigits: 0,
     }).format(Number(n || 0));
   const lines = [];
-  lines.push(`📊 *Team Daily Report — ${today}*`);
+  lines.push(`📊 *Team Daily Report - ${today}*`);
   lines.push("");
   lines.push(
     `💰 *Team daily P&L:* ${sign(totals.dailyPnl)}${fmt(totals.dailyPnl)}`,
@@ -2067,7 +2069,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                     <td>
                       {isEditing ? (
                         <input type="email" value={patch.email ?? u.email ?? ""} onChange={(e) => setEditUserPatch((p) => ({ ...p, email: e.target.value }))} />
-                      ) : <span className="muted">{u.email || "—"}</span>}
+                      ) : <span className="muted">{u.email || "-"}</span>}
                     </td>
                     <td>
                       {isEditing ? (
@@ -2102,11 +2104,11 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                               {camProfileEnabled ? "On" : "Off"}
                             </strong>
                           </label>
-                        ) : "—"
+                        ) : "-"
                       ) : (
                         u.role === USER_ROLES.CAM
                           ? <span className={u.camProfileId ? "badge success" : "badge muted"}>{u.camProfileId ? "Yes" : "No"}</span>
-                          : "—"
+                          : "-"
                       )}
                     </td>
                     <td>
@@ -2298,7 +2300,7 @@ function AuditLogsPanel() {
             <tbody>
               {logs.map((log) => (
                 <tr key={log.id}>
-                  <td>{log.createdAt ? new Date(log.createdAt).toLocaleString("en-US") : "—"}</td>
+                  <td>{log.createdAt ? new Date(log.createdAt).toLocaleString("en-US") : "-"}</td>
                   <td>
                     <strong>{log.userDisplayName || "System"}</strong>
                     {log.userEmail ? <small>{log.userEmail}</small> : null}
@@ -2677,7 +2679,7 @@ function DataToolsPanel({ clients = [], camProfiles = [], onImportClient, sessio
                         <td>
                           <strong>{row.name}</strong>
                         </td>
-                        <td className="muted">{row.email || "—"}</td>
+                        <td className="muted">{row.email || "-"}</td>
                         <td>{row.stage || "Onboarding"}</td>
                         <td>
                           {row.duplicateReason ? (
@@ -3347,7 +3349,7 @@ function ManagerOverview({
           alias: meta.alias || accountName,
           clientName: client.name,
           clientId: client.id,
-          camName: cam?.name || "—",
+          camName: cam?.name || "-",
           accountType: meta.accountType,
           bulletBotPassType: meta.bulletBotPassType || "",
           dailyPnl,
@@ -3538,7 +3540,7 @@ function ManagerOverview({
                       }}
                     >
                       <span>{client.name}</span>
-                      <small className="muted">{cam?.name || "—"}</small>
+                      <small className="muted">{cam?.name || "-"}</small>
                     </button>
                   ))
                 ) : (
@@ -3712,7 +3714,7 @@ function ManagerOverview({
             <AlertTriangle size={16} />
             <span>
               <strong>{unassignedClients.length} client{unassignedClients.length !== 1 ? "s" : ""} unassigned</strong>
-              {" "}— no active CAM assigned. Reassign in the Client roster below:{" "}
+              {" "}- no active CAM assigned. Reassign in the Client roster below:{" "}
               {unassignedClients.map((client) => client.name).join(", ")}
             </span>
           </div>
@@ -3837,7 +3839,7 @@ function ManagerOverview({
                     setNewClientForm((f) => ({ ...f, camId: e.target.value }))
                   }
                 >
-                  <option value="">— Unassigned —</option>
+                  <option value="">- Unassigned -</option>
                   {activeCamProfiles.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
@@ -3953,7 +3955,7 @@ function ManagerOverview({
                           <span className="count">{cards.length}</span>
                         </div>
                         {cards.length === 0 ? (
-                          <div className="pipeline-empty muted">—</div>
+                          <div className="pipeline-empty muted">-</div>
                         ) : (
                           cards.map(
                             ({ client, cam, pnl, openTasks, openFlags }) => (
@@ -4017,7 +4019,7 @@ function ManagerOverview({
         {showBatchImport && (
           <section className="panel">
             <div className="panel-heading">
-              <h3>Batch import — all clients</h3>
+              <h3>Batch import - all clients</h3>
               <span className="badge muted">
                 Drop NT CSV files from any client
               </span>
@@ -4398,7 +4400,7 @@ function ManagerOverview({
           return (
             <section className="panel open-flags-panel">
               <div className="panel-heading">
-                <h3>Open flags — all clients</h3>
+                <h3>Open flags - all clients</h3>
                 <span className={`badge ${critCount ? "danger" : "warning"}`}>
                   {allFlags.length} open
                   {critCount ? ` · ${critCount} critical` : ""}
@@ -4437,7 +4439,7 @@ function ManagerOverview({
                             {f.clientName}
                           </button>
                         </td>
-                        <td className="muted">{f.camName || "—"}</td>
+                        <td className="muted">{f.camName || "-"}</td>
                         <td className="muted">{f.date}</td>
                         <td>
                           <span
@@ -4446,7 +4448,7 @@ function ManagerOverview({
                             {f.severity}
                           </span>
                         </td>
-                        <td>{f.message || f.type || "—"}</td>
+                        <td>{f.message || f.type || "-"}</td>
                         <td>
                           {onResolveFlag && (
                             <button
@@ -4721,7 +4723,7 @@ function ManagerOverview({
                             ? `${formatCurrency(row.buffer)} (${row.bufferPct}%)`
                             : row.buffer > 0
                               ? formatCurrency(row.buffer)
-                              : "—"}
+                              : "-"}
                         </td>
                         <td>
                           {row.targetPct !== null ? (
@@ -4745,7 +4747,7 @@ function ManagerOverview({
                               <small>{row.targetPct}%</small>
                             </div>
                           ) : (
-                            "—"
+                            "-"
                           )}
                         </td>
                         <td>
@@ -4758,7 +4760,7 @@ function ManagerOverview({
                                   : "muted"
                             }
                           >
-                            {row.payoutState || "—"}
+                            {row.payoutState || "-"}
                           </small>
                         </td>
                         <td onClick={(e) => e.stopPropagation()}>
@@ -4850,7 +4852,7 @@ function ManagerOverview({
                         </small>
                       </td>
                       <td>
-                        <small>{row.bulletBotPassType || "—"}</small>
+                        <small>{row.bulletBotPassType || "-"}</small>
                       </td>
                       <td
                         className={row.dailyPnl >= 0 ? "positive" : "negative"}
@@ -4876,7 +4878,7 @@ function ManagerOverview({
                             {row.targetPct}%
                           </span>
                         ) : (
-                          <span className="muted">—</span>
+                          <span className="muted">-</span>
                         )}
                       </td>
                     </tr>
@@ -4911,7 +4913,7 @@ function ManagerOverview({
           <div className="panel-heading">
             <h3>Strategy Effectiveness Leaderboard</h3>
             <span className="badge muted">
-              All history — total P&amp;L, win rate, 7-day trend
+              All history - total P&amp;L, win rate, 7-day trend
             </span>
           </div>
           {strategyEffectiveness.length ? (
@@ -5106,7 +5108,7 @@ function ManagerOverview({
                           : ""}
                       </span>
                     ) : (
-                      <span className="risk-dist-names muted">—</span>
+                      <span className="risk-dist-names muted">-</span>
                     )}
                   </div>
                 );
@@ -5147,7 +5149,7 @@ function ManagerOverview({
                     );
                     const lastActive = camUser?.lastActiveAt;
                     const lastActiveLabel = (() => {
-                      if (!lastActive) return "—";
+                      if (!lastActive) return "-";
                       const mins = Math.round(
                         (Date.now() - new Date(lastActive)) / 60000,
                       );
@@ -5206,7 +5208,7 @@ function ManagerOverview({
                               </small>
                             </>
                           ) : (
-                            <span className="muted">—</span>
+                            <span className="muted">-</span>
                           )}
                         </td>
                         <td className={cam.openFlags >= 3 ? "negative" : ""}>
@@ -5288,7 +5290,7 @@ function ManagerOverview({
                               )}
                             </small>
                           </td>
-                          <td>{funded || "—"}</td>
+                          <td>{funded || "-"}</td>
                           <td
                             className={dailyPnl >= 0 ? "positive" : "negative"}
                           >
@@ -5321,7 +5323,7 @@ function ManagerOverview({
                                 });
                               }}
                             >
-                              <option value="">— Unassigned —</option>
+                              <option value="">- Unassigned -</option>
                               {activeCamProfiles.map((p) => (
                                 <option key={p.id} value={p.id}>
                                   {p.name}
@@ -5428,7 +5430,7 @@ function ManagerOverview({
                             <td>
                               <strong>{client.name}</strong>
                             </td>
-                            <td className="muted">{cam?.name || "—"}</td>
+                            <td className="muted">{cam?.name || "-"}</td>
                             <td>{accounts}</td>
                             <td className={pnl >= 0 ? "positive" : "negative"}>
                               <strong>
@@ -5451,7 +5453,7 @@ function ManagerOverview({
                           fontWeight: 700,
                         }}
                       >
-                        <td colSpan={3}>Total — {drillRows.length} clients</td>
+                        <td colSpan={3}>Total - {drillRows.length} clients</td>
                         <td className={total >= 0 ? "positive" : "negative"}>
                           {total >= 0 ? "+" : ""}
                           {formatCurrency(total)}
@@ -5508,7 +5510,7 @@ function ManagerOverview({
               <strong>Consistency rule risk</strong>
               <span>
                 Funded account's best day represents more than 30% of total
-                positive P&L — may violate prop firm consistency rule.
+                positive P&L - may violate prop firm consistency rule.
               </span>
               <small>best_day_pnl / total_positive_pnl &gt; 0.30</small>
             </div>
@@ -5693,7 +5695,7 @@ function ManagerOverview({
                             </strong>
                           </td>
                           <td>
-                            <small className="muted">{p.notes || "—"}</small>
+                            <small className="muted">{p.notes || "-"}</small>
                           </td>
                         </tr>
                       ))}
@@ -5803,7 +5805,7 @@ function MonthlyReportPanel({ client, month, onClose }) {
                 }).format(Number(n || 0));
               const s = (n) => (n >= 0 ? "+" : "");
               const lines = [
-                `📊 *Monthly Report — ${monthLabel}*`,
+                `📊 *Monthly Report - ${monthLabel}*`,
                 `👤 ${client?.name || "Client"}`,
                 ``,
                 `💰 *Net P&L:* ${s(totalPnl)}${fmt(totalPnl)}`,
@@ -5953,7 +5955,7 @@ function MonthlyReportPanel({ client, month, onClose }) {
                       {sign(d.pnl)}
                       {formatCurrency(d.pnl)}
                     </td>
-                    <td>{d.status || "—"}</td>
+                    <td>{d.status || "-"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -6050,7 +6052,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
     if (rawDD !== 0) {
       return rawDD <= 0 ? "BREACHED" : `${formatCurrency(rawDD)} buffer`;
     }
-    return "—";
+    return "-";
   }
 
   function drawdownTone(row) {
@@ -6188,7 +6190,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
                           (s) =>
                             `${s.strategyName || s.strategyFamily || "Strategy"}${s.enabled ? "" : " (off)"}`,
                         )
-                        .join(", ") || "—";
+                        .join(", ") || "-";
                     return (
                       <tr key={row.accountName}>
                         <td>
@@ -6258,12 +6260,12 @@ function ReportPanel({ client, dailyImport, onClose }) {
               <tbody>
                 {reportHistory.map((item) => (
                   <tr key={item.id}>
-                    <td>{item.reportDate || item.content?.summary?.date || "—"}</td>
+                    <td>{item.reportDate || item.content?.summary?.date || "-"}</td>
                     <td>{item.reportType === "daily_close" ? "Daily close" : item.reportType}</td>
                     <td>
                       {item.createdAt
                         ? new Date(item.createdAt).toLocaleString("en-US")
-                        : "—"}
+                        : "-"}
                     </td>
                   </tr>
                 ))}
@@ -6402,14 +6404,14 @@ function OnboardingChecklist({ client, onSwitchTab }) {
       done: !!(profile.email || profile.phone || profile.fullName),
       label: "Add contact info",
       detail:
-        "Name, WhatsApp, email — so you can reach the client from the CRM",
+        "Name, WhatsApp, email - so you can reach the client from the CRM",
       action: () => onSwitchTab?.("Profile"),
       actionLabel: "Open Profile →",
     },
     {
       done: !!(creds.ip && creds.username),
       label: "Save VPS credentials",
-      detail: "IP, username, password — required for daily check-ins",
+      detail: "IP, username, password - required for daily check-ins",
       action: () => onSwitchTab?.("Credentials & Notes"),
       actionLabel: "Open Credentials →",
     },
@@ -6436,7 +6438,7 @@ function OnboardingChecklist({ client, onSwitchTab }) {
       ),
       label: "Set payout target on funded accounts",
       detail:
-        "Target profit + max drawdown limit — enables payout alerts and progress tracking",
+        "Target profit + max drawdown limit - enables payout alerts and progress tracking",
       action: () => onSwitchTab?.("Account Registry"),
       actionLabel: "Open Registry →",
     },
@@ -6535,7 +6537,7 @@ function PayoutHistoryPanel({ funded, grandTotal, onLogPayout }) {
                 )}
                 {!history.length && m.payoutCount > 0 && (
                   <small className="muted">
-                    {m.payoutCount} payout{m.payoutCount !== 1 ? "s" : ""} — no
+                    {m.payoutCount} payout{m.payoutCount !== 1 ? "s" : ""} - no
                     detail
                   </small>
                 )}
@@ -6842,7 +6844,7 @@ function ClientOverview({
         <div className="panel-heading">
           <h3>P&amp;L Calendar</h3>
           <span className="badge muted">
-            Last 10 weeks — green = profit, red = loss
+            Last 10 weeks - green = profit, red = loss
           </span>
         </div>
         <PnlCalendarHeatmap client={client} />
@@ -6926,7 +6928,7 @@ function ClientOverview({
                 <AlertTriangle size={16} />
                 <div>
                   <strong>
-                    Possible VPS / algo disconnect — {alert.alias}
+                    Possible VPS / algo disconnect - {alert.alias}
                   </strong>
                   <span>{alert.message}</span>
                 </div>
@@ -6958,14 +6960,14 @@ function ClientOverview({
                 <AlertTriangle size={16} />
                 <div>
                   <strong>
-                    {w.alias} — {w.ratio}% concentration risk
+                    {w.alias} - {w.ratio}% concentration risk
                   </strong>
                   <span>
                     Best day ({w.bestDayDate}): {formatCurrency(w.bestDayPnl)} ={" "}
                     {w.ratio}% of {formatCurrency(w.totalPositive)} total gains.
                     {w.severity === "Critical"
                       ? " Likely fails consistency rule. Contact client."
-                      : " Monitor — approaching consistency rule limit."}
+                      : " Monitor - approaching consistency rule limit."}
                   </span>
                 </div>
               </div>
@@ -6980,7 +6982,7 @@ function ClientOverview({
             <h3>Payout Alerts</h3>
             <span className="count">{payoutAlerts.length}</span>
             <span className="badge muted">
-              Accounts near or at target — request payout
+              Accounts near or at target - request payout
             </span>
           </div>
           <div className="flag-list">
@@ -6993,8 +6995,8 @@ function ClientOverview({
                   <strong>{a.alias}</strong>
                   <span>
                     {a.ready
-                      ? `Ready for payout — profit ${formatCurrency(a.profit)} reached target ${formatCurrency(a.target)}`
-                      : `Approaching target — ${a.pct}% of ${formatCurrency(a.target)} goal (${formatCurrency(a.profit)} profit)`}
+                      ? `Ready for payout - profit ${formatCurrency(a.profit)} reached target ${formatCurrency(a.target)}`
+                      : `Approaching target - ${a.pct}% of ${formatCurrency(a.target)} goal (${formatCurrency(a.profit)} profit)`}
                   </span>
                 </div>
                 <div className="payout-progress-wrap">
@@ -7017,7 +7019,7 @@ function ClientOverview({
           <div className="panel-heading">
             <h3>Account Variance vs Team Avg</h3>
             <span className="badge muted">
-              Last 7 closes — actual vs expected by strategy
+              Last 7 closes - actual vs expected by strategy
             </span>
           </div>
           <div className="table-wrap">
@@ -7040,7 +7042,7 @@ function ClientOverview({
                       <small>{row.accountType}</small>
                     </td>
                     <td>
-                      <small className="muted">{row.strategies || "—"}</small>
+                      <small className="muted">{row.strategies || "-"}</small>
                     </td>
                     <td
                       className={row.totalActual >= 0 ? "positive" : "negative"}
@@ -7128,7 +7130,7 @@ function ClientOverview({
             ).map((row) => (
               <div className="monthly-breakdown-row" key={row.accountName}>
                 <span>{row.alias}</span>
-                <small className="muted">{row.strategies || "—"}</small>
+                <small className="muted">{row.strategies || "-"}</small>
                 <strong className={row.pnl >= 0 ? "positive" : "negative"}>
                   {formatCurrency(row.pnl)}
                 </strong>
@@ -7298,7 +7300,7 @@ function PnlCalendarHeatmap({ client }) {
                 title={
                   day.pnl !== null
                     ? `${day.date}: ${day.pnl >= 0 ? "+" : ""}${formatCurrency(day.pnl)}`
-                    : `${day.date} — no close`
+                    : `${day.date} - no close`
                 }
               />
             ))}
@@ -7474,7 +7476,7 @@ export function buildPortfolioInsights(clients) {
       client.accountRegistry,
     );
 
-    // 1. Drawdown velocity — project breach date from last 7-day buffer consumption
+    // 1. Drawdown velocity - project breach date from last 7-day buffer consumption
     for (const snap of snapshots) {
       const meta = ciMeta(registryCi, snap.accountName);
       if (meta.accountType !== "Funded") continue;
@@ -7498,7 +7500,7 @@ export function buildPortfolioInsights(clients) {
 
       if (buffers.length < 2) continue;
       const dailyChange = (buffers.at(-1) - buffers[0]) / (buffers.length - 1);
-      if (dailyChange >= 0) continue; // buffer growing or stable — no concern
+      if (dailyChange >= 0) continue; // buffer growing or stable - no concern
       const daysToBreech = Math.floor(buffer / Math.abs(dailyChange));
 
       if (daysToBreech <= 5) {
@@ -7508,13 +7510,13 @@ export function buildPortfolioInsights(clients) {
           clientId: client.id,
           clientName: client.name,
           accountAlias: meta.alias || snap.accountName,
-          message: `Buffer ${formatCurrency(buffer)} depleting ~${formatCurrency(Math.abs(dailyChange))}/day — projected breach in ${daysToBreech} trading day${daysToBreech !== 1 ? "s" : ""}`,
+          message: `Buffer ${formatCurrency(buffer)} depleting ~${formatCurrency(Math.abs(dailyChange))}/day - projected breach in ${daysToBreech} trading day${daysToBreech !== 1 ? "s" : ""}`,
           action: "Review stack or reduce position size",
         });
       }
     }
 
-    // 2. Consistency rule — best day > 30% of total positive P&L
+    // 2. Consistency rule - best day > 30% of total positive P&L
     const consistencyWarnings = buildConsistencyWarnings(client);
     for (const w of consistencyWarnings) {
       insights.push({
@@ -7523,12 +7525,12 @@ export function buildPortfolioInsights(clients) {
         clientId: client.id,
         clientName: client.name,
         accountAlias: w.alias,
-        message: `Best day (${formatCurrency(w.bestDayPnl)} on ${w.bestDayDate}) is ${w.ratio}% of total gains — consistency rule at risk`,
+        message: `Best day (${formatCurrency(w.bestDayPnl)} on ${w.bestDayDate}) is ${w.ratio}% of total gains - consistency rule at risk`,
         action: "Consider reducing position on strong days",
       });
     }
 
-    // 3. Payout opportunity — funded account near target
+    // 3. Payout opportunity - funded account near target
     if (latest) {
       const payoutAlerts = buildPayoutAlerts(client, latest);
       for (const a of payoutAlerts) {
@@ -7539,14 +7541,14 @@ export function buildPortfolioInsights(clients) {
           clientName: client.name,
           accountAlias: a.alias,
           message: a.ready
-            ? `Target reached — ${formatCurrency(a.profit)} profit vs ${formatCurrency(a.target)} goal. Request payout.`
-            : `${a.pct}% of payout target — ${formatCurrency(a.target - a.profit)} remaining`,
+            ? `Target reached - ${formatCurrency(a.profit)} profit vs ${formatCurrency(a.target)} goal. Request payout.`
+            : `${a.pct}% of payout target - ${formatCurrency(a.target - a.profit)} remaining`,
           action: a.ready ? "Request payout now" : "Monitor until target",
         });
       }
     }
 
-    // 4. Strategy cooling — algo was positive last week, now negative 3+ days
+    // 4. Strategy cooling - algo was positive last week, now negative 3+ days
     if (latest) {
       for (const snap of snapshots) {
         const meta = ciMeta(registryCi, snap.accountName);
@@ -7580,7 +7582,7 @@ export function buildPortfolioInsights(clients) {
             clientName: client.name,
             accountAlias: meta.alias || snap.accountName,
             message: `Performance shift: avg was ${formatCurrency(priorAvg)}/day, now ${formatCurrency(recentAvg)}/day (${negativeDays} negative days recently)`,
-            action: "Review in Stack Playbook — consider algo change",
+            action: "Review in Stack Playbook - consider algo change",
           });
         }
       }
@@ -8018,8 +8020,9 @@ function CamOverview({
                   className="ghost-button"
                   style={{ fontSize: 11 }}
                   onClick={() => setEditingGoal(false)}
+                  title="Cancel editing goal"
                 >
-                  ✕
+                  <X size={12} />
                 </button>
               </form>
             ) : monthlyGoal > 0 ? (
@@ -8270,7 +8273,7 @@ function CamOverview({
               })}
               {allOpenTasks.length > 20 && (
                 <p className="muted" style={{ padding: "8px 0", fontSize: 12 }}>
-                  +{allOpenTasks.length - 20} more — navigate to individual
+                  +{allOpenTasks.length - 20} more - navigate to individual
                   clients to see all.
                 </p>
               )}
@@ -8352,7 +8355,7 @@ function CamOverview({
                       ) : row.avgDaily <= 0 ? (
                         <span className="negative">Trending down</span>
                       ) : (
-                        <span className="muted">—</span>
+                        <span className="muted">-</span>
                       )}
                     </td>
                   </tr>
@@ -8562,8 +8565,9 @@ function CamOverview({
                             setQuickTaskClientId(null);
                             setQuickTaskText("");
                           }}
+                          title="Cancel task"
                         >
-                          ✕
+                          <X size={12} />
                         </button>
                       </form>
                     ) : (
@@ -8730,10 +8734,10 @@ function CamOverview({
                               : isToday
                                 ? "Today"
                                 : task.dueDate
-                            : "—"}
+                            : "-"}
                         </td>
                         <td>
-                          <small>{task.accountName || "—"}</small>
+                          <small>{task.accountName || "-"}</small>
                         </td>
                       </tr>
                     );
@@ -8921,13 +8925,13 @@ function CamOverview({
                             }
                           >
                             {todayPnl === null
-                              ? "—"
+                              ? "-"
                               : (todayPnl >= 0 ? "+" : "") +
                                 formatCurrency(todayPnl)}
                           </td>
                           <td>
                             {buffer === null ? (
-                              <span className="muted">—</span>
+                              <span className="muted">-</span>
                             ) : (
                               <span
                                 className={
@@ -8945,7 +8949,7 @@ function CamOverview({
                           </td>
                           <td>
                             {pct === null ? (
-                              <span className="muted">—</span>
+                              <span className="muted">-</span>
                             ) : (
                               <span className={pct >= 100 ? "positive" : ""}>
                                 {pct}%
@@ -8954,7 +8958,7 @@ function CamOverview({
                           </td>
                           <td>
                             <span className="muted" style={{ fontSize: 11 }}>
-                              {account.payoutState || "—"}
+                              {account.payoutState || "-"}
                             </span>
                           </td>
                         </tr>
@@ -9821,7 +9825,7 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
       ) : (
         <p className="muted">
           {taskFilter === "open" && allTasks.length
-            ? "No open tasks — all done!"
+            ? "No open tasks - all done!"
             : taskFilter === "overdue"
               ? "No overdue tasks."
               : taskFilter === "done" && !doneCount
@@ -9847,7 +9851,7 @@ function CopyButton({ value }) {
         });
       }}
     >
-      {copied ? "✓" : <Copy size={12} />}
+      {copied ? <CheckCircle2 size={12} /> : <Copy size={12} />}
     </button>
   );
 }
@@ -10139,7 +10143,7 @@ function CredentialsTab({
                 updateProfile({ preferredChannel: e.target.value })
               }
             >
-              <option value="">— Not set —</option>
+              <option value="">- Not set -</option>
               <option>WhatsApp</option>
               <option>Email</option>
               <option>Discord</option>
@@ -10152,7 +10156,7 @@ function CredentialsTab({
               value={profile.language || ""}
               onChange={(e) => updateProfile({ language: e.target.value })}
             >
-              <option value="">— Not set —</option>
+              <option value="">- Not set -</option>
               <option value="en">English</option>
               <option value="es">Español</option>
             </select>
@@ -10497,10 +10501,10 @@ function PriceChecksTab({ client, onUpdateClient }) {
             </span>
           )}
           <button className="secondary-button" onClick={resetAll}>
-            Reset
+            <RefreshCw size={14} /> Reset
           </button>
           <button className="secondary-button" onClick={addRow}>
-            <Plus size={14} /> Row
+            <Plus size={14} /> Add row
           </button>
         </div>
       </div>
@@ -10508,7 +10512,9 @@ function PriceChecksTab({ client, onUpdateClient }) {
         <table className="ops-table">
           <thead>
             <tr>
-              <th style={{ width: 36 }}>✓</th>
+              <th style={{ width: 36 }}>
+                <CheckCircle2 size={13} aria-label="Checked" />
+              </th>
               <th>Instrument</th>
               <th>Time</th>
               <th>Connection</th>
@@ -10558,7 +10564,7 @@ function PriceChecksTab({ client, onUpdateClient }) {
                     }
                     style={{ minWidth: 130 }}
                   >
-                    <option value="">— not checked</option>
+                    <option value="">- not checked</option>
                     <option value="Connected">Connected</option>
                     <option value="Disconnected">Disconnected</option>
                     <option value="Degraded">Degraded</option>
@@ -10570,7 +10576,7 @@ function PriceChecksTab({ client, onUpdateClient }) {
                     onChange={(e) => update(row.id, { algos: e.target.value })}
                     style={{ minWidth: 110 }}
                   >
-                    <option value="">— not checked</option>
+                    <option value="">- not checked</option>
                     <option value="Running">Running</option>
                     <option value="Stopped">Stopped</option>
                     <option value="N/A">N/A</option>
@@ -10619,19 +10625,19 @@ function PinnedNote({ note, onSave }) {
           setEditing(true);
         }}
       >
-        📌 Pin a note…
+        <Pin size={13} /> Pin note
       </button>
     );
   if (editing)
     return (
       <div className="pinned-note editing">
-        <span>📌</span>
+        <Pin size={14} />
         <textarea
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={2}
-          placeholder="Pinned note — always visible (VPS IP, client quirks, warnings…)"
+          placeholder="Pinned note - always visible (VPS IP, client quirks, warnings…)"
           style={{
             flex: 1,
             background: "transparent",
@@ -10686,7 +10692,7 @@ function PinnedNote({ note, onSave }) {
       }}
       title="Click to edit pinned note"
     >
-      <span>📌</span>
+      <Pin size={14} />
       <span style={{ flex: 1, fontSize: 13 }}>{note}</span>
       <button
         className="ghost-button"
@@ -10696,7 +10702,7 @@ function PinnedNote({ note, onSave }) {
           onSave("");
         }}
       >
-        ✕
+        <X size={12} />
       </button>
     </div>
   );
@@ -11644,7 +11650,7 @@ export default function App() {
     });
     if (!toClose.length) {
       window.alert(
-        "No open imports for today — all clients are already closed or have no upload.",
+        "No open imports for today - all clients are already closed or have no upload.",
       );
       return;
     }
@@ -12268,7 +12274,7 @@ export default function App() {
                             !viewedClientIds.has(client.id) && (
                               <span
                                 className="new-data-badge"
-                                title="New data uploaded — not yet reviewed"
+                                title="New data uploaded - not yet reviewed"
                               >
                                 NEW
                               </span>
@@ -12396,7 +12402,7 @@ export default function App() {
                 <div>
                   <span className="eyebrow">CAM workspace</span>
                   <h1>Daily SOP</h1>
-                  <p>Morning-to-close checklist — resets every trading day.</p>
+                  <p>Morning-to-close checklist - resets every trading day.</p>
                 </div>
               </div>
               <DailySOP camProfileId={currentCamProfile?.id} />
@@ -12758,11 +12764,11 @@ export default function App() {
                       const templates = [
                         {
                           label: "Daily update",
-                          text: `Hola ${clientName} 👋\n\nAquí tu resumen de hoy:\n📊 P&L: [AMOUNT]\n📉 Drawdown buffer: [BUFFER]\n✅ Todo bien — seguimos mañana!`,
+                          text: `Hola ${clientName} 👋\n\nAquí tu resumen de hoy:\n📊 P&L: [AMOUNT]\n📉 Drawdown buffer: [BUFFER]\n✅ Todo bien - seguimos mañana!`,
                         },
                         {
                           label: "Drawdown warning",
-                          text: `Hola ${clientName} — quick update:\n\n⚠️ Tu cuenta está acercándose al límite de drawdown.\n💰 Buffer restante: [BUFFER]\n\nVamos a monitorear de cerca. Si tienes dudas, avísame.`,
+                          text: `Hola ${clientName} - quick update:\n\n⚠️ Tu cuenta está acercándose al límite de drawdown.\n💰 Buffer restante: [BUFFER]\n\nVamos a monitorear de cerca. Si tienes dudas, avísame.`,
                         },
                         {
                           label: "Eval passed",
@@ -12774,15 +12780,15 @@ export default function App() {
                         },
                         {
                           label: "Weekly check-in",
-                          text: `Hola ${clientName} — resumen semanal:\n\n📅 Semana del [DATE]\n📊 P&L semana: [WEEKLY_PNL]\n📈 Días positivos: [WIN_DAYS]/[TOTAL_DAYS]\n\nSeguimos la próxima semana. Cualquier duda, aquí estamos!`,
+                          text: `Hola ${clientName} - resumen semanal:\n\n📅 Semana del [DATE]\n📊 P&L semana: [WEEKLY_PNL]\n📈 Días positivos: [WIN_DAYS]/[TOTAL_DAYS]\n\nSeguimos la próxima semana. Cualquier duda, aquí estamos!`,
                         },
                         {
                           label: "Account at risk",
-                          text: `${clientName} — importante:\n\n🚨 Tu cuenta está en zona de riesgo.\nDrawdown buffer: [BUFFER]\n\nPor favor revisa tu VPS y confirma que todo esté corriendo bien. Si necesitas pausar la estrategia, avísame ANTES de hacer cambios.`,
+                          text: `${clientName} - importante:\n\n🚨 Tu cuenta está en zona de riesgo.\nDrawdown buffer: [BUFFER]\n\nPor favor revisa tu VPS y confirma que todo esté corriendo bien. Si necesitas pausar la estrategia, avísame ANTES de hacer cambios.`,
                         },
                         {
                           label: "VPS issue detected",
-                          text: `Hola ${clientName} 👋\n\n🖥️ Detecté una posible desconexión en tu VPS.\nVerifiqué [ACCOUNT] — [STATUS].\n\nTe aviso si hay algo que necesite tu atención.`,
+                          text: `Hola ${clientName} 👋\n\n🖥️ Detecté una posible desconexión en tu VPS.\nVerifiqué [ACCOUNT] - [STATUS].\n\nTe aviso si hay algo que necesite tu atención.`,
                         },
                       ];
                       return (
@@ -13204,8 +13210,8 @@ export default function App() {
                       }}
                       placeholder={
                         isManagerSession
-                          ? "Search all clients — activity, tasks, notes…"
-                          : "Search your clients — activity, tasks, notes…"
+                          ? "Search all clients - activity, tasks, notes…"
+                          : "Search your clients - activity, tasks, notes…"
                       }
                       className="global-search-input"
                       onKeyDown={(e) => {

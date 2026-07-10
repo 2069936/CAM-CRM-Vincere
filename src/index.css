@@ -986,6 +986,11 @@ small {
 .pinned-note:hover {
   background: rgba(var(--warning-rgb), 0.14);
 }
+.pinned-note > svg {
+  color: var(--warning);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
 .pinned-note.editing {
   cursor: default;
   align-items: center;
@@ -3197,7 +3202,7 @@ tr:nth-child(2) .rank-badge {
   accent-color: var(--accent);
 }
 
-/* Registry table — wider cols for dates */
+/* Registry table - wider cols for dates */
 .registry-table th,
 .registry-table td {
   white-space: nowrap;
@@ -3241,7 +3246,7 @@ tr:nth-child(2) .rank-badge {
   text-decoration: line-through;
 }
 
-/* Lifecycle metrics grid — 3 cols so it fits the half-width panel */
+/* Lifecycle metrics grid - 3 cols so it fits the half-width panel */
 .lifecycle-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3464,7 +3469,7 @@ tr:nth-child(2) .rank-badge {
   color: var(--warning);
 }
 
-/* Flag resolve button — use flex push, not absolute */
+/* Flag resolve button - use flex push, not absolute */
 .flag {
   align-items: flex-start;
 }
@@ -3993,7 +3998,7 @@ tr:nth-child(2) .rank-badge {
   }
 }
 
-/* P&L Calendar Heatmap — Mon-Fri only */
+/* P&L Calendar Heatmap - Mon-Fri only */
 .pnl-heatmap {
   padding: 16px;
   display: flex;
@@ -4124,7 +4129,7 @@ tr:nth-child(2) .rank-badge {
   color: var(--muted);
 }
 
-/* Stack Playbook — team intelligence */
+/* Stack Playbook - team intelligence */
 .row-highlight td {
   background: rgba(var(--success-rgb), 0.06);
 }

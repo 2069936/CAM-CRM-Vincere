@@ -14,7 +14,7 @@ function drawdownDisplay(row) {
     if (remaining <= 1200) return { label: `${formatCurrency(remaining)} left`, tone: 'warning' };
     return { label: `${formatCurrency(remaining)} left`, tone: '' };
   }
-  if (rawDD === 0) return { label: '—', tone: '' };
+  if (rawDD === 0) return { label: '-', tone: '' };
   if (rawDD <= 0) return { label: 'BREACHED', tone: 'negative' };
   if (rawDD <= 500) return { label: `${formatCurrency(rawDD)} buffer`, tone: 'negative' };
   if (rawDD <= 1200) return { label: `${formatCurrency(rawDD)} buffer`, tone: 'warning' };
@@ -315,7 +315,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   {isFunded ? (() => {
                     const target = Number(row.meta?.targetProfit || 0);
                     const balance = Number(row.accountBalance || 0);
-                    if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>—</td>;
+                    if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>-</td>;
                     const pct = Math.min(100, Math.round((balance / target) * 100));
                     const reached = balance >= target;
                     return (
@@ -346,7 +346,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                     const target = Number(row.meta?.targetProfit || 0);
                     const start = Number(row.meta?.startBalance || 0);
                     const balance = Number(row.accountBalance || 0);
-                    if (!target) return <td className="muted">—</td>;
+                    if (!target) return <td className="muted">-</td>;
                     const base = start || (target * 0.97);
                     const profit = balance - base;
                     const needed = target - base;
@@ -442,7 +442,7 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
                 {flag.status !== 'Resolved' && flag.status !== 'Acknowledged' && onResolveFlag ? (
                   <div style={{display:'flex',gap:4,flexShrink:0}}>
                     {flag.severity !== 'Critical' && (
-                      <button className="ghost-button icon-only flag-resolve-btn" title="Acknowledge — seen, not blocking" style={{fontSize:10,padding:'2px 6px',width:'auto'}} onClick={() => onResolveFlag(flag.id, 'Acknowledged')}>Ack</button>
+                      <button className="ghost-button icon-only flag-resolve-btn" title="Acknowledge - seen, not blocking" style={{fontSize:10,padding:'2px 6px',width:'auto'}} onClick={() => onResolveFlag(flag.id, 'Acknowledged')}>Ack</button>
                     )}
                     <button className="ghost-button icon-only flag-resolve-btn" title="Mark resolved" onClick={() => onResolveFlag(flag.id, 'Resolved')}>
                       <X size={14} />

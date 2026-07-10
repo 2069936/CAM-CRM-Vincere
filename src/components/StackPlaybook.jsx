@@ -164,7 +164,7 @@ function TrendIcon({ trend }) {
 function IncomeProjection({ currentFunded }) {
   const [avgPerAccount, setAvgPerAccount] = useState(800);
   const [targetMonthly, setTargetMonthly] = useState(10000);
-  const accountsNeeded = avgPerAccount > 0 ? Math.ceil(targetMonthly / avgPerAccount) : '—';
+  const accountsNeeded = avgPerAccount > 0 ? Math.ceil(targetMonthly / avgPerAccount) : '-';
   const currentMonthly = currentFunded * avgPerAccount;
   const gap = targetMonthly - currentMonthly;
   return (
@@ -191,7 +191,7 @@ function IncomeProjection({ currentFunded }) {
       {gap > 0 && currentFunded > 0
         ? <p className="income-note muted">Need {accountsNeeded - currentFunded} more funded account{accountsNeeded - currentFunded !== 1 ? 's' : ''} to reach {fmt(targetMonthly)}/mo.</p>
         : gap <= 0 && currentFunded > 0
-          ? <p className="income-note positive">On track — {currentFunded} funded accounts generating ~{fmt(currentMonthly)}/mo.</p>
+          ? <p className="income-note positive">On track - {currentFunded} funded accounts generating ~{fmt(currentMonthly)}/mo.</p>
           : null}
     </div>
   );
@@ -218,7 +218,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     const today = new Date().toISOString().slice(0, 10);
     const note = changeNotes[accountName] || '';
     const existing = ciMeta(registryCi, accountName)?.algoHistory || [];
-    const newEntry = { date: today, from: prev || '—', to: value || '—', note };
+    const newEntry = { date: today, from: prev || '-', to: value || '-', note };
     onUpdateAccount?.(accountName, { algoStack: value, algoHistory: [...existing, newEntry] });
     setChangeNotes((n) => ({ ...n, [accountName]: '' }));
   }
@@ -245,12 +245,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs · all history</span>
         </div>
         {comboPerf.length === 0 ? (
-          <p className="muted" style={{ padding: '12px 0' }}>No strategy data across clients yet — upload daily closes to populate.</p>
+          <p className="muted" style={{ padding: '12px 0' }}>No strategy data across clients yet - upload daily closes to populate.</p>
         ) : (
           <>
             <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
               <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-              Aggregated from every client running each algo combination. Use this to evaluate what's working across the portfolio — not a per-client guarantee.
+              Aggregated from every client running each algo combination. Use this to evaluate what's working across the portfolio - not a per-client guarantee.
             </p>
             <div className="table-wrap">
               <table className="ops-table">
@@ -284,7 +284,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                         </span>
                       </td>
                       <td className={row.recent7Avg != null ? (row.recent7Avg >= 0 ? 'positive' : 'negative') : 'muted'}>
-                        {row.recent7Avg != null ? `${row.recent7Avg >= 0 ? '+' : ''}${fmt(row.recent7Avg)}` : '—'}
+                        {row.recent7Avg != null ? `${row.recent7Avg >= 0 ? '+' : ''}${fmt(row.recent7Avg)}` : '-'}
                       </td>
                       <td>{row.accounts}</td>
                       <td>{row.clients}</td>
@@ -328,16 +328,16 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                       {row.accountAvg7 >= 0 ? '+' : ''}{fmt(row.accountAvg7)}
                     </td>
                     <td className="muted">
-                      {row.teamAvg7 != null ? `${row.teamAvg7 >= 0 ? '+' : ''}${fmt(row.teamAvg7)}` : '—'}
+                      {row.teamAvg7 != null ? `${row.teamAvg7 >= 0 ? '+' : ''}${fmt(row.teamAvg7)}` : '-'}
                     </td>
                     <td className={row.delta == null ? 'muted' : row.delta >= 0 ? 'positive' : 'negative'}>
-                      {row.delta != null ? `${row.delta >= 0 ? '+' : ''}${fmt(row.delta)}` : '—'}
+                      {row.delta != null ? `${row.delta >= 0 ? '+' : ''}${fmt(row.delta)}` : '-'}
                     </td>
                     <td>
                       {row.suggestion ? (
                         <span className="playbook-suggestion">
                           <ArrowRight size={12} />
-                          Consider <strong>{row.suggestion}</strong> — team avg {fmt(row.bestAvg)}/day
+                          Consider <strong>{row.suggestion}</strong> - team avg {fmt(row.bestAvg)}/day
                         </span>
                       ) : (
                         <span className="muted" style={{ fontSize: 12 }}>On best known combo</span>
@@ -349,7 +349,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
             </table>
           </div>
           <p className="muted" style={{ fontSize: 12, padding: '8px 0 0' }}>
-            Suggestions are based on team aggregate data — market conditions vary. Use as insight, not instruction.
+            Suggestions are based on team aggregate data - market conditions vary. Use as insight, not instruction.
           </p>
         </section>
       ) : null}
@@ -376,7 +376,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               <tbody>
                 {funded.map((account) => {
                   const snap = snapshots.find((s) => s.accountName?.toLowerCase() === account.accountName?.toLowerCase());
-                  const liveCombo = snap ? comboFromStrategies(snap.strategies || []) : '—';
+                  const liveCombo = snap ? comboFromStrategies(snap.strategies || []) : '-';
                   const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : null;
                   const stackVal = localStack[account.accountName] ?? (account.algoStack || '');
                   const dllVal   = localDll[account.accountName]   ?? (account.dailyLossLimit || '');
@@ -393,7 +393,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                           ? buffer <= 0
                             ? <span className="negative">BREACHED</span>
                             : <span className={buffer < 1200 ? 'warning' : ''}>${buffer.toLocaleString()}</span>
-                          : <span className="muted">—</span>}
+                          : <span className="muted">-</span>}
                       </td>
                       <td>
                         <select value={stackVal} onChange={(e) => updateStack(account.accountName, e.target.value)}>
@@ -448,7 +448,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                       <td><strong>{h.alias}</strong></td>
                       <td className="muted">{h.from}</td>
                       <td><span className="badge muted">{h.to}</span></td>
-                      <td className="muted">{h.note || <em>—</em>}</td>
+                      <td className="muted">{h.note || <em>-</em>}</td>
                     </tr>
                   ))}
                 </tbody>

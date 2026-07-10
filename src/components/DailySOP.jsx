@@ -163,7 +163,7 @@ export default function DailySOP({ camProfileId = '' }) {
           />
         </div>
         <div className="sop-progress-label" style={{ color: isComplete ? 'var(--success)' : undefined }}>
-          {isComplete ? '✓ All done — great work today!' : `${pct}% complete · ${totalItems - doneItems} remaining`}
+          {isComplete ? '✓ All done - great work today!' : `${pct}% complete · ${totalItems - doneItems} remaining`}
         </div>
 
         {isComplete && justCompleted && (
