@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
+import { normalizeSubscriptionPrice } from './subscriptionPrice';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -393,6 +394,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = 'am-pedro' 
         additionalEmails: jsonArray(client.additional_emails),
         propFirm: client.prop_firm || '',
         messenger: client.messenger || '',
+        subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
       },
       credentials: {
         ip: credential.ip || '',
@@ -580,6 +582,7 @@ function clientPatchToDb(patch = {}) {
     if ('additionalEmails' in profile) mapped.additional_emails = cleanStringArray(profile.additionalEmails);
     if ('propFirm' in profile) mapped.prop_firm = profile.propFirm || '';
     if ('messenger' in profile) mapped.messenger = profile.messenger || '';
+    if ('subscriptionPrice' in profile) mapped.subscription_price = normalizeSubscriptionPrice(profile.subscriptionPrice);
   }
   mapped.updated_at = new Date().toISOString();
   return mapped;

@@ -1,6 +1,6 @@
 # CAM CRM Supabase Database Tracker
 
-Last updated: 2026-07-05
+Last updated: 2026-07-10
 
 ## Connection Status
 
@@ -38,7 +38,8 @@ Recommended run order for a fresh database:
 10. `supabase/step_16_prop_firms_platform_access.sql`
 11. `supabase/step_17_real_daily_sop.sql`
 12. `supabase/step_20_cam_client_permissions.sql`
-13. `supabase/cam_crm_verification_queries.sql`
+13. `supabase/step_21_client_subscription_price.sql`
+14. `supabase/cam_crm_verification_queries.sql`
 
 No SQL required:
 
