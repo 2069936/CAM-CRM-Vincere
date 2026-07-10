@@ -126,3 +126,25 @@ granularity.
 
 Both are fixable when we re-sync onto the shadcn UI; they need a product call on
 whether "deactivate a CAM" should unassign clients or be reversible.
+
+---
+
+## 7. Update — end of day (2026-07-10)
+
+Three more commits landed on top of the summary above (branch now at `5009890`):
+
+| Commit | What | Files |
+|---|---|---|
+| `d36d066` | Flag an **evaluation account that reaches its target** (bullet-bot + standard) → "deactivate and confirm consistency to activate". Mirrors the funded `Payout eligible` flag; Cash excluded (no target). | `src/domain/reconcile.js` |
+| `a6681f4` | **NinjaTrader log parser** (`parseNinjaTraderLog`) — the dated daily logs persist on disk (unlike the same-day CSV exports), so they backfill historical order/execution/strategy events. Validated on a real 877-line log: 385 orders, 37 executions, 47 strategy events. | `src/domain/ninjaTraderLog.js` |
+| `5009890` | **Bullet-bot performance over time** (`buildBulletBotStats`) — per BB eval account: direction, fired, passed (balance ≥ target) + days-to-pass; aggregated pass rate / fired / avg-days-to-pass, split Long vs Short. | `src/domain/bulletBotStats.js` |
+
+All three are pure `src/domain/` modules → **conflict-free with the `dev/sam` UI rewrite**. 302 tests pass.
+
+**Log attribution caveat:** the raw log cannot attribute bullet-bot fills on its own — strategy events key the account as `388413837` while orders/executions key it as `LTD…`, and the log never links the two. So BB analytics run on the app's stored strategy history (already linked by the `strategies` export); the log parser is a general backfill path.
+
+**Manager dashboard direction (approved):** replace the current long-list manager view with a grouped, click-to-expand dashboard — panels for weekly PnL by segment, bullet-bot over time, strategy analyzer (0–10), lifecycle, action queue, CAM leaderboard, subscription MRR — mapped from the existing master-spreadsheet logic. Data functions get built in `domain/` (conflict-free); panels get wired on the shadcn UI.
+
+**Creating new CAMs:** works today via the create-user toggle (already in main). A Manager who *also* has clients requires the decouple (§4) — coded, pending merge + runtime test + re-apply on the shadcn form. Runtime user creation needs Supabase access (Manager panel or a seed script).
+
+**Backlog delta:** F6 analytics ✅ (`buildBulletBotStats`), UI panel pending. New: "evaluation target reached" alert ✅. Still open: consistency validation (% of profit in one day vs total, per-firm thresholds), Cash-vs-IRA split (Rick), F3/F4/F5 UI panels.
