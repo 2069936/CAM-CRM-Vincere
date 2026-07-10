@@ -214,6 +214,32 @@ describe('reconcileDailyImport', () => {
     expect(result.flags.filter(f => f.type === 'Payout eligible')).toHaveLength(0);
   });
 
+  it('raises Evaluation target reached flag when a bullet-bot eval balance reaches target', () => {
+    const registry = {
+      EVAL1: { accountName: 'EVAL1', accountType: 'Evaluation - Bullet Bot', status: 'Active', targetProfit: 3000 },
+    };
+    const parsed = {
+      accounts: [{ accountName: 'EVAL1', connection: 'Lucid', grossRealizedPnl: 3100, accountBalance: 3100, trailingMaxDrawdown: 500, weeklyPnl: 3100 }],
+      strategies: [{ accountName: 'EVAL1', strategyName: '0 - BulletBot-1.0', strategyFamily: 'BulletBot', enabled: true }],
+      orders: [], executions: [],
+    };
+    const result = reconcileDailyImport({ clientId: 'c-eval', date: '2026-06-25', registry, parsed });
+    expect(result.flags.filter(f => f.type === 'Evaluation target reached')).toHaveLength(1);
+  });
+
+  it('does not raise Evaluation target reached for a cash account (no target)', () => {
+    const registry = {
+      CASH1: { accountName: 'CASH1', accountType: 'Cash', status: 'Active', targetProfit: 3000 },
+    };
+    const parsed = {
+      accounts: [{ accountName: 'CASH1', connection: 'Lucid', grossRealizedPnl: 3100, accountBalance: 3100, trailingMaxDrawdown: 500, weeklyPnl: 3100 }],
+      strategies: [{ accountName: 'CASH1', strategyName: '0 - BulletBot-1.0', strategyFamily: 'BulletBot', enabled: true }],
+      orders: [], executions: [],
+    };
+    const result = reconcileDailyImport({ clientId: 'c-cash', date: '2026-06-25', registry, parsed });
+    expect(result.flags.filter(f => f.type === 'Evaluation target reached')).toHaveLength(0);
+  });
+
   it('raises Critical Expected strategy missing for active funded account with no enabled strategy', () => {
     const registry = {
       ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active' },

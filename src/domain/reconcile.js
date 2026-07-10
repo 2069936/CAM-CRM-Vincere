@@ -244,6 +244,20 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
       }));
     }
 
+    if (
+      [ACCOUNT_TYPES.EVALUATION_BULLET, ACCOUNT_TYPES.EVALUATION_STANDARD].includes(meta.accountType) &&
+      meta.status === ACCOUNT_STATUSES.ACTIVE &&
+      Number.isFinite(targetProfit) && targetProfit > 0 &&
+      Number(account.accountBalance) >= targetProfit
+    ) {
+      flags.push(makeFlag({
+        type: 'Evaluation target reached',
+        severity: 'Warning',
+        accountName: account.accountName,
+        message: `${meta.alias} reached its evaluation target. Balance $${Number(account.accountBalance).toLocaleString()} ≥ target $${targetProfit.toLocaleString()}. Deactivate and confirm consistency with the prop firm to activate.`,
+      }));
+    }
+
     if (meta.status === ACCOUNT_STATUSES.PAYOUT_HOLD && hasActiveStrategy(strategies)) {
       flags.push(makeFlag({
         type: 'Payout hold violation',
