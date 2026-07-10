@@ -197,7 +197,51 @@ button:disabled {
   border-right: 1px solid #c7d9e4;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar-account-actions {
+  padding: 10px 14px;
+  border-top: 1px solid #cedee8;
+}
+.change-pw-toggle {
+  background: none;
+  border: none;
+  color: #2f6f8f;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.change-pw-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.change-pw-form input {
+  padding: 6px 8px;
+  border: 1px solid #c7d9e4;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.change-pw-actions {
+  display: flex;
+  gap: 6px;
+}
+.change-pw-actions button {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #c7d9e4;
+  background: #fff;
+}
+.change-pw-status {
+  font-size: 11px;
+  color: #1a2a36;
 }
 
 .sidebar-header {

@@ -41,6 +41,7 @@ import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
 import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
+import ChangePassword from "./components/ChangePassword";
 import {
   addActivityEntry,
   addClient,
@@ -3342,6 +3343,9 @@ function ManagerOverview({
             <LogOut size={16} />
             <span>Sign out</span>
           </button>
+          <div className="sidebar-account-actions">
+            <ChangePassword />
+          </div>
         </div>
       </aside>
       <section className="content">
@@ -11531,6 +11535,9 @@ export default function App() {
                   </button>
                 ) : null}
               </div>
+            </div>
+            <div className="sidebar-account-actions">
+              <ChangePassword />
             </div>
             {canCreateDeleteClients ? (
               <form className="client-form" onSubmit={handleAddClient}>
