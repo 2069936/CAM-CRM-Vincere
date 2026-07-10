@@ -2727,6 +2727,7 @@ function SopBuilderPanel() {
   const [itemDrafts, setItemDrafts] = useState({});
   const [editingSections, setEditingSections] = useState({});
   const [editingItems, setEditingItems] = useState({});
+  const [confirmAction, setConfirmAction] = useState(null);
 
   function loadTemplate() {
     setStatus("loading");
@@ -2803,13 +2804,18 @@ function SopBuilderPanel() {
     }
   }
 
-  async function deactivateSection(section) {
-    if (
-      !window.confirm(
-        `Hide section "${section.title}" and its items from the Daily SOP?`,
-      )
-    )
-      return;
+  function deactivateSection(section) {
+    setConfirmAction({
+      title: `Hide ${section.title}?`,
+      description: "This hides the section and its items from the Daily SOP.",
+      confirmLabel: "Hide section",
+      busyLabel: "Hiding...",
+      variant: "danger",
+      onConfirm: () => performDeactivateSection(section),
+    });
+  }
+
+  async function performDeactivateSection(section) {
     try {
       await updateSupabaseSopSection(section.id, { isActive: false });
       auditSilently({
@@ -2875,8 +2881,18 @@ function SopBuilderPanel() {
     }
   }
 
-  async function deactivateItem(item) {
-    if (!window.confirm(`Hide this SOP item?\n\n${item.text}`)) return;
+  function deactivateItem(item) {
+    setConfirmAction({
+      title: "Hide this SOP item?",
+      description: item.text,
+      confirmLabel: "Hide item",
+      busyLabel: "Hiding...",
+      variant: "danger",
+      onConfirm: () => performDeactivateItem(item),
+    });
+  }
+
+  async function performDeactivateItem(item) {
     try {
       await updateSupabaseSopItem(item.id, { isActive: false });
       auditSilently({
@@ -2893,6 +2909,7 @@ function SopBuilderPanel() {
   }
 
   return (
+    <>
     <section className="panel sop-builder-panel">
       <div className="panel-heading">
         <h3>SOP Builder</h3>
@@ -3201,6 +3218,15 @@ function SopBuilderPanel() {
         </>
       ) : null}
     </section>
+    <ConfirmActionDialog
+      action={confirmAction}
+      onCancel={() => setConfirmAction(null)}
+      onConfirm={() => {
+        confirmAction?.onConfirm?.();
+        setConfirmAction(null);
+      }}
+    />
+    </>
   );
 }
 
@@ -3240,6 +3266,7 @@ function ManagerOverview({
   const [showDataTools, setShowDataTools] = useState(false);
   const [fundedSort, setFundedSort] = useState({ col: "buffer", dir: -1 });
   const [managerSearch, setManagerSearch] = useState("");
+  const [managerConfirmAction, setManagerConfirmAction] = useState(null);
   const teamHistory = useMemo(
     () => buildTeamHistory(clients).slice(-10),
     [clients],
@@ -4744,23 +4771,25 @@ function ManagerOverview({
                                 whiteSpace: "nowrap",
                               }}
                               onClick={() => {
-                                if (
-                                  !window.confirm(
-                                    `Mark ${row.alias} as FAILED?\n\nThis sets status=Failed and dateFailed=today. Cannot be undone from this view.`,
-                                  )
-                                )
-                                  return;
-                                onUpdateClientAccount(
-                                  row.clientId,
-                                  row.accountName,
-                                  {
-                                    status: "Failed",
-                                    dateFailed: todayIsoDate(),
-                                  },
-                                );
+                                setManagerConfirmAction({
+                                  title: `Mark ${row.alias} as failed?`,
+                                  description: "This sets status to Failed and dateFailed to today. It cannot be undone from this view.",
+                                  confirmLabel: "Mark failed",
+                                  busyLabel: "Updating...",
+                                  variant: "danger",
+                                  onConfirm: () =>
+                                    onUpdateClientAccount(
+                                      row.clientId,
+                                      row.accountName,
+                                      {
+                                        status: "Failed",
+                                        dateFailed: todayIsoDate(),
+                                      },
+                                    ),
+                                });
                               }}
                             >
-                              ✕ Mark Failed
+                              <AlertTriangle size={13} /> Mark Failed
                             </button>
                           ) : null}
                         </td>
@@ -5280,15 +5309,13 @@ function ManagerOverview({
                                 const label = targetCam
                                   ? targetCam.name
                                   : "Unassigned";
-                                if (
-                                  window.confirm(
-                                    `Move ${client.name} → ${label}?`,
-                                  )
-                                ) {
-                                  onTransferClient(client.id, newCamId);
-                                } else {
-                                  e.target.value = cam?.id || "";
-                                }
+                                setManagerConfirmAction({
+                                  title: `Move ${client.name}?`,
+                                  description: `Transfer this client to ${label}.`,
+                                  confirmLabel: "Move client",
+                                  busyLabel: "Moving...",
+                                  onConfirm: () => onTransferClient(client.id, newCamId),
+                                });
                               }}
                             >
                               <option value="">— Unassigned —</option>
@@ -5683,6 +5710,14 @@ function ManagerOverview({
           </>
         )}
       </section>
+      <ConfirmActionDialog
+        action={managerConfirmAction}
+        onCancel={() => setManagerConfirmAction(null)}
+        onConfirm={() => {
+          managerConfirmAction?.onConfirm?.();
+          setManagerConfirmAction(null);
+        }}
+      />
     </main>
   );
 }
