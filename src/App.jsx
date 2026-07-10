@@ -26,6 +26,7 @@ import {
   Languages,
   ListChecks,
   LoaderCircle,
+  Menu,
   Pin,
   Plus,
   RefreshCw,
@@ -3270,6 +3271,8 @@ function ManagerOverview({
   const [fundedSort, setFundedSort] = useState({ col: "buffer", dir: -1 });
   const [managerSearch, setManagerSearch] = useState("");
   const [managerConfirmAction, setManagerConfirmAction] = useState(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const closeMobileSidebar = () => setMobileSidebarOpen(false);
   const teamHistory = useMemo(
     () => buildTeamHistory(clients).slice(-10),
     [clients],
@@ -3484,10 +3487,34 @@ function ManagerOverview({
   })();
 
   return (
-    <main className="manager-shell">
-      <aside className="manager-sidebar">
+    <main className={`manager-shell ${mobileSidebarOpen ? "mobile-nav-open" : ""}`}>
+      <button
+        className="mobile-nav-toggle"
+        type="button"
+        onClick={() => setMobileSidebarOpen(true)}
+        aria-label="Open navigation"
+      >
+        <Menu size={17} /> Menu
+      </button>
+      <button
+        className={`mobile-nav-backdrop ${mobileSidebarOpen ? "mobile-open" : ""}`}
+        type="button"
+        onClick={closeMobileSidebar}
+        aria-label="Close navigation"
+      />
+      <aside className={`manager-sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
         <div className="manager-sidebar-header">
-          <span className="sidebar-role-badge manager-badge">Manager</span>
+          <div className="sidebar-role-row">
+            <span className="sidebar-role-badge manager-badge">Manager</span>
+            <button
+              className="mobile-sidebar-close"
+              type="button"
+              onClick={closeMobileSidebar}
+              aria-label="Close navigation"
+            >
+              <X size={15} />
+            </button>
+          </div>
           <strong>Vincere CRM</strong>
           <small className="sidebar-role-sub">
             {session?.displayName || session?.username || "Manager"}
@@ -3499,6 +3526,7 @@ function ManagerOverview({
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
+              closeMobileSidebar();
             }}
           >
             <Users size={16} />
@@ -3537,6 +3565,7 @@ function ManagerOverview({
                       onClick={() => {
                         onOpenCam(cam?.id, client.id);
                         setManagerSearch("");
+                        closeMobileSidebar();
                       }}
                     >
                       <span>{client.name}</span>
@@ -3553,7 +3582,10 @@ function ManagerOverview({
                 <button
                   className="client-link"
                   key={cam.id}
-                  onClick={() => onOpenCam(cam.id)}
+                  onClick={() => {
+                    onOpenCam(cam.id);
+                    closeMobileSidebar();
+                  }}
                 >
                   <BarChart3 size={16} />
                   <span>{cam.name}</span>
@@ -3569,6 +3601,7 @@ function ManagerOverview({
             onClick={() => {
               setShowUserPanel(true);
               setShowAuditPanel(false);
+              closeMobileSidebar();
             }}
           >
             <Shield size={16} />
@@ -3579,12 +3612,16 @@ function ManagerOverview({
             onClick={() => {
               setShowAuditPanel(true);
               setShowUserPanel(false);
+              closeMobileSidebar();
             }}
           >
             <History size={16} />
             <span>Audit Logs</span>
           </button>
-          <button className="client-link" onClick={onLogout}>
+          <button className="client-link" onClick={() => {
+            closeMobileSidebar();
+            onLogout();
+          }}>
             <LogOut size={16} />
             <span>Sign out</span>
           </button>
@@ -3719,86 +3756,6 @@ function ManagerOverview({
             </span>
           </div>
         )}
-
-        <div className="metric-grid">
-          <div className="metric">
-            <span>Team daily P&L</span>
-            <strong
-              className={totals.dailyPnl >= 0 ? "positive" : "negative"}
-              style={{ fontSize: 22 }}
-            >
-              {formatCurrency(totals.dailyPnl)}
-            </strong>
-          </div>
-          <div className="metric">
-            <span>Team weekly P&L</span>
-            <strong
-              className={totals.weeklyPnl >= 0 ? "positive" : "negative"}
-              style={{ fontSize: 22 }}
-            >
-              {formatCurrency(totals.weeklyPnl)}
-            </strong>
-          </div>
-          <div className="metric">
-            <span>Monthly P&L ({currentMonth})</span>
-            <strong
-              className={monthlyKpis.monthlyPnl >= 0 ? "positive" : "negative"}
-              style={{ fontSize: 22 }}
-            >
-              {formatCurrency(monthlyKpis.monthlyPnl)}
-            </strong>
-          </div>
-          <div className="metric">
-            <span>Payouts this month</span>
-            <strong className="positive" style={{ fontSize: 22 }}>
-              {formatCurrency(monthlyKpis.payoutAmount)}
-            </strong>
-            <small className="muted">×{monthlyKpis.payoutCount}</small>
-          </div>
-          <div className="metric">
-            <span>Funded accounts active</span>
-            <strong style={{ fontSize: 22 }}>{monthlyKpis.fundedActive}</strong>
-          </div>
-          <div className="metric">
-            <span>Closes today</span>
-            <strong style={{ fontSize: 22 }}>
-              {monthlyKpis.closedToday}
-              <span
-                style={{ fontSize: 14, fontWeight: 400, color: "var(--muted)" }}
-              >
-                {" "}
-                / {monthlyKpis.withUploadToday}
-              </span>
-            </strong>
-          </div>
-          <div className="metric">
-            <span>Clients</span>
-            <strong>{totals.clients}</strong>
-          </div>
-          <div className="metric">
-            <span>Open flags</span>
-            <strong className={totals.flags ? "negative" : ""}>
-              {totals.flags}
-            </strong>
-          </div>
-          {healthScore && (
-            <div
-              className="metric"
-              style={{
-                borderColor: healthScore.color,
-                background: `${healthScore.color}0d`,
-              }}
-            >
-              <span>Portfolio health</span>
-              <strong style={{ fontSize: 28, color: healthScore.color }}>
-                {healthScore.score}
-              </strong>
-              <small style={{ color: healthScore.color, fontWeight: 600 }}>
-                {healthScore.label}
-              </small>
-            </div>
-          )}
-        </div>
 
         {showNewClient && (
           <section className="panel manager-new-client-panel">
@@ -4273,63 +4230,65 @@ function ManagerOverview({
                     <span> · {batchImportResult.filesLoaded} files loaded</span>
                   ) : null}
                 </p>
-                <table className="ops-table" style={{ marginTop: 8 }}>
-                  <thead>
-                    <tr>
-                      <th>Client</th>
-                      <th>Accounts found</th>
-                      <th>Flags</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {batchImportResult.clientMatches.map(
-                      ({ client, result, accountCount }) => (
-                        <tr key={client.id}>
-                          <td>
-                            <strong>{client.name}</strong>
-                          </td>
-                          <td>{accountCount}</td>
-                          <td>
-                            {(result.flags || []).filter(
-                              (f) => f.severity === "Critical",
-                            ).length > 0 ? (
-                              <span className="negative">
-                                {
-                                  (result.flags || []).filter(
-                                    (f) => f.severity === "Critical",
-                                  ).length
-                                }{" "}
-                                critical
-                              </span>
-                            ) : (
-                              <span className="positive">
-                                {(result.flags || []).length} flags
-                              </span>
-                            )}
-                          </td>
-                          <td>
-                            <button
-                              className="primary-button"
-                              style={{ padding: "3px 10px", fontSize: 11 }}
-                              onClick={() => {
-                                onAppendDailyImport?.(client.id, result);
-                                setBatchImportResult((prev) => ({
-                                  ...prev,
-                                  clientMatches: prev.clientMatches.filter(
-                                    (m) => m.client.id !== client.id,
-                                  ),
-                                }));
-                              }}
-                            >
-                              Import
-                            </button>
-                          </td>
-                        </tr>
-                      ),
-                    )}
-                  </tbody>
-                </table>
+                <div className="table-wrap" style={{ marginTop: 8 }}>
+                  <table className="ops-table">
+                    <thead>
+                      <tr>
+                        <th>Client</th>
+                        <th>Accounts found</th>
+                        <th>Flags</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batchImportResult.clientMatches.map(
+                        ({ client, result, accountCount }) => (
+                          <tr key={client.id}>
+                            <td>
+                              <strong>{client.name}</strong>
+                            </td>
+                            <td>{accountCount}</td>
+                            <td>
+                              {(result.flags || []).filter(
+                                (f) => f.severity === "Critical",
+                              ).length > 0 ? (
+                                <span className="negative">
+                                  {
+                                    (result.flags || []).filter(
+                                      (f) => f.severity === "Critical",
+                                    ).length
+                                  }{" "}
+                                  critical
+                                </span>
+                              ) : (
+                                <span className="positive">
+                                  {(result.flags || []).length} flags
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <button
+                                className="primary-button"
+                                style={{ padding: "3px 10px", fontSize: 11 }}
+                                onClick={() => {
+                                  onAppendDailyImport?.(client.id, result);
+                                  setBatchImportResult((prev) => ({
+                                    ...prev,
+                                    clientMatches: prev.clientMatches.filter(
+                                      (m) => m.client.id !== client.id,
+                                    ),
+                                  }));
+                                }}
+                              >
+                                Import
+                              </button>
+                            </td>
+                          </tr>
+                        ),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
                 {batchImportResult.clientMatches.length > 1 && (
                   <button
                     className="secondary-button"
@@ -4350,6 +4309,86 @@ function ManagerOverview({
             )}
           </section>
         )}
+
+        <div className="metric-grid">
+          <div className="metric">
+            <span>Team daily P&L</span>
+            <strong
+              className={totals.dailyPnl >= 0 ? "positive" : "negative"}
+              style={{ fontSize: 22 }}
+            >
+              {formatCurrency(totals.dailyPnl)}
+            </strong>
+          </div>
+          <div className="metric">
+            <span>Team weekly P&L</span>
+            <strong
+              className={totals.weeklyPnl >= 0 ? "positive" : "negative"}
+              style={{ fontSize: 22 }}
+            >
+              {formatCurrency(totals.weeklyPnl)}
+            </strong>
+          </div>
+          <div className="metric">
+            <span>Monthly P&L ({currentMonth})</span>
+            <strong
+              className={monthlyKpis.monthlyPnl >= 0 ? "positive" : "negative"}
+              style={{ fontSize: 22 }}
+            >
+              {formatCurrency(monthlyKpis.monthlyPnl)}
+            </strong>
+          </div>
+          <div className="metric">
+            <span>Payouts this month</span>
+            <strong className="positive" style={{ fontSize: 22 }}>
+              {formatCurrency(monthlyKpis.payoutAmount)}
+            </strong>
+            <small className="muted">×{monthlyKpis.payoutCount}</small>
+          </div>
+          <div className="metric">
+            <span>Funded accounts active</span>
+            <strong style={{ fontSize: 22 }}>{monthlyKpis.fundedActive}</strong>
+          </div>
+          <div className="metric">
+            <span>Closes today</span>
+            <strong style={{ fontSize: 22 }}>
+              {monthlyKpis.closedToday}
+              <span
+                style={{ fontSize: 14, fontWeight: 400, color: "var(--muted)" }}
+              >
+                {" "}
+                / {monthlyKpis.withUploadToday}
+              </span>
+            </strong>
+          </div>
+          <div className="metric">
+            <span>Clients</span>
+            <strong>{totals.clients}</strong>
+          </div>
+          <div className="metric">
+            <span>Open flags</span>
+            <strong className={totals.flags ? "negative" : ""}>
+              {totals.flags}
+            </strong>
+          </div>
+          {healthScore && (
+            <div
+              className="metric"
+              style={{
+                borderColor: healthScore.color,
+                background: `${healthScore.color}0d`,
+              }}
+            >
+              <span>Portfolio health</span>
+              <strong style={{ fontSize: 28, color: healthScore.color }}>
+                {healthScore.score}
+              </strong>
+              <small style={{ color: healthScore.color, fontWeight: 600 }}>
+                {healthScore.label}
+              </small>
+            </div>
+          )}
+        </div>
 
         <InsightFeedPanel
           insights={managerInsights}
@@ -4452,10 +4491,9 @@ function ManagerOverview({
                         <td>
                           {onResolveFlag && (
                             <button
-                              className="ghost-button"
+                              className="resolve-button"
                               style={{
                                 fontSize: 11,
-                                padding: "2px 8px",
                                 whiteSpace: "nowrap",
                               }}
                               onClick={() =>
@@ -4992,15 +5030,19 @@ function ManagerOverview({
             <div className="strategy-rank-list">
               {strategies.length ? (
                 strategies.map((s) => (
-                  <div className="rank-row" key={s.name}>
-                    <strong>{s.name}</strong>
-                    <small>
-                      {s.count} instances · {s.accounts} accts
-                    </small>
-                    <span>{s.score}/10</span>
-                    <em className={s.avgDaily >= 0 ? "positive" : "negative"}>
-                      {formatCurrency(s.avgDaily)} avg daily
-                    </em>
+                  <div className="rank-row strategy-snapshot-row" key={s.name}>
+                    <div className="strategy-snapshot-main">
+                      <strong>{s.name}</strong>
+                      <em className={s.avgDaily >= 0 ? "positive" : "negative"}>
+                        {formatCurrency(s.avgDaily)} avg daily
+                      </em>
+                    </div>
+                    <div className="strategy-snapshot-meta">
+                      <small>
+                        {s.count} instances · {s.accounts} accts
+                      </small>
+                      <span>{s.score}/10</span>
+                    </div>
                   </div>
                 ))
               ) : (
@@ -5636,7 +5678,7 @@ function ManagerOverview({
                 <span className="badge muted">{currentMonth}</span>
                 <span className="count">{allPayouts.length} this month</span>
                 <span
-                  className="metric"
+                  className="metric payout-summary-metric"
                   style={{ marginLeft: "auto", gap: 16, display: "flex" }}
                 >
                   <span>
@@ -6655,7 +6697,7 @@ function ClientOverview({
           {profile.email && (
             <a href={`mailto:${profile.email}`} className="contact-chip">
               <Mail size={13} />
-              {profile.email}
+              <span className="contact-chip-text">{profile.email}</span>
             </a>
           )}
           {profile.phone && (
@@ -6666,44 +6708,46 @@ function ClientOverview({
               className="contact-chip"
             >
               {waLink ? <Smartphone size={13} /> : <Phone size={13} />}
-              {profile.phone}
+              <span className="contact-chip-text">{profile.phone}</span>
             </a>
           )}
           {profile.messenger && (
             <span className="contact-chip">
               <MessageCircle size={13} />
-              {profile.messenger}
+              <span className="contact-chip-text">{profile.messenger}</span>
             </span>
           )}
           {profile.timezone && (
             <span className="contact-chip muted">
               <Clock3 size={13} />
-              {profile.timezone}
+              <span className="contact-chip-text">{profile.timezone}</span>
             </span>
           )}
           {profile.propFirm && (
             <span className="contact-chip muted">
               <Building2 size={13} />
-              {profile.propFirm}
+              <span className="contact-chip-text">{profile.propFirm}</span>
             </span>
           )}
           {profile.preferredChannel && (
             <span className="contact-chip muted">
               <MessageCircle size={13} />
-              {profile.preferredChannel}
+              <span className="contact-chip-text">{profile.preferredChannel}</span>
             </span>
           )}
           {profile.country && (
             <span className="contact-chip muted">
               <Globe2 size={13} />
-              {profile.country}
+              <span className="contact-chip-text">{profile.country}</span>
             </span>
           )}
           {profile.language && (
             <span className="contact-chip muted">
               <Languages size={13} />
-              {{ en: "English", es: "Español" }[profile.language] ||
-                profile.language}
+              <span className="contact-chip-text">
+                {{ en: "English", es: "Español" }[profile.language] ||
+                  profile.language}
+              </span>
             </span>
           )}
           {profile.stage && profile.stage !== "Active" && (
@@ -10593,6 +10637,7 @@ function PriceChecksTab({ client, onUpdateClient }) {
                 <td>
                   <button
                     className="ghost-button icon-only"
+                    title="Remove row"
                     onClick={() => removeRow(row.id)}
                   >
                     <Trash2 size={13} />
@@ -10838,6 +10883,8 @@ export default function App() {
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [globalSearchIdx, setGlobalSearchIdx] = useState(0);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const closeMobileSidebar = () => setMobileSidebarOpen(false);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -11946,18 +11993,45 @@ export default function App() {
   return (
     <ErrorBoundary>
       <>
-        <div className="app-shell">
-          <aside className="sidebar">
+        <div className={`app-shell ${mobileSidebarOpen ? "mobile-nav-open" : ""}`}>
+          <button
+            className="mobile-nav-toggle"
+            type="button"
+            onClick={() => setMobileSidebarOpen(true)}
+            aria-label="Open navigation"
+          >
+            <Menu size={17} /> Menu
+          </button>
+          <button
+            className={`mobile-nav-backdrop ${mobileSidebarOpen ? "mobile-open" : ""}`}
+            type="button"
+            onClick={closeMobileSidebar}
+            aria-label="Close navigation"
+          />
+          <aside className={`sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
             <div className="sidebar-header">
               <div className="sidebar-role-row">
                 <span className="sidebar-role-badge cam-badge">CAM</span>
-                <button
-                  className="sidebar-logout-btn"
-                  onClick={handleLogout}
-                  title="Sign out"
-                >
-                  <LogOut size={14} />
-                </button>
+                <div className="sidebar-role-actions">
+                  <button
+                    className="mobile-sidebar-close"
+                    type="button"
+                    onClick={closeMobileSidebar}
+                    aria-label="Close navigation"
+                  >
+                    <X size={15} />
+                  </button>
+                  <button
+                    className="sidebar-logout-btn"
+                    onClick={() => {
+                      closeMobileSidebar();
+                      handleLogout();
+                    }}
+                    title="Sign out"
+                  >
+                    <LogOut size={14} />
+                  </button>
+                </div>
               </div>
               <strong>
                 {currentCamProfile?.name || state.accountManager.name}
@@ -11980,7 +12054,10 @@ export default function App() {
                 {isManagerSession ? (
                   <button
                     className="ghost-button"
-                    onClick={openManagerWorkspace}
+                    onClick={() => {
+                      closeMobileSidebar();
+                      openManagerWorkspace();
+                    }}
                   >
                     <Users size={14} /> Team
                   </button>
@@ -12065,6 +12142,7 @@ export default function App() {
                         onClick={() => {
                           setShowOverview(true);
                           setShowSOP(false);
+                          closeMobileSidebar();
                         }}
                       >
                         <Users size={16} />
@@ -12082,6 +12160,7 @@ export default function App() {
                     onClick={() => {
                       setShowSOP(true);
                       setShowOverview(false);
+                      closeMobileSidebar();
                     }}
                   >
                     <CheckSquare size={16} />
@@ -12099,7 +12178,10 @@ export default function App() {
                           <button
                             className="client-link"
                             key={profile.id}
-                            onClick={() => openCamWorkspace(profile.id)}
+                            onClick={() => {
+                              closeMobileSidebar();
+                              openCamWorkspace(profile.id);
+                            }}
                           >
                             <Users size={16} />
                             <span>{profile.name} CAM</span>
@@ -12138,6 +12220,7 @@ export default function App() {
                             setShowSOP(false);
                             setClientSearch("");
                             markClientViewed(client.id);
+                            closeMobileSidebar();
                           }}
                         >
                           <span>{client.name}</span>
@@ -12244,6 +12327,7 @@ export default function App() {
                             setShowOverview(false);
                             setShowSOP(false);
                             markClientViewed(client.id);
+                            closeMobileSidebar();
                           }}
                           onKeyDown={(e) => {
                             if (e.key === "ArrowDown") {
