@@ -30,6 +30,7 @@ import {
   Trash2,
   TrendingUp,
   Upload,
+  User,
   Users,
   History,
   Mail,
@@ -42,6 +43,7 @@ import DailySOP from "./components/DailySOP";
 import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
 import ChangePassword from "./components/ChangePassword";
+import ProfilePanel from "./components/ProfilePanel";
 import {
   addActivityEntry,
   addClient,
@@ -3016,6 +3018,7 @@ function ManagerOverview({
   const [newCamName, setNewCamName] = useState("");
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
+  const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
   const [batchImportResult, setBatchImportResult] = useState(null);
@@ -3255,7 +3258,7 @@ function ManagerOverview({
           </small>
         </div>
         <div className="manager-sidebar-main">
-          <button className={showUserPanel ? "client-link" : "client-link active"} onClick={() => setShowUserPanel(false)}>
+          <button className={(showUserPanel || showAuditPanel || showProfilePanel) ? "client-link" : "client-link active"} onClick={() => { setShowUserPanel(false); setShowAuditPanel(false); setShowProfilePanel(false); }}>
             <Users size={16} />
             <span>Operations</span>
             <em>Live</em>
@@ -3339,13 +3342,21 @@ function ManagerOverview({
             <History size={16} />
             <span>Audit Logs</span>
           </button>
+          <button
+            className={showProfilePanel ? "client-link active" : "client-link"}
+            onClick={() => {
+              setShowProfilePanel(true);
+              setShowUserPanel(false);
+              setShowAuditPanel(false);
+            }}
+          >
+            <User size={16} />
+            <span>Profile</span>
+          </button>
           <button className="client-link" onClick={onLogout}>
             <LogOut size={16} />
             <span>Sign out</span>
           </button>
-          <div className="sidebar-account-actions">
-            <ChangePassword />
-          </div>
         </div>
       </aside>
       <section className="content">
@@ -3359,6 +3370,8 @@ function ManagerOverview({
           />
         ) : showAuditPanel ? (
           <AuditLogsPanel />
+        ) : showProfilePanel ? (
+          <ProfilePanel session={session} />
         ) : (
           <>
         <div className="page-header">

@@ -244,6 +244,39 @@ button:disabled {
   color: #1a2a36;
 }
 
+.profile-panel {
+  padding: 4px;
+}
+.profile-panel h2 {
+  margin: 0 0 18px;
+}
+.profile-fields {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 26px;
+  max-width: 460px;
+}
+.profile-fields dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7075;
+}
+.profile-fields dd {
+  margin: 3px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.profile-password {
+  max-width: 320px;
+  border-top: 1px solid #e2e6ea;
+  padding-top: 18px;
+}
+.profile-password h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
 .sidebar-header {
   padding: 22px 18px 16px;
   border-bottom: 1px solid #cedee8;
