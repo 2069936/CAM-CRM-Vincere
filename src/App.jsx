@@ -3256,6 +3256,7 @@ function ManagerOverview({
   const [batchImportResult, setBatchImportResult] = useState(null);
   const [drillDate, setDrillDate] = useState("");
   const [teamCopyDone, setTeamCopyDone] = useState(false);
+  const [weeklyCopyDone, setWeeklyCopyDone] = useState(false);
   const [newClientForm, setNewClientForm] = useState({
     name: "",
     camId: "",
@@ -3675,13 +3676,15 @@ function ManagerOverview({
             className="ghost-button"
             onClick={() => {
               const txt = buildTeamWeeklyReport(clients, activeCamProfiles);
-              navigator.clipboard
-                .writeText(txt)
-                .then(() => alert("Weekly team summary copied!"));
+              navigator.clipboard.writeText(txt).then(() => {
+                setWeeklyCopyDone(true);
+                setTimeout(() => setWeeklyCopyDone(false), 2000);
+              });
             }}
             title="Copy weekly team summary for Slack / email"
           >
-            <ClipboardList size={14} /> Weekly Report
+            <ClipboardList size={14} />
+            {weeklyCopyDone ? "Copied!" : "Weekly Report"}
           </button>
           <button
             className="ghost-button"
@@ -5786,7 +5789,7 @@ function MonthlyReportPanel({ client, month, onClose }) {
       <div className="report-sheet">
         <div className="report-actions no-print">
           <button className="secondary-button" onClick={() => window.print()}>
-            Print / Save PDF
+            <FileText size={14} /> Print / Save PDF
           </button>
           <button
             className="ghost-button"
@@ -6085,7 +6088,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
                   : "Report history"}
           </span>
           <button className="secondary-button" onClick={() => window.print()}>
-            Print / Save PDF
+            <FileText size={14} /> Print / Save PDF
           </button>
           <button className="ghost-button" onClick={copyWhatsApp}>
             {msgCopied ? (
