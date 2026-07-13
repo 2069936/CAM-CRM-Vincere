@@ -11404,7 +11404,7 @@ export default function App() {
             flagCount: (result.flags || []).length,
           },
         });
-        return reloadSupabaseState(state.accountManager?.id);
+        return reloadSupabaseState(state.accountManager?.id, clientId);
       })
       .catch((error) => {
         console.error("[CRM] Failed to save daily import:", error);
