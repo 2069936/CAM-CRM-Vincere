@@ -89,3 +89,31 @@ strategy analyzer (0–10), lifecycle, action queue, CAM leaderboard, subscripti
 | `summarizeLogByAccount(parsed)` | `domain/ninjaTraderLog.js` | per-account activity |
 | `buildBulletBotStats(clients)` | `domain/bulletBotStats.js` | BB performance over time |
 | eval-target flag | `domain/reconcile.js` | already active (fires on Evaluation accounts at target) |
+| `buildAlgoComboPerformance(allClients)` | `components/StackPlaybook.jsx` | team-wide algo-combo pool (already exists) |
+
+---
+
+## 8. CAM view sync: Team overview + Stack Playbook only see the CAM's own data
+
+Both the **Team overview** (bottom of CAM Overview) and the **Stack Playbook**
+"Team Algo Performance" / "vs Team avg" are built from `allClients`, which in the
+**CAM view is scoped to the signed-in CAM's own clients**. Effect:
+- Team overview shows every *other* CAM as `0 clients · 0 accounts · $0 weekly`
+  (only the current CAM's row is real).
+- Stack Playbook's "team" pool is really just the CAM's own clients — so it
+  compares the CAM against themselves, not the team.
+
+The Manager view is correct because it loads all clients. The logic is fine; the
+CAM view just isn't given team-level data.
+
+**Fix:** feed the CAM view a lightweight **team aggregate** (privacy-scoped — no
+other CAMs' client records or flags):
+- Per-CAM summary — clients, accounts, **weekly PnL** — for the Team overview
+  leaderboard. (A CAM does NOT need other CAMs' flags; weekly PnL is the compare
+  metric they want.)
+- Team-wide **algo-combo pool** (`buildAlgoComboPerformance` over all clients) for
+  the Stack Playbook, passed in as `allClients` or a dedicated pooled dataset.
+
+Requested by Pedro: as a CAM he wants to benchmark his weekly PnL and his per-algo
+performance against the team. Aggregates only — this is a sync/data-loading fix,
+not new UI or a redesign.
