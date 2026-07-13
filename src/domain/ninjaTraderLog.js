@@ -124,3 +124,55 @@ export function parseNinjaTraderLog(logText) {
     },
   };
 }
+
+// Extract the trading date from a NinjaTrader log/trace filename, e.g.
+// "log.20260710.00000.txt" or "trace.20260710.00000.en.txt" -> "2026-07-10".
+// These files are named with the date they cover, so the filename dates the
+// backfilled history. Returns '' if no valid YYYYMMDD run is found.
+export function dateFromLogFilename(filename) {
+  const match = String(filename || '').match(/(20\d{2})(\d{2})(\d{2})/);
+  if (!match) return '';
+  const [, year, month, day] = match;
+  if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > 31) {
+    return '';
+  }
+  return `${year}-${month}-${day}`;
+}
+
+// Parse one NinjaTrader log file (name + contents) into a dated activity record
+// for historical backfill: the date comes from the filename, the events from the
+// log body.
+export function parseNinjaTraderLogFile(filename, logText) {
+  return {
+    filename: String(filename || ''),
+    date: dateFromLogFilename(filename),
+    ...parseNinjaTraderLog(logText),
+  };
+}
+
+// Roll a parsed log day up into per-account activity for showing/storing as
+// history. The log carries trade activity (fills, direction) but NOT account
+// balances, so this summarizes what traded, not account state.
+export function summarizeLogByAccount(parsedFile) {
+  const byAccount = {};
+  for (const execution of parsedFile.executions || []) {
+    const name = execution.accountName;
+    if (!name) continue;
+    if (!byAccount[name]) {
+      byAccount[name] = {
+        accountName: name,
+        date: parsedFile.date || '',
+        fills: 0,
+        contracts: 0,
+        long: 0,
+        short: 0,
+      };
+    }
+    const row = byAccount[name];
+    row.fills += 1;
+    row.contracts += Number(execution.quantity) || 0;
+    if (/long/i.test(execution.position)) row.long += 1;
+    else if (/short/i.test(execution.position)) row.short += 1;
+  }
+  return Object.values(byAccount);
+}

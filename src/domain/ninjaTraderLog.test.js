@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNinjaTraderLog } from './ninjaTraderLog';
+import { parseNinjaTraderLog, dateFromLogFilename, parseNinjaTraderLogFile, summarizeLogByAccount } from './ninjaTraderLog';
 
 const SAMPLE = [
   "2026-07-10 10:21:19:415|1|32|Order='490243547664/LTD15072018970002' Name='Enter Short' New state='Filled' Instrument='M2K SEP26' Action='Sell short' Limit price=0 Stop price=0 Quantity=6 Type='Market' Time in force=GTC Oco='' Filled=6 Fill price=2986.3 Error='No error' Native error=''",
@@ -61,5 +61,35 @@ describe('parseNinjaTraderLog', () => {
   it('handles empty / undefined input without throwing', () => {
     expect(parseNinjaTraderLog('').orders).toHaveLength(0);
     expect(() => parseNinjaTraderLog(undefined)).not.toThrow();
+  });
+});
+
+describe('NinjaTrader log file import (filename date + backfill)', () => {
+  it('extracts the trading date from the filename', () => {
+    expect(dateFromLogFilename('log.20260710.00000.txt')).toBe('2026-07-10');
+    expect(dateFromLogFilename('trace.20260710.00000.en.txt')).toBe('2026-07-10');
+    expect(dateFromLogFilename('log.txt')).toBe('');
+    expect(dateFromLogFilename('log.20261340.00000.txt')).toBe(''); // invalid month/day
+  });
+
+  it('dates the parsed activity by filename', () => {
+    const result = parseNinjaTraderLogFile('log.20260710.00000.txt', SAMPLE);
+    expect(result.date).toBe('2026-07-10');
+    expect(result.filename).toBe('log.20260710.00000.txt');
+    expect(result.executions).toHaveLength(1);
+  });
+
+  it('rolls executions up per account with long/short direction', () => {
+    const parsed = parseNinjaTraderLogFile('log.20260710.00000.txt', SAMPLE);
+    const rows = summarizeLogByAccount(parsed);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      accountName: 'LTD15072018970002',
+      date: '2026-07-10',
+      fills: 1,
+      contracts: 6,
+      short: 1,
+      long: 0,
+    });
   });
 });
