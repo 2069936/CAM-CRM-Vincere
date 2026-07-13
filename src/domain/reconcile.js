@@ -175,7 +175,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
     const rawDD = Number(account.trailingMaxDrawdown || 0);
 
     if (Number.isFinite(ddLimit) && ddLimit > 0) {
-      // Model 1: configured limit — trailingMaxDrawdown is cumulative loss (negative number)
+      // Model 1: configured limit - trailingMaxDrawdown is cumulative loss (negative number)
       const currentDD = Math.abs(rawDD);
       if (currentDD > 0) {
         const remaining = ddLimit - currentDD;
@@ -203,14 +203,14 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
         }
       }
     } else if (rawDD !== 0) {
-      // Model 2: no configured limit — trailingMaxDrawdown IS the remaining buffer (sign-based)
+      // Model 2: no configured limit - trailingMaxDrawdown IS the remaining buffer (sign-based)
       // NT exports this as positive (buffer remaining); account dies when it hits 0 or goes negative
       if (rawDD <= 0) {
         flags.push(makeFlag({
           type: 'Drawdown breached',
           severity: 'Critical',
           accountName: account.accountName,
-          message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} — account limit reached or exceeded. Verify with prop firm immediately.`,
+          message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} - account limit reached or exceeded. Verify with prop firm immediately.`,
         }));
       } else if (rawDD <= 500) {
         flags.push(makeFlag({

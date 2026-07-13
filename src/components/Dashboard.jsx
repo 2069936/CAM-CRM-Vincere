@@ -14,7 +14,7 @@ function drawdownDisplay(row) {
     if (remaining <= 1200) return { label: `${formatCurrency(remaining)} left`, tone: 'warning' };
     return { label: `${formatCurrency(remaining)} left`, tone: '' };
   }
-  if (rawDD === 0) return { label: '—', tone: '' };
+  if (rawDD === 0) return { label: '-', tone: '' };
   if (rawDD <= 0) return { label: 'BREACHED', tone: 'negative' };
   if (rawDD <= 500) return { label: `${formatCurrency(rawDD)} buffer`, tone: 'negative' };
   if (rawDD <= 1200) return { label: `${formatCurrency(rawDD)} buffer`, tone: 'warning' };
@@ -141,12 +141,12 @@ function AccountHistorySparkline({ accountName, dailyImports }) {
         <polyline
           points={polyline}
           fill="none"
-          stroke={totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}
+          stroke={totalPnl >= 0 ? 'var(--success)' : 'var(--error)'}
           strokeWidth="2"
           strokeLinejoin="round"
         />
         {pts.map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r={3} fill={history[i].pnl >= 0 ? 'var(--green)' : 'var(--red)'}>
+          <circle key={i} cx={x} cy={y} r={3} fill={history[i].pnl >= 0 ? 'var(--success)' : 'var(--error)'}>
             <title>{history[i].date}: {history[i].pnl >= 0 ? '+' : ''}{formatCurrency(history[i].pnl)}</title>
           </circle>
         ))}
@@ -315,14 +315,14 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   {isFunded ? (() => {
                     const target = Number(row.meta?.targetProfit || 0);
                     const balance = Number(row.accountBalance || 0);
-                    if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>—</td>;
+                    if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>-</td>;
                     const pct = Math.min(100, Math.round((balance / target) * 100));
                     const reached = balance >= target;
                     return (
                       <td className="target-cell" onClick={(e) => e.stopPropagation()}>
                         <div className="target-progress">
                           <div className="target-bar">
-                            <i style={{ width: `${pct}%`, background: reached ? 'var(--green)' : pct >= 80 ? '#f59e0b' : 'var(--accent)' }} />
+                            <i style={{ width: `${pct}%`, background: reached ? 'var(--success)' : pct >= 80 ? 'var(--warning)' : 'var(--accent)' }} />
                           </div>
                           <small className={reached ? 'positive' : ''}>{pct}%</small>
                         </div>
@@ -346,7 +346,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                     const target = Number(row.meta?.targetProfit || 0);
                     const start = Number(row.meta?.startBalance || 0);
                     const balance = Number(row.accountBalance || 0);
-                    if (!target) return <td className="muted">—</td>;
+                    if (!target) return <td className="muted">-</td>;
                     const base = start || (target * 0.97);
                     const profit = balance - base;
                     const needed = target - base;
@@ -356,7 +356,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                       <td className="target-cell">
                         <div className="target-progress">
                           <div className="target-bar">
-                            <i style={{ width: `${pct}%`, background: passed ? 'var(--green)' : pct >= 80 ? '#f59e0b' : 'var(--accent)' }} />
+                            <i style={{ width: `${pct}%`, background: passed ? 'var(--success)' : pct >= 80 ? 'var(--warning)' : 'var(--accent)' }} />
                           </div>
                           <small className={passed ? 'positive' : ''}>{passed ? '✓ Passed' : `${pct}%`}</small>
                         </div>
@@ -442,7 +442,7 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
                 {flag.status !== 'Resolved' && flag.status !== 'Acknowledged' && onResolveFlag ? (
                   <div style={{display:'flex',gap:4,flexShrink:0}}>
                     {flag.severity !== 'Critical' && (
-                      <button className="ghost-button icon-only flag-resolve-btn" title="Acknowledge — seen, not blocking" style={{fontSize:10,padding:'2px 6px',width:'auto'}} onClick={() => onResolveFlag(flag.id, 'Acknowledged')}>Ack</button>
+                      <button className="ghost-button icon-only flag-resolve-btn" title="Acknowledge - seen, not blocking" style={{fontSize:10,padding:'2px 6px',width:'auto'}} onClick={() => onResolveFlag(flag.id, 'Acknowledged')}>Ack</button>
                     )}
                     <button className="ghost-button icon-only flag-resolve-btn" title="Mark resolved" onClick={() => onResolveFlag(flag.id, 'Resolved')}>
                       <X size={14} />

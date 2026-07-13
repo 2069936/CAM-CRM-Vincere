@@ -22,7 +22,7 @@ describe('buildConsistencyWarnings', () => {
   });
 
   it('returns empty when best day is ≤30% of total positive PnL', () => {
-    // Best day 300 out of 300+300+300+300 = 1200 → 25% — below threshold
+    // Best day 300 out of 300+300+300+300 = 1200 → 25% - below threshold
     const client = makeClientWithPnls('ACC1', [300, 300, 300, 300]);
     expect(buildConsistencyWarnings(client)).toHaveLength(0);
   });

@@ -154,7 +154,7 @@ export default function DailySOP({ camProfileId = '' }) {
             style={{
               width: `${pct}%`,
               background: isComplete
-                ? 'var(--green)'
+                ? 'var(--success)'
                 : pct >= 60
                 ? 'linear-gradient(90deg, var(--blue), var(--accent))'
                 : 'var(--blue)',
@@ -162,8 +162,8 @@ export default function DailySOP({ camProfileId = '' }) {
             }}
           />
         </div>
-        <div className="sop-progress-label" style={{ color: isComplete ? 'var(--green)' : undefined }}>
-          {isComplete ? '✓ All done — great work today!' : `${pct}% complete · ${totalItems - doneItems} remaining`}
+        <div className="sop-progress-label" style={{ color: isComplete ? 'var(--success)' : undefined }}>
+          {isComplete ? '✓ All done - great work today!' : `${pct}% complete · ${totalItems - doneItems} remaining`}
         </div>
 
         {isComplete && justCompleted && (
