@@ -88,6 +88,23 @@ describe('csvImport', () => {
     });
   });
 
+  it('detects an accounts file whose header is "Realized PnL" (not "Gross realized PnL")', () => {
+    const csv = [
+      'ConnectionStatus,Connection,Display name,Unrealized PnL,Realized PnL,Excess intraday margin,Cash value',
+      'Connected,Live,2018219,0,-1071.95,27904.09,27904.09',
+    ].join('\n');
+
+    const parsed = parseNinjaTraderCsvText(csv, 'NinjaTrader Grid.csv');
+
+    expect(detectNinjaTraderFileType(parsed.headers)).toBe('accounts');
+    expect(parsed.type).toBe('accounts');
+    expect(parsed.rows[0]).toMatchObject({
+      accountName: '2018219',
+      grossRealizedPnl: -1071.95,
+      accountBalance: 27904.09,
+    });
+  });
+
   it('detects strategies files and parses account strategy links by header', () => {
     const csv = [
       'Enabled,Parameters,Account display name,Strategy,Instrument,Realized,Unrealized,Data series,Connection',

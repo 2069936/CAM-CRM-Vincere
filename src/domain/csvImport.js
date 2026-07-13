@@ -26,6 +26,7 @@ const HEADER_ALIASES = {
   quantity: 'quantity',
   rate: 'rate',
   realized: 'realized',
+  realizedpnl: 'grossRealizedPnl',
   remaining: 'remaining',
   state: 'state',
   stop: 'stop',
