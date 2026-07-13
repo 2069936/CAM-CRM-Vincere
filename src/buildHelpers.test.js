@@ -51,7 +51,7 @@ describe('lastContactDaysAgo', () => {
     expect(lastContactDaysAgo(client)).toBe(5);
   });
 
-  it('uses index 0 (newest entry — log is prepended on insert)', () => {
+  it('uses index 0 (newest entry - log is prepended on insert)', () => {
     const client = {
       activityLog: [
         { id: 'new', createdAt: '2026-06-24T12:00:00.000Z' }, // 1 day ago

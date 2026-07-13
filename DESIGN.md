@@ -31,3 +31,38 @@ The application natively operates in a rich, low-light aesthetic using HSL varia
 
 ## Layout Shape
 The application employs a fixed lateral sidebar (Width: 72) for Client Context, with the main content area functioning as a vertically scrolling canvas. The Dashboard prioritizes high-level aggregate metrics at the top (Card Grids & Recharts), naturally filtering down into highly detailed, data-dense tabular trees at the bottom.
+
+## shadcn/ui Adoption
+
+The app may use shadcn/ui as the component baseline while preserving the CAM CRM identity above. The adoption should be incremental and presentation-first so the existing workflow, Supabase persistence, tab state, and user permissions remain unchanged.
+
+### Adoption Rules
+- Keep the existing data flow, event handlers, Supabase calls, routing, auth behavior, and tab behavior unchanged unless a bug fix is explicitly required.
+- Use shadcn/ui for presentational consistency: buttons, cards, tabs, tables, alerts, forms, dialogs, switches, checkboxes, textareas, badges, dropdowns, and tooltips.
+- Map shadcn CSS variables to the existing dark workspace identity from this document instead of adopting a generic light theme.
+- Prefer `lucide-react` icons in all interactive controls. Do not use emoji as product UI icons.
+- Keep operational screens data-dense, scannable, and work-focused. Avoid marketing-style hero sections, oversized copy, and decorative-only UI.
+- Refactor one surface at a time, then QA that section before moving to the next one.
+
+### Token Mapping Direction
+- `--background` should align with the existing deep base background.
+- `--card` and `--popover` should align with elevated dark surfaces.
+- `--primary` should carry the existing purple accent for primary actions and selected states.
+- `--secondary` and `--accent` should support cyan/blue secondary emphasis without dominating the screen.
+- `--destructive` should match the existing danger red.
+- `--muted` and `--muted-foreground` should preserve readable subdued text for dense tables and metadata.
+
+### First Refactor Targets
+1. Manager Operations header, metric cards, and alert banner.
+2. Users & Access table and user form controls.
+3. Client roster table and assignment controls.
+4. CAM workspace header, primary action row, and tab navigation.
+5. Credentials/Profile forms and repeated credential panels.
+
+### Deferred Layout Direction
+
+For the next Manager Operations header pass, use a command header with grouped actions:
+- Keep the left side focused on brand/date, page title, operational counts, and alert badges.
+- Keep only high-priority actions in the header right side: open primary CAM workspace and create a new client.
+- Move secondary tools into a quiet toolbar below the header: SOP Item, Pipeline, Batch Import, Data Tools, Weekly Report, and Copy Team Report.
+- Preserve all existing handlers and visibility toggles; this is a layout hierarchy change, not a workflow change.

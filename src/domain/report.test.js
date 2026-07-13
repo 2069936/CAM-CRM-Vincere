@@ -165,7 +165,7 @@ describe('buildWeeklyMessageReport', () => {
   });
 });
 
-// ── buildDailyReportSummary — flag counting ───────────────────────────────────
+// ── buildDailyReportSummary - flag counting ───────────────────────────────────
 
 describe('buildDailyReportSummary flag counts', () => {
   const client = { name: 'Pedro', dailyImports: [], accountRegistry: {} };

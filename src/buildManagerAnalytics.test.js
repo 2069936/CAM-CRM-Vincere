@@ -67,7 +67,7 @@ describe('buildManagerSummary', () => {
       { strategyFamily: 'RBO', strategyVersion: '1.8', enabled: true },
       { strategyFamily: 'RBO', strategyVersion: '1.8', enabled: true }, // same family+version on second account
       { strategyFamily: 'IFSP', strategyVersion: '2.0', enabled: true },
-      { strategyFamily: 'RBO', strategyVersion: '1.8', enabled: false }, // disabled — not counted
+      { strategyFamily: 'RBO', strategyVersion: '1.8', enabled: false }, // disabled - not counted
     ];
     const clients = [
       makeClient({ id: 'c1', snapshots: [makeSnapshot('A1', 0, 0, [strategies[0]]), makeSnapshot('A2', 0, 0, [strategies[1]])] }),
