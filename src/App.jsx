@@ -6406,7 +6406,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
             <strong>{report.counts.accounts}</strong>
           </div>
           <div>
-            <span>Daily / Gross PnL</span>
+            <span>Daily Realized PnL</span>
             <strong
               className={
                 report.totals.grossRealizedPnl >= 0

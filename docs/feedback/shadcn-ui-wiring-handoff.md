@@ -151,6 +151,13 @@ Do not add them together — a Funded $52k, a Cash $10k and an Eval $51k are thr
 separate pools, not $113k. (Bullet-bot evals are tracked by pass/fail, not balance
 — you can omit their balance from the report; `buildBulletBotStats` covers them.)
 
+**Cash PnL is net of fees — do not label it "Gross".** Pedro confirmed his
+NinjaTrader "Realized PnL" column already has commissions subtracted, so the
+`dailyPnl` we carry for a Cash account is the net figure. For the Cash segment
+label the PnL as "Realized (net)" — not "Gross". No compute change: the number is
+already correct; the fix is purely the label. (The combined report headline was
+renamed from "Daily / Gross PnL" to "Daily Realized PnL" for the same reason.)
+
 ### 9c. Client overview: click "accounts tracked" → reveal the client's prop firms
 In a client's overview the CAM sees a count of accounts tracked but not *what* they
 are. Make that count expandable: on click, list the **prop firms** the client runs
