@@ -364,7 +364,7 @@ export function buildTodayActions(client, dailyImport) {
       actions.push({
         severity: "info-green",
         icon: "💰",
-        text: `Payout ready: ${p.alias} reached ${Math.round((p.profit / p.target) * 100)}% of target`,
+        text: `Payout ready: ${p.alias} reached ${p.pct}% of target`,
       });
     }
   }
@@ -1258,15 +1258,25 @@ export function buildPayoutAlerts(client, dailyImport) {
     const target = Number(meta.targetProfit || 0);
     if (!target) continue;
     const balance = Number(snap.accountBalance || 0);
+    // Progress is measured from the account's starting balance, not from zero.
+    // A 50k funded account with a 54k target is at 0% at 50k and negative below
+    // it — not 91%. Fall back to the account-size guess used elsewhere when no
+    // start balance has been set.
+    const start =
+      Number(meta.startBalance || 0) || (balance >= 90000 ? 100000 : 50000);
+    const needed = target - start;
+    if (needed <= 0) continue;
+    const profit = balance - start;
     const alreadyRequested =
       meta.payoutState && meta.payoutState !== "Not requested";
-    if (!alreadyRequested && balance >= target * 0.9) {
+    if (!alreadyRequested && profit >= needed * 0.9) {
       alerts.push({
         accountName: snap.accountName,
         alias: meta.alias || snap.accountName,
-        profit: balance,
+        balance,
+        profit,
         target,
-        pct: Math.round((balance / target) * 100),
+        pct: Math.round((profit / needed) * 100),
         payoutState: meta.payoutState || "Not requested",
         ready: balance >= target,
       });
@@ -7265,8 +7275,8 @@ function ClientOverview({
                   <strong>{a.alias}</strong>
                   <span>
                     {a.ready
-                      ? `Ready for payout - profit ${formatCurrency(a.profit)} reached target ${formatCurrency(a.target)}`
-                      : `Approaching target - ${a.pct}% of ${formatCurrency(a.target)} goal (${formatCurrency(a.profit)} profit)`}
+                      ? `Ready for payout - balance ${formatCurrency(a.balance)} reached target ${formatCurrency(a.target)} (${formatCurrency(a.profit)} profit)`
+                      : `Approaching target - ${a.pct}% of goal (${formatCurrency(a.profit)} profit toward ${formatCurrency(a.target)})`}
                   </span>
                 </div>
                 <div className="payout-progress-wrap">

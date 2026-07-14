@@ -316,13 +316,16 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                     const target = Number(row.meta?.targetProfit || 0);
                     const balance = Number(row.accountBalance || 0);
                     if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>-</td>;
-                    const pct = Math.min(100, Math.round((balance / target) * 100));
+                    // Progress from the starting balance, not from zero. A 50k account
+                    // with a 54k target sits at 0% at 50k, negative below it.
+                    const start = Number(row.meta?.startBalance || 0) || (balance >= 90000 ? 100000 : 50000);
+                    const pct = target > start ? Math.round(((balance - start) / (target - start)) * 100) : 0;
                     const reached = balance >= target;
                     return (
                       <td className="target-cell" onClick={(e) => e.stopPropagation()}>
                         <div className="target-progress">
                           <div className="target-bar">
-                            <i style={{ width: `${pct}%`, background: reached ? 'var(--success)' : pct >= 80 ? 'var(--warning)' : 'var(--accent)' }} />
+                            <i style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: reached ? 'var(--success)' : pct >= 80 ? 'var(--warning)' : 'var(--accent)' }} />
                           </div>
                           <small className={reached ? 'positive' : ''}>{pct}%</small>
                         </div>
