@@ -144,8 +144,10 @@ summed into one number. Pedro cares about three pools specifically:
 - **Funded accounts** (`Funded`)
 - **Cash accounts** (`Cash`)
 
-Use `buildClientSegments(client, dailyImport)` → `{ funded, cash, evalStandard,
-bulletBot, other }`, each `{ balance, dailyPnl, count, accounts[] }`. Render one
+Already computed for you: **`report.segments`** on the object returned by
+`buildDailyReportSummary` (the same `report` the daily view already uses). Shape:
+`{ funded, cash, evalStandard, bulletBot, other }`, each `{ balance, dailyPnl,
+count, accounts[] }`. No new call needed — just read `report.segments`. Render one
 balance figure and one PnL figure **per segment** (Eval-standard / Funded / Cash).
 Do not add them together — a Funded $52k, a Cash $10k and an Eval $51k are three
 separate pools, not $113k. (Bullet-bot evals are tracked by pass/fail, not balance
