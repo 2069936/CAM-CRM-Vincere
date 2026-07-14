@@ -30,7 +30,7 @@ describe('remainingBuffer', () => {
 // ── lastContactDaysAgo ────────────────────────────────────────────────────────
 
 describe('lastContactDaysAgo', () => {
-  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-06-25T12:00:00')); });
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-06-25T12:00:00.000Z')); });
   afterEach(() => { vi.useRealTimers(); });
 
   it('returns null when activityLog is empty', () => {
