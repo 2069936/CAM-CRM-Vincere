@@ -92,6 +92,10 @@ import {
 } from "./domain/reconcile";
 import { parseNinjaTraderCsvText } from "./domain/csvImport";
 import {
+  parseNinjaTraderLogFile,
+  summarizeLogByAccount,
+} from "./domain/ninjaTraderLog";
+import {
   buildClientMessageReport,
   buildWeeklyMessageReport,
   buildDailyReportSummary,
@@ -2323,13 +2327,22 @@ function AuditLogsPanel() {
   );
 }
 
-function DataToolsPanel({ clients = [], camProfiles = [], onImportClient, session }) {
+function DataToolsPanel({
+  clients = [],
+  camProfiles = [],
+  onImportClient,
+  onAppendActivity,
+  session,
+}) {
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
   const [importRows, setImportRows] = useState([]);
   const [importError, setImportError] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [isFetchingIntake, setIsFetchingIntake] = useState(false);
+  const [logImportResult, setLogImportResult] = useState(null);
+  const [isParsingLogs, setIsParsingLogs] = useState(false);
+  const [logPersisting, setLogPersisting] = useState(false);
 
   const duplicateKeys = useMemo(
     () => {
@@ -2355,6 +2368,118 @@ function DataToolsPanel({ clients = [], camProfiles = [], onImportClient, sessio
 
   function camForClient(clientId) {
     return (camProfiles || []).find((cam) => (cam.clientIds || []).includes(clientId)) || null;
+  }
+
+  const accountOwnerMap = useMemo(() => {
+    const map = new Map();
+    for (const client of clients || []) {
+      for (const accountName of Object.keys(client.accountRegistry || {})) {
+        const key = accountName.toLowerCase();
+        if (!map.has(key)) map.set(key, { client, accountName });
+      }
+    }
+    return map;
+  }, [clients]);
+
+  async function readTextFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
+      reader.readAsText(file);
+    });
+  }
+
+  async function parseNinjaTraderLogs(files = []) {
+    const logFiles = [...files].filter((file) => {
+      const name = file.name.toLowerCase();
+      return name.endsWith(".txt") || name.includes("log.") || name.includes("trace.");
+    });
+    if (!logFiles.length) {
+      setLogImportResult({ error: "No NinjaTrader log or trace text files selected." });
+      return;
+    }
+    setIsParsingLogs(true);
+    setLogImportResult(null);
+    try {
+      const parsedFiles = [];
+      for (const file of logFiles) {
+        const text = await readTextFile(file);
+        const parsed = parseNinjaTraderLogFile(file.name, text);
+        const accounts = summarizeLogByAccount(parsed).map((row) => {
+          const owner = accountOwnerMap.get(String(row.accountName || "").toLowerCase());
+          return {
+            ...row,
+            clientId: owner?.client?.id || "",
+            clientName: owner?.client?.name || "",
+            matchedAccountName: owner?.accountName || row.accountName,
+          };
+        });
+        parsedFiles.push({ parsed, accounts });
+      }
+      setLogImportResult({ files: parsedFiles });
+      setMessage(`Parsed ${parsedFiles.length} NinjaTrader log file${parsedFiles.length !== 1 ? "s" : ""}.`);
+      setStatus("ready");
+      auditSilently({
+        entityType: "data_import",
+        action: "data_import.ninjatrader_log.parse",
+        afterData: {
+          fileCount: parsedFiles.length,
+          accountRows: parsedFiles.flatMap((file) => file.accounts || []).length,
+          manager: session?.displayName || session?.username || "",
+        },
+      });
+    } catch (error) {
+      console.error("[CRM] Failed to parse NinjaTrader logs:", error);
+      setLogImportResult({ error: error.message || "Could not parse NinjaTrader logs." });
+      setStatus("error");
+    } finally {
+      setIsParsingLogs(false);
+    }
+  }
+
+  async function persistParsedLogActivity() {
+    const matchedRows = (logImportResult?.files || [])
+      .flatMap((file) =>
+        (file.accounts || []).map((row) => ({
+          ...row,
+          filename: file.parsed.filename,
+          orders: file.parsed.orders?.length || 0,
+          executions: file.parsed.executions?.length || 0,
+          strategyEvents: file.parsed.strategyEvents?.length || 0,
+        })),
+      )
+      .filter((row) => row.clientId);
+    if (!matchedRows.length) {
+      setLogImportResult((current) => ({
+        ...(current || {}),
+        error: "No matched client accounts to save.",
+      }));
+      return;
+    }
+    setLogPersisting(true);
+    try {
+      for (const row of matchedRows) {
+        await onAppendActivity?.(row.clientId, {
+          id: `nt-log-${row.date || "unknown"}-${row.accountName}-${Date.now()}`.replace(/[^a-zA-Z0-9_-]/g, "-"),
+          type: "Import",
+          accountName: row.matchedAccountName || row.accountName,
+          createdAt: new Date().toISOString(),
+          text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short) for ${row.date || "unknown date"}.`,
+        });
+      }
+      setMessage(`Saved ${matchedRows.length} NinjaTrader log summar${matchedRows.length === 1 ? "y" : "ies"} to client activity.`);
+      setStatus("ready");
+    } catch (error) {
+      console.error("[CRM] Failed to save NinjaTrader log activity:", error);
+      setLogImportResult((current) => ({
+        ...(current || {}),
+        error: error.message || "Could not save NinjaTrader log activity.",
+      }));
+      setStatus("error");
+    } finally {
+      setLogPersisting(false);
+    }
   }
 
   function exportClientCsv() {
@@ -2700,6 +2825,74 @@ function DataToolsPanel({ clients = [], camProfiles = [], onImportClient, sessio
           <button className="primary-button" onClick={importClients} disabled={!newRows.length || isImporting}>
             <Upload size={14} /> {isImporting ? "Importing..." : `Import ${newRows.length || ""}`.trim()}
           </button>
+        </div>
+        <div className="data-tool-card data-tool-card-wide">
+          <strong>NinjaTrader log backfill</strong>
+          <p className="muted">
+            Upload dated log or trace text files to summarize historical fills by account. Matched accounts can be saved to client activity while a dedicated history table is still pending.
+          </p>
+          <input
+            type="file"
+            accept=".txt,text/plain"
+            multiple
+            onChange={(event) => {
+              parseNinjaTraderLogs(event.target.files || []);
+              event.target.value = "";
+            }}
+          />
+          {isParsingLogs ? (
+            <div className="notice info">Parsing NinjaTrader logs...</div>
+          ) : null}
+          {logImportResult?.error ? (
+            <div className="notice error">{logImportResult.error}</div>
+          ) : null}
+          {logImportResult?.files?.length ? (
+            <div className="intake-preview">
+              <div className="intake-preview-head">
+                <strong>Parsed log activity</strong>
+                <span className="muted">
+                  {logImportResult.files.reduce((sum, file) => sum + (file.accounts?.length || 0), 0)} account rows
+                </span>
+              </div>
+              <div className="table-wrap">
+                <table className="ops-table compact-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Account</th>
+                      <th>Client</th>
+                      <th>Fills</th>
+                      <th>Long/Short</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logImportResult.files.flatMap((file) => file.accounts || []).slice(0, 12).map((row, index) => (
+                      <tr key={`${row.date}-${row.accountName}-${index}`}>
+                        <td>{row.date || "-"}</td>
+                        <td><code>{row.accountName}</code></td>
+                        <td>
+                          {row.clientName ? (
+                            <span className="badge success">{row.clientName}</span>
+                          ) : (
+                            <span className="badge warning">Unmatched</span>
+                          )}
+                        </td>
+                        <td>{row.fills} fills / {row.contracts} contracts</td>
+                        <td>{row.long}L / {row.short}S</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button
+                className="primary-button"
+                onClick={persistParsedLogActivity}
+                disabled={logPersisting || !logImportResult.files.some((file) => (file.accounts || []).some((row) => row.clientId))}
+              >
+                <Upload size={14} /> {logPersisting ? "Saving..." : "Save matched activity"}
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
       {message ? (
@@ -3235,6 +3428,7 @@ function ManagerOverview({
   onAddClient,
   onImportClient,
   onAppendDailyImport,
+  onAppendActivity,
   onLogout,
   users = [],
   onUsersChange,
@@ -3873,6 +4067,7 @@ function ManagerOverview({
             clients={clients}
             camProfiles={activeCamProfiles}
             onImportClient={onImportClient}
+            onAppendActivity={onAppendActivity}
             session={session}
           />
         )}
@@ -11565,7 +11760,7 @@ export default function App() {
 
   function persistActivity(clientId, entry) {
     setState((current) => addActivityEntry(current, clientId, entry));
-    insertSupabaseActivity(clientId, entry).then(() => {
+    return insertSupabaseActivity(clientId, entry).then(() => {
       auditSilently({
         entityType: "activity_log",
         entityId: entry.id,
@@ -11575,6 +11770,7 @@ export default function App() {
     }).catch((error) => {
       console.error("[CRM] Failed to save activity:", error);
       window.alert(`Could not save activity to Supabase: ${error.message}`);
+      throw error;
     });
   }
 
@@ -12004,6 +12200,9 @@ export default function App() {
             }}
             onAppendDailyImport={(clientId, result) =>
               persistDailyImport(clientId, result)
+            }
+            onAppendActivity={(clientId, entry) =>
+              persistActivity(clientId, entry)
             }
           />
           <ConfirmActionDialog
@@ -12525,7 +12724,7 @@ export default function App() {
               <CamOverview
                 clients={currentCamClients}
                 camProfiles={visibleCamProfiles}
-                allClients={accessibleClients}
+                allClients={state.clients || []}
                 strategySetRecords={strategySetIndex.records}
                 strategySetIndexStatus={strategySetIndex.status}
                 onSelectClient={(clientId) => {
@@ -13009,7 +13208,7 @@ export default function App() {
                       <ClientOverview
                         client={selectedClient}
                         dailyImport={dailyImport}
-                        allClients={accessibleClients}
+                        allClients={state.clients || []}
                         onRequestMonthlyReport={(month) =>
                           setMonthlyReportMonth(month)
                         }
@@ -13050,7 +13249,7 @@ export default function App() {
                         client={selectedClient}
                         dailyImport={dailyImport}
                         onUpdateAccount={handleAccountUpdate}
-                        allClients={accessibleClients}
+                        allClients={state.clients || []}
                       />
                     ) : null}
                     {["Review", "Evaluations", "Funded", "Cash"].includes(

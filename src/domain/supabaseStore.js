@@ -195,7 +195,7 @@ async function loadTable(table, columns = '*') {
   return data || [];
 }
 
-export async function loadSupabaseCrmState({ preferredCamProfileId = 'am-pedro' } = {}) {
+export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}) {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY.');
   }
@@ -423,8 +423,8 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = 'am-pedro' 
   return {
     dataSource: 'supabase',
     accountManager: {
-      id: preferredCam?.id || 'am-pedro',
-      name: preferredCam?.name || 'Pedro',
+      id: preferredCam?.id || '',
+      name: preferredCam?.name || 'Unassigned',
     },
     camProfiles,
     clients,

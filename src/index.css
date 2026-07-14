@@ -2369,6 +2369,10 @@ textarea {
   padding: 14px;
 }
 
+.data-tool-card-wide {
+  grid-column: 1 / -1;
+}
+
 .data-tool-card input[type="file"] {
   border: 1px dashed rgba(255, 255, 255, 0.1);
   border-radius: 8px;
