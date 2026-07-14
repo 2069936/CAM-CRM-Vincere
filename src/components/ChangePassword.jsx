@@ -32,7 +32,7 @@ export default function ChangePassword() {
     setBusy(true);
     try {
       await changeOwnPassword(password);
-      setStatus("✓ Password updated.");
+      setStatus("Password updated.");
       setPassword("");
       setConfirm("");
     } catch (error) {
@@ -67,7 +67,7 @@ export default function ChangePassword() {
         onChange={(event) => setConfirm(event.target.value)}
       />
       <div className="change-pw-actions">
-        <button type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+        <button type="submit" disabled={busy}>{busy ? "Saving..." : "Save"}</button>
         <button type="button" onClick={() => { setOpen(false); reset(); }}>Cancel</button>
       </div>
       {status && <small className="change-pw-status">{status}</small>}

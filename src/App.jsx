@@ -38,6 +38,7 @@ import {
   TrendingUp,
   Upload,
   UserPlus,
+  UserRound,
   Users,
   History,
   Mail,
@@ -49,6 +50,7 @@ import AccountManager from "./components/AccountManager";
 import Dashboard from "./components/Dashboard";
 import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
+import ProfilePanel from "./components/ProfilePanel";
 import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
 import {
@@ -99,6 +101,7 @@ import {
 import {
   USER_ROLES,
 } from "./domain/userStore";
+import { SUBSCRIPTION_PRICES } from "./domain/subscriptionPrice";
 import {
   authenticateSupabaseAppUser,
   getSupabaseSessionAppUser,
@@ -1322,7 +1325,6 @@ function activeCamProfilesForUsers(camProfiles = [], users = []) {
   const activeCamIds = new Set(
     (users || [])
       .filter((user) => (
-        user.role === USER_ROLES.CAM &&
         (user.status || "Active") !== "Inactive" &&
         user.camProfileId
       ))
@@ -1806,7 +1808,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       setError("");
       const payload = {
         ...newUser,
-        hasCamProfile: newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile),
+        hasCamProfile: Boolean(newUser.hasCamProfile),
       };
       const remoteUsers = await createSupabaseManagedUser(payload);
       onUsersChange(remoteUsers);
@@ -1853,9 +1855,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
       displayName: patch.displayName ?? user.displayName,
       email: patch.email ?? user.email,
       role: patch.role ?? user.role,
-      hasCamProfile: (patch.role ?? user.role) === USER_ROLES.CAM
-        ? (patch.hasCamProfile ?? Boolean(user.camProfileId))
-        : false,
+      hasCamProfile: patch.hasCamProfile ?? Boolean(user.camProfileId),
       status: patch.status ?? user.status ?? "Active",
       password: patch.password,
     };
@@ -2079,9 +2079,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                           onChange={(e) => setEditUserPatch((p) => ({
                             ...p,
                             role: e.target.value,
-                            hasCamProfile: e.target.value === USER_ROLES.CAM
-                              ? (p.hasCamProfile ?? Boolean(u.camProfileId))
-                              : false,
+                            hasCamProfile: p.hasCamProfile ?? Boolean(u.camProfileId),
                           }))}
                         >
                           {Object.values(USER_ROLES).map((role) => <option key={role}>{role}</option>)}
@@ -2092,24 +2090,20 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
                     </td>
                     <td>
                       {isEditing ? (
-                        (patch.role ?? u.role) === USER_ROLES.CAM ? (
-                          <label className="inline-toggle switch-field">
-                            <Switch
-                              id={`cam-profile-${u.id}`}
-                              type="button"
-                              checked={camProfileEnabled}
-                              onCheckedChange={(checked) => setEditUserPatch((p) => ({ ...p, hasCamProfile: checked }))}
-                            />
-                            <span>CAM profile</span>
-                            <strong className={camProfileEnabled ? "positive" : "muted"}>
-                              {camProfileEnabled ? "On" : "Off"}
-                            </strong>
-                          </label>
-                        ) : "-"
+                        <label className="inline-toggle switch-field">
+                          <Switch
+                            id={`cam-profile-${u.id}`}
+                            type="button"
+                            checked={camProfileEnabled}
+                            onCheckedChange={(checked) => setEditUserPatch((p) => ({ ...p, hasCamProfile: checked }))}
+                          />
+                          <span>CAM profile</span>
+                          <strong className={camProfileEnabled ? "positive" : "muted"}>
+                            {camProfileEnabled ? "On" : "Off"}
+                          </strong>
+                        </label>
                       ) : (
-                        u.role === USER_ROLES.CAM
-                          ? <span className={u.camProfileId ? "badge success" : "badge muted"}>{u.camProfileId ? "Yes" : "No"}</span>
-                          : "-"
+                        <span className={u.camProfileId ? "badge success" : "badge muted"}>{u.camProfileId ? "Yes" : "No"}</span>
                       )}
                     </td>
                     <td>
@@ -2199,22 +2193,21 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
             onChange={(e) => setNewUser((v) => ({
               ...v,
               role: e.target.value,
-              hasCamProfile: e.target.value === USER_ROLES.CAM ? v.hasCamProfile : false,
+              hasCamProfile: v.hasCamProfile,
             }))}
           >
             {Object.values(USER_ROLES).map((role) => <option key={role}>{role}</option>)}
           </select>
-          <label className={`inline-toggle switch-field ${newUser.role !== USER_ROLES.CAM ? "disabled" : ""}`}>
+          <label className="inline-toggle switch-field">
             <Switch
               id="new-user-cam-profile"
               type="button"
-              checked={newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile)}
-              disabled={newUser.role !== USER_ROLES.CAM}
+              checked={Boolean(newUser.hasCamProfile)}
               onCheckedChange={(checked) => setNewUser((v) => ({ ...v, hasCamProfile: checked }))}
             />
             <span>CAM profile</span>
-            <strong className={newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile) ? "positive" : "muted"}>
-              {newUser.role === USER_ROLES.CAM && Boolean(newUser.hasCamProfile) ? "On" : "Off"}
+            <strong className={Boolean(newUser.hasCamProfile) ? "positive" : "muted"}>
+              {Boolean(newUser.hasCamProfile) ? "On" : "Off"}
             </strong>
           </label>
           <button className="secondary-button" disabled={actionBusy}>
@@ -3254,6 +3247,7 @@ function ManagerOverview({
   const [newCamName, setNewCamName] = useState("");
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
+  const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
   const [batchImportResult, setBatchImportResult] = useState(null);
@@ -3522,10 +3516,11 @@ function ManagerOverview({
         </div>
         <div className="manager-sidebar-main">
           <button
-            className={!showUserPanel && !showAuditPanel ? "client-link active" : "client-link"}
+            className={!showUserPanel && !showAuditPanel && !showProfilePanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
+              setShowProfilePanel(false);
               closeMobileSidebar();
             }}
           >
@@ -3601,6 +3596,7 @@ function ManagerOverview({
             onClick={() => {
               setShowUserPanel(true);
               setShowAuditPanel(false);
+              setShowProfilePanel(false);
               closeMobileSidebar();
             }}
           >
@@ -3612,11 +3608,24 @@ function ManagerOverview({
             onClick={() => {
               setShowAuditPanel(true);
               setShowUserPanel(false);
+              setShowProfilePanel(false);
               closeMobileSidebar();
             }}
           >
             <History size={16} />
             <span>Audit Logs</span>
+          </button>
+          <button
+            className={showProfilePanel ? "client-link active" : "client-link"}
+            onClick={() => {
+              setShowProfilePanel(true);
+              setShowUserPanel(false);
+              setShowAuditPanel(false);
+              closeMobileSidebar();
+            }}
+          >
+            <UserRound size={16} />
+            <span>Profile</span>
           </button>
           <button className="client-link" onClick={() => {
             closeMobileSidebar();
@@ -3638,6 +3647,20 @@ function ManagerOverview({
           />
         ) : showAuditPanel ? (
           <AuditLogsPanel />
+        ) : showProfilePanel ? (
+          <div className="page-stack">
+            <div className="page-header manager-subpage-header">
+              <div>
+                <span className="eyebrow">Account</span>
+                <h1>Profile</h1>
+                <div className="occ-status-row">
+                  <Shield size={14} />
+                  <span>Review your account details and update your password.</span>
+                </div>
+              </div>
+            </div>
+            <ProfilePanel session={session} />
+          </div>
         ) : (
           <>
         <div className="page-header">
@@ -3666,13 +3689,6 @@ function ManagerOverview({
             </div>
           </div>
           <div className="header-actions operations-primary-actions">
-            <button
-              className="primary-button workspace-open-button"
-              onClick={() => onOpenCam(cams[0]?.id || "am-pedro")}
-            >
-              <BarChart3 size={16} /> Open {cams[0]?.name || "Pedro"}'s
-              Workspace
-            </button>
             <button
               className={showNewClient ? "secondary-button" : "ghost-button"}
               onClick={() => setShowNewClient((v) => !v)}
@@ -10180,6 +10196,17 @@ function CredentialsTab({
             </select>
           </label>
           <label>
+            Subscription price
+            <select
+              value={profile.subscriptionPrice || "Undetermined"}
+              onChange={(e) => updateProfile({ subscriptionPrice: e.target.value })}
+            >
+              {SUBSCRIPTION_PRICES.map((price) => (
+                <option value={price} key={price}>{price}</option>
+              ))}
+            </select>
+          </label>
+          <label>
             Preferred channel
             <select
               value={profile.preferredChannel || ""}
@@ -10891,7 +10918,7 @@ export default function App() {
     let cancelled = false;
     loadSupabaseCrmState({
       preferredCamProfileId:
-        session?.camProfileId || state.accountManager?.id || "am-pedro",
+        session?.camProfileId || state.accountManager?.id || state.camProfiles?.[0]?.id || null,
     })
       .then((remoteState) => {
         if (cancelled) return;
@@ -10926,7 +10953,8 @@ export default function App() {
         preferredCamProfileId ||
         session?.camProfileId ||
         state.accountManager?.id ||
-        "am-pedro",
+        state.camProfiles?.[0]?.id ||
+        null,
     });
     const nextState = selectedClientId
       ? selectClient(remoteState, selectedClientId)
@@ -11108,7 +11136,8 @@ export default function App() {
     }
   }
 
-  function openCamWorkspace(camId = "am-pedro", clientId = null) {
+  function openCamWorkspace(camId = currentCamProfile?.id, clientId = null) {
+    if (!camId) return;
     setState((current) => {
       const next = selectCam(current, camId);
       return clientId ? { ...next, selectedClientId: clientId } : next;

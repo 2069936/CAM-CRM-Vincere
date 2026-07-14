@@ -23,7 +23,7 @@ export default function ProfilePanel({ session }) {
     };
   }, []);
 
-  const name = session?.displayName || session?.username || "—";
+  const name = session?.displayName || session?.username || "-";
 
   return (
     <div className="profile-panel">
@@ -35,15 +35,15 @@ export default function ProfilePanel({ session }) {
         </div>
         <div>
           <dt>Username</dt>
-          <dd>{session?.username || "—"}</dd>
+          <dd>{session?.username || "-"}</dd>
         </div>
         <div>
           <dt>Email</dt>
-          <dd>{email || "—"}</dd>
+          <dd>{email || "-"}</dd>
         </div>
         <div>
           <dt>Role</dt>
-          <dd>{session?.role || "—"}</dd>
+          <dd>{session?.role || "-"}</dd>
         </div>
       </dl>
       <div className="profile-password">
