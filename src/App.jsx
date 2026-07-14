@@ -2338,6 +2338,7 @@ function DataToolsPanel({
   const [message, setMessage] = useState("");
   const [importRows, setImportRows] = useState([]);
   const [importError, setImportError] = useState("");
+  const [activeImportMode, setActiveImportMode] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [isFetchingIntake, setIsFetchingIntake] = useState(false);
   const [logImportResult, setLogImportResult] = useState(null);
@@ -2604,6 +2605,7 @@ function DataToolsPanel({
   function parseClientCsv(file, mode = "client_directory") {
     setImportRows([]);
     setImportError("");
+    setActiveImportMode(mode);
     if (!file) return;
     Papa.parse(file, {
       header: true,
@@ -2625,6 +2627,7 @@ function DataToolsPanel({
     setIsFetchingIntake(true);
     setImportRows([]);
     setImportError("");
+    setActiveImportMode("intake");
     setStatus("loading");
     setMessage("Fetching Google Sheet intake data...");
     try {
@@ -2686,6 +2689,7 @@ function DataToolsPanel({
         imported += 1;
       }
       setImportRows([]);
+      setActiveImportMode("");
       setStatus("ready");
       setMessage(`Imported ${imported} client${imported !== 1 ? "s" : ""} to Supabase.`);
       auditSilently({
@@ -2717,6 +2721,70 @@ function DataToolsPanel({
   const newRows = previewRows.filter((row) => !row.duplicateReason);
   const duplicateRows = previewRows.filter((row) => row.duplicateReason);
 
+  function renderImportPreview(mode) {
+    if (activeImportMode !== mode) return null;
+    return (
+      <>
+        {importRows.length ? (
+          <div className="muted" style={{ fontSize: 12 }}>
+            {newRows.length} new · {duplicateRows.length} duplicate skipped
+          </div>
+        ) : null}
+        {previewRows.length ? (
+          <div className="intake-preview">
+            <div className="intake-preview-head">
+              <strong>Preview</strong>
+              <span className="muted">
+                {newRows.length} ready · {duplicateRows.length} duplicate
+              </span>
+            </div>
+            <div className="table-wrap">
+              <table className="ops-table compact-table">
+                <thead>
+                  <tr>
+                    <th>Client</th>
+                    <th>Email</th>
+                    <th>Stage</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.slice(0, 8).map((row, index) => (
+                    <tr key={`${row.name}-${row.email}-${index}`}>
+                      <td>
+                        <strong>{row.name}</strong>
+                      </td>
+                      <td className="muted">{row.email || "-"}</td>
+                      <td>{row.stage || "Onboarding"}</td>
+                      <td>
+                        {row.duplicateReason ? (
+                          <span className="badge warning">
+                            {row.duplicateReason}
+                          </span>
+                        ) : (
+                          <span className="badge success">Ready</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {previewRows.length > 8 ? (
+              <small className="muted">
+                Showing first 8 rows of {previewRows.length}.
+              </small>
+            ) : null}
+          </div>
+        ) : null}
+        {importError ? <div className="notice error">{importError}</div> : null}
+        <button className="primary-button" onClick={importClients} disabled={!newRows.length || isImporting}>
+          <Upload size={14} /> {isImporting ? "Importing..." : `Import ${newRows.length || ""}`.trim()}
+        </button>
+      </>
+    );
+  }
+
   return (
     <section className="panel data-tools-panel">
       <div className="panel-heading">
@@ -2740,90 +2808,6 @@ function DataToolsPanel({
           </p>
           <button className="ghost-button" onClick={exportClientCsv}>
             <Download size={14} /> Export Clients CSV
-          </button>
-        </div>
-        <div className="data-tool-card">
-          <strong>Import clients CSV</strong>
-          <p className="muted">
-            Columns: name, cam, stage, email, additionalEmails, phone, timezone, country, startDate, preferredChannel, language, productKey, messenger, notes.
-          </p>
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(event) => parseClientCsv(event.target.files?.[0], "client_directory")}
-          />
-          <div className="data-tool-divider" />
-          <strong>Import intake CSV</strong>
-          <p className="muted">
-            Pull from the connected Google Sheet, or upload the exported CSV. New rows become unassigned onboarding clients.
-          </p>
-          <button
-            className="secondary-button"
-            onClick={fetchIntakeSheet}
-            disabled={isFetchingIntake}
-          >
-            <RefreshCw size={14} /> {isFetchingIntake ? "Fetching..." : "Fetch Google Sheet"}
-          </button>
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(event) => parseClientCsv(event.target.files?.[0], "intake")}
-          />
-          {importRows.length ? (
-            <div className="muted" style={{ fontSize: 12 }}>
-              {newRows.length} new · {duplicateRows.length} duplicate skipped
-            </div>
-          ) : null}
-          {previewRows.length ? (
-            <div className="intake-preview">
-              <div className="intake-preview-head">
-                <strong>Preview</strong>
-                <span className="muted">
-                  {newRows.length} ready · {duplicateRows.length} duplicate
-                </span>
-              </div>
-              <div className="table-wrap">
-                <table className="ops-table compact-table">
-                  <thead>
-                    <tr>
-                      <th>Client</th>
-                      <th>Email</th>
-                      <th>Stage</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewRows.slice(0, 8).map((row, index) => (
-                      <tr key={`${row.name}-${row.email}-${index}`}>
-                        <td>
-                          <strong>{row.name}</strong>
-                        </td>
-                        <td className="muted">{row.email || "-"}</td>
-                        <td>{row.stage || "Onboarding"}</td>
-                        <td>
-                          {row.duplicateReason ? (
-                            <span className="badge warning">
-                              {row.duplicateReason}
-                            </span>
-                          ) : (
-                            <span className="badge success">Ready</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {previewRows.length > 8 ? (
-                <small className="muted">
-                  Showing first 8 rows of {previewRows.length}.
-                </small>
-              ) : null}
-            </div>
-          ) : null}
-          {importError ? <div className="notice error">{importError}</div> : null}
-          <button className="primary-button" onClick={importClients} disabled={!newRows.length || isImporting}>
-            <Upload size={14} /> {isImporting ? "Importing..." : `Import ${newRows.length || ""}`.trim()}
           </button>
         </div>
         <div className="data-tool-card">
@@ -2893,6 +2877,37 @@ function DataToolsPanel({
               </button>
             </div>
           ) : null}
+        </div>
+        <div className="data-tool-card">
+          <strong>Import clients CSV</strong>
+          <p className="muted">
+            Columns: name, cam, stage, email, additionalEmails, phone, timezone, country, startDate, preferredChannel, language, productKey, messenger, notes.
+          </p>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => parseClientCsv(event.target.files?.[0], "client_directory")}
+          />
+          {renderImportPreview("client_directory")}
+        </div>
+        <div className="data-tool-card">
+          <strong>Import intake CSV</strong>
+          <p className="muted">
+            Pull from the connected Google Sheet, or upload the exported CSV. New rows become unassigned onboarding clients.
+          </p>
+          <button
+            className="secondary-button"
+            onClick={fetchIntakeSheet}
+            disabled={isFetchingIntake}
+          >
+            <RefreshCw size={14} /> {isFetchingIntake ? "Fetching..." : "Fetch Google Sheet"}
+          </button>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => parseClientCsv(event.target.files?.[0], "intake")}
+          />
+          {renderImportPreview("intake")}
         </div>
       </div>
       {message ? (
