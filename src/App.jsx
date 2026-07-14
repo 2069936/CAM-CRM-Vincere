@@ -2826,7 +2826,7 @@ function DataToolsPanel({
             <Upload size={14} /> {isImporting ? "Importing..." : `Import ${newRows.length || ""}`.trim()}
           </button>
         </div>
-        <div className="data-tool-card data-tool-card-wide">
+        <div className="data-tool-card">
           <strong>NinjaTrader log backfill</strong>
           <p className="muted">
             Upload dated log or trace text files to summarize historical fills by account. Matched accounts can be saved to client activity while a dedicated history table is still pending.

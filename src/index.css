@@ -2353,7 +2353,7 @@ textarea {
 .data-tools-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .data-tool-card {
@@ -2369,10 +2369,6 @@ textarea {
   padding: 14px;
 }
 
-.data-tool-card-wide {
-  grid-column: 1 / -1;
-}
-
 .data-tool-card input[type="file"] {
   border: 1px dashed rgba(255, 255, 255, 0.1);
   border-radius: 8px;
@@ -2386,6 +2382,18 @@ textarea {
     border-color 0.14s ease,
     box-shadow 0.14s ease,
     background 0.14s ease;
+}
+
+@media (max-width: 1180px) {
+  .data-tools-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .data-tools-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .data-tool-card input[type="file"]:hover {
   border-color: rgba(var(--info-rgb), 0.5);
