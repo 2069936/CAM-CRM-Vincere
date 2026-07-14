@@ -1,3 +1,5 @@
+import { buildClientSegments } from './clientSegments';
+
 function ciLookup(registry, accountName) {
   if (!registry || !accountName) return {};
   if (registry[accountName]) return registry[accountName];
@@ -189,6 +191,12 @@ export function buildDailyReportSummary(client, dailyImport) {
     generatedAt: new Date().toISOString(),
     grouped,
     totals,
+    // Per-account-type subtotals so the report can show balance + realized PnL
+    // split by pool (Eval-standard / Funded / Cash / Bullet Bot) instead of one
+    // combined total. Eval-standard is kept separate from Bullet Bot because a
+    // bullet-bot eval is tracked by pass/fail, not by balance. Cash PnL is net
+    // of fees (the NinjaTrader "Realized PnL" column already subtracts them).
+    segments: buildClientSegments(client, dailyImport),
     priorDailyPnl,
     flags: dailyImport?.flags || [],
     openFlags,
