@@ -90,6 +90,8 @@ strategy analyzer (0–10), lifecycle, action queue, CAM leaderboard, subscripti
 | `buildBulletBotStats(clients)` | `domain/bulletBotStats.js` | BB performance over time |
 | eval-target flag | `domain/reconcile.js` | already active (fires on Evaluation accounts at target) |
 | `buildAlgoComboPerformance(allClients)` | `components/StackPlaybook.jsx` | team-wide algo-combo pool (already exists) |
+| `buildClientSegments(client, dailyImport)` | `domain/clientSegments.js` | balance + PnL split by account type (never a total) |
+| `buildClientPropFirms(client, dailyImport)` | `domain/clientSegments.js` | the client's prop firms (connections), grouped |
 
 ---
 
@@ -117,3 +119,46 @@ other CAMs' client records or flags):
 Requested by Pedro: as a CAM he wants to benchmark his weekly PnL and his per-algo
 performance against the team. Aggregates only — this is a sync/data-loading fix,
 not new UI or a redesign.
+
+---
+
+## 9. Per-account balance in the UI + balance/PnL split by account type in the report
+
+Three related asks from Pedro. **The data already exists** on every snapshot
+(`accountBalance` from cash value, `grossRealizedPnl`, `trailingMaxDrawdown`) and
+in the account registry (`accountType`, `connection`). This is display + grouping,
+no new data. Two tested helpers do the grouping for you — see the table above.
+
+### 9a. Show the balance per account (all accounts) in the client view
+Today the per-account balance is captured and used internally (payout eligibility,
+funded tracking) but never shown next to each account. In the client's account
+list, show for **every** account: **balance** (`snapshot.accountBalance`) and, when
+present, the **trailing buffer** (`snapshot.trailingMaxDrawdown`). Caveat Pedro
+hit live: his NinjaTrader grid export was missing the *Trailing max drawdown*
+column, so trailing came in as 0 — show a dash, not `$0`, when the column is absent.
+
+### 9b. Report: balance AND PnL split by account type — NOT a combined total
+In the report the balance and PnL must be shown **separated by account type**, not
+summed into one number. Pedro cares about three pools specifically:
+- **Evaluations running normal algorithms** (`Evaluation - Standard`)
+- **Funded accounts** (`Funded`)
+- **Cash accounts** (`Cash`)
+
+Use `buildClientSegments(client, dailyImport)` → `{ funded, cash, evalStandard,
+bulletBot, other }`, each `{ balance, dailyPnl, count, accounts[] }`. Render one
+balance figure and one PnL figure **per segment** (Eval-standard / Funded / Cash).
+Do not add them together — a Funded $52k, a Cash $10k and an Eval $51k are three
+separate pools, not $113k. (Bullet-bot evals are tracked by pass/fail, not balance
+— you can omit their balance from the report; `buildBulletBotStats` covers them.)
+
+### 9c. Client overview: click "accounts tracked" → reveal the client's prop firms
+In a client's overview the CAM sees a count of accounts tracked but not *what* they
+are. Make that count expandable: on click, list the **prop firms** the client runs
+on (grouped, with the account count per firm) so the CAM can see at a glance which
+firms to turn on. Use `buildClientPropFirms(client, dailyImport)` → sorted array of
+`{ firm, count, accounts[] }` (firm = the account `connection`).
+
+Requested by Pedro verbatim: balance visible for all accounts in the UI; in the
+report balance + PnL "separados" by eval / funded / cash, "no es un balance total";
+and clicking accounts-tracked should "dejar saber qué prop firms tiene, para
+prenderlas más fácil".
