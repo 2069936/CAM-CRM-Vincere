@@ -95,6 +95,7 @@ import { suggestAccountDefaults } from "./domain/accountTargets";
 import {
   parseNinjaTraderLogFile,
   summarizeLogByAccount,
+  summarizeLogByFamily,
 } from "./domain/ninjaTraderLog";
 import {
   buildClientMessageReport,
@@ -143,6 +144,8 @@ import {
   loadSupabaseAuditLogs,
   loadStrategyClassifications,
   upsertStrategyClassification,
+  loadLogAlgoHistory,
+  saveLogAlgoHistory,
   replaceSupabaseOperationalFlags,
   replaceSupabasePriceChecks,
   softDeleteSupabaseClient,
@@ -2482,7 +2485,11 @@ function DataToolsPanel({
           text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short), realized ${formatCurrency(row.realizedPnl || 0)} over ${row.roundTrips || 0} round trips for ${row.date || "unknown date"}.${row.unknownInstruments?.length ? ` Unpriced: ${row.unknownInstruments.join(", ")}.` : ""}`,
         });
       }
-      setMessage(`Saved ${matchedRows.length} NinjaTrader log summar${matchedRows.length === 1 ? "y" : "ies"} to client activity.`);
+      // Team-wide algo history from ALL parsed logs, matched or not — accounts
+      // that no longer exist still count toward bullet-bot / algo history.
+      const familyRows = (logImportResult?.files || []).flatMap((file) => summarizeLogByFamily(file.parsed));
+      if (familyRows.length) await saveLogAlgoHistory(familyRows);
+      setMessage(`Saved ${matchedRows.length} log summar${matchedRows.length === 1 ? "y" : "ies"} + ${familyRows.length} algo-history row${familyRows.length === 1 ? "" : "s"}.`);
       setStatus("ready");
     } catch (error) {
       console.error("[CRM] Failed to save NinjaTrader log activity:", error);
@@ -10996,6 +11003,17 @@ export default function App() {
     ]);
   }
 
+  // Team-wide algo history derived from NinjaTrader logs (incl. dead accounts).
+  const [logAlgoHistory, setLogAlgoHistory] = useState([]);
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    loadLogAlgoHistory()
+      .then((rows) => { if (!cancelled) setLogAlgoHistory(rows); })
+      .catch((error) => console.error("[CRM] Failed to load log algo history:", error));
+    return () => { cancelled = true; };
+  }, []);
+
   async function reloadSupabaseState(preferredCamProfileId = null, selectedClientId = null) {
     if (!isSupabaseConfigured) return null;
     const remoteState = await loadSupabaseCrmState({
@@ -13165,6 +13183,7 @@ export default function App() {
                         allClients={state.clients || []}
                         classifications={strategyClassifications}
                         onClassify={handleClassifyStrategy}
+                        logAlgoHistory={logAlgoHistory}
                       />
                     ) : null}
                     {["Review", "Evaluations", "Funded", "Cash"].includes(

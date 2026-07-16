@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
+import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
 import { buildBulletBotStats } from '../domain/bulletBotStats';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
@@ -251,7 +252,7 @@ function IncomeProjection({ currentFunded }) {
   );
 }
 
-export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], classifications = [], onClassify }) {
+export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], classifications = [], onClassify, logAlgoHistory = [] }) {
   const registryCi = mergeRegCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
 
@@ -269,6 +270,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [classOpen, setClassOpen] = useState(false);
   const [bbOpen, setBbOpen] = useState(false);
   const [heatOpen, setHeatOpen] = useState(false);
+  const [logHistOpen, setLogHistOpen] = useState(false);
   const [classDraft, setClassDraft] = useState({});
   const [windowDays, setWindowDays] = useState(30);
 
@@ -304,6 +306,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const riskCurves = buildRiskScalingCurve(comboPerf);
   const bbStats = buildBulletBotStats(teamClients);
   const comboFirm = buildComboByFirm(teamClients, comboFromStrategies);
+  const logAlgoAgg = aggregateLogFamilyHistory(logAlgoHistory);
   const sigGroups = groupStrategiesBySignature(teamClients);
   const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
   const mismatches = detectVersionMismatches(teamClients, classifications);
@@ -573,6 +576,50 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               </div>
             );
           })() : null}
+        </section>
+      ) : null}
+
+      {/* ── Algo history from logs (team-wide, dead accounts incl.) ── */}
+      {logAlgoAgg.length ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setLogHistOpen((v) => !v)}>
+            <ChevronDown className={logHistOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Algo history (from logs)</h3>
+            <span className="muted">Team-wide realized PnL by algo + direction, incl. accounts no longer active</span>
+          </button>
+          {logHistOpen ? (
+            <div className="table-wrap">
+              <table className="ops-table">
+                <thead>
+                  <tr>
+                    <th>Algo</th>
+                    <th>Realized</th>
+                    <th>Long</th>
+                    <th>Short</th>
+                    <th>Accounts</th>
+                    <th>Days</th>
+                    <th>Round trips</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logAlgoAgg.map((row) => (
+                    <tr key={row.family}>
+                      <td><strong>{row.family}</strong></td>
+                      <td className={row.totalPnl >= 0 ? 'positive' : 'negative'}>{row.totalPnl >= 0 ? '+' : ''}{fmt(row.totalPnl)}</td>
+                      <td className={row.byDirection.Long >= 0 ? 'positive' : 'negative'}>{fmt(row.byDirection.Long)}</td>
+                      <td className={row.byDirection.Short >= 0 ? 'positive' : 'negative'}>{fmt(row.byDirection.Short)}</td>
+                      <td className="muted">{row.accounts}</td>
+                      <td className="muted">{row.days}</td>
+                      <td className="muted">{row.roundTrips}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                Derived from NinjaTrader logs (executions x contract value) — realized PnL only, no balances. Includes accounts that no longer exist; no client assignment needed. Upload logs in Data Tools to grow it.
+              </p>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

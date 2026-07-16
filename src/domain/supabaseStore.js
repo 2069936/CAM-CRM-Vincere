@@ -1694,3 +1694,39 @@ export async function deleteStrategyClassification(matchKey) {
     .eq('match_key', matchKey);
   if (error) throw new Error(error.message);
 }
+
+function logAlgoHistoryFromRow(row = {}) {
+  return {
+    date: row.log_date || '',
+    accountName: row.account_name || '',
+    family: row.family || 'Unknown',
+    direction: row.direction || 'Mixed',
+    realizedPnl: Number(row.realized_pnl || 0),
+    roundTrips: Number(row.round_trips || 0),
+  };
+}
+
+export async function loadLogAlgoHistory() {
+  if (!isSupabaseConfigured || !supabase) return [];
+  const { data, error } = await supabase.from('log_algo_history').select('*');
+  if (error) throw new Error(error.message);
+  return (data || []).map(logAlgoHistoryFromRow);
+}
+
+export async function saveLogAlgoHistory(rows = []) {
+  if (!isSupabaseConfigured || !supabase || !rows.length) return [];
+  const payload = rows.map((r) => ({
+    log_date: r.date || null,
+    account_name: r.accountName || '',
+    family: r.family || 'Unknown',
+    direction: r.direction || 'Mixed',
+    realized_pnl: r.realizedPnl || 0,
+    round_trips: r.roundTrips || 0,
+  }));
+  const { data, error } = await supabase
+    .from('log_algo_history')
+    .upsert(payload, { onConflict: 'log_date,account_name,family' })
+    .select();
+  if (error) throw new Error(error.message);
+  return (data || []).map(logAlgoHistoryFromRow);
+}
