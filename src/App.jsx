@@ -10433,9 +10433,9 @@ function CredentialsTab({
           <span className="badge muted">Acknowledgement</span>
         </div>
         <p className="muted">
-          Client acknowledgement form. Download the blank template, have the
-          client fill it, and (soon) upload the signed copy here to keep it on
-          file.
+          Vincere Platform Operations Support Addendum - the client
+          acknowledgement document. Download the blank template, have the client
+          sign it, and (soon) upload the signed copy here to keep it on file.
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <a
