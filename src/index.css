@@ -6306,3 +6306,7 @@ tr:nth-child(2) .rank-badge {
 @media (max-width: 720px) { .ahc-charts { grid-template-columns: 1fr; } }
 
 .window-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+
+/* Stack Playbook - risk scaling */
+.risk-scaling-list { display: flex; flex-direction: column; gap: 18px; }
+.risk-curve-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }

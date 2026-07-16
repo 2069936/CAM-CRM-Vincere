@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES } from '../domain/reconcile';
 import { buildAccountEquitySeries } from '../domain/stackAnalytics';
+import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
@@ -241,6 +242,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [localDll, setLocalDll] = useState({});
   const [changeNotes, setChangeNotes] = useState({});
   const [historyOpen, setHistoryOpen] = useState(true);
+  const [riskOpen, setRiskOpen] = useState(false);
   const [windowDays, setWindowDays] = useState(30);
 
   // Funded + evaluation accounts get a full-history chart (cash accounts are
@@ -272,6 +274,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const teamClients = allClients.length ? allClients : (client ? [client] : []);
   const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
   const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
+  const riskCurves = buildRiskScalingCurve(comboPerf);
 
   const hasSuggestions = clientInsights.some((i) => i.suggestion);
   const totalTeamAccounts = comboPerf.reduce((s, c) => s + c.accounts, 0);
@@ -290,19 +293,81 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           </button>
           {historyOpen ? (
             <div className="ahc-list">
-              {chartAccounts.map((account) => (
-                <div className="ahc-account" key={account.accountName}>
-                  <div className="ahc-account-head">
-                    <strong>{account.alias || account.accountName}</strong>
-                    <small className="muted">{account.accountType}{account.connection ? ` · ${account.connection}` : ''}</small>
+              {chartAccounts.map((account) => {
+                const series = buildAccountEquitySeries(client, account.accountName);
+                const ddLimit = Number(account.maxDrawdownLimit || 0);
+                const snap = snapshots.find((s) => s.accountName?.toLowerCase() === account.accountName.toLowerCase());
+                const mult = parseComboRisk(comboFromStrategies(snap?.strategies || [])).multiplier;
+                const last = series[series.length - 1];
+                const buffer = last ? (ddLimit > 0 ? ddLimit - Math.abs(last.trailing) : last.trailing) : 0;
+                const safe = estimateMaxSafeMultiplier(series, buffer, mult);
+                return (
+                  <div className="ahc-account" key={account.accountName}>
+                    <div className="ahc-account-head">
+                      <strong>{account.alias || account.accountName}</strong>
+                      <small className="muted">{account.accountType}{account.connection ? ` · ${account.connection}` : ''}</small>
+                      {safe ? (
+                        <small className={safe.safeLevel < mult ? 'negative' : 'muted'}>
+                          buffer supports ~{safe.safeLevel}x{mult ? ` (running ${mult}x)` : ''}
+                        </small>
+                      ) : null}
+                    </div>
+                    <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} />
                   </div>
-                  <AccountHistoryChart
-                    series={buildAccountEquitySeries(client, account.accountName)}
-                    ddLimit={Number(account.maxDrawdownLimit || 0)}
-                    alias={account.alias || account.accountName}
-                  />
+                );
+              })}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Risk scaling (combo × contract level) ──────────── */}
+      {riskCurves.some((c) => c.hasScaling) ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setRiskOpen((v) => !v)}>
+            <ChevronDown className={riskOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Risk scaling</h3>
+            <span className="muted">How PnL scales with contract level per algo — the level with the best per-contract return wins</span>
+          </button>
+          {riskOpen ? (
+            <div className="risk-scaling-list">
+              {riskCurves.filter((c) => c.hasScaling).map((curve) => (
+                <div className="risk-curve" key={curve.base}>
+                  <div className="risk-curve-head">
+                    <strong>{curve.base}</strong>
+                    {curve.bestEfficiency ? (
+                      <small className="muted">Best per-contract-unit: <b>{curve.bestEfficiency.combo}</b> ({fmt(curve.bestEfficiency.riskNormalizedPnl)}/unit)</small>
+                    ) : null}
+                  </div>
+                  <div className="table-wrap">
+                    <table className="ops-table">
+                      <thead>
+                        <tr>
+                          <th>Level</th>
+                          <th>Avg P&amp;L / day</th>
+                          <th>Per contract-unit</th>
+                          <th>Win rate</th>
+                          <th>Accounts</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {curve.levels.map((l) => (
+                          <tr key={l.combo} className={l === curve.bestEfficiency ? 'row-highlight' : ''}>
+                            <td><strong>{l.riskLevel}x</strong> <span className="muted">{l.combo}</span></td>
+                            <td className={l.avgPnl >= 0 ? 'positive' : 'negative'}>{l.avgPnl >= 0 ? '+' : ''}{fmt(l.avgPnl)}</td>
+                            <td>{fmt(l.riskNormalizedPnl)}</td>
+                            <td>{l.winRate}%</td>
+                            <td>{l.accounts}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               ))}
+              <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                Risk level ≈ contract multiplier (each level roughly doubles contracts). "Per contract-unit" normalizes PnL by the multiplier so levels compare fairly — a higher raw PnL at 2x is only better if it beats 1x per unit.
+              </p>
             </div>
           ) : null}
         </section>
