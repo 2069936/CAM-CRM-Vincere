@@ -141,6 +141,8 @@ import {
   loadSupabaseDailySopTemplate,
   loadSupabaseReports,
   loadSupabaseAuditLogs,
+  loadStrategyClassifications,
+  upsertStrategyClassification,
   replaceSupabaseOperationalFlags,
   replaceSupabasePriceChecks,
   softDeleteSupabaseClient,
@@ -10969,6 +10971,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Manual strategy classifications (family+signature -> version + risk).
+  const [strategyClassifications, setStrategyClassifications] = useState([]);
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    loadStrategyClassifications()
+      .then((rows) => { if (!cancelled) setStrategyClassifications(rows); })
+      .catch((error) => console.error("[CRM] Failed to load strategy classifications:", error));
+    return () => { cancelled = true; };
+  }, []);
+
+  async function handleClassifyStrategy(classification) {
+    const saved = await upsertStrategyClassification(classification);
+    setStrategyClassifications((prev) => [
+      ...prev.filter((c) => c.key !== classification.key),
+      saved || classification,
+    ]);
+  }
+
   async function reloadSupabaseState(preferredCamProfileId = null, selectedClientId = null) {
     if (!isSupabaseConfigured) return null;
     const remoteState = await loadSupabaseCrmState({
@@ -13136,6 +13157,8 @@ export default function App() {
                         dailyImport={dailyImport}
                         onUpdateAccount={handleAccountUpdate}
                         allClients={state.clients || []}
+                        classifications={strategyClassifications}
+                        onClassify={handleClassifyStrategy}
                       />
                     ) : null}
                     {["Review", "Evaluations", "Funded", "Cash"].includes(

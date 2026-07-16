@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
-import { ACCOUNT_TYPES, ACCOUNT_STATUSES } from '../domain/reconcile';
+import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
+import { groupStrategiesBySignature, detectVersionMismatches } from '../domain/strategyClassification';
 import { buildAccountEquitySeries } from '../domain/stackAnalytics';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
@@ -228,7 +229,7 @@ function IncomeProjection({ currentFunded }) {
   );
 }
 
-export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [] }) {
+export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], classifications = [], onClassify }) {
   const registryCi = mergeRegCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
 
@@ -243,6 +244,8 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [changeNotes, setChangeNotes] = useState({});
   const [historyOpen, setHistoryOpen] = useState(true);
   const [riskOpen, setRiskOpen] = useState(false);
+  const [classOpen, setClassOpen] = useState(false);
+  const [classDraft, setClassDraft] = useState({});
   const [windowDays, setWindowDays] = useState(30);
 
   // Funded + evaluation accounts get a full-history chart (cash accounts are
@@ -275,6 +278,22 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
   const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
   const riskCurves = buildRiskScalingCurve(comboPerf);
+  const sigGroups = groupStrategiesBySignature(teamClients);
+  const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
+  const mismatches = detectVersionMismatches(teamClients, classifications);
+
+  function saveClassification(group) {
+    if (!onClassify) return;
+    const existing = classByKey[group.key] || {};
+    const draft = classDraft[group.key] || {};
+    onClassify({
+      key: group.key,
+      family: group.family,
+      signature: group.signature,
+      version: draft.version ?? existing.version ?? '',
+      riskLevel: draft.riskLevel ?? existing.riskLevel ?? '',
+    });
+  }
 
   const hasSuggestions = clientInsights.some((i) => i.suggestion);
   const totalTeamAccounts = comboPerf.reduce((s, c) => s + c.accounts, 0);
@@ -367,6 +386,84 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               ))}
               <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
                 Risk level ≈ contract multiplier (each level roughly doubles contracts). "Per contract-unit" normalizes PnL by the multiplier so levels compare fairly — a higher raw PnL at 2x is only better if it beats 1x per unit.
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Strategy classification ────────────────────────── */}
+      {sigGroups.length ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setClassOpen((v) => !v)}>
+            <ChevronDown className={classOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Strategy classification</h3>
+            <span className="muted">Assign a version + risk to each parameter signature</span>
+            <span className="count">{sigGroups.length}</span>
+          </button>
+          {classOpen ? (
+            <div className="strat-class-list">
+              {mismatches.length ? (
+                <div className="notice warning">
+                  <AlertTriangle size={14} /> Version drift: {mismatches.map((m) => `${m.family} (${m.variantCount})`).join(', ')} — more than one parameter signature running for the same algo.
+                </div>
+              ) : null}
+              <div className="table-wrap">
+                <table className="ops-table">
+                  <thead>
+                    <tr>
+                      <th>Algo</th>
+                      <th>Instruments</th>
+                      <th>Usage</th>
+                      <th>Name ver.</th>
+                      <th>Version</th>
+                      <th>Risk</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sigGroups.map((g) => {
+                      const cls = classByKey[g.key] || {};
+                      const draft = classDraft[g.key] || {};
+                      const versionVal = draft.version ?? cls.version ?? '';
+                      const riskVal = draft.riskLevel ?? cls.riskLevel ?? '';
+                      const dirty =
+                        (draft.version !== undefined && draft.version !== (cls.version || '')) ||
+                        (draft.riskLevel !== undefined && draft.riskLevel !== (cls.riskLevel || ''));
+                      return (
+                        <tr key={g.key} className={cls.version ? 'row-highlight' : ''}>
+                          <td><strong>{g.family}</strong></td>
+                          <td className="muted">{g.instruments.join(', ') || '-'}</td>
+                          <td className="muted">{g.accountCount} acct · {g.clientCount} cl</td>
+                          <td className="muted">{g.nameVersions.join(', ') || '-'}</td>
+                          <td>
+                            <input
+                              type="text"
+                              placeholder="e.g. v1"
+                              value={versionVal}
+                              style={{ width: 72 }}
+                              onChange={(e) => setClassDraft((d) => ({ ...d, [g.key]: { ...d[g.key], version: e.target.value } }))}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              value={riskVal}
+                              onChange={(e) => setClassDraft((d) => ({ ...d, [g.key]: { ...d[g.key], riskLevel: e.target.value } }))}
+                            >
+                              {['', ...RISK_LEVELS].map((r) => <option key={r} value={r}>{r || '-'}</option>)}
+                            </select>
+                          </td>
+                          <td>
+                            <button className="ghost-button" disabled={!dirty || !onClassify} onClick={() => saveClassification(g)}>Save</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                Accounts running the same algo with the same parameters share a signature. Select the version you run — the biggest pools sort first. Risk is set per version and replaces the old inference.
               </p>
             </div>
           ) : null}

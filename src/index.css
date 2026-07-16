@@ -6310,3 +6310,7 @@ tr:nth-child(2) .rank-badge {
 /* Stack Playbook - risk scaling */
 .risk-scaling-list { display: flex; flex-direction: column; gap: 18px; }
 .risk-curve-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+
+/* Stack Playbook - strategy classification */
+.strat-class-list { display: flex; flex-direction: column; gap: 10px; }
+.strat-class-list input[type="text"], .strat-class-list select { font-size: 12px; padding: 3px 6px; }
