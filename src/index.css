@@ -6292,3 +6292,15 @@ tr:nth-child(2) .rank-badge {
     @apply font-sans;
   }
 }
+
+/* Stack Playbook - per-account history charts */
+.ahc-list { display: flex; flex-direction: column; gap: 18px; }
+.ahc-account { border-top: 1px solid var(--line); padding-top: 14px; }
+.ahc-account:first-child { border-top: none; padding-top: 0; }
+.ahc-account-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.account-history-chart { display: flex; flex-direction: column; gap: 10px; }
+.ahc-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.ahc-plot-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 3px; }
+.ahc-plot-head strong, .ahc-stats strong { font-variant-numeric: tabular-nums; }
+.ahc-stats { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; }
+@media (max-width: 720px) { .ahc-charts { grid-template-columns: 1fr; } }

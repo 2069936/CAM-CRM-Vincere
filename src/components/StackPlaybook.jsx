@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES } from '../domain/reconcile';
+import { buildAccountEquitySeries } from '../domain/stackAnalytics';
+import AccountHistoryChart from './AccountHistoryChart';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
@@ -210,6 +212,16 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [localStack, setLocalStack] = useState({});
   const [localDll, setLocalDll] = useState({});
   const [changeNotes, setChangeNotes] = useState({});
+  const [historyOpen, setHistoryOpen] = useState(true);
+
+  // Funded + evaluation accounts get a full-history chart (cash accounts are
+  // tracked by cash balance, not trajectory).
+  const chartAccounts = Object.values(registryCi).filter(
+    (a) =>
+      (a.accountType === ACCOUNT_TYPES.FUNDED || String(a.accountType || '').startsWith('Evaluation')) &&
+      a.status !== ACCOUNT_STATUSES.FAILED &&
+      a.status !== ACCOUNT_STATUSES.INACTIVE,
+  );
 
   function updateStack(accountName, value) {
     const prev = ciMeta(registryCi, accountName)?.algoStack || '';
@@ -237,6 +249,35 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
 
   return (
     <div className="stack-playbook">
+
+      {/* ── Account history ────────────────────────────────── */}
+      {chartAccounts.length ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setHistoryOpen((v) => !v)}>
+            <ChevronDown className={historyOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Account history</h3>
+            <span className="muted">Equity curve + drawdown buffer over every close</span>
+            <span className="count">{chartAccounts.length}</span>
+          </button>
+          {historyOpen ? (
+            <div className="ahc-list">
+              {chartAccounts.map((account) => (
+                <div className="ahc-account" key={account.accountName}>
+                  <div className="ahc-account-head">
+                    <strong>{account.alias || account.accountName}</strong>
+                    <small className="muted">{account.accountType}{account.connection ? ` · ${account.connection}` : ''}</small>
+                  </div>
+                  <AccountHistoryChart
+                    series={buildAccountEquitySeries(client, account.accountName)}
+                    ddLimit={Number(account.maxDrawdownLimit || 0)}
+                    alias={account.alias || account.accountName}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
