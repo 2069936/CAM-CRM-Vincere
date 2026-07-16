@@ -12809,7 +12809,7 @@ export default function App() {
               />
             </>
           ) : (
-            <main className="content">
+            <main className="content client-workspace">
               {!selectedClient ? (
                 <div className="onboarding-empty">
                   <div className="onboarding-hero">
@@ -12882,7 +12882,7 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="page-header">
+                  <div className="page-header client-workspace-header">
                     <div>
                       <span className="eyebrow">Client workspace</span>
                       <h1

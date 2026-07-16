@@ -690,6 +690,26 @@ textarea {
   min-width: 0;
 }
 
+/* Client workspace: make the content its own scroll container on desktop so the
+   client-name header can stick to the top while the content scrolls underneath.
+   Scoped to desktop; mobile keeps normal window scrolling. */
+@media (min-width: 981px) {
+  .content.client-workspace {
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .content.client-workspace .client-workspace-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--bg);
+    /* negative margins cover the .content 28px padding so the sticky bar spans
+       edge to edge; padding puts the content back in place. */
+    margin: -28px -28px 18px;
+    padding: 28px 28px 16px;
+  }
+}
+
 .content > .panel,
 .content > .notice,
 .content > .metric-grid,
