@@ -2476,6 +2476,8 @@ function DataToolsPanel({
           id: `nt-log-${row.date || "unknown"}-${row.accountName}-${Date.now()}`.replace(/[^a-zA-Z0-9_-]/g, "-"),
           type: "Import",
           accountName: row.matchedAccountName || row.accountName,
+          logDate: row.date || "",
+          logPnl: row.realizedPnl != null ? row.realizedPnl : null,
           createdAt: new Date().toISOString(),
           text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short), realized ${formatCurrency(row.realizedPnl || 0)} over ${row.roundTrips || 0} round trips for ${row.date || "unknown date"}.${row.unknownInstruments?.length ? ` Unpriced: ${row.unknownInstruments.join(", ")}.` : ""}`,
         });

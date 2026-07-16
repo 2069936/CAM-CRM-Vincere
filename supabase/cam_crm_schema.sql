@@ -222,6 +222,8 @@ create table if not exists public.activity_logs (
   trading_account_id uuid references public.trading_accounts(id) on delete set null,
   type text not null,
   text text not null,
+  log_date date,
+  log_pnl numeric,
   created_by_user_id uuid references public.app_users(id) on delete set null,
   created_at timestamptz default now()
 );

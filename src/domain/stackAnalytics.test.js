@@ -27,6 +27,23 @@ describe('buildAccountEquitySeries', () => {
     expect(buildAccountEquitySeries(client, 'a1')).toHaveLength(3);
     expect(buildAccountEquitySeries(client, 'nope')).toEqual([]);
   });
+
+  it('backfills days from log activity PnL when there is no CSV close (CSV wins on overlap)', () => {
+    const c = {
+      dailyImports: [di('2026-07-01', { accountName: 'A1', grossRealizedPnl: 100, accountBalance: 50100, trailingMaxDrawdown: -200 })],
+      activityLog: [
+        { accountName: 'A1', logDate: '2026-07-02', logPnl: 250 },
+        { accountName: 'A1', logDate: '2026-07-01', logPnl: 999 }, // same day as CSV -> ignored
+        { accountName: 'OTHER', logDate: '2026-07-03', logPnl: 5 },
+      ],
+    };
+    const series = buildAccountEquitySeries(c, 'A1');
+    expect(series.map((p) => p.date)).toEqual(['2026-07-01', '2026-07-02']);
+    expect(series.map((p) => p.dayPnl)).toEqual([100, 250]);
+    expect(series.map((p) => p.cumPnl)).toEqual([100, 350]);
+    expect(series[0].source).toBe('csv');
+    expect(series[1].source).toBe('log');
+  });
 });
 
 describe('projectDaysToBreach', () => {

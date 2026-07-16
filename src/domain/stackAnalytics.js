@@ -9,24 +9,44 @@
 // import. cumPnl is the running sum of daily realized PnL.
 export function buildAccountEquitySeries(client, accountName) {
   const lower = String(accountName || '').toLowerCase();
-  const imports = [...(client?.dailyImports || [])].sort((a, b) =>
-    String(a.date || '').localeCompare(String(b.date || '')),
-  );
-  const series = [];
-  let cumPnl = 0;
-  for (const di of imports) {
+
+  // CSV closes by date (carry balance + trailing).
+  const csvByDate = new Map();
+  for (const di of client?.dailyImports || []) {
+    if (!di.date) continue;
     const snapshot = (di.snapshots || []).find(
       (s) => String(s.accountName || '').toLowerCase() === lower,
     );
-    if (!snapshot) continue;
-    const dayPnl = Number(snapshot.grossRealizedPnl || 0);
+    if (snapshot) csvByDate.set(di.date, snapshot);
+  }
+
+  // Log-derived PnL points backfill days with no CSV close (activity entries the
+  // NinjaTrader log backfill saved). CSV always wins for a given date.
+  const logByDate = new Map();
+  for (const entry of client?.activityLog || []) {
+    if (entry.logPnl == null || !entry.logDate) continue;
+    if (String(entry.accountName || '').toLowerCase() !== lower) continue;
+    if (csvByDate.has(entry.logDate)) continue;
+    logByDate.set(entry.logDate, Number(entry.logPnl));
+  }
+
+  const dates = [...new Set([...csvByDate.keys(), ...logByDate.keys()])].sort((a, b) =>
+    String(a).localeCompare(String(b)),
+  );
+
+  const series = [];
+  let cumPnl = 0;
+  for (const date of dates) {
+    const snapshot = csvByDate.get(date);
+    const dayPnl = snapshot ? Number(snapshot.grossRealizedPnl || 0) : logByDate.get(date);
     cumPnl += dayPnl;
     series.push({
-      date: di.date || '',
+      date,
       dayPnl,
       cumPnl,
-      balance: Number(snapshot.accountBalance || 0),
-      trailing: Number(snapshot.trailingMaxDrawdown || 0),
+      balance: snapshot ? Number(snapshot.accountBalance || 0) : 0,
+      trailing: snapshot ? Number(snapshot.trailingMaxDrawdown || 0) : 0,
+      source: snapshot ? 'csv' : 'log',
     });
   }
   return series;

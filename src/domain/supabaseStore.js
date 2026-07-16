@@ -152,6 +152,8 @@ function activityFromRow(row, accountById) {
     text: row.text,
     accountName: account?.account_name || '',
     createdAt: row.created_at || '',
+    logDate: row.log_date || '',
+    logPnl: row.log_pnl != null ? Number(row.log_pnl) : null,
   };
 }
 
@@ -1068,6 +1070,8 @@ export async function insertSupabaseActivity(clientId, entry) {
       trading_account_id: accountId,
       type: entry.type || 'Note',
       text: entry.text || '',
+      log_date: entry.logDate || null,
+      log_pnl: entry.logPnl != null ? entry.logPnl : null,
       created_at: entry.createdAt || new Date().toISOString(),
     })
     .select()
