@@ -55,6 +55,10 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
   const start = series[0].date;
   const end = series[series.length - 1].date;
 
+  // Consistency strip: last 60 trading days as green/red cells, intensity by size.
+  const strip = series.slice(-60);
+  const maxAbsDay = Math.max(1, ...strip.map((p) => Math.abs(p.dayPnl)));
+
   return (
     <div className="account-history-chart">
       <div className="ahc-charts">
@@ -88,6 +92,21 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
             />
           </div>
         ) : null}
+      </div>
+
+      <div className="ahc-consistency" aria-label="Daily result history">
+        {strip.map((p, i) => {
+          const color = p.dayPnl > 0 ? 'var(--success)' : p.dayPnl < 0 ? 'var(--error)' : 'var(--surface-3)';
+          const opacity = p.dayPnl === 0 ? 0.4 : 0.35 + 0.65 * (Math.abs(p.dayPnl) / maxAbsDay);
+          return (
+            <span
+              key={`${p.date}-${i}`}
+              className="ahc-cell"
+              title={`${p.date}: ${money(p.dayPnl)}`}
+              style={{ background: color, opacity }}
+            />
+          );
+        })}
       </div>
 
       <div className="ahc-stats">

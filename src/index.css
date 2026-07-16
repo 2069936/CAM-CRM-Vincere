@@ -6331,3 +6331,7 @@ tr:nth-child(2) .rank-badge {
 .bb-passrate .combo-bar-track { flex: 1; }
 .bb-stats { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 @media (max-width: 720px) { .bb-grid { grid-template-columns: 1fr; } }
+
+/* Stack Playbook - consistency strip (Q5) */
+.ahc-consistency { display: flex; flex-wrap: wrap; gap: 3px; }
+.ahc-cell { width: 12px; height: 12px; border-radius: 3px; }
