@@ -95,3 +95,40 @@ export function buildAccountStreaks(series) {
     tradingDays,
   };
 }
+
+// Cross-tab combo (row) x prop firm / connection (col) -> avg PnL/day per cell.
+// Different firms have different drawdown mechanics, so the best combo can be
+// firm-dependent. comboFn maps a snapshot's strategies to a combo label.
+export function buildComboByFirm(clients = [], comboFn = () => 'Unknown') {
+  const cells = {};
+  const combos = new Set();
+  const firms = new Set();
+  for (const client of clients || []) {
+    for (const di of client.dailyImports || []) {
+      for (const snapshot of di.snapshots || []) {
+        const combo = comboFn(snapshot.strategies || []);
+        if (!combo || combo === 'Unknown') continue;
+        const firm = snapshot.connection || 'Unknown';
+        combos.add(combo);
+        firms.add(firm);
+        const key = `${combo}|${firm}`;
+        if (!cells[key]) cells[key] = { pnl: 0, days: 0 };
+        cells[key].pnl += Number(snapshot.grossRealizedPnl || 0);
+        cells[key].days += 1;
+      }
+    }
+  }
+  const comboList = [...combos];
+  const firmList = [...firms];
+  return {
+    combos: comboList,
+    firms: firmList,
+    matrix: comboList.map((combo) => ({
+      combo,
+      cells: firmList.map((firm) => {
+        const c = cells[`${combo}|${firm}`];
+        return { firm, avgPnl: c && c.days ? c.pnl / c.days : null, days: c ? c.days : 0 };
+      }),
+    })),
+  };
+}

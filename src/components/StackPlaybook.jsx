@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
-import { buildAccountEquitySeries } from '../domain/stackAnalytics';
+import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
 import { buildBulletBotStats } from '../domain/bulletBotStats';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
@@ -268,6 +268,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [riskOpen, setRiskOpen] = useState(false);
   const [classOpen, setClassOpen] = useState(false);
   const [bbOpen, setBbOpen] = useState(false);
+  const [heatOpen, setHeatOpen] = useState(false);
   const [classDraft, setClassDraft] = useState({});
   const [windowDays, setWindowDays] = useState(30);
 
@@ -302,6 +303,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
   const riskCurves = buildRiskScalingCurve(comboPerf);
   const bbStats = buildBulletBotStats(teamClients);
+  const comboFirm = buildComboByFirm(teamClients, comboFromStrategies);
   const sigGroups = groupStrategiesBySignature(teamClients);
   const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
   const mismatches = detectVersionMismatches(teamClients, classifications);
@@ -528,6 +530,49 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               ))}
             </div>
           ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Combo × Prop firm heatmap (B5) ─────────────────── */}
+      {comboFirm.combos.length && comboFirm.firms.length > 1 ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setHeatOpen((v) => !v)}>
+            <ChevronDown className={heatOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Combo × Prop firm</h3>
+            <span className="muted">Avg PnL/day by combo under each firm's rules</span>
+          </button>
+          {heatOpen ? (() => {
+            const maxAbs = Math.max(1, ...comboFirm.matrix.flatMap((r) => r.cells.map((c) => Math.abs(c.avgPnl || 0))));
+            return (
+              <div className="table-wrap">
+                <table className="ops-table heatmap-table">
+                  <thead>
+                    <tr>
+                      <th>Combo</th>
+                      {comboFirm.firms.map((f) => <th key={f}>{f}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comboFirm.matrix.map((row) => (
+                      <tr key={row.combo}>
+                        <td><strong>{row.combo}</strong></td>
+                        {row.cells.map((c) => {
+                          if (c.avgPnl == null) return <td key={c.firm} className="muted">-</td>;
+                          const alpha = 0.15 + 0.55 * (Math.abs(c.avgPnl) / maxAbs);
+                          const bg = c.avgPnl >= 0 ? `rgba(var(--success-rgb), ${alpha})` : `rgba(var(--error-rgb), ${alpha})`;
+                          return (
+                            <td key={c.firm} style={{ background: bg }} title={`${c.days} day-runs`}>
+                              {c.avgPnl >= 0 ? '+' : ''}{fmt(c.avgPnl)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })() : null}
         </section>
       ) : null}
 

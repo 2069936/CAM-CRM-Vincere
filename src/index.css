@@ -6335,3 +6335,7 @@ tr:nth-child(2) .rank-badge {
 /* Stack Playbook - consistency strip (Q5) */
 .ahc-consistency { display: flex; flex-wrap: wrap; gap: 3px; }
 .ahc-cell { width: 12px; height: 12px; border-radius: 3px; }
+
+/* Stack Playbook - combo x firm heatmap (B5) */
+.heatmap-table td { text-align: center; font-variant-numeric: tabular-nums; }
+.heatmap-table td:first-child { text-align: left; }

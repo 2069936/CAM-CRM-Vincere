@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAccountEquitySeries, projectDaysToBreach, buildAccountStreaks } from './stackAnalytics';
+import { buildAccountEquitySeries, projectDaysToBreach, buildAccountStreaks, buildComboByFirm } from './stackAnalytics';
 
 function di(date, snap) {
   return { date, snapshots: snap ? [snap] : [] };
@@ -65,5 +65,24 @@ describe('buildAccountStreaks', () => {
     expect(s.longestWin).toBe(2);
     expect(s.longestLoss).toBe(3);
     expect(s.currentStreak).toBe(-3); // ending on a 3-day losing streak
+  });
+});
+
+describe('buildComboByFirm', () => {
+  it('cross-tabs avg PnL by combo and firm', () => {
+    const comboFn = (strats) => strats[0]?.combo || 'Unknown';
+    const clients = [{
+      dailyImports: [
+        { snapshots: [{ strategies: [{ combo: 'URGO' }], connection: 'Lucid', grossRealizedPnl: 100 }] },
+        { snapshots: [{ strategies: [{ combo: 'URGO' }], connection: 'Lucid', grossRealizedPnl: 200 }] },
+        { snapshots: [{ strategies: [{ combo: 'URGO' }], connection: 'Tradeify', grossRealizedPnl: -50 }] },
+      ],
+    }];
+    const result = buildComboByFirm(clients, comboFn);
+    expect(result.combos).toEqual(['URGO']);
+    expect(result.firms).toEqual(expect.arrayContaining(['Lucid', 'Tradeify']));
+    const lucid = result.matrix[0].cells.find((c) => c.firm === 'Lucid');
+    expect(lucid.avgPnl).toBeCloseTo(150);
+    expect(lucid.days).toBe(2);
   });
 });
