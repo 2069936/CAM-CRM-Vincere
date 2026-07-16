@@ -8041,6 +8041,11 @@ function CamOverview({
   onSetMonthlyGoal,
 }) {
   const [expandedAlgorithm, setExpandedAlgorithm] = useState("");
+  // Collapsible overview sections (default collapsed to cut clutter).
+  const [showBriefing, setShowBriefing] = useState(false);
+  const [showFundedTable, setShowFundedTable] = useState(true);
+  const [showActivity, setShowActivity] = useState(false);
+  const [showTeam, setShowTeam] = useState(false);
   const [showBulkTask, setShowBulkTask] = useState(false);
   const [bulkTaskText, setBulkTaskText] = useState("");
   const [bulkTaskDue, setBulkTaskDue] = useState("");
@@ -8556,7 +8561,14 @@ function CamOverview({
         <section
           className={urgencyCounts.critical ? "panel danger-panel" : "panel"}
         >
-          <div className="panel-heading">
+          <button
+            className="registry-toggle"
+            onClick={() => setShowBriefing((v) => !v)}
+          >
+            <ChevronDown
+              className={showBriefing ? "chevron open" : "chevron"}
+              size={16}
+            />
             <h3>Today's briefing</h3>
             <div style={{ display: "flex", gap: 8 }}>
               {urgencyCounts.critical ? (
@@ -8578,7 +8590,8 @@ function CamOverview({
                 <span className="badge success">All clear</span>
               ) : null}
             </div>
-          </div>
+          </button>
+          {showBriefing ? (
           <div className="briefing-grid">
             {briefing.map(
               ({
@@ -8794,6 +8807,7 @@ function CamOverview({
               },
             )}
           </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -8902,10 +8916,18 @@ function CamOverview({
         if (!fundedRows.length) return null;
         return (
           <section className="panel">
-            <div className="panel-heading">
+            <button
+              className="registry-toggle"
+              onClick={() => setShowFundedTable((v) => !v)}
+            >
+              <ChevronDown
+                className={showFundedTable ? "chevron open" : "chevron"}
+                size={16}
+              />
               <h3>Funded accounts</h3>
               <span className="count">{fundedRows.length}</span>
-            </div>
+            </button>
+            {showFundedTable ? (
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -8996,6 +9018,7 @@ function CamOverview({
                 </tbody>
               </table>
             </div>
+            ) : null}
           </section>
         );
       })()}
@@ -9143,12 +9166,20 @@ function CamOverview({
         if (!allEntries.length) return null;
         return (
           <section className="panel">
-            <div className="panel-heading">
+            <button
+              className="registry-toggle"
+              onClick={() => setShowActivity((v) => !v)}
+            >
+              <ChevronDown
+                className={showActivity ? "chevron open" : "chevron"}
+                size={16}
+              />
               <h3>Recent activity</h3>
               <span className="badge muted">
                 Last 20 entries across all clients
               </span>
-            </div>
+            </button>
+            {showActivity ? (
             <div className="activity-feed-global">
               {allEntries.map((entry, i) => (
                 <div
@@ -9173,16 +9204,25 @@ function CamOverview({
                 </div>
               ))}
             </div>
+            ) : null}
           </section>
         );
       })()}
 
       {camProfiles.length > 0 ? (
         <section className="panel">
-          <div className="panel-heading">
+          <button
+            className="registry-toggle"
+            onClick={() => setShowTeam((v) => !v)}
+          >
+            <ChevronDown
+              className={showTeam ? "chevron open" : "chevron"}
+              size={16}
+            />
             <h3>Team overview</h3>
             <span className="badge muted">All CAMs</span>
-          </div>
+          </button>
+          {showTeam ? (
           <div className="team-grid">
             {camProfiles.map((cam) => {
               const camClients = allClients.filter((c) =>
@@ -9208,6 +9248,7 @@ function CamOverview({
               );
             })}
           </div>
+          ) : null}
         </section>
       ) : null}
     </main>
