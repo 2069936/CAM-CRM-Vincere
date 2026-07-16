@@ -2477,7 +2477,7 @@ function DataToolsPanel({
           type: "Import",
           accountName: row.matchedAccountName || row.accountName,
           createdAt: new Date().toISOString(),
-          text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short) for ${row.date || "unknown date"}.`,
+          text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short), realized ${formatCurrency(row.realizedPnl || 0)} over ${row.roundTrips || 0} round trips for ${row.date || "unknown date"}.${row.unknownInstruments?.length ? ` Unpriced: ${row.unknownInstruments.join(", ")}.` : ""}`,
         });
       }
       setMessage(`Saved ${matchedRows.length} NinjaTrader log summar${matchedRows.length === 1 ? "y" : "ies"} to client activity.`);
@@ -2858,6 +2858,7 @@ function DataToolsPanel({
                       <th>Client</th>
                       <th>Fills</th>
                       <th>Long/Short</th>
+                      <th>Realized</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2874,6 +2875,9 @@ function DataToolsPanel({
                         </td>
                         <td>{row.fills} fills / {row.contracts} contracts</td>
                         <td>{row.long}L / {row.short}S</td>
+                        <td className={(row.realizedPnl || 0) >= 0 ? "positive" : "negative"} title={row.unknownInstruments?.length ? `Unpriced: ${row.unknownInstruments.join(", ")}` : `${row.roundTrips || 0} round trips`}>
+                          {formatCurrency(row.realizedPnl || 0)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

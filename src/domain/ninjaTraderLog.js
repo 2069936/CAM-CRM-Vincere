@@ -13,6 +13,8 @@
 //   Execution='<id>' Instrument='...' Account='...' Price=X Quantity=N Market position=Long|Short|Flat Operation=Operation_Add|Remove|Update Order='<id>' Time='...'
 //   Enabling|Disabling NinjaScript strategy '<name>/<account>'
 
+import { computeExecutionPnl } from './executionPnl';
+
 const LINE_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:\d{3})\|[^|]*\|[^|]*\|(.*)$/;
 const STRATEGY_RE = /^(Enabling|Disabling) NinjaScript strategy '([^']+)'/;
 
@@ -166,6 +168,10 @@ export function summarizeLogByAccount(parsedFile) {
         contracts: 0,
         long: 0,
         short: 0,
+        realizedPnl: 0,
+        ticksMoved: 0,
+        roundTrips: 0,
+        unknownInstruments: [],
       };
     }
     const row = byAccount[name];
@@ -173,6 +179,16 @@ export function summarizeLogByAccount(parsedFile) {
     row.contracts += Number(execution.quantity) || 0;
     if (/long/i.test(execution.position)) row.long += 1;
     else if (/short/i.test(execution.position)) row.short += 1;
+  }
+  // Realized PnL derived from the executions' price moves (no balances needed).
+  for (const pnl of computeExecutionPnl(parsedFile.executions || [])) {
+    if (!byAccount[pnl.accountName]) continue;
+    Object.assign(byAccount[pnl.accountName], {
+      realizedPnl: pnl.realizedPnl,
+      ticksMoved: pnl.ticksMoved,
+      roundTrips: pnl.roundTrips,
+      unknownInstruments: pnl.unknownInstruments,
+    });
   }
   return Object.values(byAccount);
 }
