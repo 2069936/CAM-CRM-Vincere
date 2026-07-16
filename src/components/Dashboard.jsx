@@ -20,24 +20,12 @@ function drawdownDisplay(row) {
   return { label: `${formatCurrency(rawDD)} buffer`, tone: '' };
 }
 
-function fundedRiskLevel(row) {
-  const activeStrats = (row.strategies || []).filter((s) => s.enabled).length;
-  const hasDll = row.meta?.dailyLossLimit && row.meta.dailyLossLimit !== 'None' && row.meta.dailyLossLimit !== '';
-  const ddLimit = Number(row.meta?.maxDrawdownLimit || 0);
-  const rawDD = Number(row.trailingMaxDrawdown || 0);
-  const buffer = ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
-
-  let score = 0;
-  if (activeStrats >= 3) score += 3;
-  else if (activeStrats === 2) score += 2;
-  else if (activeStrats === 1) score += 1;
-  if (!hasDll) score += 2;
-  if (buffer > 0 && buffer < 500) score += 3;
-  else if (buffer > 0 && buffer < 1200) score += 1;
-
-  if (score <= 1) return { label: 'Low', tone: 'positive' };
-  if (score <= 3) return { label: 'Medium', tone: 'warning' };
-  return { label: 'High', tone: 'negative' };
+// Risk level is assigned manually per account (not inferred). Empty = Unassigned.
+function manualRiskDisplay(level) {
+  if (level === 'High') return { label: 'High', tone: 'negative' };
+  if (level === 'Medium') return { label: 'Medium', tone: 'warning' };
+  if (level === 'Low') return { label: 'Low', tone: 'positive' };
+  return { label: '—', tone: 'muted' };
 }
 
 function Metric({ label, value, tone }) {
@@ -336,7 +324,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                       </select>
                     </td>
                   ) : null}
-                  {isFunded ? (() => { const r = fundedRiskLevel(row); return <td className={r.tone}>{r.label}</td>; })() : null}
+                  {isFunded ? (() => { const r = manualRiskDisplay(row.meta?.riskLevel); return <td className={r.tone}>{r.label}</td>; })() : null}
                   {isEval ? (() => {
                     const target = Number(row.meta?.targetProfit || 0);
                     const start = Number(row.meta?.startBalance || 0);

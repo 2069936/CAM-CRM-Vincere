@@ -23,6 +23,9 @@ export const PAYOUT_STATES = {
   CLEAR_TO_TRADE: 'Clear to trade',
 };
 
+// Risk level is assigned manually by the team (not inferred). Empty = Unassigned.
+export const RISK_LEVELS = ['Low', 'Medium', 'High'];
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -41,8 +44,10 @@ function createDefaultAccount(account, existing = {}) {
     accountType: existing.accountType || ACCOUNT_TYPES.UNASSIGNED,
     status: existing.status || ACCOUNT_STATUSES.ACTIVE,
     payoutState: existing.payoutState || PAYOUT_STATES.NOT_REQUESTED,
+    startBalance: existing.startBalance ?? '',
     targetProfit: existing.targetProfit ?? '',
     maxDrawdownLimit: existing.maxDrawdownLimit ?? '',
+    riskLevel: existing.riskLevel || '',
     bulletBotPassType: existing.bulletBotPassType || '',
     bulletBotDirection: existing.bulletBotDirection || '',
     notes: existing.notes || '',

@@ -78,6 +78,7 @@ create table if not exists public.trading_accounts (
   start_balance numeric,
   target_profit numeric,
   max_drawdown_limit numeric,
+  risk_level text,
   bullet_bot_pass_type text,
   bullet_bot_direction text,
   algo_stack text,

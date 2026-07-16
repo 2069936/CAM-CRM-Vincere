@@ -1203,7 +1203,7 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
     for (const id of cam.clientIds || []) clientCam[id] = cam.id;
   }
 
-  const buckets = { Critical: [], High: [], Medium: [], Low: [], Safe: [] };
+  const buckets = { High: [], Medium: [], Low: [], Unassigned: [] };
 
   for (const client of clients) {
     const latest = client.dailyImports?.at(-1);
@@ -1231,11 +1231,9 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
         pct: risk?.pct || 0,
       };
 
-      if (risk?.level === "Critical") buckets.Critical.push(entry);
-      else if (risk?.level === "High") buckets.High.push(entry);
-      else if (risk?.level === "Medium") buckets.Medium.push(entry);
-      else if (risk?.level === "Low") buckets.Low.push(entry);
-      else buckets.Safe.push(entry);
+      const level = meta.riskLevel || "Unassigned";
+      if (buckets[level]) buckets[level].push(entry);
+      else buckets.Unassigned.push(entry);
     }
   }
 
@@ -5319,11 +5317,11 @@ function ManagerOverview({
         {riskDist.total > 0 ? (
           <section
             className={
-              riskDist.buckets.Critical.length ? "panel danger-panel" : "panel"
+              riskDist.buckets.High.length ? "panel danger-panel" : "panel"
             }
           >
             <div className="panel-heading">
-              <h3>Drawdown risk distribution</h3>
+              <h3>Risk distribution</h3>
               <span className="badge muted">
                 {riskDist.total} active accounts
               </span>
@@ -5331,26 +5329,21 @@ function ManagerOverview({
             <div className="risk-dist-grid">
               {[
                 {
-                  key: "Critical",
-                  color: "var(--error)",
-                  label: "Critical (≥85% / ≤$500)",
-                },
-                {
                   key: "High",
-                  color: "var(--warning)",
-                  label: "High (65–85% / ≤$1.2k)",
+                  color: "var(--error)",
+                  label: "High",
                 },
                 {
                   key: "Medium",
                   color: "var(--warning)",
-                  label: "Medium (40–65% / ≤$2.5k)",
+                  label: "Medium",
                 },
                 {
                   key: "Low",
                   color: "var(--success)",
-                  label: "Low (<40% / >$2.5k)",
+                  label: "Low",
                 },
-                { key: "Safe", color: "var(--muted)", label: "No DD data" },
+                { key: "Unassigned", color: "var(--muted)", label: "Unassigned" },
               ].map(({ key, color, label }) => {
                 const accounts = riskDist.buckets[key];
                 const pct =
@@ -5368,7 +5361,7 @@ function ManagerOverview({
                     <strong
                       style={{
                         color:
-                          accounts.length && key === "Critical"
+                          accounts.length && key === "High"
                             ? color
                             : undefined,
                       }}
@@ -7433,20 +7426,22 @@ function ClientOverview({
             );
             const meta = ciMeta(latestRegistry, account.accountName);
             const risk = accountRiskLevel(snapshot, meta);
+            const manualRisk = meta?.riskLevel || "";
+            const ddUsed =
+              risk?.pct != null ? `${Math.round(risk.pct * 100)}% DD used` : "";
             return (
               <div className="target-row" key={account.accountName}>
                 <div>
                   <strong>
                     {account.alias}
-                    {risk ? (
+                    {manualRisk ? (
                       <span
-                        className={`risk-badge risk-${risk.level.toLowerCase()}`}
+                        className={`risk-badge risk-${manualRisk.toLowerCase()}`}
                       >
-                        {risk.level} risk
-                        {risk.pct != null
-                          ? ` · ${Math.round(risk.pct * 100)}% DD used`
-                          : ""}
+                        {manualRisk} risk{ddUsed ? ` · ${ddUsed}` : ""}
                       </span>
+                    ) : ddUsed ? (
+                      <span className="risk-badge">{ddUsed}</span>
                     ) : null}
                   </strong>
                   <span>
