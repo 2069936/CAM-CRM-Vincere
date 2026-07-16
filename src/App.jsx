@@ -91,6 +91,7 @@ import {
   reconcileDailyImport,
 } from "./domain/reconcile";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
+import { suggestAccountDefaults } from "./domain/accountTargets";
 import {
   parseNinjaTraderLogFile,
   summarizeLogByAccount,
@@ -11372,7 +11373,32 @@ export default function App() {
 
   function handleAccountUpdate(accountName, patch) {
     if (!selectedClient) return;
-    persistAccountUpdate(selectedClient.id, accountName, patch);
+    let finalPatch = patch;
+    // When the user assigns an account type, pre-fill the start balance and
+    // profit target from the account's current balance and standard sizing
+    // (50k/100k/150k -> 54100/107300/159000; Bullet Bot 50k -> 53000; Cash none).
+    // Only fills fields the user has left empty; never overwrites a set value.
+    if ("accountType" in patch) {
+      const registry = selectedClient.accountRegistry || {};
+      const metaKey = Object.keys(registry).find(
+        (key) => key.toLowerCase() === accountName.toLowerCase(),
+      );
+      const meta = metaKey ? registry[metaKey] : {};
+      const latest = selectedClient.dailyImports?.at(-1);
+      const snapshot = (latest?.snapshots || []).find(
+        (s) => s.accountName?.toLowerCase() === accountName.toLowerCase(),
+      );
+      const balance = Number(snapshot?.accountBalance || 0);
+      const defaults = suggestAccountDefaults(patch.accountType, balance);
+      const isEmpty = (value) => value == null || value === "";
+      const augment = {};
+      if (defaults.startingBalance != null && isEmpty(meta.startBalance))
+        augment.startBalance = defaults.startingBalance;
+      if (defaults.target != null && isEmpty(meta.targetProfit))
+        augment.targetProfit = defaults.target;
+      if (Object.keys(augment).length) finalPatch = { ...patch, ...augment };
+    }
+    persistAccountUpdate(selectedClient.id, accountName, finalPatch);
   }
 
   function persistAccountUpdate(clientId, accountName, patch) {
