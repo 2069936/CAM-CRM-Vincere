@@ -212,6 +212,18 @@ export function buildDailyReportSummary(client, dailyImport) {
   };
 }
 
+// Every client's daily report for one date (for a CAM's "all clients for the
+// day" export). Only clients that have an import on that date are included.
+export function buildCamDayReport(clients = [], date) {
+  const rows = [];
+  for (const client of clients) {
+    const dailyImport = (client.dailyImports || []).find((d) => d.date === date);
+    if (!dailyImport) continue;
+    rows.push({ client, dailyImport, report: buildDailyReportSummary(client, dailyImport) });
+  }
+  return rows.sort((a, b) => (b.report.totals.grossRealizedPnl || 0) - (a.report.totals.grossRealizedPnl || 0));
+}
+
 export function buildTeamWeeklyReport(clients, camProfiles) {
   const today = new Date();
   const weekStart = new Date(today);

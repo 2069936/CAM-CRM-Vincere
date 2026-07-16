@@ -103,6 +103,7 @@ import {
   buildWeeklyMessageReport,
   buildDailyReportSummary,
   buildTeamWeeklyReport,
+  buildCamDayReport,
   formatCurrency,
 } from "./domain/report";
 import {
@@ -6588,6 +6589,61 @@ function ReportPanel({ client, dailyImport, onClose }) {
   );
 }
 
+function CamDayReportPanel({ clients, date, camName, onClose }) {
+  const rows = useMemo(() => buildCamDayReport(clients, date), [clients, date]);
+  const totalPnl = rows.reduce((s, r) => s + Number(r.report.totals.grossRealizedPnl || 0), 0);
+  const sign = (n) => (n >= 0 ? "+" : "");
+  return (
+    <div className="report-overlay">
+      <div className="report-sheet">
+        <div className="report-actions no-print">
+          <button
+            className="secondary-button"
+            onClick={() => printWithTitle(`Day report ${date}${camName ? ` - ${camName}` : ""}`)}
+          >
+            <FileText size={14} /> Print / Save PDF
+          </button>
+          <button className="ghost-button" onClick={onClose}>Close</button>
+        </div>
+        <header className="report-header">
+          <div>
+            <p className="report-firm">Vincere Trading</p>
+            <h1>Day report — all clients</h1>
+          </div>
+          <div className="report-header-right">
+            <strong>{date}</strong>
+            <span>{rows.length} client{rows.length === 1 ? "" : "s"} · {sign(totalPnl)}{formatCurrency(totalPnl)}</span>
+          </div>
+        </header>
+        {rows.length === 0 ? (
+          <p className="muted" style={{ padding: "16px 0" }}>No client has a close on {date}.</p>
+        ) : (
+          rows.map((r) => (
+            <section
+              className="cam-day-client"
+              key={r.client.id}
+              style={{ pageBreakInside: "avoid", borderTop: "1px solid var(--line)", paddingTop: 12, marginTop: 12 }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <h2 style={{ margin: 0 }}>{r.client.name}</h2>
+                <strong className={r.report.totals.grossRealizedPnl >= 0 ? "report-positive" : "report-negative"}>
+                  {sign(r.report.totals.grossRealizedPnl)}{formatCurrency(r.report.totals.grossRealizedPnl)}
+                </strong>
+              </div>
+              <p className="muted" style={{ margin: "4px 0" }}>
+                {r.report.counts.accounts} accounts · {r.report.counts.openFlags} open flags ({r.report.counts.criticalFlags} critical)
+              </p>
+              <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                Funded {formatCurrency(r.report.segments.funded.dailyPnl)} · Eval {formatCurrency(r.report.segments.evalStandard.dailyPnl)} · Cash {formatCurrency(r.report.segments.cash.dailyPnl)}
+              </p>
+            </section>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ClientPnlChart({ history = [] }) {
   const values = history.map((day) => Number(day.dailyPnl || 0));
   if (!values.length)
@@ -10964,6 +11020,7 @@ export default function App() {
   const [quickLogText, setQuickLogText] = useState("");
   const [quickLogAccount, setQuickLogAccount] = useState("");
   const [reportImport, setReportImport] = useState(null);
+  const [showCamDayReport, setShowCamDayReport] = useState(false);
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -12333,6 +12390,17 @@ export default function App() {
                     <span>Profile</span>
                     <em>Account</em>
                   </button>
+                  <button
+                    className="client-link"
+                    onClick={() => {
+                      setShowCamDayReport(true);
+                      closeMobileSidebar();
+                    }}
+                  >
+                    <FileText size={16} />
+                    <span>Day report</span>
+                    <em>All clients · {selectedDate}</em>
+                  </button>
                   {isManagerSession ? (
                     <>
                       <div className="nav-label">Other CAMs</div>
@@ -13313,6 +13381,14 @@ export default function App() {
             client={selectedClient}
             dailyImport={reportImport}
             onClose={() => setReportImport(null)}
+          />
+        ) : null}
+        {showCamDayReport ? (
+          <CamDayReportPanel
+            clients={currentCamClients}
+            date={selectedDate}
+            camName={currentCamProfile?.name}
+            onClose={() => setShowCamDayReport(false)}
           />
         ) : null}
         {monthlyReportMonth ? (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDailyReportSummary, buildClientMessageReport, buildTeamWeeklyReport, buildWeeklyMessageReport, summarizeAccountRows } from './report';
+import { buildDailyReportSummary, buildClientMessageReport, buildTeamWeeklyReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport } from './report';
 
 describe('buildDailyReportSummary', () => {
   it('uses current account registry metadata over stale import metadata', () => {
@@ -297,5 +297,19 @@ describe('buildTeamWeeklyReport', () => {
     };
     const text = buildTeamWeeklyReport([client], [cam]);
     expect(text).toContain('1 funded');
+  });
+});
+
+describe('buildCamDayReport', () => {
+  it('collects each client that has a close on the date, sorted by daily PnL', () => {
+    const clients = [
+      { id: 'c1', name: 'A', accountRegistry: { X: { accountName: 'X', accountType: 'Funded' } }, dailyImports: [{ date: '2026-07-13', accounts: {}, snapshots: [{ accountName: 'X', grossRealizedPnl: 100 }], flags: [] }] },
+      { id: 'c2', name: 'B', accountRegistry: { Y: { accountName: 'Y', accountType: 'Funded' } }, dailyImports: [{ date: '2026-07-13', accounts: {}, snapshots: [{ accountName: 'Y', grossRealizedPnl: 500 }], flags: [] }] },
+      { id: 'c3', name: 'C', accountRegistry: {}, dailyImports: [{ date: '2026-07-12', accounts: {}, snapshots: [], flags: [] }] },
+    ];
+    const rows = buildCamDayReport(clients, '2026-07-13');
+    expect(rows).toHaveLength(2); // C has no close on that date
+    expect(rows[0].client.name).toBe('B'); // higher PnL first
+    expect(rows[0].report.totals.grossRealizedPnl).toBe(500);
   });
 });
