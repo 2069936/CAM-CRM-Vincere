@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
-import { groupStrategiesBySignature, detectVersionMismatches } from '../domain/strategyClassification';
+import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
 import { buildAccountEquitySeries } from '../domain/stackAnalytics';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
@@ -320,11 +320,18 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                 const last = series[series.length - 1];
                 const buffer = last ? (ddLimit > 0 ? ddLimit - Math.abs(last.trailing) : last.trailing) : 0;
                 const safe = estimateMaxSafeMultiplier(series, buffer, mult);
+                const stratVersions = (snap?.strategies || [])
+                  .filter((st) => st.enabled)
+                  .map((st) => {
+                    const c = classifyStrategy(st, classifications);
+                    return c.matched ? `${st.strategyFamily} ${c.version}` : `${st.strategyFamily || st.strategyName || 'Algo'}?`;
+                  });
                 return (
                   <div className="ahc-account" key={account.accountName}>
                     <div className="ahc-account-head">
                       <strong>{account.alias || account.accountName}</strong>
                       <small className="muted">{account.accountType}{account.connection ? ` · ${account.connection}` : ''}</small>
+                      {stratVersions.length ? <small className="muted">{stratVersions.join(' · ')}</small> : null}
                       {safe ? (
                         <small className={safe.safeLevel < mult ? 'negative' : 'muted'}>
                           buffer supports ~{safe.safeLevel}x{mult ? ` (running ${mult}x)` : ''}
