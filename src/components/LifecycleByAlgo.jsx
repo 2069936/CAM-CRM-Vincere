@@ -7,7 +7,9 @@ function days(n) {
 // Which algo combo gets accounts funded / lasts longer / survives. Reused in the
 // Stack Playbook, CAM overview, and Manager overview.
 export default function LifecycleByAlgo({ clients = [], asOf = '' }) {
-  const rows = buildLifecycleByAlgo(clients, { asOf }).filter((r) => r.accounts > 0);
+  // Default the "still alive" clock to today so active accounts count real days.
+  const today = asOf || new Date().toISOString().slice(0, 10);
+  const rows = buildLifecycleByAlgo(clients, { asOf: today }).filter((r) => r.accounts > 0);
   if (!rows.length) return <p className="muted" style={{ padding: '8px 0' }}>No account lifecycle data yet — set each account&apos;s algo stack.</p>;
   return (
     <div className="table-wrap">
