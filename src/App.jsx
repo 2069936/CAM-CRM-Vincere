@@ -52,6 +52,7 @@ import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
 import ProfilePanel from "./components/ProfilePanel";
 import StackPlaybook from "./components/StackPlaybook";
+import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import {
   Dialog,
@@ -5327,6 +5328,8 @@ function ManagerOverview({
                 <strong>{lifecycle.avgDaysToPayout}</strong>
               </div>
             </div>
+            <h4 className="muted" style={{ margin: "14px 0 6px" }}>By algo combo — funded rate, lifespan, survival</h4>
+            <LifecycleByAlgo clients={clients} />
           </div>
         </section>
 
@@ -8844,6 +8847,14 @@ function CamOverview({
           <strong>{overview.totals.openDeviationFlags}</strong>
         </div>
       </div>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h3>Lifecycle by algo</h3>
+          <span className="badge muted">Which combo funds / survives</span>
+        </div>
+        <LifecycleByAlgo clients={clients} />
+      </section>
 
       <section
         className={

@@ -3,6 +3,8 @@ import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
 import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
+import { buildAccountLifecycle } from '../domain/accountLifecycle';
+import LifecycleByAlgo from './LifecycleByAlgo';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
 import { buildBulletBotStats } from '../domain/bulletBotStats';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
@@ -271,6 +273,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [bbOpen, setBbOpen] = useState(false);
   const [heatOpen, setHeatOpen] = useState(false);
   const [logHistOpen, setLogHistOpen] = useState(false);
+  const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const [classDraft, setClassDraft] = useState({});
   const [windowDays, setWindowDays] = useState(30);
 
@@ -355,6 +358,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                     const c = classifyStrategy(st, classifications);
                     return c.matched ? `${st.strategyFamily} ${c.version}` : `${st.strategyFamily || st.strategyName || 'Algo'}?`;
                   });
+                const lc = buildAccountLifecycle(account, { asOf: last?.date || dailyImport?.date || '' });
                 return (
                   <div className="ahc-account" key={account.accountName}>
                     <div className="ahc-account-head">
@@ -366,6 +370,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                           buffer supports ~{safe.safeLevel}x{mult ? ` (running ${mult}x)` : ''}
                         </small>
                       ) : null}
+                      <small
+                        className={lc.outcome === 'funded' ? 'positive' : lc.outcome === 'failed' ? 'negative' : 'muted'}
+                        title={lc.phases.map((p) => `${p.algo}: ${p.days ?? '?'}d`).join(' -> ')}
+                      >
+                        {lc.outcome}{lc.daysAlive != null ? ` · ${lc.daysAlive}d alive` : ''}{lc.phases.length > 1 ? ` · ${lc.phases.length} algo phases` : ''}
+                      </small>
                     </div>
                     <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName)} />
                   </div>
@@ -622,6 +632,23 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           ) : null}
         </section>
       ) : null}
+
+      {/* ── Lifecycle by algo ──────────────────────────────── */}
+      <section className="panel">
+        <button className="registry-toggle" onClick={() => setLifecycleOpen((v) => !v)}>
+          <ChevronDown className={lifecycleOpen ? 'chevron open' : 'chevron'} size={16} />
+          <h3>Lifecycle by algo</h3>
+          <span className="muted">Which combo gets accounts funded, lasts longer, survives</span>
+        </button>
+        {lifecycleOpen ? (
+          <>
+            <LifecycleByAlgo clients={teamClients} />
+            <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+              Funded rate + lifespan by the algo stack set on each account. F / X / Active = funded / failed / still active. Set an account&apos;s algo stack below to feed this.
+            </p>
+          </>
+        ) : null}
+      </section>
 
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
