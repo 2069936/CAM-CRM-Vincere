@@ -6322,3 +6322,12 @@ tr:nth-child(2) .rank-badge {
 .combo-bar-track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
 .combo-bar-track i { display: block; height: 100%; border-radius: 4px; }
 .combo-bar-row span { font-variant-numeric: tabular-nums; }
+
+/* Stack Playbook - bullet bot (B6) */
+.bb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.bb-card { background: var(--surface-2); border-radius: 8px; padding: 12px; }
+.bb-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.bb-passrate { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.bb-passrate .combo-bar-track { flex: 1; }
+.bb-stats { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+@media (max-width: 720px) { .bb-grid { grid-template-columns: 1fr; } }

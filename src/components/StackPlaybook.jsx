@@ -3,6 +3,7 @@ import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
 import { buildAccountEquitySeries } from '../domain/stackAnalytics';
+import { buildBulletBotStats } from '../domain/bulletBotStats';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 
@@ -245,6 +246,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [historyOpen, setHistoryOpen] = useState(true);
   const [riskOpen, setRiskOpen] = useState(false);
   const [classOpen, setClassOpen] = useState(false);
+  const [bbOpen, setBbOpen] = useState(false);
   const [classDraft, setClassDraft] = useState({});
   const [windowDays, setWindowDays] = useState(30);
 
@@ -278,6 +280,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
   const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
   const riskCurves = buildRiskScalingCurve(comboPerf);
+  const bbStats = buildBulletBotStats(teamClients);
   const sigGroups = groupStrategiesBySignature(teamClients);
   const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
   const mismatches = detectVersionMismatches(teamClients, classifications);
@@ -472,6 +475,36 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
                 Accounts running the same algo with the same parameters share a signature. Select the version you run — the biggest pools sort first. Risk is set per version and replaces the old inference.
               </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Bullet Bot ─────────────────────────────────────── */}
+      {bbStats.overall.accounts ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setBbOpen((v) => !v)}>
+            <ChevronDown className={bbOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Bullet Bot</h3>
+            <span className="muted">Pass rate + days-to-pass by direction</span>
+            <span className="count">{bbStats.overall.accounts}</span>
+          </button>
+          {bbOpen ? (
+            <div className="bb-grid">
+              {[{ label: 'Long', s: bbStats.long }, { label: 'Short', s: bbStats.short }, { label: 'Overall', s: bbStats.overall }].map(({ label, s }) => (
+                <div className="bb-card" key={label}>
+                  <div className="bb-card-head"><strong>{label}</strong><span className="muted">{s.accounts} acct</span></div>
+                  <div className="bb-passrate">
+                    <div className="combo-bar-track"><i style={{ width: `${Math.round(s.passRate * 100)}%`, background: 'var(--success)' }} /></div>
+                    <span className="positive">{Math.round(s.passRate * 100)}%</span>
+                  </div>
+                  <div className="bb-stats muted">
+                    <span>{s.passed}/{s.accounts} passed</span>
+                    <span>{s.fired} fired</span>
+                    <span>{s.avgDaysToPass != null ? `~${Math.round(s.avgDaysToPass)}d to pass` : 'no passes yet'}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
         </section>
