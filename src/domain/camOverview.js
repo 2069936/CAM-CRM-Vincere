@@ -1,5 +1,4 @@
 import { getLatestClientImport } from './crmStateStore';
-import { matchStrategySet } from './xmlMatch';
 
 function average(values) {
   if (!values.length) return 0;
@@ -39,7 +38,7 @@ function executionMove(points = []) {
   return prices.at(-1) - prices[0];
 }
 
-export function buildCamOverview(clients = [], setRecords = []) {
+export function buildCamOverview(clients = []) {
   const groups = new Map();
 
   for (const client of clients) {
@@ -73,7 +72,6 @@ export function buildCamOverview(clients = [], setRecords = []) {
           unrealized: Number(strategy.unrealized || 0),
           accountWeeklyPnl: Number(snapshot.weeklyPnl || 0),
           enabled: Boolean(strategy.enabled),
-          configMatch: matchStrategySet(strategy, setRecords),
           executionPoints,
           executionMove: executionMove(executionPoints),
         };

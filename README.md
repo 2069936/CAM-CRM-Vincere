@@ -42,30 +42,6 @@ npm run build
 npm run lint
 ```
 
-## Local XML Strategy Index
-
-Strategy XML set files are private and are intentionally not committed.
-
-If the local folder exists at:
-
-```text
-Vincere Trading 6.0/3 - Set Files
-```
-
-generate the local strategy index with:
-
-```bash
-npm run xml:index
-```
-
-This writes:
-
-```text
-public/strategy-set-index.json
-```
-
-That generated JSON is also gitignored. The app will use it locally to match strategies by signature and show XML-derived labels such as risk, period, set version, Bullet Bot pass type, direction, size, and target.
-
 ## Daily Workflow
 
 1. Run `npm run dev:open`.
@@ -100,8 +76,6 @@ These are ignored by git and should stay local:
 
 - Excel workbooks
 - NinjaTrader CSV exports
-- NinjaTrader strategy/set XML files
-- Generated `public/strategy-set-index.json`
 - Local `.env` / `.env.local` files
 
 ## Scripts
@@ -109,7 +83,6 @@ These are ignored by git and should stay local:
 ```bash
 npm run dev        # Start Vite locally
 npm run dev:open   # Start Vite and open localhost automatically
-npm run xml:index  # Generate local XML strategy index if set files exist
 npm test           # Run Vitest suite
 npm run build      # Production build check
 npm run lint       # ESLint check

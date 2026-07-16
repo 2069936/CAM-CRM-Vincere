@@ -8037,8 +8037,6 @@ function CamOverview({
   clients,
   camProfiles = [],
   allClients = [],
-  strategySetRecords = [],
-  strategySetIndexStatus,
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
@@ -8081,8 +8079,8 @@ function CamOverview({
       ? Math.min(100, Math.round((monthlyPnl / monthlyGoal) * 100))
       : null;
   const overview = useMemo(
-    () => buildCamOverview(clients, strategySetRecords),
-    [clients, strategySetRecords],
+    () => buildCamOverview(clients),
+    [clients],
   );
   const briefing = useMemo(() => buildTodayBriefing(clients), [clients]);
   const insights = useMemo(
@@ -9048,25 +9046,6 @@ function CamOverview({
         </div>
       </div>
 
-      <section className="panel compact-panel">
-        <div className="panel-heading">
-          <h3>XML strategy index</h3>
-          <span
-            className={
-              strategySetRecords.length ? "badge success" : "badge muted"
-            }
-          >
-            {strategySetRecords.length
-              ? `${strategySetRecords.length} set files`
-              : strategySetIndexStatus}
-          </span>
-        </div>
-        <p className="muted">
-          Risk, period, pass type, and set version are matched locally from the
-          generated XML index when signatures are unique.
-        </p>
-      </section>
-
       <section
         className={
           overview.deviationFlags.length ? "panel danger-panel" : "panel"
@@ -9337,25 +9316,6 @@ function CamOverview({
                                   {item.strategyName || algorithm.algorithm} ·{" "}
                                   {item.enabled ? "Enabled" : "Disabled"}
                                 </span>
-                                {item.configMatch?.matched ? (
-                                  <span>
-                                    {[
-                                      item.configMatch.risk,
-                                      item.configMatch.setVersion,
-                                      item.configMatch.period
-                                        ? `Period ${item.configMatch.period}`
-                                        : "",
-                                      item.configMatch.passType,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")}
-                                  </span>
-                                ) : (
-                                  <span>
-                                    {item.configMatch?.reason ||
-                                      "XML config unknown"}
-                                  </span>
-                                )}
                                 <span
                                   className={
                                     item.realized >= 0 ? "positive" : "negative"
@@ -11123,10 +11083,6 @@ export default function App() {
   const [reportImport, setReportImport] = useState(null);
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
-  const [strategySetIndex, setStrategySetIndex] = useState({
-    status: "Not loaded",
-    records: [],
-  });
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [globalSearchIdx, setGlobalSearchIdx] = useState(0);
@@ -11249,26 +11205,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/strategy-set-index.json", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (cancelled) return;
-        if (data?.records?.length) {
-          setStrategySetIndex({ status: "Loaded", records: data.records });
-        } else {
-          setStrategySetIndex({ status: "Run npm run xml:index", records: [] });
-        }
-      })
-      .catch(() => {
-        if (!cancelled)
-          setStrategySetIndex({ status: "Run npm run xml:index", records: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const visibleCamProfiles = activeCamProfilesForUsers(state.camProfiles || [], users);
   const currentCamProfile =
@@ -12750,8 +12686,6 @@ export default function App() {
                 clients={currentCamClients}
                 camProfiles={visibleCamProfiles}
                 allClients={state.clients || []}
-                strategySetRecords={strategySetIndex.records}
-                strategySetIndexStatus={strategySetIndex.status}
                 onSelectClient={(clientId) => {
                   setState((current) => selectClient(current, clientId));
                   setShowOverview(false);
@@ -13291,7 +13225,6 @@ export default function App() {
                           onResolveFlag={handleResolveFlag}
                           onBulkResolveFlags={handleBulkResolveFlags}
                           onUpdateAccount={handleAccountUpdate}
-                          strategySetRecords={strategySetIndex.records}
                           client={selectedClient}
                         />
                         <section className="panel">

@@ -56,7 +56,6 @@ function strategyFromRow(row) {
     enabled: Boolean(row.enabled),
     realized: Number(row.realized || 0),
     unrealized: Number(row.unrealized || 0),
-    configMatch: row.config_match || {},
   };
 }
 
@@ -1274,7 +1273,6 @@ export async function upsertSupabaseDailyImport(clientId, importResult) {
       enabled: Boolean(strategy.enabled),
       realized: numberOrNull(strategy.realized) || 0,
       unrealized: numberOrNull(strategy.unrealized) || 0,
-      config_match: strategy.configMatch || {},
     };
   });
   if (strategyRows.length) {

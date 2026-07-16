@@ -1,7 +1,6 @@
 import { Fragment, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw, X } from 'lucide-react';
 import { formatCurrency, summarizeAccountRows } from '../domain/report';
-import { enrichStrategyWithSetMatch } from '../domain/xmlMatch';
 import { PAYOUT_STATES } from '../domain/reconcile';
 
 function drawdownDisplay(row) {
@@ -90,11 +89,6 @@ function formatStrategySettings(strategy) {
   if (strategy.params.stopLossTicks != null) parts.push(`Stop ${strategy.params.stopLossTicks}t`);
   if (strategy.params.profitTargets?.length) parts.push(`Targets ${strategy.params.profitTargets.join('/')}t`);
   return parts.join(' · ');
-}
-
-function formatConfigMatch(match) {
-  if (!match?.matched) return match?.reason || '';
-  return [match.risk, match.setVersion, match.period ? `Period ${match.period}` : '', match.passType, match.direction].filter(Boolean).join(' · ');
 }
 
 function buildTradeStats(executions, strategies) {
@@ -189,7 +183,6 @@ function AccountDetail({ row, executions, colSpan = 7, dailyImports }) {
                   const key = `${row.accountName}-${strategy.strategyName}`;
                   const strategyExecutions = accountExecutions.filter((execution) => execution.strategyName === strategy.strategyName);
                   const settings = formatStrategySettings(strategy);
-                  const configLabel = formatConfigMatch(strategy.configMatch);
                   return (
                     <div className="strategy-detail" key={key}>
                       <button
@@ -199,7 +192,6 @@ function AccountDetail({ row, executions, colSpan = 7, dailyImports }) {
                         <span>
                           <strong><ChevronDown className={expandedStrategy === key ? 'chevron open' : 'chevron'} size={14} /> {strategy.strategyName}</strong>
                           <small>{strategy.instrument} · {strategy.enabled ? 'Enabled' : 'Disabled'}{strategy.strategyFamily === 'Bullet Bot' && strategy.direction ? ` · ${strategy.direction}` : ''}</small>
-                          {configLabel ? <small>{configLabel}</small> : null}
                           {settings ? <small>{settings}</small> : null}
                         </span>
                         <span>
@@ -378,7 +370,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
   );
 }
 
-export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, strategySetRecords = [], client }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, client }) {
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -390,10 +382,7 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
   }
 
   const summary = summarizeAccountRows(rows);
-  const enrichedRows = rows.map((row) => ({
-    ...row,
-    strategies: (row.strategies || []).map((strategy) => enrichStrategyWithSetMatch(strategy, strategySetRecords)),
-  }));
+  const enrichedRows = rows;
   const relevantAccountNames = new Set(rows.map((row) => row.accountName));
   const flags = (dailyImport.flags || []).filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
   const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');

@@ -155,7 +155,7 @@ describe('buildCamOverview', () => {
     expect(flatGroup.deviationFlags).toEqual([]);
   });
 
-  it('attaches XML config matches and execution movement points to algorithm instances', () => {
+  it('attaches execution movement points to algorithm instances', () => {
     const clients = [
       {
         id: 'client-a',
@@ -185,27 +185,8 @@ describe('buildCamOverview', () => {
         }],
       },
     ];
-    const setRecords = [{
-      family: 'RBO',
-      risk: 'Low Risk',
-      period: '2',
-      setVersion: 'v3',
-      signature: {
-        direction: 'Both',
-        posSizes: [2, 2, 2],
-        profitTargets: [155, 175, 250],
-        stopLossTicks: 105,
-      },
-    }];
+    const overview = buildCamOverview(clients);
 
-    const overview = buildCamOverview(clients, setRecords);
-
-    expect(overview.algorithms[0].items[0].configMatch).toMatchObject({
-      matched: true,
-      risk: 'Low Risk',
-      period: '2',
-      setVersion: 'v3',
-    });
     expect(overview.algorithms[0].items[0].executionPoints).toEqual([
       expect.objectContaining({ time: '9:30 AM', price: 100, action: 'Buy' }),
       expect.objectContaining({ time: '9:45 AM', price: 108, action: 'Sell' }),
