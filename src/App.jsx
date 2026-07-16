@@ -1626,6 +1626,20 @@ function auditSilently(entry) {
   });
 }
 
+// Print-to-PDF uses document.title as the default filename, so set it to the
+// client + date before printing and restore it after — no more manual renaming.
+function printWithTitle(title) {
+  const safe = String(title || "report").replace(/[\\/:*?"<>|]+/g, "-").trim();
+  const prev = document.title;
+  document.title = safe;
+  const restore = () => {
+    document.title = prev;
+    window.removeEventListener("afterprint", restore);
+  };
+  window.addEventListener("afterprint", restore);
+  window.print();
+}
+
 function downloadTextFile(fileName, text, type = "application/json") {
   const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
@@ -6080,7 +6094,10 @@ function MonthlyReportPanel({ client, month, onClose }) {
     <div className="report-overlay">
       <div className="report-sheet">
         <div className="report-actions no-print">
-          <button className="secondary-button" onClick={() => window.print()}>
+          <button
+            className="secondary-button"
+            onClick={() => printWithTitle(`${client?.name || "Client"} - ${monthLabel} monthly report`)}
+          >
             <FileText size={14} /> Print / Save PDF
           </button>
           <button
@@ -6379,7 +6396,10 @@ function ReportPanel({ client, dailyImport, onClose }) {
                   ? "Report not saved"
                   : "Report history"}
           </span>
-          <button className="secondary-button" onClick={() => window.print()}>
+          <button
+            className="secondary-button"
+            onClick={() => printWithTitle(`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`)}
+          >
             <FileText size={14} /> Print / Save PDF
           </button>
           <button className="ghost-button" onClick={copyWhatsApp}>
