@@ -329,11 +329,14 @@ export function recalculateDailyImport({ dailyImport, registry = {} }) {
     },
   });
 
+  // Recalculate only re-derives flags + status from the data already uploaded.
+  // It must NOT replace the snapshots/accounts/strategies/orders/executions: the
+  // rebuilt snapshots would drop their nested strategy detail whenever the
+  // top-level detail arrays are empty (e.g. right after an upload, before a
+  // reload), which is what made Recalculate look like it erased the import.
   return {
     ...dailyImport,
     status: recalculated.status,
-    accounts: recalculated.accounts,
-    snapshots: recalculated.snapshots,
     flags: recalculated.flags,
   };
 }

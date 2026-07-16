@@ -399,4 +399,23 @@ describe('recalculateDailyImport', () => {
     expect(result.customField).toBe('keep-me');
     expect(result.id).toBe('di-custom');
   });
+
+  it('does not erase uploaded data: keeps snapshots + their nested strategies even when top-level detail is empty', () => {
+    const registry = {
+      ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active', maxDrawdownLimit: 2000, targetProfit: 52000 },
+    };
+    // Post-upload shape: strategies are nested on the snapshot, top-level arrays empty.
+    const dailyImport = {
+      id: 'di-1', clientId: 'c1', date: '2026-06-25', status: 'Closed',
+      snapshots: [{
+        accountName: 'ACC1', grossRealizedPnl: 200, accountBalance: 51200, trailingMaxDrawdown: -500, weeklyPnl: 800,
+        strategies: [{ strategyName: '1-RBO', enabled: true }],
+      }],
+      strategies: [], orders: [], executions: [], accounts: {}, flags: [],
+    };
+    const result = recalculateDailyImport({ dailyImport, registry });
+    expect(result.snapshots).toHaveLength(1);
+    expect(result.snapshots[0].strategies).toHaveLength(1);
+    expect(result.snapshots[0].accountBalance).toBe(51200);
+  });
 });
