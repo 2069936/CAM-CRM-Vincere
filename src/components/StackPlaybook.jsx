@@ -36,6 +36,27 @@ function comboFromStrategies(strategies = []) {
   return unique.join(' + ') || 'Unknown';
 }
 
+// Combo-change events for an account, aligned to its equity series index (same
+// sorted-by-date, snapshot-present ordering as buildAccountEquitySeries), so the
+// changes can be marked on the curve — "did the change help?".
+function comboChangesFor(client, accountName) {
+  const lower = String(accountName || '').toLowerCase();
+  const imports = [...(client?.dailyImports || [])].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  const points = [];
+  for (const di of imports) {
+    const snap = (di.snapshots || []).find((s) => s.accountName?.toLowerCase() === lower);
+    if (!snap) continue;
+    points.push({ date: di.date || '', combo: comboFromStrategies(snap.strategies || []) });
+  }
+  const changes = [];
+  for (let i = 1; i < points.length; i += 1) {
+    if (points[i].combo !== points[i - 1].combo) {
+      changes.push({ index: i, date: points[i].date, from: points[i - 1].combo || '-', to: points[i].combo || '-' });
+    }
+  }
+  return changes;
+}
+
 // Aggregate algo combo performance across ALL clients' historical closes
 // Calendar days that `date` (YYYY-MM-DD) falls before `anchor`. 0 = same day.
 // Date-based so the "recent window" is aligned across clients regardless of how
@@ -341,7 +362,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                         </small>
                       ) : null}
                     </div>
-                    <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} />
+                    <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName)} />
                   </div>
                 );
               })}

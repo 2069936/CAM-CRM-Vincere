@@ -7,7 +7,7 @@ function money(n) {
 // Single-series SVG line over a full-width viewBox. vector-effect keeps the 2px
 // stroke crisp regardless of horizontal scaling, so we can stretch to container
 // width without distorting the mark. baseline draws a dashed reference line.
-function MiniLine({ series, pick, color, fill, baseline = null, title }) {
+function MiniLine({ series, pick, color, fill, baseline = null, title, markers = [] }) {
   const w = 600;
   const h = 90;
   const pad = 8;
@@ -23,6 +23,11 @@ function MiniLine({ series, pick, color, fill, baseline = null, title }) {
   return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={title} style={{ width: '100%', height: 74, display: 'block' }}>
       <title>{title}</title>
+      {markers.map((m) => (
+        <line key={m.index} x1={X(m.index)} x2={X(m.index)} y1={pad} y2={h - pad} stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 3" vectorEffect="non-scaling-stroke" opacity="0.5">
+          <title>{`${m.date}: ${m.from} -> ${m.to}`}</title>
+        </line>
+      ))}
       {baseline != null ? (
         <line x1={pad} x2={w - pad} y1={Y(baseline)} y2={Y(baseline)} stroke="var(--error)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" opacity="0.75" />
       ) : null}
@@ -40,7 +45,7 @@ function bufferColor(buffer) {
   return 'var(--success)';
 }
 
-export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 'Account' }) {
+export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 'Account', comboChanges = [] }) {
   if (series.length < 2) {
     return <div className="muted" style={{ fontSize: 12 }}>Not enough history yet for {alias} — needs at least two closes.</div>;
   }
@@ -64,7 +69,7 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
       <div className="ahc-charts">
         <div className="ahc-plot">
           <div className="ahc-plot-head">
-            <span className="muted">Cumulative PnL</span>
+            <span className="muted">Cumulative PnL{comboChanges.length ? ` · ${comboChanges.length} combo change${comboChanges.length > 1 ? 's' : ''}` : ''}</span>
             <strong className={finalCum >= 0 ? 'positive' : 'negative'}>{money(finalCum)}</strong>
           </div>
           <MiniLine
@@ -73,6 +78,7 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
             color="var(--accent)"
             fill="rgba(var(--accent-rgb), 0.12)"
             baseline={0}
+            markers={comboChanges}
             title={`${alias} cumulative PnL ${start} to ${end}: ${money(finalCum)}`}
           />
         </div>
