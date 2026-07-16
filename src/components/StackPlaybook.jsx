@@ -34,19 +34,39 @@ function comboFromStrategies(strategies = []) {
 }
 
 // Aggregate algo combo performance across ALL clients' historical closes
-export function buildAlgoComboPerformance(allClients = []) {
+// Calendar days that `date` (YYYY-MM-DD) falls before `anchor`. 0 = same day.
+// Date-based so the "recent window" is aligned across clients regardless of how
+// many imports each has — the positional last-N-rows approach misaligned them.
+function daysBefore(anchor, date) {
+  if (!anchor || !date) return Infinity;
+  const a = new Date(`${anchor}T00:00:00Z`).getTime();
+  const d = new Date(`${date}T00:00:00Z`).getTime();
+  return Math.round((a - d) / 86400000);
+}
+
+// Latest import date across a set of clients — the window anchor.
+function latestImportDate(clients) {
+  let anchor = '';
+  for (const client of clients || []) {
+    for (const di of client.dailyImports || []) {
+      if ((di.date || '') > anchor) anchor = di.date || '';
+    }
+  }
+  return anchor;
+}
+
+export function buildAlgoComboPerformance(allClients = [], { windowDays = 7 } = {}) {
   const combos = {};
+  const anchor = latestImportDate(allClients);
 
   for (const client of allClients) {
     const rawReg = client.accountRegistry || {};
     const registry = Object.fromEntries(Object.entries(rawReg).map(([k, v]) => [k.toLowerCase(), v]));
-    const imports = client.dailyImports || [];
-    const n = imports.length;
 
-    for (let i = 0; i < n; i++) {
-      const di = imports[i];
-      const isRecent7 = i >= n - 7;
-      const isPrior7 = i >= n - 14 && i < n - 7;
+    for (const di of client.dailyImports || []) {
+      const age = daysBefore(anchor, di.date); // days this close is before the anchor
+      const isRecent = age >= 0 && age < windowDays;
+      const isPrior = age >= windowDays && age < windowDays * 2;
 
       for (const snap of di.snapshots || []) {
         const meta = registry[(snap.accountName || '').toLowerCase()] || {};
@@ -62,10 +82,10 @@ export function buildAlgoComboPerformance(allClients = []) {
             totalPnl: 0,
             days: 0,
             winDays: 0,
-            recent7Pnl: 0,
-            recent7Days: 0,
-            prior7Pnl: 0,
-            prior7Days: 0,
+            recentPnl: 0,
+            recentDays: 0,
+            priorPnl: 0,
+            priorDays: 0,
             accountSet: new Set(),
             clientSet: new Set(),
           };
@@ -78,8 +98,8 @@ export function buildAlgoComboPerformance(allClients = []) {
         if (pnl > 0) entry.winDays += 1;
         entry.accountSet.add(`${client.id}::${snap.accountName}`);
         entry.clientSet.add(client.id);
-        if (isRecent7) { entry.recent7Pnl += pnl; entry.recent7Days += 1; }
-        if (isPrior7)  { entry.prior7Pnl += pnl; entry.prior7Days += 1; }
+        if (isRecent) { entry.recentPnl += pnl; entry.recentDays += 1; }
+        if (isPrior)  { entry.priorPnl += pnl; entry.priorDays += 1; }
       }
     }
   }
@@ -87,12 +107,12 @@ export function buildAlgoComboPerformance(allClients = []) {
   return Object.values(combos)
     .map((c) => {
       const avgPnl = c.days ? c.totalPnl / c.days : 0;
-      const recent7Avg = c.recent7Days ? c.recent7Pnl / c.recent7Days : null;
-      const prior7Avg  = c.prior7Days  ? c.prior7Pnl  / c.prior7Days  : null;
+      const recentAvg = c.recentDays ? c.recentPnl / c.recentDays : null;
+      const priorAvg  = c.priorDays  ? c.priorPnl  / c.priorDays  : null;
       let trend = 'stable';
-      if (recent7Avg !== null && prior7Avg !== null) {
-        if (recent7Avg > prior7Avg * 1.1) trend = 'up';
-        else if (recent7Avg < prior7Avg * 0.9) trend = 'down';
+      if (recentAvg !== null && priorAvg !== null) {
+        if (recentAvg > priorAvg * 1.1) trend = 'up';
+        else if (recentAvg < priorAvg * 0.9) trend = 'down';
       }
       return {
         combo: c.combo,
@@ -102,20 +122,23 @@ export function buildAlgoComboPerformance(allClients = []) {
         accounts: c.accountSet.size,
         clients: c.clientSet.size,
         trend,
-        recent7Avg,
-        prior7Avg,
+        recentAvg,
+        priorAvg,
+        recentDays: c.recentDays,
       };
     })
     .sort((a, b) => b.avgPnl - a.avgPnl);
 }
 
 // For a specific client's funded accounts, compare their combo vs team avg and suggest better option
-function buildClientComboInsights(client, dailyImport, comboPerf) {
+function buildClientComboInsights(client, dailyImport, comboPerf, { windowDays = 7 } = {}) {
   if (!client || !comboPerf.length) return [];
   const registry = mergeRegCi(dailyImport?.accounts, client.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
   const perfByCombo = Object.fromEntries(comboPerf.map((c) => [c.combo, c]));
   const best = comboPerf[0];
+  // Anchor the account window at the close being viewed, not the array tail.
+  const anchor = dailyImport?.date || latestImportDate([client]);
 
   return snapshots
     .filter((s) => {
@@ -129,15 +152,19 @@ function buildClientComboInsights(client, dailyImport, comboPerf) {
       const currentCombo = comboFromStrategies(s.strategies || []);
       const teamData = perfByCombo[currentCombo];
       const sNameLower = (s.accountName || '').toLowerCase();
-      const accountPnl7 = (client.dailyImports || [])
-        .slice(-7)
-        .reduce((sum, di) => {
-          const snap = (di.snapshots || []).find((x) => x.accountName?.toLowerCase() === sNameLower);
-          return sum + Number(snap?.grossRealizedPnl || 0);
-        }, 0);
-      const accountAvg7 = accountPnl7 / 7;
-      const teamAvg7 = teamData?.recent7Avg ?? teamData?.avgPnl ?? null;
-      const delta = teamAvg7 !== null ? accountAvg7 - teamAvg7 : null;
+      // Sum the account's PnL over the real date window and divide by the days
+      // that actually had data (not a hard-coded 7).
+      let sum = 0;
+      let daysWithData = 0;
+      for (const di of client.dailyImports || []) {
+        const age = daysBefore(anchor, di.date);
+        if (age < 0 || age >= windowDays) continue;
+        const snap = (di.snapshots || []).find((x) => x.accountName?.toLowerCase() === sNameLower);
+        if (snap) { sum += Number(snap.grossRealizedPnl || 0); daysWithData += 1; }
+      }
+      const accountAvg = daysWithData ? sum / daysWithData : 0;
+      const teamAvg = teamData?.recentAvg ?? teamData?.avgPnl ?? null;
+      const delta = teamAvg !== null ? accountAvg - teamAvg : null;
       const suggestion = best.combo !== currentCombo && best.avgPnl > (teamData?.avgPnl || 0) * 1.15
         ? best.combo
         : null;
@@ -146,8 +173,9 @@ function buildClientComboInsights(client, dailyImport, comboPerf) {
         accountName: s.accountName,
         alias: meta.alias || s.accountName,
         currentCombo,
-        accountAvg7,
-        teamAvg7,
+        accountAvg,
+        accountDays: daysWithData,
+        teamAvg,
         delta,
         suggestion,
         bestCombo: best.combo,
@@ -213,6 +241,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [localDll, setLocalDll] = useState({});
   const [changeNotes, setChangeNotes] = useState({});
   const [historyOpen, setHistoryOpen] = useState(true);
+  const [windowDays, setWindowDays] = useState(30);
 
   // Funded + evaluation accounts get a full-history chart (cash accounts are
   // tracked by cash balance, not trajectory).
@@ -241,8 +270,8 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
 
   // Build team intelligence using ALL clients
   const teamClients = allClients.length ? allClients : (client ? [client] : []);
-  const comboPerf = buildAlgoComboPerformance(teamClients);
-  const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf);
+  const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
+  const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
 
   const hasSuggestions = clientInsights.some((i) => i.suggestion);
   const totalTeamAccounts = comboPerf.reduce((s, c) => s + c.accounts, 0);
@@ -283,7 +312,15 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
       <section className="panel">
         <div className="panel-heading">
           <h3>Team Algo Performance</h3>
-          <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs · all history</span>
+          <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs</span>
+          <select
+            className="window-select"
+            value={windowDays}
+            onChange={(e) => setWindowDays(Number(e.target.value))}
+            title="Trend / recent-average window"
+          >
+            {[7, 30, 60, 90, 180].map((d) => <option key={d} value={d}>{`Last ${d}d`}</option>)}
+          </select>
         </div>
         {comboPerf.length === 0 ? (
           <p className="muted" style={{ padding: '12px 0' }}>No strategy data across clients yet - upload daily closes to populate.</p>
@@ -300,8 +337,8 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                     <th>Combo</th>
                     <th>Avg P&amp;L / day</th>
                     <th>Win rate</th>
-                    <th>Trend (7d)</th>
-                    <th>Last 7d avg</th>
+                    <th>Trend ({windowDays}d)</th>
+                    <th>Last {windowDays}d avg</th>
                     <th>Accounts</th>
                     <th>Clients</th>
                     <th>Total days</th>
@@ -324,8 +361,8 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                           {row.trend}
                         </span>
                       </td>
-                      <td className={row.recent7Avg != null ? (row.recent7Avg >= 0 ? 'positive' : 'negative') : 'muted'}>
-                        {row.recent7Avg != null ? `${row.recent7Avg >= 0 ? '+' : ''}${fmt(row.recent7Avg)}` : '-'}
+                      <td className={row.recentAvg != null ? (row.recentAvg >= 0 ? 'positive' : 'negative') : 'muted'}>
+                        {row.recentAvg != null ? `${row.recentAvg >= 0 ? '+' : ''}${fmt(row.recentAvg)}` : '-'}
                       </td>
                       <td>{row.accounts}</td>
                       <td>{row.clients}</td>
@@ -354,7 +391,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                 <tr>
                   <th>Account</th>
                   <th>Current combo</th>
-                  <th>This acct 7d avg</th>
+                  <th>This acct {windowDays}d avg</th>
                   <th>Team avg (same combo)</th>
                   <th>vs Team</th>
                   <th>Insight</th>
@@ -365,11 +402,11 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                   <tr key={row.accountName}>
                     <td><strong>{row.alias}</strong></td>
                     <td><span className="badge muted">{row.currentCombo}</span></td>
-                    <td className={row.accountAvg7 >= 0 ? 'positive' : 'negative'}>
-                      {row.accountAvg7 >= 0 ? '+' : ''}{fmt(row.accountAvg7)}
+                    <td className={row.accountAvg >= 0 ? 'positive' : 'negative'}>
+                      {row.accountAvg >= 0 ? '+' : ''}{fmt(row.accountAvg)}
                     </td>
                     <td className="muted">
-                      {row.teamAvg7 != null ? `${row.teamAvg7 >= 0 ? '+' : ''}${fmt(row.teamAvg7)}` : '-'}
+                      {row.teamAvg != null ? `${row.teamAvg >= 0 ? '+' : ''}${fmt(row.teamAvg)}` : '-'}
                     </td>
                     <td className={row.delta == null ? 'muted' : row.delta >= 0 ? 'positive' : 'negative'}>
                       {row.delta != null ? `${row.delta >= 0 ? '+' : ''}${fmt(row.delta)}` : '-'}

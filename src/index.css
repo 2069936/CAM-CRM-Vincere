@@ -6304,3 +6304,5 @@ tr:nth-child(2) .rank-badge {
 .ahc-plot-head strong, .ahc-stats strong { font-variant-numeric: tabular-nums; }
 .ahc-stats { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; }
 @media (max-width: 720px) { .ahc-charts { grid-template-columns: 1fr; } }
+
+.window-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
