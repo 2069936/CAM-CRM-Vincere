@@ -61,7 +61,9 @@ function createDefaultAccount(account, existing = {}) {
 
 function makeFlag({ type, severity = 'Warning', accountName = '', message }) {
   return {
-    id: `${type}-${accountName || 'client'}-${Math.random().toString(36).slice(2, 9)}`,
+    // Deterministic id (no random) so a recalculated flag maps to its prior
+    // triage status instead of coming back as a brand-new Open flag.
+    id: `${type}|${accountName || 'client'}|${message || ''}`,
     type,
     severity,
     accountName,
@@ -339,9 +341,22 @@ export function recalculateDailyImport({ dailyImport, registry = {} }) {
   // rebuilt snapshots would drop their nested strategy detail whenever the
   // top-level detail arrays are empty (e.g. right after an upload, before a
   // reload), which is what made Recalculate look like it erased the import.
+  // Carry each prior flag's triage (Acknowledged/Resolved + resolvedAt) onto the
+  // regenerated flag so Recalculate keeps the operator's work instead of resetting
+  // every flag to Open. Match on a reconstructed type|account|message key (not the
+  // id) so it also matches flags reloaded from the DB, which carry a uuid id.
+  const flagKey = (f) => `${f.type}|${f.accountName || 'client'}|${f.message || ''}`;
+  const priorByKey = Object.fromEntries((dailyImport.flags || []).map((f) => [flagKey(f), f]));
+  const flags = (recalculated.flags || []).map((flag) => {
+    const prior = priorByKey[flagKey(flag)];
+    return prior && prior.status && prior.status !== 'Open'
+      ? { ...flag, status: prior.status, resolvedAt: prior.resolvedAt }
+      : flag;
+  });
+
   return {
     ...dailyImport,
     status: recalculated.status,
-    flags: recalculated.flags,
+    flags,
   };
 }

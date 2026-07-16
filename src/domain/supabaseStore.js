@@ -127,6 +127,7 @@ function flagFromRow(row, accountById) {
     accountName: account?.account_name || '',
     message: row.message,
     status: row.status || 'Open',
+    resolvedAt: row.resolved_at || '',
   };
 }
 
@@ -1141,8 +1142,8 @@ export async function replaceSupabaseOperationalFlags(clientId, importId, flags 
       type: flag.type,
       severity: flag.severity || 'Warning',
       message: flag.message || '',
-      status: 'Open',
-      resolved_at: null,
+      status: flag.status || 'Open',
+      resolved_at: flag.resolvedAt || null,
     };
   });
 

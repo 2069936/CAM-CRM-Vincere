@@ -393,16 +393,11 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
         <div className="panel-heading">
           <h3>Action required</h3>
           <div className="inline-actions">
-            {onBulkResolveFlags && flags.some(f => f.status !== 'Resolved' && f.status !== 'Acknowledged') && (
-              <>
-                <button className="ghost-button" style={{fontSize:12}} title="Mark all open flags as acknowledged" onClick={() => onBulkResolveFlags('Acknowledged')}>
-                  Ack all
-                </button>
-                <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags('Resolved')}>
-                  Resolve all
-                </button>
-              </>
-            )}
+            {onBulkResolveFlags && flags.length ? (
+              <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags('Resolved')}>
+                Resolve all
+              </button>
+            ) : null}
             <button className="secondary-button" onClick={onRecalculate}>
               <RefreshCw size={16} /> Recalculate
             </button>
@@ -423,15 +418,10 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
                   </strong>
                   <span>{flag.message}</span>
                 </div>
-                {flag.status !== 'Resolved' && flag.status !== 'Acknowledged' && onResolveFlag ? (
-                  <div style={{display:'flex',gap:4,flexShrink:0}}>
-                    {flag.severity !== 'Critical' && (
-                      <button className="ghost-button icon-only flag-resolve-btn" title="Acknowledge - seen, not blocking" style={{fontSize:10,padding:'2px 6px',width:'auto'}} onClick={() => onResolveFlag(flag.id, 'Acknowledged')}>Ack</button>
-                    )}
-                    <button className="ghost-button icon-only flag-resolve-btn" title="Mark resolved" onClick={() => onResolveFlag(flag.id, 'Resolved')}>
-                      <X size={14} />
-                    </button>
-                  </div>
+                {onResolveFlag ? (
+                  <button className="ghost-button icon-only flag-resolve-btn" title="Resolve - dismiss this flag" style={{flexShrink:0}} onClick={() => onResolveFlag(flag.id, 'Resolved')}>
+                    <X size={14} />
+                  </button>
                 ) : null}
               </div>
             ))}

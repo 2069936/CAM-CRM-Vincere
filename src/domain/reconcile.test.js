@@ -400,6 +400,23 @@ describe('recalculateDailyImport', () => {
     expect(result.id).toBe('di-custom');
   });
 
+  it('preserves resolved/acknowledged flag status across a recalculate (no triage reset)', () => {
+    const registry = {
+      ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active', maxDrawdownLimit: 2000, targetProfit: 52000 },
+    };
+    const dailyImport = {
+      id: 'di-1', clientId: 'c1', date: '2026-06-25', status: 'Closed',
+      snapshots: [{ accountName: 'ACC1', grossRealizedPnl: 200, accountBalance: 51200, trailingMaxDrawdown: -1900, weeklyPnl: 800 }],
+      strategies: [], orders: [], executions: [], accounts: {}, flags: [],
+    };
+    const first = recalculateDailyImport({ dailyImport, registry });
+    expect(first.flags.length).toBeGreaterThan(0);
+    // operator resolves the generated flags, then recalculates again
+    const resolved = { ...dailyImport, flags: first.flags.map((f) => ({ ...f, status: 'Resolved', resolvedAt: '2026-06-25T10:00:00Z' })) };
+    const second = recalculateDailyImport({ dailyImport: resolved, registry });
+    expect(second.flags.every((f) => f.status === 'Resolved')).toBe(true);
+  });
+
   it('does not erase uploaded data: keeps snapshots + their nested strategies even when top-level detail is empty', () => {
     const registry = {
       ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active', maxDrawdownLimit: 2000, targetProfit: 52000 },
