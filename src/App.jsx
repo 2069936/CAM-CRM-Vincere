@@ -11071,6 +11071,7 @@ export default function App() {
   const [showUpload, setShowUpload] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const [showSOP, setShowSOP] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [showQuickLog, setShowQuickLog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [quickLogType, setQuickLogType] = useState("Note");
@@ -11084,6 +11085,16 @@ export default function App() {
   const [globalSearchIdx, setGlobalSearchIdx] = useState(0);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
+
+  // Keep the CAM Profile view mutually exclusive with the other sub-views without
+  // threading setShowProfile(false) through every navigation handler: clear it
+  // when the user opens Overview/SOP or switches to a client.
+  useEffect(() => {
+    if (showOverview || showSOP) setShowProfile(false);
+  }, [showOverview, showSOP]);
+  useEffect(() => {
+    setShowProfile(false);
+  }, [state.selectedClientId]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -12393,6 +12404,19 @@ export default function App() {
                     <span>Daily SOP</span>
                     <em>Checklist</em>
                   </button>
+                  <button
+                    className={showProfile ? "client-link active" : "client-link"}
+                    onClick={() => {
+                      setShowProfile(true);
+                      setShowOverview(false);
+                      setShowSOP(false);
+                      closeMobileSidebar();
+                    }}
+                  >
+                    <UserRound size={16} />
+                    <span>Profile</span>
+                    <em>Account</em>
+                  </button>
                   {isManagerSession ? (
                     <>
                       <div className="nav-label">Other CAMs</div>
@@ -12706,7 +12730,18 @@ export default function App() {
             </nav>
           </aside>
 
-          {showSOP ? (
+          {showProfile ? (
+            <main className="content">
+              <div className="page-header">
+                <div>
+                  <span className="eyebrow">Account</span>
+                  <h1>Profile</h1>
+                  <p>Review your account details and update your password.</p>
+                </div>
+              </div>
+              <ProfilePanel session={session} />
+            </main>
+          ) : showSOP ? (
             <main className="content">
               <div className="page-header">
                 <div>
