@@ -12841,6 +12841,21 @@ export default function App() {
                           </span>
                         ) : null}
                       </h1>
+                      {selectedClient.credentials?.ip ? (
+                        <p
+                          className="client-vps-ip"
+                          style={{
+                            margin: "2px 0 0",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span className="muted">VPS</span>
+                          <code>{selectedClient.credentials.ip}</code>
+                          <CopyButton value={selectedClient.credentials.ip} />
+                        </p>
+                      ) : null}
                       <p>
                         {dailyImport
                           ? `${dailyImport.status} · ${(dailyImport.flags || []).length} flags`
