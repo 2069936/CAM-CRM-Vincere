@@ -499,6 +499,23 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
               Aggregated from every client running each algo combination. Use this to evaluate what's working across the portfolio - not a per-client guarantee.
             </p>
+            {(() => {
+              const maxAbs = Math.max(...comboPerf.map((c) => Math.abs(c.avgPnl)), 1);
+              return (
+                <div className="combo-bars">
+                  {comboPerf.slice(0, 8).map((row) => (
+                    <div className="combo-bar-row" key={row.combo}>
+                      <span className="combo-bar-label" title={row.combo}>{row.combo}</span>
+                      <div className="combo-bar-track">
+                        <i style={{ width: `${(Math.abs(row.avgPnl) / maxAbs) * 100}%`, background: row.avgPnl >= 0 ? 'var(--success)' : 'var(--error)' }} />
+                      </div>
+                      <span className={row.avgPnl >= 0 ? 'positive' : 'negative'}>{row.avgPnl >= 0 ? '+' : ''}{fmt(row.avgPnl)}</span>
+                      <span className="muted">{row.winRate}% win</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>

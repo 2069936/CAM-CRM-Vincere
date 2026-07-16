@@ -6314,3 +6314,11 @@ tr:nth-child(2) .rank-badge {
 /* Stack Playbook - strategy classification */
 .strat-class-list { display: flex; flex-direction: column; gap: 10px; }
 .strat-class-list input[type="text"], .strat-class-list select { font-size: 12px; padding: 3px 6px; }
+
+/* Stack Playbook - combo bars (Q3) */
+.combo-bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.combo-bar-row { display: grid; grid-template-columns: 120px 1fr 76px 64px; gap: 10px; align-items: center; font-size: 12px; }
+.combo-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-bar-track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.combo-bar-track i { display: block; height: 100%; border-radius: 4px; }
+.combo-bar-row span { font-variant-numeric: tabular-nums; }
