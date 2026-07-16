@@ -244,7 +244,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
   const isCash = mode === 'cash';
   const isFunded = title === 'Funded';
   const isEval = title === 'Standard Evaluations' || title === 'Bullet Bot';
-  const colSpan = isCash ? 5 : isFunded ? 9 : isEval ? 7 : 6;
+  const colSpan = isCash ? 5 : isFunded ? 10 : isEval ? 8 : 6;
 
   return (
     <section className="panel">
@@ -262,6 +262,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
               <th>Daily PnL</th>
               <th>Weekly PnL</th>
               {isCash ? <th>Cash balance</th> : null}
+              {(isFunded || isEval) ? <th>Balance</th> : null}
               {!isCash ? <th>Drawdown</th> : null}
               {isFunded ? <th>Target</th> : null}
               {isFunded ? <th>Payout</th> : null}
@@ -291,6 +292,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   <td className={row.grossRealizedPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.grossRealizedPnl)}</td>
                   <td className={row.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.weeklyPnl)}</td>
                   {isCash ? <td>{formatCurrency(row.accountBalance)}</td> : null}
+                  {(isFunded || isEval) ? <td>{formatCurrency(row.accountBalance)}</td> : null}
                   {!isCash ? (() => { const dd = drawdownDisplay(row); return <td className={dd.tone}>{dd.label}</td>; })() : null}
                   {isFunded ? (() => {
                     const target = Number(row.meta?.targetProfit || 0);
@@ -372,7 +374,9 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
   const summary = summarizeAccountRows(rows);
   const enrichedRows = rows;
   const relevantAccountNames = new Set(rows.map((row) => row.accountName));
-  const flags = (dailyImport.flags || []).filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
+  const flags = (dailyImport.flags || [])
+    .filter((flag) => flag.status !== 'Acknowledged' && flag.status !== 'Resolved')
+    .filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
   const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');
   const isCash = mode === 'cash';
 
