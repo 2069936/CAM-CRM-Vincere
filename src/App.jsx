@@ -10429,6 +10429,31 @@ function CredentialsTab({
 
       <section className="panel">
         <div className="panel-heading">
+          <h3>Forms</h3>
+          <span className="badge muted">Acknowledgement</span>
+        </div>
+        <p className="muted">
+          Client acknowledgement form. Download the blank template, have the
+          client fill it, and (soon) upload the signed copy here to keep it on
+          file.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <a
+            className="ghost-button"
+            href="/templates/acknowledgement-form.pdf"
+            download
+          >
+            <Download size={16} /> Download blank form
+          </a>
+        </div>
+        <div className="notice muted" style={{ marginTop: 10 }}>
+          Uploading and verifying the filled form is pending the client-forms
+          storage setup (Supabase Storage bucket + step_24 migration).
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
           <h3>Notes</h3>
         </div>
         <textarea
