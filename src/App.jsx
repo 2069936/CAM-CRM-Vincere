@@ -90,7 +90,7 @@ import {
   recalculateDailyImport,
   reconcileDailyImport,
 } from "./domain/reconcile";
-import { parseNinjaTraderCsvText } from "./domain/csvImport";
+import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import {
   parseNinjaTraderLogFile,
   summarizeLogByAccount,
@@ -11315,8 +11315,24 @@ export default function App() {
     }
   }
 
-  function handleParsedFiles(parsed) {
+  function handleParsedFiles(parsed, parsedFiles) {
     if (!selectedClient) return;
+    // Warn before committing an incomplete upload: NinjaTrader needs all four
+    // exports (accounts, strategies, orders, executions), and an unrecognized
+    // file usually means a wrong export or bad headers.
+    const upload = summarizeUploadTypes(parsedFiles || []);
+    if (!upload.isComplete) {
+      const lines = [];
+      if (upload.missingTypes.length)
+        lines.push(`Missing file(s): ${upload.missingTypes.join(", ")}.`);
+      if (upload.unknownFiles.length)
+        lines.push(`Unrecognized file(s): ${upload.unknownFiles.join(", ")}.`);
+      const proceed = window.confirm(
+        `Incomplete upload for ${selectedClient.name}.\n\n${lines.join("\n")}\n\n` +
+          `The close may be missing account or strategy/trade detail. Continue anyway?`,
+      );
+      if (!proceed) return;
+    }
     const result = reconcileDailyImport({
       clientId: selectedClient.id,
       date: selectedDate,
