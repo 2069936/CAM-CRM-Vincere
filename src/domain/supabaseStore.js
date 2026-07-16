@@ -1639,3 +1639,54 @@ export async function saveSupabaseDailySop(camProfileId, checklistDate, checkedI
   if (error) throw new Error(error.message);
   return data;
 }
+
+function strategyClassificationFromRow(row = {}) {
+  return {
+    id: row.id,
+    key: row.match_key,
+    family: row.family || '',
+    signature: row.signature || null,
+    version: row.version || '',
+    riskLevel: row.risk_level || '',
+    notes: row.notes || '',
+  };
+}
+
+export async function loadStrategyClassifications() {
+  if (!isSupabaseConfigured || !supabase) return [];
+  const { data, error } = await supabase
+    .from('strategy_classifications')
+    .select('*')
+    .order('family', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []).map(strategyClassificationFromRow);
+}
+
+export async function upsertStrategyClassification(classification = {}) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const row = {
+    match_key: classification.key,
+    family: classification.family || '',
+    signature: classification.signature || null,
+    version: classification.version || '',
+    risk_level: classification.riskLevel || '',
+    notes: classification.notes || '',
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from('strategy_classifications')
+    .upsert(row, { onConflict: 'match_key' })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return strategyClassificationFromRow(data);
+}
+
+export async function deleteStrategyClassification(matchKey) {
+  if (!isSupabaseConfigured || !supabase) return;
+  const { error } = await supabase
+    .from('strategy_classifications')
+    .delete()
+    .eq('match_key', matchKey);
+  if (error) throw new Error(error.message);
+}

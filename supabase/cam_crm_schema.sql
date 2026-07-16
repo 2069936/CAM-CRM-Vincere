@@ -311,3 +311,17 @@ create index if not exists idx_executions_import_order_id on public.executions(d
 create index if not exists idx_flags_client_status on public.operational_flags(client_id, status);
 create index if not exists idx_tasks_client_done on public.tasks(client_id, done);
 create index if not exists idx_activity_client_created on public.activity_logs(client_id, created_at desc);
+
+-- Manual strategy classifications (family + parameter signature -> version + risk).
+create table if not exists public.strategy_classifications (
+  id uuid primary key default gen_random_uuid(),
+  match_key text unique not null,
+  family text not null,
+  signature jsonb,
+  version text,
+  risk_level text,
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists strategy_classifications_family_idx on public.strategy_classifications(family);
