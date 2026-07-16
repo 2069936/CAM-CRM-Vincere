@@ -26,7 +26,7 @@ function segmentKey(accountType) {
 // Bullet Bot). Never combined. Each segment also lists its accounts with the
 // per-account balance and PnL for the UI.
 export function buildClientSegments(client, dailyImport) {
-  const empty = () => ({ balance: 0, dailyPnl: 0, count: 0, accounts: [] });
+  const empty = () => ({ balance: 0, dailyPnl: 0, weeklyPnl: 0, count: 0, accounts: [] });
   const segments = {
     funded: empty(),
     cash: empty(),
@@ -40,9 +40,11 @@ export function buildClientSegments(client, dailyImport) {
     const seg = segments[segmentKey(meta.accountType)];
     const balance = Number(snapshot.accountBalance) || 0;
     const dailyPnl = Number(snapshot.grossRealizedPnl) || 0;
+    const weeklyPnl = Number(snapshot.weeklyPnl) || 0;
     const trailing = Number(snapshot.trailingMaxDrawdown) || 0;
     seg.balance += balance;
     seg.dailyPnl += dailyPnl;
+    seg.weeklyPnl += weeklyPnl;
     seg.count += 1;
     seg.accounts.push({
       accountName: snapshot.accountName,
@@ -50,6 +52,7 @@ export function buildClientSegments(client, dailyImport) {
       accountType: meta.accountType || '',
       balance,
       dailyPnl,
+      weeklyPnl,
       trailing,
       connection: snapshot.connection || '',
     });

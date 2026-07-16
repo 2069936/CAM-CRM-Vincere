@@ -22,6 +22,13 @@ const dailyImport = {
 };
 
 describe('buildClientSegments', () => {
+  it('accumulates weekly PnL per segment too', () => {
+    const withWeekly = { ...dailyImport, snapshots: dailyImport.snapshots.map((s) => ({ ...s, weeklyPnl: 111 })) };
+    const seg = buildClientSegments(client, withWeekly);
+    expect(seg.funded.weeklyPnl).toBe(111);
+    expect(seg.cash.weeklyPnl).toBe(111);
+  });
+
   it('keeps balance and PnL separate per account type (no combined total)', () => {
     const seg = buildClientSegments(client, dailyImport);
     expect(seg.funded).toMatchObject({ balance: 52000, dailyPnl: 300, count: 1 });

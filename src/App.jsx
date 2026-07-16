@@ -106,6 +106,7 @@ import {
   buildCamDayReport,
   formatCurrency,
 } from "./domain/report";
+import { buildClientSegments } from "./domain/clientSegments";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -6418,6 +6419,24 @@ function ReportPanel({ client, dailyImport, onClose }) {
           ) : null}
         </section>
 
+        <section className="report-metrics report-segments">
+          {[
+            { key: "funded", label: "Funded" },
+            { key: "evalStandard", label: "Evaluations" },
+            { key: "cash", label: "Cash" },
+          ]
+            .filter(({ key }) => report.segments[key].count > 0)
+            .map(({ key, label }) => (
+              <div key={key}>
+                <span>{label} · {report.segments[key].count} acct</span>
+                <strong>{formatCurrency(report.segments[key].balance)}</strong>
+                <small className={report.segments[key].dailyPnl >= 0 ? "report-positive" : "report-negative"}>
+                  day {report.segments[key].dailyPnl >= 0 ? "+" : ""}{formatCurrency(report.segments[key].dailyPnl)} · wk {formatCurrency(report.segments[key].weeklyPnl)}
+                </small>
+              </div>
+            ))}
+        </section>
+
         {["evaluations", "funded", "cash"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
@@ -7051,6 +7070,24 @@ function ClientOverview({
           <span>Open flags</span>
           <strong>{overview.metrics.openFlags}</strong>
         </div>
+        {(() => {
+          const seg = buildClientSegments(client, dailyImport);
+          return [
+            { key: "funded", label: "Funded" },
+            { key: "evalStandard", label: "Evaluations" },
+            { key: "cash", label: "Cash" },
+          ]
+            .filter(({ key }) => seg[key].count > 0)
+            .map(({ key, label }) => (
+              <div className="metric" key={key}>
+                <span>{label} balance · {seg[key].count}</span>
+                <strong>{formatCurrency(seg[key].balance)}</strong>
+                <small className={seg[key].dailyPnl >= 0 ? "positive" : "negative"}>
+                  day {seg[key].dailyPnl >= 0 ? "+" : ""}{formatCurrency(seg[key].dailyPnl)} · wk {formatCurrency(seg[key].weeklyPnl)}
+                </small>
+              </div>
+            ));
+        })()}
         {lifetime && (
           <>
             <div className="metric">

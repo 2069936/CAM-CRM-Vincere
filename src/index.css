@@ -6370,3 +6370,7 @@ tr:nth-child(2) .rank-badge {
 /* Stack Playbook - combo x firm heatmap (B5) */
 .heatmap-table td { text-align: center; font-variant-numeric: tabular-nums; }
 .heatmap-table td:first-child { text-align: left; }
+
+/* Per-type segment strip in report + client overview */
+.report-segments div, .metric { position: relative; }
+.report-segments div small, .metric small { display: block; font-size: 11px; margin-top: 3px; }
