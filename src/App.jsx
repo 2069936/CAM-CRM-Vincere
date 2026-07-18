@@ -52,6 +52,7 @@ import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
 import ProfilePanel from "./components/ProfilePanel";
 import StackPlaybook from "./components/StackPlaybook";
+import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import {
   Dialog,
@@ -90,18 +91,22 @@ import {
   recalculateDailyImport,
   reconcileDailyImport,
 } from "./domain/reconcile";
-import { parseNinjaTraderCsvText } from "./domain/csvImport";
+import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
+import { suggestAccountDefaults } from "./domain/accountTargets";
 import {
   parseNinjaTraderLogFile,
   summarizeLogByAccount,
+  summarizeLogByFamily,
 } from "./domain/ninjaTraderLog";
 import {
   buildClientMessageReport,
   buildWeeklyMessageReport,
   buildDailyReportSummary,
   buildTeamWeeklyReport,
+  buildCamDayReport,
   formatCurrency,
 } from "./domain/report";
+import { buildClientSegments } from "./domain/clientSegments";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -140,6 +145,10 @@ import {
   loadSupabaseDailySopTemplate,
   loadSupabaseReports,
   loadSupabaseAuditLogs,
+  loadStrategyClassifications,
+  upsertStrategyClassification,
+  loadLogAlgoHistory,
+  saveLogAlgoHistory,
   replaceSupabaseOperationalFlags,
   replaceSupabasePriceChecks,
   softDeleteSupabaseClient,
@@ -364,7 +373,7 @@ export function buildTodayActions(client, dailyImport) {
       actions.push({
         severity: "info-green",
         icon: "💰",
-        text: `Payout ready: ${p.alias} reached ${Math.round((p.profit / p.target) * 100)}% of target`,
+        text: `Payout ready: ${p.alias} reached ${p.pct}% of target`,
       });
     }
   }
@@ -1203,7 +1212,7 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
     for (const id of cam.clientIds || []) clientCam[id] = cam.id;
   }
 
-  const buckets = { Critical: [], High: [], Medium: [], Low: [], Safe: [] };
+  const buckets = { High: [], Medium: [], Low: [], Unassigned: [] };
 
   for (const client of clients) {
     const latest = client.dailyImports?.at(-1);
@@ -1231,11 +1240,9 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
         pct: risk?.pct || 0,
       };
 
-      if (risk?.level === "Critical") buckets.Critical.push(entry);
-      else if (risk?.level === "High") buckets.High.push(entry);
-      else if (risk?.level === "Medium") buckets.Medium.push(entry);
-      else if (risk?.level === "Low") buckets.Low.push(entry);
-      else buckets.Safe.push(entry);
+      const level = meta.riskLevel || "Unassigned";
+      if (buckets[level]) buckets[level].push(entry);
+      else buckets.Unassigned.push(entry);
     }
   }
 
@@ -1258,15 +1265,25 @@ export function buildPayoutAlerts(client, dailyImport) {
     const target = Number(meta.targetProfit || 0);
     if (!target) continue;
     const balance = Number(snap.accountBalance || 0);
+    // Progress is measured from the account's starting balance, not from zero.
+    // A 50k funded account with a 54k target is at 0% at 50k and negative below
+    // it — not 91%. Fall back to the account-size guess used elsewhere when no
+    // start balance has been set.
+    const start =
+      Number(meta.startBalance || 0) || (balance >= 90000 ? 100000 : 50000);
+    const needed = target - start;
+    if (needed <= 0) continue;
+    const profit = balance - start;
     const alreadyRequested =
       meta.payoutState && meta.payoutState !== "Not requested";
-    if (!alreadyRequested && balance >= target * 0.9) {
+    if (!alreadyRequested && profit >= needed * 0.9) {
       alerts.push({
         accountName: snap.accountName,
         alias: meta.alias || snap.accountName,
-        profit: balance,
+        balance,
+        profit,
         target,
-        pct: Math.round((balance / target) * 100),
+        pct: Math.round((profit / needed) * 100),
         payoutState: meta.payoutState || "Not requested",
         ready: balance >= target,
       });
@@ -1609,6 +1626,20 @@ function auditSilently(entry) {
   createSupabaseAuditLog(entry).catch((error) => {
     console.error("[CRM] Failed to write audit log:", error);
   });
+}
+
+// Print-to-PDF uses document.title as the default filename, so set it to the
+// client + date before printing and restore it after — no more manual renaming.
+function printWithTitle(title) {
+  const safe = String(title || "report").replace(/[\\/:*?"<>|]+/g, "-").trim();
+  const prev = document.title;
+  document.title = safe;
+  const restore = () => {
+    document.title = prev;
+    window.removeEventListener("afterprint", restore);
+  };
+  window.addEventListener("afterprint", restore);
+  window.print();
 }
 
 function downloadTextFile(fileName, text, type = "application/json") {
@@ -2465,11 +2496,17 @@ function DataToolsPanel({
           id: `nt-log-${row.date || "unknown"}-${row.accountName}-${Date.now()}`.replace(/[^a-zA-Z0-9_-]/g, "-"),
           type: "Import",
           accountName: row.matchedAccountName || row.accountName,
+          logDate: row.date || "",
+          logPnl: row.realizedPnl != null ? row.realizedPnl : null,
           createdAt: new Date().toISOString(),
-          text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short) for ${row.date || "unknown date"}.`,
+          text: `NinjaTrader log ${row.filename}: ${row.fills} fills, ${row.contracts} contracts (${row.long} long / ${row.short} short), realized ${formatCurrency(row.realizedPnl || 0)} over ${row.roundTrips || 0} round trips for ${row.date || "unknown date"}.${row.unknownInstruments?.length ? ` Unpriced: ${row.unknownInstruments.join(", ")}.` : ""}`,
         });
       }
-      setMessage(`Saved ${matchedRows.length} NinjaTrader log summar${matchedRows.length === 1 ? "y" : "ies"} to client activity.`);
+      // Team-wide algo history from ALL parsed logs, matched or not — accounts
+      // that no longer exist still count toward bullet-bot / algo history.
+      const familyRows = (logImportResult?.files || []).flatMap((file) => summarizeLogByFamily(file.parsed));
+      if (familyRows.length) await saveLogAlgoHistory(familyRows);
+      setMessage(`Saved ${matchedRows.length} log summar${matchedRows.length === 1 ? "y" : "ies"} + ${familyRows.length} algo-history row${familyRows.length === 1 ? "" : "s"}.`);
       setStatus("ready");
     } catch (error) {
       console.error("[CRM] Failed to save NinjaTrader log activity:", error);
@@ -2847,6 +2884,7 @@ function DataToolsPanel({
                       <th>Client</th>
                       <th>Fills</th>
                       <th>Long/Short</th>
+                      <th>Realized</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2863,6 +2901,9 @@ function DataToolsPanel({
                         </td>
                         <td>{row.fills} fills / {row.contracts} contracts</td>
                         <td>{row.long}L / {row.short}S</td>
+                        <td className={(row.realizedPnl || 0) >= 0 ? "positive" : "negative"} title={row.unknownInstruments?.length ? `Unpriced: ${row.unknownInstruments.join(", ")}` : `${row.roundTrips || 0} round trips`}>
+                          {formatCurrency(row.realizedPnl || 0)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -5303,17 +5344,19 @@ function ManagerOverview({
                 <strong>{lifecycle.avgDaysToPayout}</strong>
               </div>
             </div>
+            <h4 className="muted" style={{ margin: "14px 0 6px" }}>By algo combo — funded rate, lifespan, survival</h4>
+            <LifecycleByAlgo clients={clients} />
           </div>
         </section>
 
         {riskDist.total > 0 ? (
           <section
             className={
-              riskDist.buckets.Critical.length ? "panel danger-panel" : "panel"
+              riskDist.buckets.High.length ? "panel danger-panel" : "panel"
             }
           >
             <div className="panel-heading">
-              <h3>Drawdown risk distribution</h3>
+              <h3>Risk distribution</h3>
               <span className="badge muted">
                 {riskDist.total} active accounts
               </span>
@@ -5321,26 +5364,21 @@ function ManagerOverview({
             <div className="risk-dist-grid">
               {[
                 {
-                  key: "Critical",
-                  color: "var(--error)",
-                  label: "Critical (≥85% / ≤$500)",
-                },
-                {
                   key: "High",
-                  color: "var(--warning)",
-                  label: "High (65–85% / ≤$1.2k)",
+                  color: "var(--error)",
+                  label: "High",
                 },
                 {
                   key: "Medium",
                   color: "var(--warning)",
-                  label: "Medium (40–65% / ≤$2.5k)",
+                  label: "Medium",
                 },
                 {
                   key: "Low",
                   color: "var(--success)",
-                  label: "Low (<40% / >$2.5k)",
+                  label: "Low",
                 },
-                { key: "Safe", color: "var(--muted)", label: "No DD data" },
+                { key: "Unassigned", color: "var(--muted)", label: "Unassigned" },
               ].map(({ key, color, label }) => {
                 const accounts = riskDist.buckets[key];
                 const pct =
@@ -5358,7 +5396,7 @@ function ManagerOverview({
                     <strong
                       style={{
                         color:
-                          accounts.length && key === "Critical"
+                          accounts.length && key === "High"
                             ? color
                             : undefined,
                       }}
@@ -5996,7 +6034,6 @@ function ManagerOverview({
 }
 
 function MonthlyReportPanel({ client, month, onClose }) {
-  const [copied, setCopied] = useState(false);
   // month = 'YYYY-MM'
   const lastMonthImport = (client?.dailyImports || [])
     .filter((di) => di.date?.startsWith(month))
@@ -6058,50 +6095,11 @@ function MonthlyReportPanel({ client, month, onClose }) {
     <div className="report-overlay">
       <div className="report-sheet">
         <div className="report-actions no-print">
-          <button className="secondary-button" onClick={() => window.print()}>
-            <FileText size={14} /> Print / Save PDF
-          </button>
           <button
-            className="ghost-button"
-            onClick={() => {
-              if (!allDays.length) return;
-              const fmt = (n) =>
-                new Intl.NumberFormat("en-US", {
-                  style: "currency",
-                  currency: "USD",
-                  maximumFractionDigits: 0,
-                }).format(Number(n || 0));
-              const s = (n) => (n >= 0 ? "+" : "");
-              const lines = [
-                `📊 *Monthly Report - ${monthLabel}*`,
-                `👤 ${client?.name || "Client"}`,
-                ``,
-                `💰 *Net P&L:* ${s(totalPnl)}${fmt(totalPnl)}`,
-                `📅 *Trading days:* ${allDays.length} | ✅ Positive: ${positiveDays.length} | ❌ Negative: ${negativeDays.length}`,
-                bestDay
-                  ? `📈 *Best day:* ${s(bestDay.pnl)}${fmt(bestDay.pnl)} (${bestDay.date})`
-                  : null,
-                worstDay && worstDay.date !== bestDay?.date
-                  ? `📉 *Worst day:* ${s(worstDay.pnl)}${fmt(worstDay.pnl)} (${worstDay.date})`
-                  : null,
-                accountRows.length ? `` : null,
-                accountRows.length ? `*Account breakdown:*` : null,
-                ...accountRows
-                  .slice(0, 8)
-                  .map(
-                    (r) =>
-                      `  • ${r.alias}: ${s(r.pnl)}${fmt(r.pnl)} (${r.days}d, ${r.days ? Math.round((r.winDays / r.days) * 100) : 0}% win)`,
-                  ),
-                ``,
-                `_Generated by CAM CRM · Drive Insight_`,
-              ].filter((l) => l !== null);
-              navigator.clipboard.writeText(lines.join("\n")).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2500);
-              });
-            }}
+            className="secondary-button"
+            onClick={() => printWithTitle(`${client?.name || "Client"} - ${monthLabel} monthly report`)}
           >
-            <Copy size={14} /> {copied ? "Copied!" : "Copy WhatsApp"}
+            <FileText size={14} /> Print / Save PDF
           </button>
           <button className="ghost-button" onClick={onClose}>
             Close
@@ -6237,7 +6235,6 @@ function MonthlyReportPanel({ client, month, onClose }) {
 
 function ReportPanel({ client, dailyImport, onClose }) {
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
-  const [msgCopied, setMsgCopied] = useState(false);
   const [saveStatus, setSaveStatus] = useState("idle");
   const [saveError, setSaveError] = useState("");
   const [reportHistory, setReportHistory] = useState([]);
@@ -6298,12 +6295,6 @@ function ReportPanel({ client, dailyImport, onClose }) {
       });
   }, [client, dailyImport, report, whatsappMessage]);
 
-  function copyWhatsApp() {
-    navigator.clipboard.writeText(whatsappMessage).then(() => {
-      setMsgCopied(true);
-      setTimeout(() => setMsgCopied(false), 2500);
-    });
-  }
   const dailyDelta =
     report.priorDailyPnl !== null
       ? report.totals.grossRealizedPnl - report.priorDailyPnl
@@ -6357,17 +6348,11 @@ function ReportPanel({ client, dailyImport, onClose }) {
                   ? "Report not saved"
                   : "Report history"}
           </span>
-          <button className="secondary-button" onClick={() => window.print()}>
+          <button
+            className="secondary-button"
+            onClick={() => printWithTitle(`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`)}
+          >
             <FileText size={14} /> Print / Save PDF
-          </button>
-          <button className="ghost-button" onClick={copyWhatsApp}>
-            {msgCopied ? (
-              "✓ Copied!"
-            ) : (
-              <>
-                <Smartphone size={14} /> Copy for WhatsApp
-              </>
-            )}
           </button>
           <button className="ghost-button" onClick={onClose}>
             Close
@@ -6396,7 +6381,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
             <strong>{report.counts.accounts}</strong>
           </div>
           <div>
-            <span>Daily / Gross PnL</span>
+            <span>Daily Realized PnL</span>
             <strong
               className={
                 report.totals.grossRealizedPnl >= 0
@@ -6432,6 +6417,24 @@ function ReportPanel({ client, dailyImport, onClose }) {
               </strong>
             </div>
           ) : null}
+        </section>
+
+        <section className="report-metrics report-segments">
+          {[
+            { key: "funded", label: "Funded" },
+            { key: "evalStandard", label: "Evaluations" },
+            { key: "cash", label: "Cash" },
+          ]
+            .filter(({ key }) => report.segments[key].count > 0)
+            .map(({ key, label }) => (
+              <div key={key}>
+                <span>{label} · {report.segments[key].count} acct</span>
+                <strong>{formatCurrency(report.segments[key].balance)}</strong>
+                <small className={report.segments[key].dailyPnl >= 0 ? "report-positive" : "report-negative"}>
+                  day {report.segments[key].dailyPnl >= 0 ? "+" : ""}{formatCurrency(report.segments[key].dailyPnl)} · wk {formatCurrency(report.segments[key].weeklyPnl)}
+                </small>
+              </div>
+            ))}
         </section>
 
         {["evaluations", "funded", "cash"].map((group) =>
@@ -6541,6 +6544,61 @@ function ReportPanel({ client, dailyImport, onClose }) {
             </table>
           </section>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CamDayReportPanel({ clients, date, camName, onClose }) {
+  const rows = useMemo(() => buildCamDayReport(clients, date), [clients, date]);
+  const totalPnl = rows.reduce((s, r) => s + Number(r.report.totals.grossRealizedPnl || 0), 0);
+  const sign = (n) => (n >= 0 ? "+" : "");
+  return (
+    <div className="report-overlay">
+      <div className="report-sheet">
+        <div className="report-actions no-print">
+          <button
+            className="secondary-button"
+            onClick={() => printWithTitle(`Day report ${date}${camName ? ` - ${camName}` : ""}`)}
+          >
+            <FileText size={14} /> Print / Save PDF
+          </button>
+          <button className="ghost-button" onClick={onClose}>Close</button>
+        </div>
+        <header className="report-header">
+          <div>
+            <p className="report-firm">Vincere Trading</p>
+            <h1>Day report — all clients</h1>
+          </div>
+          <div className="report-header-right">
+            <strong>{date}</strong>
+            <span>{rows.length} client{rows.length === 1 ? "" : "s"} · {sign(totalPnl)}{formatCurrency(totalPnl)}</span>
+          </div>
+        </header>
+        {rows.length === 0 ? (
+          <p className="muted" style={{ padding: "16px 0" }}>No client has a close on {date}.</p>
+        ) : (
+          rows.map((r) => (
+            <section
+              className="cam-day-client"
+              key={r.client.id}
+              style={{ pageBreakInside: "avoid", borderTop: "1px solid var(--line)", paddingTop: 12, marginTop: 12 }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <h2 style={{ margin: 0 }}>{r.client.name}</h2>
+                <strong className={r.report.totals.grossRealizedPnl >= 0 ? "report-positive" : "report-negative"}>
+                  {sign(r.report.totals.grossRealizedPnl)}{formatCurrency(r.report.totals.grossRealizedPnl)}
+                </strong>
+              </div>
+              <p className="muted" style={{ margin: "4px 0" }}>
+                {r.report.counts.accounts} accounts · {r.report.counts.openFlags} open flags ({r.report.counts.criticalFlags} critical)
+              </p>
+              <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                Funded {formatCurrency(r.report.segments.funded.dailyPnl)} · Eval {formatCurrency(r.report.segments.evalStandard.dailyPnl)} · Cash {formatCurrency(r.report.segments.cash.dailyPnl)}
+              </p>
+            </section>
+          ))
+        )}
       </div>
     </div>
   );
@@ -7012,6 +7070,24 @@ function ClientOverview({
           <span>Open flags</span>
           <strong>{overview.metrics.openFlags}</strong>
         </div>
+        {(() => {
+          const seg = buildClientSegments(client, dailyImport);
+          return [
+            { key: "funded", label: "Funded" },
+            { key: "evalStandard", label: "Evaluations" },
+            { key: "cash", label: "Cash" },
+          ]
+            .filter(({ key }) => seg[key].count > 0)
+            .map(({ key, label }) => (
+              <div className="metric" key={key}>
+                <span>{label} balance · {seg[key].count}</span>
+                <strong>{formatCurrency(seg[key].balance)}</strong>
+                <small className={seg[key].dailyPnl >= 0 ? "positive" : "negative"}>
+                  day {seg[key].dailyPnl >= 0 ? "+" : ""}{formatCurrency(seg[key].dailyPnl)} · wk {formatCurrency(seg[key].weeklyPnl)}
+                </small>
+              </div>
+            ));
+        })()}
         {lifetime && (
           <>
             <div className="metric">
@@ -7265,8 +7341,8 @@ function ClientOverview({
                   <strong>{a.alias}</strong>
                   <span>
                     {a.ready
-                      ? `Ready for payout - profit ${formatCurrency(a.profit)} reached target ${formatCurrency(a.target)}`
-                      : `Approaching target - ${a.pct}% of ${formatCurrency(a.target)} goal (${formatCurrency(a.profit)} profit)`}
+                      ? `Ready for payout - balance ${formatCurrency(a.balance)} reached target ${formatCurrency(a.target)} (${formatCurrency(a.profit)} profit)`
+                      : `Approaching target - ${a.pct}% of goal (${formatCurrency(a.profit)} profit toward ${formatCurrency(a.target)})`}
                   </span>
                 </div>
                 <div className="payout-progress-wrap">
@@ -7423,20 +7499,22 @@ function ClientOverview({
             );
             const meta = ciMeta(latestRegistry, account.accountName);
             const risk = accountRiskLevel(snapshot, meta);
+            const manualRisk = meta?.riskLevel || "";
+            const ddUsed =
+              risk?.pct != null ? `${Math.round(risk.pct * 100)}% DD used` : "";
             return (
               <div className="target-row" key={account.accountName}>
                 <div>
                   <strong>
                     {account.alias}
-                    {risk ? (
+                    {manualRisk ? (
                       <span
-                        className={`risk-badge risk-${risk.level.toLowerCase()}`}
+                        className={`risk-badge risk-${manualRisk.toLowerCase()}`}
                       >
-                        {risk.level} risk
-                        {risk.pct != null
-                          ? ` · ${Math.round(risk.pct * 100)}% DD used`
-                          : ""}
+                        {manualRisk} risk{ddUsed ? ` · ${ddUsed}` : ""}
                       </span>
+                    ) : ddUsed ? (
+                      <span className="risk-badge">{ddUsed}</span>
                     ) : null}
                   </strong>
                   <span>
@@ -8027,8 +8105,6 @@ function CamOverview({
   clients,
   camProfiles = [],
   allClients = [],
-  strategySetRecords = [],
-  strategySetIndexStatus,
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
@@ -8037,6 +8113,11 @@ function CamOverview({
   onSetMonthlyGoal,
 }) {
   const [expandedAlgorithm, setExpandedAlgorithm] = useState("");
+  // Collapsible overview sections (default collapsed to cut clutter).
+  const [showBriefing, setShowBriefing] = useState(false);
+  const [showFundedTable, setShowFundedTable] = useState(true);
+  const [showActivity, setShowActivity] = useState(false);
+  const [showTeam, setShowTeam] = useState(false);
   const [showBulkTask, setShowBulkTask] = useState(false);
   const [bulkTaskText, setBulkTaskText] = useState("");
   const [bulkTaskDue, setBulkTaskDue] = useState("");
@@ -8071,16 +8152,12 @@ function CamOverview({
       ? Math.min(100, Math.round((monthlyPnl / monthlyGoal) * 100))
       : null;
   const overview = useMemo(
-    () => buildCamOverview(clients, strategySetRecords),
-    [clients, strategySetRecords],
+    () => buildCamOverview(clients),
+    [clients],
   );
   const briefing = useMemo(() => buildTodayBriefing(clients), [clients]);
   const insights = useMemo(
     () => buildPortfolioInsights(clients),
-    [clients],
-  );
-  const incomeProjection = useMemo(
-    () => buildIncomeProjection(clients),
     [clients],
   );
 
@@ -8552,95 +8629,18 @@ function CamOverview({
         );
       })()}
 
-      {incomeProjection.length > 0 && (
-        <section className="panel">
-          <div className="panel-heading">
-            <h3>Funded account income projection</h3>
-            <span className="badge muted">
-              {incomeProjection.length} accounts · based on 7-day avg P&L
-            </span>
-          </div>
-          <div className="table-wrap">
-            <table className="ops-table">
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Client</th>
-                  <th>Progress</th>
-                  <th>Profit earned</th>
-                  <th>Remaining</th>
-                  <th>Avg daily</th>
-                  <th>Est. days to payout</th>
-                </tr>
-              </thead>
-              <tbody>
-                {incomeProjection.map((row) => (
-                  <tr
-                    key={row.alias}
-                    style={{ cursor: "pointer" }}
-                    onClick={() => onSelectClient?.(row.clientId)}
-                  >
-                    <td>
-                      <strong>{row.alias}</strong>
-                    </td>
-                    <td>{row.clientName}</td>
-                    <td>
-                      <div
-                        className="target-progress"
-                        style={{ minWidth: 100 }}
-                      >
-                        <div className="target-bar">
-                          <i
-                            style={{
-                              width: `${row.pct}%`,
-                              background: row.ready
-                                ? "var(--success)"
-                                : row.pct >= 80
-                                  ? "var(--warning)"
-                                  : "var(--accent)",
-                            }}
-                          />
-                        </div>
-                        <small className={row.ready ? "positive" : ""}>
-                          {row.ready ? "✓ Ready" : `${row.pct}%`}
-                        </small>
-                      </div>
-                    </td>
-                    <td className={row.profit >= 0 ? "positive" : "negative"}>
-                      {formatCurrency(row.profit)}
-                    </td>
-                    <td className="muted">
-                      {formatCurrency(Math.max(0, row.needed - row.profit))}
-                    </td>
-                    <td className={row.avgDaily >= 0 ? "positive" : "negative"}>
-                      {formatCurrency(row.avgDaily)}/day
-                    </td>
-                    <td>
-                      {row.ready ? (
-                        <span className="badge success">Payout eligible</span>
-                      ) : row.daysLeft !== null && row.daysLeft > 0 ? (
-                        <span className={row.daysLeft <= 14 ? "positive" : ""}>
-                          {row.daysLeft}d (~{Math.ceil(row.daysLeft / 5)} weeks)
-                        </span>
-                      ) : row.avgDaily <= 0 ? (
-                        <span className="negative">Trending down</span>
-                      ) : (
-                        <span className="muted">-</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
       {clients.length > 0 ? (
         <section
           className={urgencyCounts.critical ? "panel danger-panel" : "panel"}
         >
-          <div className="panel-heading">
+          <button
+            className="registry-toggle"
+            onClick={() => setShowBriefing((v) => !v)}
+          >
+            <ChevronDown
+              className={showBriefing ? "chevron open" : "chevron"}
+              size={16}
+            />
             <h3>Today's briefing</h3>
             <div style={{ display: "flex", gap: 8 }}>
               {urgencyCounts.critical ? (
@@ -8662,7 +8662,8 @@ function CamOverview({
                 <span className="badge success">All clear</span>
               ) : null}
             </div>
-          </div>
+          </button>
+          {showBriefing ? (
           <div className="briefing-grid">
             {briefing.map(
               ({
@@ -8878,146 +8879,9 @@ function CamOverview({
               },
             )}
           </div>
+          ) : null}
         </section>
       ) : null}
-
-      {(() => {
-        const today = todayIsoDate();
-        const allTasks = clients.flatMap((client) =>
-          (client.tasks || [])
-            .filter((t) => !t.done)
-            .map((t) => ({
-              ...t,
-              clientName: client.name,
-              clientId: client.id,
-            })),
-        );
-        const sorted = allTasks.sort((a, b) => {
-          const overA = a.dueDate && a.dueDate < today;
-          const overB = b.dueDate && b.dueDate < today;
-          if (overA && !overB) return -1;
-          if (!overA && overB) return 1;
-          const prioOrder = { High: 0, Normal: 1, Low: 2 };
-          if ((prioOrder[a.priority] ?? 1) !== (prioOrder[b.priority] ?? 1))
-            return (prioOrder[a.priority] ?? 1) - (prioOrder[b.priority] ?? 1);
-          if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
-          if (a.dueDate) return -1;
-          if (b.dueDate) return 1;
-          return 0;
-        });
-        if (!sorted.length) return null;
-        const overdueCount = sorted.filter(
-          (t) => t.dueDate && t.dueDate < today,
-        ).length;
-        return (
-          <section className={overdueCount ? "panel danger-panel" : "panel"}>
-            <div className="panel-heading">
-              <h3>My task inbox</h3>
-              <div style={{ display: "flex", gap: 8 }}>
-                {overdueCount ? (
-                  <span className="badge danger">{overdueCount} overdue</span>
-                ) : null}
-                <span className="badge muted">{sorted.length} open</span>
-              </div>
-            </div>
-            <div className="table-wrap">
-              <table className="ops-table">
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>Task</th>
-                    <th>Client</th>
-                    <th>Priority</th>
-                    <th>Due</th>
-                    <th>Account</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sorted.map((task) => {
-                    const isOverdue = task.dueDate && task.dueDate < today;
-                    const isToday = task.dueDate === today;
-                    return (
-                      <tr
-                        key={task.id}
-                        className={isOverdue ? "row-warning" : ""}
-                      >
-                        <td style={{ width: 28 }}>
-                          <button
-                            className="ghost-button"
-                            style={{
-                              padding: "2px 4px",
-                              fontSize: 14,
-                              lineHeight: 1,
-                            }}
-                            title="Mark done"
-                            onClick={() =>
-                              onCompleteTask?.(task.clientId, task.id)
-                            }
-                          >
-                            ☐
-                          </button>
-                        </td>
-                        <td
-                          style={{
-                            maxWidth: 260,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            cursor: "pointer",
-                          }}
-                          onClick={() =>
-                            onSelectClient && onSelectClient(task.clientId)
-                          }
-                          title={`Open ${task.clientName} → Tasks`}
-                        >
-                          {task.text}
-                        </td>
-                        <td>
-                          <strong
-                            style={{ cursor: "pointer" }}
-                            onClick={() =>
-                              onSelectClient && onSelectClient(task.clientId)
-                            }
-                          >
-                            {task.clientName}
-                          </strong>
-                        </td>
-                        <td>
-                          <span
-                            className={
-                              task.priority === "High"
-                                ? "task-chip task-chip-high"
-                                : "task-chip"
-                            }
-                          >
-                            {task.priority}
-                          </span>
-                        </td>
-                        <td
-                          className={
-                            isOverdue ? "negative" : isToday ? "warning" : ""
-                          }
-                        >
-                          {task.dueDate
-                            ? isOverdue
-                              ? `OVERDUE (${task.dueDate})`
-                              : isToday
-                                ? "Today"
-                                : task.dueDate
-                            : "-"}
-                        </td>
-                        <td>
-                          <small>{task.accountName || "-"}</small>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })()}
 
       <div className="metric-grid">
         <div className="metric">
@@ -9038,23 +8902,12 @@ function CamOverview({
         </div>
       </div>
 
-      <section className="panel compact-panel">
+      <section className="panel">
         <div className="panel-heading">
-          <h3>XML strategy index</h3>
-          <span
-            className={
-              strategySetRecords.length ? "badge success" : "badge muted"
-            }
-          >
-            {strategySetRecords.length
-              ? `${strategySetRecords.length} set files`
-              : strategySetIndexStatus}
-          </span>
+          <h3>Lifecycle by algo</h3>
+          <span className="badge muted">Which combo funds / survives</span>
         </div>
-        <p className="muted">
-          Risk, period, pass type, and set version are matched locally from the
-          generated XML index when signatures are unique.
-        </p>
+        <LifecycleByAlgo clients={clients} />
       </section>
 
       <section
@@ -9143,10 +8996,18 @@ function CamOverview({
         if (!fundedRows.length) return null;
         return (
           <section className="panel">
-            <div className="panel-heading">
+            <button
+              className="registry-toggle"
+              onClick={() => setShowFundedTable((v) => !v)}
+            >
+              <ChevronDown
+                className={showFundedTable ? "chevron open" : "chevron"}
+                size={16}
+              />
               <h3>Funded accounts</h3>
               <span className="count">{fundedRows.length}</span>
-            </div>
+            </button>
+            {showFundedTable ? (
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -9237,6 +9098,7 @@ function CamOverview({
                 </tbody>
               </table>
             </div>
+            ) : null}
           </section>
         );
       })()}
@@ -9327,25 +9189,6 @@ function CamOverview({
                                   {item.strategyName || algorithm.algorithm} ·{" "}
                                   {item.enabled ? "Enabled" : "Disabled"}
                                 </span>
-                                {item.configMatch?.matched ? (
-                                  <span>
-                                    {[
-                                      item.configMatch.risk,
-                                      item.configMatch.setVersion,
-                                      item.configMatch.period
-                                        ? `Period ${item.configMatch.period}`
-                                        : "",
-                                      item.configMatch.passType,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")}
-                                  </span>
-                                ) : (
-                                  <span>
-                                    {item.configMatch?.reason ||
-                                      "XML config unknown"}
-                                  </span>
-                                )}
                                 <span
                                   className={
                                     item.realized >= 0 ? "positive" : "negative"
@@ -9403,12 +9246,20 @@ function CamOverview({
         if (!allEntries.length) return null;
         return (
           <section className="panel">
-            <div className="panel-heading">
+            <button
+              className="registry-toggle"
+              onClick={() => setShowActivity((v) => !v)}
+            >
+              <ChevronDown
+                className={showActivity ? "chevron open" : "chevron"}
+                size={16}
+              />
               <h3>Recent activity</h3>
               <span className="badge muted">
                 Last 20 entries across all clients
               </span>
-            </div>
+            </button>
+            {showActivity ? (
             <div className="activity-feed-global">
               {allEntries.map((entry, i) => (
                 <div
@@ -9433,16 +9284,25 @@ function CamOverview({
                 </div>
               ))}
             </div>
+            ) : null}
           </section>
         );
       })()}
 
       {camProfiles.length > 0 ? (
         <section className="panel">
-          <div className="panel-heading">
+          <button
+            className="registry-toggle"
+            onClick={() => setShowTeam((v) => !v)}
+          >
+            <ChevronDown
+              className={showTeam ? "chevron open" : "chevron"}
+              size={16}
+            />
             <h3>Team overview</h3>
             <span className="badge muted">All CAMs</span>
-          </div>
+          </button>
+          {showTeam ? (
           <div className="team-grid">
             {camProfiles.map((cam) => {
               const camClients = allClients.filter((c) =>
@@ -9468,6 +9328,7 @@ function CamOverview({
               );
             })}
           </div>
+          ) : null}
         </section>
       ) : null}
     </main>
@@ -10648,6 +10509,31 @@ function CredentialsTab({
 
       <section className="panel">
         <div className="panel-heading">
+          <h3>Forms</h3>
+          <span className="badge muted">Acknowledgement</span>
+        </div>
+        <p className="muted">
+          Vincere Platform Operations Support Addendum - the client
+          acknowledgement document. Download the blank template, have the client
+          sign it, and (soon) upload the signed copy here to keep it on file.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <a
+            className="ghost-button"
+            href="/templates/acknowledgement-form.pdf"
+            download
+          >
+            <Download size={16} /> Download blank form
+          </a>
+        </div>
+        <div className="notice muted" style={{ marginTop: 10 }}>
+          Uploading and verifying the filled form is pending the client-forms
+          storage setup (Supabase Storage bucket + step_24 migration).
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
           <h3>Notes</h3>
         </div>
         <textarea
@@ -11105,23 +10991,31 @@ export default function App() {
   const [showUpload, setShowUpload] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const [showSOP, setShowSOP] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [showQuickLog, setShowQuickLog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [quickLogType, setQuickLogType] = useState("Note");
   const [quickLogText, setQuickLogText] = useState("");
   const [quickLogAccount, setQuickLogAccount] = useState("");
   const [reportImport, setReportImport] = useState(null);
+  const [showCamDayReport, setShowCamDayReport] = useState(false);
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
-  const [strategySetIndex, setStrategySetIndex] = useState({
-    status: "Not loaded",
-    records: [],
-  });
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [globalSearchIdx, setGlobalSearchIdx] = useState(0);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
+
+  // Keep the CAM Profile view mutually exclusive with the other sub-views without
+  // threading setShowProfile(false) through every navigation handler: clear it
+  // when the user opens Overview/SOP or switches to a client.
+  useEffect(() => {
+    if (showOverview || showSOP) setShowProfile(false);
+  }, [showOverview, showSOP]);
+  useEffect(() => {
+    setShowProfile(false);
+  }, [state.selectedClientId]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -11154,6 +11048,36 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Manual strategy classifications (family+signature -> version + risk).
+  const [strategyClassifications, setStrategyClassifications] = useState([]);
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    loadStrategyClassifications()
+      .then((rows) => { if (!cancelled) setStrategyClassifications(rows); })
+      .catch((error) => console.error("[CRM] Failed to load strategy classifications:", error));
+    return () => { cancelled = true; };
+  }, []);
+
+  async function handleClassifyStrategy(classification) {
+    const saved = await upsertStrategyClassification(classification);
+    setStrategyClassifications((prev) => [
+      ...prev.filter((c) => c.key !== classification.key),
+      saved || classification,
+    ]);
+  }
+
+  // Team-wide algo history derived from NinjaTrader logs (incl. dead accounts).
+  const [logAlgoHistory, setLogAlgoHistory] = useState([]);
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    loadLogAlgoHistory()
+      .then((rows) => { if (!cancelled) setLogAlgoHistory(rows); })
+      .catch((error) => console.error("[CRM] Failed to load log algo history:", error));
+    return () => { cancelled = true; };
   }, []);
 
   async function reloadSupabaseState(preferredCamProfileId = null, selectedClientId = null) {
@@ -11239,26 +11163,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/strategy-set-index.json", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (cancelled) return;
-        if (data?.records?.length) {
-          setStrategySetIndex({ status: "Loaded", records: data.records });
-        } else {
-          setStrategySetIndex({ status: "Run npm run xml:index", records: [] });
-        }
-      })
-      .catch(() => {
-        if (!cancelled)
-          setStrategySetIndex({ status: "Run npm run xml:index", records: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const visibleCamProfiles = activeCamProfilesForUsers(state.camProfiles || [], users);
   const currentCamProfile =
@@ -11374,8 +11278,24 @@ export default function App() {
     }
   }
 
-  function handleParsedFiles(parsed) {
+  function handleParsedFiles(parsed, parsedFiles) {
     if (!selectedClient) return;
+    // Warn before committing an incomplete upload: NinjaTrader needs all four
+    // exports (accounts, strategies, orders, executions), and an unrecognized
+    // file usually means a wrong export or bad headers.
+    const upload = summarizeUploadTypes(parsedFiles || []);
+    if (!upload.isComplete) {
+      const lines = [];
+      if (upload.missingTypes.length)
+        lines.push(`Missing file(s): ${upload.missingTypes.join(", ")}.`);
+      if (upload.unknownFiles.length)
+        lines.push(`Unrecognized file(s): ${upload.unknownFiles.join(", ")}.`);
+      const proceed = window.confirm(
+        `Incomplete upload for ${selectedClient.name}.\n\n${lines.join("\n")}\n\n` +
+          `The close may be missing account or strategy/trade detail. Continue anyway?`,
+      );
+      if (!proceed) return;
+    }
     const result = reconcileDailyImport({
       clientId: selectedClient.id,
       date: selectedDate,
@@ -11404,7 +11324,7 @@ export default function App() {
             flagCount: (result.flags || []).length,
           },
         });
-        return reloadSupabaseState(state.accountManager?.id);
+        return reloadSupabaseState(state.accountManager?.id, clientId);
       })
       .catch((error) => {
         console.error("[CRM] Failed to save daily import:", error);
@@ -11415,7 +11335,32 @@ export default function App() {
 
   function handleAccountUpdate(accountName, patch) {
     if (!selectedClient) return;
-    persistAccountUpdate(selectedClient.id, accountName, patch);
+    let finalPatch = patch;
+    // When the user assigns an account type, pre-fill the start balance and
+    // profit target from the account's current balance and standard sizing
+    // (50k/100k/150k -> 54100/107300/159000; Bullet Bot 50k -> 53000; Cash none).
+    // Only fills fields the user has left empty; never overwrites a set value.
+    if ("accountType" in patch) {
+      const registry = selectedClient.accountRegistry || {};
+      const metaKey = Object.keys(registry).find(
+        (key) => key.toLowerCase() === accountName.toLowerCase(),
+      );
+      const meta = metaKey ? registry[metaKey] : {};
+      const latest = selectedClient.dailyImports?.at(-1);
+      const snapshot = (latest?.snapshots || []).find(
+        (s) => s.accountName?.toLowerCase() === accountName.toLowerCase(),
+      );
+      const balance = Number(snapshot?.accountBalance || 0);
+      const defaults = suggestAccountDefaults(patch.accountType, balance);
+      const isEmpty = (value) => value == null || value === "";
+      const augment = {};
+      if (defaults.startingBalance != null && isEmpty(meta.startBalance))
+        augment.startBalance = defaults.startingBalance;
+      if (defaults.target != null && isEmpty(meta.targetProfit))
+        augment.targetProfit = defaults.target;
+      if (Object.keys(augment).length) finalPatch = { ...patch, ...augment };
+    }
+    persistAccountUpdate(selectedClient.id, accountName, finalPatch);
   }
 
   function persistAccountUpdate(clientId, accountName, patch) {
@@ -12410,6 +12355,30 @@ export default function App() {
                     <span>Daily SOP</span>
                     <em>Checklist</em>
                   </button>
+                  <button
+                    className={showProfile ? "client-link active" : "client-link"}
+                    onClick={() => {
+                      setShowProfile(true);
+                      setShowOverview(false);
+                      setShowSOP(false);
+                      closeMobileSidebar();
+                    }}
+                  >
+                    <UserRound size={16} />
+                    <span>Profile</span>
+                    <em>Account</em>
+                  </button>
+                  <button
+                    className="client-link"
+                    onClick={() => {
+                      setShowCamDayReport(true);
+                      closeMobileSidebar();
+                    }}
+                  >
+                    <FileText size={16} />
+                    <span>Day report</span>
+                    <em>All clients · {selectedDate}</em>
+                  </button>
                   {isManagerSession ? (
                     <>
                       <div className="nav-label">Other CAMs</div>
@@ -12723,7 +12692,18 @@ export default function App() {
             </nav>
           </aside>
 
-          {showSOP ? (
+          {showProfile ? (
+            <main className="content">
+              <div className="page-header">
+                <div>
+                  <span className="eyebrow">Account</span>
+                  <h1>Profile</h1>
+                  <p>Review your account details and update your password.</p>
+                </div>
+              </div>
+              <ProfilePanel session={session} />
+            </main>
+          ) : showSOP ? (
             <main className="content">
               <div className="page-header">
                 <div>
@@ -12740,8 +12720,6 @@ export default function App() {
                 clients={currentCamClients}
                 camProfiles={visibleCamProfiles}
                 allClients={state.clients || []}
-                strategySetRecords={strategySetIndex.records}
-                strategySetIndexStatus={strategySetIndex.status}
                 onSelectClient={(clientId) => {
                   setState((current) => selectClient(current, clientId));
                   setShowOverview(false);
@@ -12793,7 +12771,7 @@ export default function App() {
               />
             </>
           ) : (
-            <main className="content">
+            <main className="content client-workspace">
               {!selectedClient ? (
                 <div className="onboarding-empty">
                   <div className="onboarding-hero">
@@ -12866,7 +12844,7 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="page-header">
+                  <div className="page-header client-workspace-header">
                     <div>
                       <span className="eyebrow">Client workspace</span>
                       <h1
@@ -12886,6 +12864,21 @@ export default function App() {
                           </span>
                         ) : null}
                       </h1>
+                      {selectedClient.credentials?.ip ? (
+                        <p
+                          className="client-vps-ip"
+                          style={{
+                            margin: "2px 0 0",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span className="muted">VPS</span>
+                          <code>{selectedClient.credentials.ip}</code>
+                          <CopyButton value={selectedClient.credentials.ip} />
+                        </p>
+                      ) : null}
                       <p>
                         {dailyImport
                           ? `${dailyImport.status} · ${(dailyImport.flags || []).length} flags`
@@ -13265,6 +13258,9 @@ export default function App() {
                         dailyImport={dailyImport}
                         onUpdateAccount={handleAccountUpdate}
                         allClients={state.clients || []}
+                        classifications={strategyClassifications}
+                        onClassify={handleClassifyStrategy}
+                        logAlgoHistory={logAlgoHistory}
                       />
                     ) : null}
                     {["Review", "Evaluations", "Funded", "Cash"].includes(
@@ -13281,7 +13277,6 @@ export default function App() {
                           onResolveFlag={handleResolveFlag}
                           onBulkResolveFlags={handleBulkResolveFlags}
                           onUpdateAccount={handleAccountUpdate}
-                          strategySetRecords={strategySetIndex.records}
                           client={selectedClient}
                         />
                         <section className="panel">
@@ -13364,6 +13359,14 @@ export default function App() {
             client={selectedClient}
             dailyImport={reportImport}
             onClose={() => setReportImport(null)}
+          />
+        ) : null}
+        {showCamDayReport ? (
+          <CamDayReportPanel
+            clients={currentCamClients}
+            date={selectedDate}
+            camName={currentCamProfile?.name}
+            onClose={() => setShowCamDayReport(false)}
           />
         ) : null}
         {monthlyReportMonth ? (

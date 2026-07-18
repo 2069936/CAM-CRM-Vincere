@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseNinjaTraderLog, dateFromLogFilename, parseNinjaTraderLogFile, summarizeLogByAccount } from './ninjaTraderLog';
+import { parseNinjaTraderLog, dateFromLogFilename, parseNinjaTraderLogFile, summarizeLogByAccount, summarizeLogByFamily, aggregateLogFamilyHistory } from './ninjaTraderLog';
 
 const SAMPLE = [
   "2026-07-10 10:21:19:415|1|32|Order='490243547664/LTD15072018970002' Name='Enter Short' New state='Filled' Instrument='M2K SEP26' Action='Sell short' Limit price=0 Stop price=0 Quantity=6 Type='Market' Time in force=GTC Oco='' Filled=6 Fill price=2986.3 Error='No error' Native error=''",
@@ -91,5 +91,32 @@ describe('NinjaTrader log file import (filename date + backfill)', () => {
       short: 1,
       long: 0,
     });
+  });
+});
+
+describe('summarizeLogByFamily + aggregateLogFamilyHistory', () => {
+  const parsedFile = {
+    date: '2026-07-13',
+    executions: [
+      { accountName: 'DEAD1', instrument: 'NQ JUN26', price: 19000, quantity: 1, position: 'Long', entryExit: 'Entry' },
+      { accountName: 'DEAD1', instrument: 'NQ JUN26', price: 19010, quantity: 1, position: 'Flat', entryExit: 'Exit' },
+    ],
+    strategyEvents: [
+      { action: 'Enable', strategyName: '0 - Bullet Bot-1.1', accountName: 'DEAD1' },
+    ],
+  };
+
+  it('summarizes a (possibly dead) account by family + direction + PnL, no client needed', () => {
+    const [row] = summarizeLogByFamily(parsedFile);
+    expect(row).toMatchObject({ accountName: 'DEAD1', family: 'Bullet Bot', direction: 'Long', realizedPnl: 200 });
+  });
+
+  it('aggregates family rows team-wide, split by direction', () => {
+    const agg = aggregateLogFamilyHistory(summarizeLogByFamily(parsedFile));
+    const bb = agg.find((a) => a.family === 'Bullet Bot');
+    expect(bb.totalPnl).toBe(200);
+    expect(bb.byDirection.Long).toBe(200);
+    expect(bb.accounts).toBe(1);
+    expect(bb.days).toBe(1);
   });
 });

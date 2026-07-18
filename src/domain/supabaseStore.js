@@ -25,6 +25,7 @@ function accountMetaFromRow(row) {
     targetProfit: row.target_profit ?? '',
     startBalance: row.start_balance ?? '',
     maxDrawdownLimit: row.max_drawdown_limit ?? '',
+    riskLevel: row.risk_level || '',
     bulletBotPassType: row.bullet_bot_pass_type || '',
     bulletBotDirection: row.bullet_bot_direction || '',
     algoStack: row.algo_stack || '',
@@ -56,7 +57,6 @@ function strategyFromRow(row) {
     enabled: Boolean(row.enabled),
     realized: Number(row.realized || 0),
     unrealized: Number(row.unrealized || 0),
-    configMatch: row.config_match || {},
   };
 }
 
@@ -127,6 +127,7 @@ function flagFromRow(row, accountById) {
     accountName: account?.account_name || '',
     message: row.message,
     status: row.status || 'Open',
+    resolvedAt: row.resolved_at || '',
   };
 }
 
@@ -152,6 +153,8 @@ function activityFromRow(row, accountById) {
     text: row.text,
     accountName: account?.account_name || '',
     createdAt: row.created_at || '',
+    logDate: row.log_date || '',
+    logPnl: row.log_pnl != null ? Number(row.log_pnl) : null,
   };
 }
 
@@ -503,6 +506,7 @@ function accountPatchToDb(patch = {}) {
     accountType: 'account_type',
     status: 'status',
     payoutState: 'payout_state',
+    riskLevel: 'risk_level',
     bulletBotPassType: 'bullet_bot_pass_type',
     bulletBotDirection: 'bullet_bot_direction',
     algoStack: 'algo_stack',
@@ -947,6 +951,7 @@ export async function upsertSupabaseTradingAccount(clientId, accountName, meta =
     start_balance: numberOrNull(meta.startBalance),
     target_profit: numberOrNull(meta.targetProfit),
     max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
+    risk_level: meta.riskLevel || '',
     bullet_bot_pass_type: meta.bulletBotPassType || '',
     bullet_bot_direction: meta.bulletBotDirection || '',
     notes: meta.notes || '',
@@ -1066,6 +1071,8 @@ export async function insertSupabaseActivity(clientId, entry) {
       trading_account_id: accountId,
       type: entry.type || 'Note',
       text: entry.text || '',
+      log_date: entry.logDate || null,
+      log_pnl: entry.logPnl != null ? entry.logPnl : null,
       created_at: entry.createdAt || new Date().toISOString(),
     })
     .select()
@@ -1135,8 +1142,8 @@ export async function replaceSupabaseOperationalFlags(clientId, importId, flags 
       type: flag.type,
       severity: flag.severity || 'Warning',
       message: flag.message || '',
-      status: 'Open',
-      resolved_at: null,
+      status: flag.status || 'Open',
+      resolved_at: flag.resolvedAt || null,
     };
   });
 
@@ -1274,7 +1281,6 @@ export async function upsertSupabaseDailyImport(clientId, importResult) {
       enabled: Boolean(strategy.enabled),
       realized: numberOrNull(strategy.realized) || 0,
       unrealized: numberOrNull(strategy.unrealized) || 0,
-      config_match: strategy.configMatch || {},
     };
   });
   if (strategyRows.length) {
@@ -1637,4 +1643,91 @@ export async function saveSupabaseDailySop(camProfileId, checklistDate, checkedI
     .single();
   if (error) throw new Error(error.message);
   return data;
+}
+
+function strategyClassificationFromRow(row = {}) {
+  return {
+    id: row.id,
+    key: row.match_key,
+    family: row.family || '',
+    signature: row.signature || null,
+    version: row.version || '',
+    riskLevel: row.risk_level || '',
+    notes: row.notes || '',
+  };
+}
+
+export async function loadStrategyClassifications() {
+  if (!isSupabaseConfigured || !supabase) return [];
+  const { data, error } = await supabase
+    .from('strategy_classifications')
+    .select('*')
+    .order('family', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []).map(strategyClassificationFromRow);
+}
+
+export async function upsertStrategyClassification(classification = {}) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const row = {
+    match_key: classification.key,
+    family: classification.family || '',
+    signature: classification.signature || null,
+    version: classification.version || '',
+    risk_level: classification.riskLevel || '',
+    notes: classification.notes || '',
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from('strategy_classifications')
+    .upsert(row, { onConflict: 'match_key' })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return strategyClassificationFromRow(data);
+}
+
+export async function deleteStrategyClassification(matchKey) {
+  if (!isSupabaseConfigured || !supabase) return;
+  const { error } = await supabase
+    .from('strategy_classifications')
+    .delete()
+    .eq('match_key', matchKey);
+  if (error) throw new Error(error.message);
+}
+
+function logAlgoHistoryFromRow(row = {}) {
+  return {
+    date: row.log_date || '',
+    accountName: row.account_name || '',
+    family: row.family || 'Unknown',
+    direction: row.direction || 'Mixed',
+    realizedPnl: Number(row.realized_pnl || 0),
+    roundTrips: Number(row.round_trips || 0),
+  };
+}
+
+export async function loadLogAlgoHistory() {
+  if (!isSupabaseConfigured || !supabase) return [];
+  const { data, error } = await supabase.from('log_algo_history').select('*');
+  if (error) throw new Error(error.message);
+  return (data || []).map(logAlgoHistoryFromRow);
+}
+
+export async function saveLogAlgoHistory(rows = []) {
+  if (!isSupabaseConfigured || !supabase || !rows.length) return [];
+  const payload = rows.map((r) => ({
+    log_date: r.date || null,
+    account_name: r.accountName || '',
+    family: r.family || 'Unknown',
+    direction: r.direction || 'Mixed',
+    realized_pnl: r.realizedPnl || 0,
+    round_trips: r.roundTrips || 0,
+  }));
+  const { data, error } = await supabase
+    .from('log_algo_history')
+    .upsert(payload, { onConflict: 'log_date,account_name,family' })
+    .select();
+  if (error) throw new Error(error.message);
+  return (data || []).map(logAlgoHistoryFromRow);
 }

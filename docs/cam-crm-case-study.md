@@ -27,7 +27,7 @@ Manual Excel tracking for trading client accounts made it easy to lose account s
 - Defensive CSV ingestion by header names, not column positions.
 - Orders-to-executions join via `order.id -> execution.orderId`.
 - XML matching scoped by strategy family to avoid broad false matches.
-- Private XML configs stay local: `npm run xml:index` generates `public/strategy-set-index.json`, which is gitignored.
+- Strategy classification stays local and manual (see the strategy classification work replacing the earlier XML matching approach).
 - TDD coverage for parsers, reconciliation, CAM rollups, deviation flags, and XML matching.
 - Playwright installed for reproducible UI screenshots and before/after evidence.
 

@@ -1,8 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, UploadCloud } from 'lucide-react';
-import { parseNinjaTraderCsvText } from '../domain/csvImport';
-
-const REQUIRED_TYPES = ['accounts', 'strategies', 'orders', 'executions'];
+import { parseNinjaTraderCsvText, summarizeUploadTypes } from '../domain/csvImport';
 
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
@@ -46,8 +44,7 @@ export default function UploadArea({ onParsed }) {
     }
   }
 
-  const foundTypes = new Set(parsedFiles.map((file) => file.type));
-  const missingTypes = REQUIRED_TYPES.filter((type) => !foundTypes.has(type));
+  const { missingTypes, unknownFiles } = summarizeUploadTypes(parsedFiles);
 
   return (
     <section className="upload-panel">
@@ -78,6 +75,12 @@ export default function UploadArea({ onParsed }) {
             <div className="notice warning">
               <AlertTriangle size={16} />
               Missing or not detected: {missingTypes.join(', ')}
+            </div>
+          ) : null}
+          {unknownFiles.length ? (
+            <div className="notice warning">
+              <AlertTriangle size={16} />
+              Unrecognized file(s): {unknownFiles.join(', ')} — check the export headers.
             </div>
           ) : null}
         </div>

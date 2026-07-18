@@ -13,6 +13,9 @@
 //   Execution='<id>' Instrument='...' Account='...' Price=X Quantity=N Market position=Long|Short|Flat Operation=Operation_Add|Remove|Update Order='<id>' Time='...'
 //   Enabling|Disabling NinjaScript strategy '<name>/<account>'
 
+import { computeExecutionPnl } from './executionPnl';
+import { normalizeStrategyFamily } from './csvImport';
+
 const LINE_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:\d{3})\|[^|]*\|[^|]*\|(.*)$/;
 const STRATEGY_RE = /^(Enabling|Disabling) NinjaScript strategy '([^']+)'/;
 
@@ -166,6 +169,10 @@ export function summarizeLogByAccount(parsedFile) {
         contracts: 0,
         long: 0,
         short: 0,
+        realizedPnl: 0,
+        ticksMoved: 0,
+        roundTrips: 0,
+        unknownInstruments: [],
       };
     }
     const row = byAccount[name];
@@ -174,5 +181,102 @@ export function summarizeLogByAccount(parsedFile) {
     if (/long/i.test(execution.position)) row.long += 1;
     else if (/short/i.test(execution.position)) row.short += 1;
   }
+  // Realized PnL derived from the executions' price moves (no balances needed).
+  for (const pnl of computeExecutionPnl(parsedFile.executions || [])) {
+    if (!byAccount[pnl.accountName]) continue;
+    Object.assign(byAccount[pnl.accountName], {
+      realizedPnl: pnl.realizedPnl,
+      ticksMoved: pnl.ticksMoved,
+      roundTrips: pnl.roundTrips,
+      unknownInstruments: pnl.unknownInstruments,
+    });
+  }
   return Object.values(byAccount);
+}
+
+// Roll a parsed log day up by algo family + direction, independent of any client
+// (so accounts that no longer exist still contribute to team-wide algo/bullet-bot
+// history). Family = the enabled strategies for that account (from strategyEvents);
+// direction = the majority market position of its executions; PnL from executions.
+export function summarizeLogByFamily(parsedFile) {
+  const pnlByAccount = {};
+  for (const row of computeExecutionPnl(parsedFile.executions || [])) {
+    pnlByAccount[row.accountName] = row;
+  }
+
+  const famByAccount = {};
+  for (const event of parsedFile.strategyEvents || []) {
+    if (!event.accountName) continue;
+    if (!famByAccount[event.accountName]) famByAccount[event.accountName] = new Set();
+    const family = normalizeStrategyFamily(event.strategyName);
+    if (family && family !== 'Unknown') famByAccount[event.accountName].add(family);
+  }
+
+  const dirByAccount = {};
+  for (const ex of parsedFile.executions || []) {
+    if (!ex.accountName) continue;
+    if (!dirByAccount[ex.accountName]) dirByAccount[ex.accountName] = { long: 0, short: 0 };
+    if (/long/i.test(ex.position)) dirByAccount[ex.accountName].long += 1;
+    else if (/short/i.test(ex.position)) dirByAccount[ex.accountName].short += 1;
+  }
+
+  const accounts = new Set([...Object.keys(pnlByAccount), ...Object.keys(famByAccount)]);
+  const rows = [];
+  for (const account of accounts) {
+    const fams = [...(famByAccount[account] || [])].sort();
+    const family = fams.join(' + ') || 'Unknown';
+    const dir = dirByAccount[account] || { long: 0, short: 0 };
+    const direction = dir.long > dir.short ? 'Long' : dir.short > dir.long ? 'Short' : 'Mixed';
+    const pnl = pnlByAccount[account] || {};
+    rows.push({
+      accountName: account,
+      date: parsedFile.date || '',
+      family,
+      direction,
+      realizedPnl: pnl.realizedPnl || 0,
+      roundTrips: pnl.roundTrips || 0,
+    });
+  }
+  return rows;
+}
+
+// Aggregate per-account-day family rows (summarizeLogByFamily, accumulated across
+// all uploaded logs) into team-wide algo/bullet-bot history: PnL by family, split
+// by direction, plus round trips, distinct accounts, and days.
+export function aggregateLogFamilyHistory(rows = []) {
+  const byFamily = {};
+  for (const r of rows) {
+    const fam = r.family || 'Unknown';
+    if (!byFamily[fam]) {
+      byFamily[fam] = {
+        family: fam,
+        totalPnl: 0,
+        roundTrips: 0,
+        byDirection: { Long: 0, Short: 0, Mixed: 0 },
+        accounts: new Set(),
+        dates: new Set(),
+      };
+    }
+    const g = byFamily[fam];
+    const pnl = Number(r.realizedPnl || 0);
+    g.totalPnl += pnl;
+    g.roundTrips += Number(r.roundTrips || 0);
+    if (g.byDirection[r.direction] != null) g.byDirection[r.direction] += pnl;
+    if (r.accountName) g.accounts.add(r.accountName);
+    if (r.date) g.dates.add(r.date);
+  }
+  return Object.values(byFamily)
+    .map((g) => ({
+      family: g.family,
+      totalPnl: Math.round(g.totalPnl * 100) / 100,
+      roundTrips: g.roundTrips,
+      byDirection: {
+        Long: Math.round(g.byDirection.Long * 100) / 100,
+        Short: Math.round(g.byDirection.Short * 100) / 100,
+        Mixed: Math.round(g.byDirection.Mixed * 100) / 100,
+      },
+      accounts: g.accounts.size,
+      days: g.dates.size,
+    }))
+    .sort((a, b) => b.totalPnl - a.totalPnl);
 }

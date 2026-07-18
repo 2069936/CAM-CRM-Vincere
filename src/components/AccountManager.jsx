@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES } from '../domain/reconcile';
+import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS } from '../domain/reconcile';
 
 const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.UNASSIGNED,
@@ -15,6 +15,7 @@ const STATUS_OPTIONS = Object.values(ACCOUNT_STATUSES);
 const PAYOUT_OPTIONS = Object.values(PAYOUT_STATES);
 const PASS_TYPES = ['', '1-day pass', '2-day pass', '3-day pass'];
 const DIRECTIONS = ['', 'Long', 'Short'];
+const RISK_OPTIONS = ['', ...RISK_LEVELS];
 
 export default function AccountManager({ accounts, snapshots, onUpdateAccount, onAddAccount, onRemoveAccount, mode }) {
   const isCash = mode === 'cash';
@@ -67,6 +68,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
             <th>Account</th>
             <th>Type</th>
             <th>Status</th>
+            <th>Risk</th>
             {!isCash ? <th>Pass</th> : null}
             {!isCash ? <th>Direction</th> : null}
             {!isCash ? <th>Payout</th> : null}
@@ -104,6 +106,14 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
                   onChange={(event) => onUpdateAccount(account.accountName, { status: event.target.value })}
                 >
                   {STATUS_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                </select>
+              </td>
+              <td>
+                <select
+                  value={account.riskLevel || ''}
+                  onChange={(event) => onUpdateAccount(account.accountName, { riskLevel: event.target.value })}
+                >
+                  {RISK_OPTIONS.map((option) => <option key={option} value={option}>{option || 'Unassigned'}</option>)}
                 </select>
               </td>
               {!isCash ? (

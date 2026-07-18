@@ -445,7 +445,7 @@ h6 {
 }
 
 .sidebar-role-sub {
-  color: #7a9ab0;
+  color: #4a5a6a;
   font-size: 11px;
   margin-top: 2px;
   display: block;
@@ -606,7 +606,7 @@ textarea {
 
 .search-matches small {
   font-size: 10px;
-  color: var(--muted);
+  color: #4a5a6a;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -614,13 +614,13 @@ textarea {
 }
 
 .search-match-account {
-  color: var(--accent) !important;
+  color: #1a6fb5 !important;
 }
 .search-match-task {
-  color: var(--warning) !important;
+  color: #8a5a00 !important;
 }
 .search-match-activity {
-  color: var(--muted) !important;
+  color: #4a5a6a !important;
 }
 
 /* Close-status dot in sidebar */
@@ -688,6 +688,26 @@ textarea {
   overflow: auto;
   max-width: 100%;
   min-width: 0;
+}
+
+/* Client workspace: make the content its own scroll container on desktop so the
+   client-name header can stick to the top while the content scrolls underneath.
+   Scoped to desktop; mobile keeps normal window scrolling. */
+@media (min-width: 981px) {
+  .content.client-workspace {
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .content.client-workspace .client-workspace-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--bg);
+    /* negative margins cover the .content 28px padding so the sticky bar spans
+       edge to edge; padding puts the content back in place. */
+    margin: -28px -28px 18px;
+    padding: 28px 28px 16px;
+  }
 }
 
 .content > .panel,
@@ -2517,11 +2537,11 @@ textarea {
 }
 .report-table small {
   font-size: 11px;
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .report-positive {
-  color: #16a34a;
+  color: #0f7a37;
   font-weight: 600;
 }
 .report-negative {
@@ -2533,7 +2553,7 @@ textarea {
   font-weight: 600;
 }
 .report-dd-warning {
-  color: #d97706;
+  color: #b45309;
   font-weight: 600;
 }
 
@@ -2553,7 +2573,7 @@ textarea {
 .report-flag-badge {
   display: inline-block;
   background: #fef2f2;
-  color: #dc2626;
+  color: #b91c1c;
   border: 1px solid #fecaca;
   border-radius: 4px;
   font-size: 11px;
@@ -2590,7 +2610,7 @@ textarea {
 }
 
 .report-ok {
-  color: #16a34a;
+  color: #0f7a37;
   font-weight: 600;
   margin: 8px 0 0;
 }
@@ -2602,7 +2622,7 @@ textarea {
   display: flex;
   justify-content: space-between;
   font-size: 11px;
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .login-screen {
@@ -4720,6 +4740,10 @@ tr:nth-child(2) .rank-badge {
   }
 }
 
+@page {
+  size: A4;
+  margin: 12mm;
+}
 @media print {
   body {
     background: #ffffff;
@@ -4732,12 +4756,39 @@ tr:nth-child(2) .rank-badge {
     position: static;
     padding: 0;
     background: #ffffff;
+    backdrop-filter: none;
   }
   .report-sheet {
     width: 100%;
     max-height: none;
+    overflow: visible;
+    padding: 0;
     box-shadow: none;
     border-radius: 0;
+    /* keep background fills + PnL colors + flag badges in the PDF */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* keep rows, sections and per-client blocks from splitting across pages */
+  .report-section,
+  .report-sheet section,
+  .cam-day-client,
+  tr {
+    break-inside: avoid;
+  }
+  h1,
+  h2 {
+    break-after: avoid;
+  }
+  thead {
+    display: table-header-group;
+  }
+  .report-table,
+  .report-sheet .ops-table {
+    table-layout: fixed;
+    width: 100%;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 }
 
@@ -5075,7 +5126,7 @@ tr:nth-child(2) .rank-badge {
 }
 .stage-onboarding {
   background: rgba(var(--info-rgb), 0.15);
-  color: #1a6fb5;
+  color: #45a3ff;
 }
 .stage-active {
   background: rgba(var(--success-rgb), 0.15);
@@ -6272,3 +6323,54 @@ tr:nth-child(2) .rank-badge {
     @apply font-sans;
   }
 }
+
+/* Stack Playbook - per-account history charts */
+.ahc-list { display: flex; flex-direction: column; gap: 18px; }
+.ahc-account { border-top: 1px solid var(--line); padding-top: 14px; }
+.ahc-account:first-child { border-top: none; padding-top: 0; }
+.ahc-account-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.account-history-chart { display: flex; flex-direction: column; gap: 10px; }
+.ahc-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.ahc-plot-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 3px; }
+.ahc-plot-head strong, .ahc-stats strong { font-variant-numeric: tabular-nums; }
+.ahc-stats { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; }
+@media (max-width: 720px) { .ahc-charts { grid-template-columns: 1fr; } }
+
+.window-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+
+/* Stack Playbook - risk scaling */
+.risk-scaling-list { display: flex; flex-direction: column; gap: 18px; }
+.risk-curve-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+
+/* Stack Playbook - strategy classification */
+.strat-class-list { display: flex; flex-direction: column; gap: 10px; }
+.strat-class-list input[type="text"], .strat-class-list select { font-size: 12px; padding: 3px 6px; }
+
+/* Stack Playbook - combo bars (Q3) */
+.combo-bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.combo-bar-row { display: grid; grid-template-columns: 120px 1fr 76px 64px; gap: 10px; align-items: center; font-size: 12px; }
+.combo-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-bar-track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.combo-bar-track i { display: block; height: 100%; border-radius: 4px; }
+.combo-bar-row span { font-variant-numeric: tabular-nums; }
+
+/* Stack Playbook - bullet bot (B6) */
+.bb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.bb-card { background: var(--surface-2); border-radius: 8px; padding: 12px; }
+.bb-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.bb-passrate { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.bb-passrate .combo-bar-track { flex: 1; }
+.bb-stats { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+@media (max-width: 720px) { .bb-grid { grid-template-columns: 1fr; } }
+
+/* Stack Playbook - consistency strip (Q5) */
+.ahc-consistency { display: flex; flex-wrap: wrap; gap: 3px; }
+.ahc-cell { width: 12px; height: 12px; border-radius: 3px; }
+
+/* Stack Playbook - combo x firm heatmap (B5) */
+.heatmap-table td { text-align: center; font-variant-numeric: tabular-nums; }
+.heatmap-table td:first-child { text-align: left; }
+
+/* Per-type segment strip in report + client overview */
+.report-segments div, .metric { position: relative; }
+.report-segments div small, .metric small { display: block; font-size: 11px; margin-top: 3px; }

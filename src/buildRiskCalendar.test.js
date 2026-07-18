@@ -3,11 +3,11 @@ import { buildPnlCalendar, buildRiskDistribution } from './App';
 
 // ── buildRiskDistribution ─────────────────────────────────────────────────────
 
-function makeRiskClient({ id = 'c1', name = 'Pedro', ddLimit = 0, rawDD = 0, accountType = 'Funded', status = 'Active' } = {}) {
+function makeRiskClient({ id = 'c1', name = 'Pedro', ddLimit = 0, rawDD = 0, accountType = 'Funded', status = 'Active', riskLevel = '' } = {}) {
   return {
     id, name,
     accountRegistry: {
-      ACC1: { accountName: 'ACC1', alias: 'Test', accountType, status, maxDrawdownLimit: ddLimit },
+      ACC1: { accountName: 'ACC1', alias: 'Test', accountType, status, maxDrawdownLimit: ddLimit, riskLevel },
     },
     dailyImports: [{
       id: `${id}-di`, date: '2026-06-25', accounts: {},
@@ -24,45 +24,29 @@ describe('buildRiskDistribution', () => {
     expect(Object.values(r.buckets).every(b => b.length === 0)).toBe(true);
   });
 
-  it('classifies model-1 account as Critical when >85% drawdown used', () => {
-    // ddLimit=2000, rawDD=-1800 → used=1800, pct=0.90 → Critical
-    const client = makeRiskClient({ ddLimit: 2000, rawDD: -1800 });
+  it('buckets an account by its manually-assigned High risk level', () => {
+    const client = makeRiskClient({ riskLevel: 'High' });
     const r = buildRiskDistribution([client], []);
-    expect(r.buckets.Critical).toHaveLength(1);
+    expect(r.buckets.High).toHaveLength(1);
     expect(r.total).toBe(1);
   });
 
-  it('classifies model-1 account as High when 65–85% drawdown used', () => {
-    // ddLimit=2000, rawDD=-1400 → pct=0.70 → High
-    const client = makeRiskClient({ ddLimit: 2000, rawDD: -1400 });
+  it('buckets an account by its manually-assigned Medium risk level', () => {
+    const client = makeRiskClient({ riskLevel: 'Medium' });
     const r = buildRiskDistribution([client], []);
-    expect(r.buckets.High).toHaveLength(1);
+    expect(r.buckets.Medium).toHaveLength(1);
   });
 
-  it('classifies model-1 account as Low when <40% drawdown used', () => {
-    // ddLimit=2000, rawDD=-200 → pct=0.10 → Low
-    const client = makeRiskClient({ ddLimit: 2000, rawDD: -200 });
+  it('buckets an account by its manually-assigned Low risk level', () => {
+    const client = makeRiskClient({ riskLevel: 'Low' });
     const r = buildRiskDistribution([client], []);
     expect(r.buckets.Low).toHaveLength(1);
   });
 
-  it('places account in Safe bucket when no drawdown data (rawDD=0, no ddLimit)', () => {
-    // accountRiskLevel returns null → goes to Safe
-    const client = makeRiskClient({ ddLimit: 0, rawDD: 0 });
+  it('places an account with no assigned risk level in the Unassigned bucket', () => {
+    const client = makeRiskClient({ riskLevel: '' });
     const r = buildRiskDistribution([client], []);
-    expect(r.buckets.Safe).toHaveLength(1);
-  });
-
-  it('classifies model-2 Critical when buffer ≤ $500', () => {
-    const client = makeRiskClient({ ddLimit: 0, rawDD: 300 }); // model-2, buffer=300 → Critical
-    const r = buildRiskDistribution([client], []);
-    expect(r.buckets.Critical).toHaveLength(1);
-  });
-
-  it('classifies model-2 Low when buffer > $2500', () => {
-    const client = makeRiskClient({ ddLimit: 0, rawDD: 3000 }); // model-2, buffer=3000 → Low
-    const r = buildRiskDistribution([client], []);
-    expect(r.buckets.Low).toHaveLength(1);
+    expect(r.buckets.Unassigned).toHaveLength(1);
   });
 
   it('excludes Inactive/Ignore and Failed/Inactive accounts', () => {

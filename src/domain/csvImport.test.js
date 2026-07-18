@@ -7,6 +7,7 @@ import {
   parseStrategyParameters,
   parseStrategyVersion,
   parseCurrency,
+  summarizeUploadTypes,
 } from './csvImport';
 
 describe('parseCurrency', () => {
@@ -85,6 +86,23 @@ describe('csvImport', () => {
       trailingMaxDrawdown: -250,
       accountBalance: 50100,
       weeklyPnl: 12.5,
+    });
+  });
+
+  it('detects an accounts file whose header is "Realized PnL" (not "Gross realized PnL")', () => {
+    const csv = [
+      'ConnectionStatus,Connection,Display name,Unrealized PnL,Realized PnL,Excess intraday margin,Cash value',
+      'Connected,Live,2018219,0,-1071.95,27904.09,27904.09',
+    ].join('\n');
+
+    const parsed = parseNinjaTraderCsvText(csv, 'NinjaTrader Grid.csv');
+
+    expect(detectNinjaTraderFileType(parsed.headers)).toBe('accounts');
+    expect(parsed.type).toBe('accounts');
+    expect(parsed.rows[0]).toMatchObject({
+      accountName: '2018219',
+      grossRealizedPnl: -1071.95,
+      accountBalance: 27904.09,
     });
   });
 
@@ -173,6 +191,35 @@ describe('csvImport', () => {
       price: 19000,
       quantity: 2,
     });
+  });
+});
+
+describe('summarizeUploadTypes', () => {
+  it('is complete when all four required types are present', () => {
+    const files = ['accounts', 'strategies', 'orders', 'executions'].map((type) => ({ type, fileName: `${type}.csv` }));
+    const summary = summarizeUploadTypes(files);
+    expect(summary.isComplete).toBe(true);
+    expect(summary.missingTypes).toEqual([]);
+    expect(summary.unknownFiles).toEqual([]);
+  });
+
+  it('flags the missing types when a file is not provided', () => {
+    const files = [{ type: 'accounts', fileName: 'a.csv' }, { type: 'strategies', fileName: 's.csv' }];
+    const summary = summarizeUploadTypes(files);
+    expect(summary.isComplete).toBe(false);
+    expect(summary.missingTypes).toEqual(['orders', 'executions']);
+  });
+
+  it('flags unknown (unrecognized) files by name and marks the upload incomplete', () => {
+    const files = [
+      { type: 'accounts', fileName: 'a.csv' }, { type: 'strategies', fileName: 's.csv' },
+      { type: 'orders', fileName: 'o.csv' }, { type: 'executions', fileName: 'e.csv' },
+      { type: 'unknown', fileName: 'mystery.csv' },
+    ];
+    const summary = summarizeUploadTypes(files);
+    expect(summary.isComplete).toBe(false);
+    expect(summary.unknownFiles).toEqual(['mystery.csv']);
+    expect(summary.missingTypes).toEqual([]);
   });
 });
 

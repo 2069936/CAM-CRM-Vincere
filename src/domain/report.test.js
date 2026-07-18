@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDailyReportSummary, buildClientMessageReport, buildTeamWeeklyReport, buildWeeklyMessageReport, summarizeAccountRows } from './report';
+import { buildDailyReportSummary, buildClientMessageReport, buildTeamWeeklyReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport } from './report';
 
 describe('buildDailyReportSummary', () => {
   it('uses current account registry metadata over stale import metadata', () => {
@@ -54,6 +54,39 @@ describe('buildDailyReportSummary', () => {
 
     expect(report.grouped.funded).toHaveLength(1);
     expect(report.grouped.funded[0].meta.alias).toBe('My Account');
+  });
+
+  it('exposes balance + PnL split by account type (segments), never combined', () => {
+    const client = {
+      name: 'Pedro',
+      accountRegistry: {
+        F1: { accountName: 'F1', accountType: 'Funded', status: 'Active' },
+        C1: { accountName: 'C1', accountType: 'Cash', status: 'Active' },
+        E1: { accountName: 'E1', accountType: 'Evaluation - Standard', status: 'Active' },
+        B1: { accountName: 'B1', accountType: 'Evaluation - Bullet Bot', status: 'Active' },
+      },
+    };
+    const dailyImport = {
+      date: '2026-07-13',
+      accounts: {},
+      snapshots: [
+        { accountName: 'F1', accountBalance: 52000, grossRealizedPnl: 300 },
+        { accountName: 'C1', accountBalance: 10000, grossRealizedPnl: -50 },
+        { accountName: 'E1', accountBalance: 51000, grossRealizedPnl: 200 },
+        { accountName: 'B1', accountBalance: 3200, grossRealizedPnl: 100 },
+      ],
+      flags: [],
+    };
+
+    const report = buildDailyReportSummary(client, dailyImport);
+
+    // Each pool separate — a Funded $52k, Cash $10k and Eval $51k are not $113k.
+    expect(report.segments.funded).toMatchObject({ balance: 52000, dailyPnl: 300 });
+    expect(report.segments.cash).toMatchObject({ balance: 10000, dailyPnl: -50 });
+    expect(report.segments.evalStandard).toMatchObject({ balance: 51000, dailyPnl: 200 });
+    // Bullet-bot kept out of the eval-standard pool (pass/fail, not balance).
+    expect(report.segments.bulletBot).toMatchObject({ balance: 3200, dailyPnl: 100 });
+    expect(report.segments.evalStandard.count).toBe(1);
   });
 });
 
@@ -264,5 +297,19 @@ describe('buildTeamWeeklyReport', () => {
     };
     const text = buildTeamWeeklyReport([client], [cam]);
     expect(text).toContain('1 funded');
+  });
+});
+
+describe('buildCamDayReport', () => {
+  it('collects each client that has a close on the date, sorted by daily PnL', () => {
+    const clients = [
+      { id: 'c1', name: 'A', accountRegistry: { X: { accountName: 'X', accountType: 'Funded' } }, dailyImports: [{ date: '2026-07-13', accounts: {}, snapshots: [{ accountName: 'X', grossRealizedPnl: 100 }], flags: [] }] },
+      { id: 'c2', name: 'B', accountRegistry: { Y: { accountName: 'Y', accountType: 'Funded' } }, dailyImports: [{ date: '2026-07-13', accounts: {}, snapshots: [{ accountName: 'Y', grossRealizedPnl: 500 }], flags: [] }] },
+      { id: 'c3', name: 'C', accountRegistry: {}, dailyImports: [{ date: '2026-07-12', accounts: {}, snapshots: [], flags: [] }] },
+    ];
+    const rows = buildCamDayReport(clients, '2026-07-13');
+    expect(rows).toHaveLength(2); // C has no close on that date
+    expect(rows[0].client.name).toBe('B'); // higher PnL first
+    expect(rows[0].report.totals.grossRealizedPnl).toBe(500);
   });
 });

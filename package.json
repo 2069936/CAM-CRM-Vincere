@@ -10,8 +10,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
-    "xml:index": "node scripts/build-strategy-set-index.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

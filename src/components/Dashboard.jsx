@@ -1,7 +1,6 @@
 import { Fragment, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw, X } from 'lucide-react';
 import { formatCurrency, summarizeAccountRows } from '../domain/report';
-import { enrichStrategyWithSetMatch } from '../domain/xmlMatch';
 import { PAYOUT_STATES } from '../domain/reconcile';
 
 function drawdownDisplay(row) {
@@ -21,24 +20,12 @@ function drawdownDisplay(row) {
   return { label: `${formatCurrency(rawDD)} buffer`, tone: '' };
 }
 
-function fundedRiskLevel(row) {
-  const activeStrats = (row.strategies || []).filter((s) => s.enabled).length;
-  const hasDll = row.meta?.dailyLossLimit && row.meta.dailyLossLimit !== 'None' && row.meta.dailyLossLimit !== '';
-  const ddLimit = Number(row.meta?.maxDrawdownLimit || 0);
-  const rawDD = Number(row.trailingMaxDrawdown || 0);
-  const buffer = ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
-
-  let score = 0;
-  if (activeStrats >= 3) score += 3;
-  else if (activeStrats === 2) score += 2;
-  else if (activeStrats === 1) score += 1;
-  if (!hasDll) score += 2;
-  if (buffer > 0 && buffer < 500) score += 3;
-  else if (buffer > 0 && buffer < 1200) score += 1;
-
-  if (score <= 1) return { label: 'Low', tone: 'positive' };
-  if (score <= 3) return { label: 'Medium', tone: 'warning' };
-  return { label: 'High', tone: 'negative' };
+// Risk level is assigned manually per account (not inferred). Empty = Unassigned.
+function manualRiskDisplay(level) {
+  if (level === 'High') return { label: 'High', tone: 'negative' };
+  if (level === 'Medium') return { label: 'Medium', tone: 'warning' };
+  if (level === 'Low') return { label: 'Low', tone: 'positive' };
+  return { label: '—', tone: 'muted' };
 }
 
 function Metric({ label, value, tone }) {
@@ -90,11 +77,6 @@ function formatStrategySettings(strategy) {
   if (strategy.params.stopLossTicks != null) parts.push(`Stop ${strategy.params.stopLossTicks}t`);
   if (strategy.params.profitTargets?.length) parts.push(`Targets ${strategy.params.profitTargets.join('/')}t`);
   return parts.join(' · ');
-}
-
-function formatConfigMatch(match) {
-  if (!match?.matched) return match?.reason || '';
-  return [match.risk, match.setVersion, match.period ? `Period ${match.period}` : '', match.passType, match.direction].filter(Boolean).join(' · ');
 }
 
 function buildTradeStats(executions, strategies) {
@@ -189,7 +171,6 @@ function AccountDetail({ row, executions, colSpan = 7, dailyImports }) {
                   const key = `${row.accountName}-${strategy.strategyName}`;
                   const strategyExecutions = accountExecutions.filter((execution) => execution.strategyName === strategy.strategyName);
                   const settings = formatStrategySettings(strategy);
-                  const configLabel = formatConfigMatch(strategy.configMatch);
                   return (
                     <div className="strategy-detail" key={key}>
                       <button
@@ -199,7 +180,6 @@ function AccountDetail({ row, executions, colSpan = 7, dailyImports }) {
                         <span>
                           <strong><ChevronDown className={expandedStrategy === key ? 'chevron open' : 'chevron'} size={14} /> {strategy.strategyName}</strong>
                           <small>{strategy.instrument} · {strategy.enabled ? 'Enabled' : 'Disabled'}{strategy.strategyFamily === 'Bullet Bot' && strategy.direction ? ` · ${strategy.direction}` : ''}</small>
-                          {configLabel ? <small>{configLabel}</small> : null}
                           {settings ? <small>{settings}</small> : null}
                         </span>
                         <span>
@@ -264,7 +244,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
   const isCash = mode === 'cash';
   const isFunded = title === 'Funded';
   const isEval = title === 'Standard Evaluations' || title === 'Bullet Bot';
-  const colSpan = isCash ? 5 : isFunded ? 9 : isEval ? 7 : 6;
+  const colSpan = isCash ? 5 : isFunded ? 10 : isEval ? 8 : 6;
 
   return (
     <section className="panel">
@@ -282,6 +262,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
               <th>Daily PnL</th>
               <th>Weekly PnL</th>
               {isCash ? <th>Cash balance</th> : null}
+              {(isFunded || isEval) ? <th>Balance</th> : null}
               {!isCash ? <th>Drawdown</th> : null}
               {isFunded ? <th>Target</th> : null}
               {isFunded ? <th>Payout</th> : null}
@@ -311,18 +292,22 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   <td className={row.grossRealizedPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.grossRealizedPnl)}</td>
                   <td className={row.weeklyPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(row.weeklyPnl)}</td>
                   {isCash ? <td>{formatCurrency(row.accountBalance)}</td> : null}
+                  {(isFunded || isEval) ? <td>{formatCurrency(row.accountBalance)}</td> : null}
                   {!isCash ? (() => { const dd = drawdownDisplay(row); return <td className={dd.tone}>{dd.label}</td>; })() : null}
                   {isFunded ? (() => {
                     const target = Number(row.meta?.targetProfit || 0);
                     const balance = Number(row.accountBalance || 0);
                     if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>-</td>;
-                    const pct = Math.min(100, Math.round((balance / target) * 100));
+                    // Progress from the starting balance, not from zero. A 50k account
+                    // with a 54k target sits at 0% at 50k, negative below it.
+                    const start = Number(row.meta?.startBalance || 0) || (balance >= 90000 ? 100000 : 50000);
+                    const pct = target > start ? Math.round(((balance - start) / (target - start)) * 100) : 0;
                     const reached = balance >= target;
                     return (
                       <td className="target-cell" onClick={(e) => e.stopPropagation()}>
                         <div className="target-progress">
                           <div className="target-bar">
-                            <i style={{ width: `${pct}%`, background: reached ? 'var(--success)' : pct >= 80 ? 'var(--warning)' : 'var(--accent)' }} />
+                            <i style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: reached ? 'var(--success)' : pct >= 80 ? 'var(--warning)' : 'var(--accent)' }} />
                           </div>
                           <small className={reached ? 'positive' : ''}>{pct}%</small>
                         </div>
@@ -341,7 +326,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                       </select>
                     </td>
                   ) : null}
-                  {isFunded ? (() => { const r = fundedRiskLevel(row); return <td className={r.tone}>{r.label}</td>; })() : null}
+                  {isFunded ? (() => { const r = manualRiskDisplay(row.meta?.riskLevel); return <td className={r.tone}>{r.label}</td>; })() : null}
                   {isEval ? (() => {
                     const target = Number(row.meta?.targetProfit || 0);
                     const start = Number(row.meta?.startBalance || 0);
@@ -375,7 +360,7 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
   );
 }
 
-export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, strategySetRecords = [], client }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, client }) {
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -387,12 +372,11 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
   }
 
   const summary = summarizeAccountRows(rows);
-  const enrichedRows = rows.map((row) => ({
-    ...row,
-    strategies: (row.strategies || []).map((strategy) => enrichStrategyWithSetMatch(strategy, strategySetRecords)),
-  }));
+  const enrichedRows = rows;
   const relevantAccountNames = new Set(rows.map((row) => row.accountName));
-  const flags = (dailyImport.flags || []).filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
+  const flags = (dailyImport.flags || [])
+    .filter((flag) => flag.status !== 'Acknowledged' && flag.status !== 'Resolved')
+    .filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
   const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');
   const isCash = mode === 'cash';
 
@@ -409,16 +393,11 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
         <div className="panel-heading">
           <h3>Action required</h3>
           <div className="inline-actions">
-            {onBulkResolveFlags && flags.some(f => f.status !== 'Resolved' && f.status !== 'Acknowledged') && (
-              <>
-                <button className="ghost-button" style={{fontSize:12}} title="Mark all open flags as acknowledged" onClick={() => onBulkResolveFlags('Acknowledged')}>
-                  Ack all
-                </button>
-                <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags('Resolved')}>
-                  Resolve all
-                </button>
-              </>
-            )}
+            {onBulkResolveFlags && flags.length ? (
+              <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags('Resolved')}>
+                Resolve all
+              </button>
+            ) : null}
             <button className="secondary-button" onClick={onRecalculate}>
               <RefreshCw size={16} /> Recalculate
             </button>
@@ -439,15 +418,10 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
                   </strong>
                   <span>{flag.message}</span>
                 </div>
-                {flag.status !== 'Resolved' && flag.status !== 'Acknowledged' && onResolveFlag ? (
-                  <div style={{display:'flex',gap:4,flexShrink:0}}>
-                    {flag.severity !== 'Critical' && (
-                      <button className="ghost-button icon-only flag-resolve-btn" title="Acknowledge - seen, not blocking" style={{fontSize:10,padding:'2px 6px',width:'auto'}} onClick={() => onResolveFlag(flag.id, 'Acknowledged')}>Ack</button>
-                    )}
-                    <button className="ghost-button icon-only flag-resolve-btn" title="Mark resolved" onClick={() => onResolveFlag(flag.id, 'Resolved')}>
-                      <X size={14} />
-                    </button>
-                  </div>
+                {onResolveFlag ? (
+                  <button className="ghost-button icon-only flag-resolve-btn" title="Resolve - dismiss this flag" style={{flexShrink:0}} onClick={() => onResolveFlag(flag.id, 'Resolved')}>
+                    <X size={14} />
+                  </button>
                 ) : null}
               </div>
             ))}
