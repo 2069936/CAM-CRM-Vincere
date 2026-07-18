@@ -697,16 +697,20 @@ textarea {
   .content.client-workspace {
     height: 100vh;
     overflow-y: auto;
+    padding: 0 28px 28px;
   }
   .content.client-workspace .client-workspace-header {
     position: sticky;
     top: 0;
     z-index: 20;
     background: var(--bg);
-    /* negative margins cover the .content 28px padding so the sticky bar spans
-       edge to edge; padding puts the content back in place. */
-    margin: -28px -28px 18px;
+    /* Horizontal negative margins keep the sticky bar edge-to-edge while the
+       workspace starts at scroll position zero. */
+    margin: 0 -28px 18px;
     padding: 28px 28px 16px;
+  }
+  .content.client-workspace .operations-toolbar.client-toolbar {
+    margin-top: 60px;
   }
 }
 
