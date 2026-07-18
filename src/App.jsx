@@ -8108,7 +8108,6 @@ function CamOverview({
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
-  onCompleteTask,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -11007,16 +11006,6 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
 
-  // Keep the CAM Profile view mutually exclusive with the other sub-views without
-  // threading setShowProfile(false) through every navigation handler: clear it
-  // when the user opens Overview/SOP or switches to a client.
-  useEffect(() => {
-    if (showOverview || showSOP) setShowProfile(false);
-  }, [showOverview, showSOP]);
-  useEffect(() => {
-    setShowProfile(false);
-  }, [state.selectedClientId]);
-
   useEffect(() => {
     if (!isSupabaseConfigured) return;
     let cancelled = false;
@@ -11129,6 +11118,7 @@ export default function App() {
       }
       if (e.altKey && e.key === "o") {
         e.preventDefault();
+        setShowProfile(false);
         setShowOverview(true);
         setShowSOP(false);
       }
@@ -11145,11 +11135,13 @@ export default function App() {
       }
       if (e.altKey && e.key === "s") {
         e.preventDefault();
+        setShowProfile(false);
         setShowSOP(true);
         setShowOverview(false);
       }
       if (e.altKey && e.key === "n") {
         e.preventDefault();
+        setShowProfile(false);
         setActiveTab("Tasks");
         setShowOverview(false);
         setShowSOP(false);
@@ -11230,6 +11222,7 @@ export default function App() {
       addClient(current, clientName, current.accountManager?.id),
     );
     setNewClientName("");
+    setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
     if (isSupabaseConfigured) {
@@ -11257,6 +11250,7 @@ export default function App() {
       return clientId ? { ...next, selectedClientId: clientId } : next;
     });
     setPlatformView("cam");
+    setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
     setRegistryOpen(false);
@@ -11269,6 +11263,7 @@ export default function App() {
 
   function openManagerWorkspace() {
     setPlatformView("manager");
+    setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
     if (isSupabaseConfigured) {
@@ -12328,6 +12323,7 @@ export default function App() {
                             : "client-link"
                         }
                         onClick={() => {
+                          setShowProfile(false);
                           setShowOverview(true);
                           setShowSOP(false);
                           closeMobileSidebar();
@@ -12346,6 +12342,7 @@ export default function App() {
                   <button
                     className={showSOP ? "client-link active" : "client-link"}
                     onClick={() => {
+                      setShowProfile(false);
                       setShowSOP(true);
                       setShowOverview(false);
                       closeMobileSidebar();
@@ -12428,6 +12425,7 @@ export default function App() {
                             setState((current) =>
                               selectClient(current, client.id),
                             );
+                            setShowProfile(false);
                             setShowOverview(false);
                             setShowSOP(false);
                             setClientSearch("");
@@ -12536,6 +12534,7 @@ export default function App() {
                             setState((current) =>
                               selectClient(current, client.id),
                             );
+                            setShowProfile(false);
                             setShowOverview(false);
                             setShowSOP(false);
                             markClientViewed(client.id);
@@ -12722,26 +12721,12 @@ export default function App() {
                 allClients={state.clients || []}
                 onSelectClient={(clientId) => {
                   setState((current) => selectClient(current, clientId));
+                  setShowProfile(false);
                   setShowOverview(false);
                   setShowSOP(false);
                 }}
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
-                onCompleteTask={(clientId, taskId) => {
-                  const patch = {
-                    done: true,
-                    doneAt: new Date().toISOString(),
-                  };
-                  setState((current) =>
-                    updateTask(current, clientId, taskId, patch),
-                  );
-                  updateSupabaseTask(taskId, patch).catch((error) => {
-                    console.error("[CRM] Failed to complete task:", error);
-                    window.alert(
-                      `Could not complete task in Supabase: ${error.message}`,
-                    );
-                  });
-                }}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
@@ -13569,6 +13554,7 @@ export default function App() {
                             : currentCamProfile;
                           if (ownerCam) openCamWorkspace(ownerCam.id, r.client.id);
                           else setState((s) => selectClient(s, r.client.id));
+                          setShowProfile(false);
                           setShowOverview(false);
                           setShowSOP(false);
                           setActiveTab(r.tab);
@@ -13608,6 +13594,7 @@ export default function App() {
                             : currentCamProfile;
                           if (ownerCam) openCamWorkspace(ownerCam.id, r.client.id);
                           else setState((s) => selectClient(s, r.client.id));
+                          setShowProfile(false);
                           setShowOverview(false);
                           setShowSOP(false);
                           setActiveTab(r.tab);
