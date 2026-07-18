@@ -1,3 +1,5 @@
+import { buildClientSegments } from './clientSegments';
+
 function ciLookup(registry, accountName) {
   if (!registry || !accountName) return {};
   if (registry[accountName]) return registry[accountName];
@@ -189,6 +191,12 @@ export function buildDailyReportSummary(client, dailyImport) {
     generatedAt: new Date().toISOString(),
     grouped,
     totals,
+    // Per-account-type subtotals so the report can show balance + realized PnL
+    // split by pool (Eval-standard / Funded / Cash / Bullet Bot) instead of one
+    // combined total. Eval-standard is kept separate from Bullet Bot because a
+    // bullet-bot eval is tracked by pass/fail, not by balance. Cash PnL is net
+    // of fees (the NinjaTrader "Realized PnL" column already subtracts them).
+    segments: buildClientSegments(client, dailyImport),
     priorDailyPnl,
     flags: dailyImport?.flags || [],
     openFlags,
@@ -202,6 +210,18 @@ export function buildDailyReportSummary(client, dailyImport) {
       criticalFlags: criticalFlags.length,
     },
   };
+}
+
+// Every client's daily report for one date (for a CAM's "all clients for the
+// day" export). Only clients that have an import on that date are included.
+export function buildCamDayReport(clients = [], date) {
+  const rows = [];
+  for (const client of clients) {
+    const dailyImport = (client.dailyImports || []).find((d) => d.date === date);
+    if (!dailyImport) continue;
+    rows.push({ client, dailyImport, report: buildDailyReportSummary(client, dailyImport) });
+  }
+  return rows.sort((a, b) => (b.report.totals.grossRealizedPnl || 0) - (a.report.totals.grossRealizedPnl || 0));
 }
 
 export function buildTeamWeeklyReport(clients, camProfiles) {

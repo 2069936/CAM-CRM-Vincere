@@ -1,6 +1,14 @@
 import { useState } from 'react';
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock } from 'lucide-react';
-import { ACCOUNT_TYPES, ACCOUNT_STATUSES } from '../domain/reconcile';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
+import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
+import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
+import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
+import { buildAccountLifecycle } from '../domain/accountLifecycle';
+import LifecycleByAlgo from './LifecycleByAlgo';
+import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
+import { buildBulletBotStats } from '../domain/bulletBotStats';
+import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
+import AccountHistoryChart from './AccountHistoryChart';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
@@ -31,20 +39,61 @@ function comboFromStrategies(strategies = []) {
   return unique.join(' + ') || 'Unknown';
 }
 
+// Combo-change events for an account, aligned to its equity series index (same
+// sorted-by-date, snapshot-present ordering as buildAccountEquitySeries), so the
+// changes can be marked on the curve — "did the change help?".
+function comboChangesFor(client, accountName) {
+  const lower = String(accountName || '').toLowerCase();
+  const imports = [...(client?.dailyImports || [])].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  const points = [];
+  for (const di of imports) {
+    const snap = (di.snapshots || []).find((s) => s.accountName?.toLowerCase() === lower);
+    if (!snap) continue;
+    points.push({ date: di.date || '', combo: comboFromStrategies(snap.strategies || []) });
+  }
+  const changes = [];
+  for (let i = 1; i < points.length; i += 1) {
+    if (points[i].combo !== points[i - 1].combo) {
+      changes.push({ index: i, date: points[i].date, from: points[i - 1].combo || '-', to: points[i].combo || '-' });
+    }
+  }
+  return changes;
+}
+
 // Aggregate algo combo performance across ALL clients' historical closes
-export function buildAlgoComboPerformance(allClients = []) {
+// Calendar days that `date` (YYYY-MM-DD) falls before `anchor`. 0 = same day.
+// Date-based so the "recent window" is aligned across clients regardless of how
+// many imports each has — the positional last-N-rows approach misaligned them.
+function daysBefore(anchor, date) {
+  if (!anchor || !date) return Infinity;
+  const a = new Date(`${anchor}T00:00:00Z`).getTime();
+  const d = new Date(`${date}T00:00:00Z`).getTime();
+  return Math.round((a - d) / 86400000);
+}
+
+// Latest import date across a set of clients — the window anchor.
+function latestImportDate(clients) {
+  let anchor = '';
+  for (const client of clients || []) {
+    for (const di of client.dailyImports || []) {
+      if ((di.date || '') > anchor) anchor = di.date || '';
+    }
+  }
+  return anchor;
+}
+
+export function buildAlgoComboPerformance(allClients = [], { windowDays = 7 } = {}) {
   const combos = {};
+  const anchor = latestImportDate(allClients);
 
   for (const client of allClients) {
     const rawReg = client.accountRegistry || {};
     const registry = Object.fromEntries(Object.entries(rawReg).map(([k, v]) => [k.toLowerCase(), v]));
-    const imports = client.dailyImports || [];
-    const n = imports.length;
 
-    for (let i = 0; i < n; i++) {
-      const di = imports[i];
-      const isRecent7 = i >= n - 7;
-      const isPrior7 = i >= n - 14 && i < n - 7;
+    for (const di of client.dailyImports || []) {
+      const age = daysBefore(anchor, di.date); // days this close is before the anchor
+      const isRecent = age >= 0 && age < windowDays;
+      const isPrior = age >= windowDays && age < windowDays * 2;
 
       for (const snap of di.snapshots || []) {
         const meta = registry[(snap.accountName || '').toLowerCase()] || {};
@@ -60,10 +109,10 @@ export function buildAlgoComboPerformance(allClients = []) {
             totalPnl: 0,
             days: 0,
             winDays: 0,
-            recent7Pnl: 0,
-            recent7Days: 0,
-            prior7Pnl: 0,
-            prior7Days: 0,
+            recentPnl: 0,
+            recentDays: 0,
+            priorPnl: 0,
+            priorDays: 0,
             accountSet: new Set(),
             clientSet: new Set(),
           };
@@ -76,8 +125,8 @@ export function buildAlgoComboPerformance(allClients = []) {
         if (pnl > 0) entry.winDays += 1;
         entry.accountSet.add(`${client.id}::${snap.accountName}`);
         entry.clientSet.add(client.id);
-        if (isRecent7) { entry.recent7Pnl += pnl; entry.recent7Days += 1; }
-        if (isPrior7)  { entry.prior7Pnl += pnl; entry.prior7Days += 1; }
+        if (isRecent) { entry.recentPnl += pnl; entry.recentDays += 1; }
+        if (isPrior)  { entry.priorPnl += pnl; entry.priorDays += 1; }
       }
     }
   }
@@ -85,12 +134,12 @@ export function buildAlgoComboPerformance(allClients = []) {
   return Object.values(combos)
     .map((c) => {
       const avgPnl = c.days ? c.totalPnl / c.days : 0;
-      const recent7Avg = c.recent7Days ? c.recent7Pnl / c.recent7Days : null;
-      const prior7Avg  = c.prior7Days  ? c.prior7Pnl  / c.prior7Days  : null;
+      const recentAvg = c.recentDays ? c.recentPnl / c.recentDays : null;
+      const priorAvg  = c.priorDays  ? c.priorPnl  / c.priorDays  : null;
       let trend = 'stable';
-      if (recent7Avg !== null && prior7Avg !== null) {
-        if (recent7Avg > prior7Avg * 1.1) trend = 'up';
-        else if (recent7Avg < prior7Avg * 0.9) trend = 'down';
+      if (recentAvg !== null && priorAvg !== null) {
+        if (recentAvg > priorAvg * 1.1) trend = 'up';
+        else if (recentAvg < priorAvg * 0.9) trend = 'down';
       }
       return {
         combo: c.combo,
@@ -100,20 +149,23 @@ export function buildAlgoComboPerformance(allClients = []) {
         accounts: c.accountSet.size,
         clients: c.clientSet.size,
         trend,
-        recent7Avg,
-        prior7Avg,
+        recentAvg,
+        priorAvg,
+        recentDays: c.recentDays,
       };
     })
     .sort((a, b) => b.avgPnl - a.avgPnl);
 }
 
 // For a specific client's funded accounts, compare their combo vs team avg and suggest better option
-function buildClientComboInsights(client, dailyImport, comboPerf) {
+function buildClientComboInsights(client, dailyImport, comboPerf, { windowDays = 7 } = {}) {
   if (!client || !comboPerf.length) return [];
   const registry = mergeRegCi(dailyImport?.accounts, client.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
   const perfByCombo = Object.fromEntries(comboPerf.map((c) => [c.combo, c]));
   const best = comboPerf[0];
+  // Anchor the account window at the close being viewed, not the array tail.
+  const anchor = dailyImport?.date || latestImportDate([client]);
 
   return snapshots
     .filter((s) => {
@@ -127,15 +179,19 @@ function buildClientComboInsights(client, dailyImport, comboPerf) {
       const currentCombo = comboFromStrategies(s.strategies || []);
       const teamData = perfByCombo[currentCombo];
       const sNameLower = (s.accountName || '').toLowerCase();
-      const accountPnl7 = (client.dailyImports || [])
-        .slice(-7)
-        .reduce((sum, di) => {
-          const snap = (di.snapshots || []).find((x) => x.accountName?.toLowerCase() === sNameLower);
-          return sum + Number(snap?.grossRealizedPnl || 0);
-        }, 0);
-      const accountAvg7 = accountPnl7 / 7;
-      const teamAvg7 = teamData?.recent7Avg ?? teamData?.avgPnl ?? null;
-      const delta = teamAvg7 !== null ? accountAvg7 - teamAvg7 : null;
+      // Sum the account's PnL over the real date window and divide by the days
+      // that actually had data (not a hard-coded 7).
+      let sum = 0;
+      let daysWithData = 0;
+      for (const di of client.dailyImports || []) {
+        const age = daysBefore(anchor, di.date);
+        if (age < 0 || age >= windowDays) continue;
+        const snap = (di.snapshots || []).find((x) => x.accountName?.toLowerCase() === sNameLower);
+        if (snap) { sum += Number(snap.grossRealizedPnl || 0); daysWithData += 1; }
+      }
+      const accountAvg = daysWithData ? sum / daysWithData : 0;
+      const teamAvg = teamData?.recentAvg ?? teamData?.avgPnl ?? null;
+      const delta = teamAvg !== null ? accountAvg - teamAvg : null;
       const suggestion = best.combo !== currentCombo && best.avgPnl > (teamData?.avgPnl || 0) * 1.15
         ? best.combo
         : null;
@@ -144,8 +200,9 @@ function buildClientComboInsights(client, dailyImport, comboPerf) {
         accountName: s.accountName,
         alias: meta.alias || s.accountName,
         currentCombo,
-        accountAvg7,
-        teamAvg7,
+        accountAvg,
+        accountDays: daysWithData,
+        teamAvg,
         delta,
         suggestion,
         bestCombo: best.combo,
@@ -197,7 +254,7 @@ function IncomeProjection({ currentFunded }) {
   );
 }
 
-export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [] }) {
+export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], classifications = [], onClassify, logAlgoHistory = [] }) {
   const registryCi = mergeRegCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
 
@@ -210,6 +267,24 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [localStack, setLocalStack] = useState({});
   const [localDll, setLocalDll] = useState({});
   const [changeNotes, setChangeNotes] = useState({});
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [riskOpen, setRiskOpen] = useState(false);
+  const [classOpen, setClassOpen] = useState(false);
+  const [bbOpen, setBbOpen] = useState(false);
+  const [heatOpen, setHeatOpen] = useState(false);
+  const [logHistOpen, setLogHistOpen] = useState(false);
+  const [lifecycleOpen, setLifecycleOpen] = useState(false);
+  const [classDraft, setClassDraft] = useState({});
+  const [windowDays, setWindowDays] = useState(30);
+
+  // Funded + evaluation accounts get a full-history chart (cash accounts are
+  // tracked by cash balance, not trajectory).
+  const chartAccounts = Object.values(registryCi).filter(
+    (a) =>
+      (a.accountType === ACCOUNT_TYPES.FUNDED || String(a.accountType || '').startsWith('Evaluation')) &&
+      a.status !== ACCOUNT_STATUSES.FAILED &&
+      a.status !== ACCOUNT_STATUSES.INACTIVE,
+  );
 
   function updateStack(accountName, value) {
     const prev = ciMeta(registryCi, accountName)?.algoStack || '';
@@ -229,8 +304,28 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
 
   // Build team intelligence using ALL clients
   const teamClients = allClients.length ? allClients : (client ? [client] : []);
-  const comboPerf = buildAlgoComboPerformance(teamClients);
-  const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf);
+  const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
+  const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
+  const riskCurves = buildRiskScalingCurve(comboPerf);
+  const bbStats = buildBulletBotStats(teamClients);
+  const comboFirm = buildComboByFirm(teamClients, comboFromStrategies);
+  const logAlgoAgg = aggregateLogFamilyHistory(logAlgoHistory);
+  const sigGroups = groupStrategiesBySignature(teamClients);
+  const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
+  const mismatches = detectVersionMismatches(teamClients, classifications);
+
+  function saveClassification(group) {
+    if (!onClassify) return;
+    const existing = classByKey[group.key] || {};
+    const draft = classDraft[group.key] || {};
+    onClassify({
+      key: group.key,
+      family: group.family,
+      signature: group.signature,
+      version: draft.version ?? existing.version ?? '',
+      riskLevel: draft.riskLevel ?? existing.riskLevel ?? '',
+    });
+  }
 
   const hasSuggestions = clientInsights.some((i) => i.suggestion);
   const totalTeamAccounts = comboPerf.reduce((s, c) => s + c.accounts, 0);
@@ -238,11 +333,336 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   return (
     <div className="stack-playbook">
 
+      {/* ── Account history ────────────────────────────────── */}
+      {chartAccounts.length ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setHistoryOpen((v) => !v)}>
+            <ChevronDown className={historyOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Account history</h3>
+            <span className="muted">Equity curve + drawdown buffer over every close</span>
+            <span className="count">{chartAccounts.length}</span>
+          </button>
+          {historyOpen ? (
+            <div className="ahc-list">
+              {chartAccounts.map((account) => {
+                const series = buildAccountEquitySeries(client, account.accountName);
+                const ddLimit = Number(account.maxDrawdownLimit || 0);
+                const snap = snapshots.find((s) => s.accountName?.toLowerCase() === account.accountName.toLowerCase());
+                const mult = parseComboRisk(comboFromStrategies(snap?.strategies || [])).multiplier;
+                const last = series[series.length - 1];
+                const buffer = last ? (ddLimit > 0 ? ddLimit - Math.abs(last.trailing) : last.trailing) : 0;
+                const safe = estimateMaxSafeMultiplier(series, buffer, mult);
+                const stratVersions = (snap?.strategies || [])
+                  .filter((st) => st.enabled)
+                  .map((st) => {
+                    const c = classifyStrategy(st, classifications);
+                    return c.matched ? `${st.strategyFamily} ${c.version}` : `${st.strategyFamily || st.strategyName || 'Algo'}?`;
+                  });
+                const lc = buildAccountLifecycle(account, { asOf: last?.date || dailyImport?.date || '' });
+                return (
+                  <div className="ahc-account" key={account.accountName}>
+                    <div className="ahc-account-head">
+                      <strong>{account.alias || account.accountName}</strong>
+                      <small className="muted">{account.accountType}{account.connection ? ` · ${account.connection}` : ''}</small>
+                      {stratVersions.length ? <small className="muted">{stratVersions.join(' · ')}</small> : null}
+                      {safe ? (
+                        <small className={safe.safeLevel < mult ? 'negative' : 'muted'}>
+                          buffer supports ~{safe.safeLevel}x{mult ? ` (running ${mult}x)` : ''}
+                        </small>
+                      ) : null}
+                      <small
+                        className={lc.outcome === 'funded' ? 'positive' : lc.outcome === 'failed' ? 'negative' : 'muted'}
+                        title={lc.phases.map((p) => `${p.algo}: ${p.days ?? '?'}d`).join(' -> ')}
+                      >
+                        {lc.outcome}{lc.daysAlive != null ? ` · ${lc.daysAlive}d alive` : ''}{lc.phases.length > 1 ? ` · ${lc.phases.length} algo phases` : ''}
+                      </small>
+                    </div>
+                    <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName)} />
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Risk scaling (combo × contract level) ──────────── */}
+      {riskCurves.some((c) => c.hasScaling) ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setRiskOpen((v) => !v)}>
+            <ChevronDown className={riskOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Risk scaling</h3>
+            <span className="muted">How PnL scales with contract level per algo — the level with the best per-contract return wins</span>
+          </button>
+          {riskOpen ? (
+            <div className="risk-scaling-list">
+              {riskCurves.filter((c) => c.hasScaling).map((curve) => (
+                <div className="risk-curve" key={curve.base}>
+                  <div className="risk-curve-head">
+                    <strong>{curve.base}</strong>
+                    {curve.bestEfficiency ? (
+                      <small className="muted">Best per-contract-unit: <b>{curve.bestEfficiency.combo}</b> ({fmt(curve.bestEfficiency.riskNormalizedPnl)}/unit)</small>
+                    ) : null}
+                  </div>
+                  <div className="table-wrap">
+                    <table className="ops-table">
+                      <thead>
+                        <tr>
+                          <th>Level</th>
+                          <th>Avg P&amp;L / day</th>
+                          <th>Per contract-unit</th>
+                          <th>Win rate</th>
+                          <th>Accounts</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {curve.levels.map((l) => (
+                          <tr key={l.combo} className={l === curve.bestEfficiency ? 'row-highlight' : ''}>
+                            <td><strong>{l.riskLevel}x</strong> <span className="muted">{l.combo}</span></td>
+                            <td className={l.avgPnl >= 0 ? 'positive' : 'negative'}>{l.avgPnl >= 0 ? '+' : ''}{fmt(l.avgPnl)}</td>
+                            <td>{fmt(l.riskNormalizedPnl)}</td>
+                            <td>{l.winRate}%</td>
+                            <td>{l.accounts}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+              <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                Risk level ≈ contract multiplier (each level roughly doubles contracts). "Per contract-unit" normalizes PnL by the multiplier so levels compare fairly — a higher raw PnL at 2x is only better if it beats 1x per unit.
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Strategy classification ────────────────────────── */}
+      {sigGroups.length ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setClassOpen((v) => !v)}>
+            <ChevronDown className={classOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Strategy classification</h3>
+            <span className="muted">Assign a version + risk to each parameter signature</span>
+            <span className="count">{sigGroups.length}</span>
+          </button>
+          {classOpen ? (
+            <div className="strat-class-list">
+              {mismatches.length ? (
+                <div className="notice warning">
+                  <AlertTriangle size={14} /> Version drift: {mismatches.map((m) => `${m.family} (${m.variantCount})`).join(', ')} — more than one parameter signature running for the same algo.
+                </div>
+              ) : null}
+              <div className="table-wrap">
+                <table className="ops-table">
+                  <thead>
+                    <tr>
+                      <th>Algo</th>
+                      <th>Instruments</th>
+                      <th>Usage</th>
+                      <th>Name ver.</th>
+                      <th>Version</th>
+                      <th>Risk</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sigGroups.map((g) => {
+                      const cls = classByKey[g.key] || {};
+                      const draft = classDraft[g.key] || {};
+                      const versionVal = draft.version ?? cls.version ?? '';
+                      const riskVal = draft.riskLevel ?? cls.riskLevel ?? '';
+                      const dirty =
+                        (draft.version !== undefined && draft.version !== (cls.version || '')) ||
+                        (draft.riskLevel !== undefined && draft.riskLevel !== (cls.riskLevel || ''));
+                      return (
+                        <tr key={g.key} className={cls.version ? 'row-highlight' : ''}>
+                          <td><strong>{g.family}</strong></td>
+                          <td className="muted">{g.instruments.join(', ') || '-'}</td>
+                          <td className="muted">{g.accountCount} acct · {g.clientCount} cl</td>
+                          <td className="muted">{g.nameVersions.join(', ') || '-'}</td>
+                          <td>
+                            <input
+                              type="text"
+                              placeholder="e.g. v1"
+                              value={versionVal}
+                              style={{ width: 72 }}
+                              onChange={(e) => setClassDraft((d) => ({ ...d, [g.key]: { ...d[g.key], version: e.target.value } }))}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              value={riskVal}
+                              onChange={(e) => setClassDraft((d) => ({ ...d, [g.key]: { ...d[g.key], riskLevel: e.target.value } }))}
+                            >
+                              {['', ...RISK_LEVELS].map((r) => <option key={r} value={r}>{r || '-'}</option>)}
+                            </select>
+                          </td>
+                          <td>
+                            <button className="ghost-button" disabled={!dirty || !onClassify} onClick={() => saveClassification(g)}>Save</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                Accounts running the same algo with the same parameters share a signature. Select the version you run — the biggest pools sort first. Risk is set per version and replaces the old inference.
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Bullet Bot ─────────────────────────────────────── */}
+      {bbStats.overall.accounts ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setBbOpen((v) => !v)}>
+            <ChevronDown className={bbOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Bullet Bot</h3>
+            <span className="muted">Pass rate + days-to-pass by direction</span>
+            <span className="count">{bbStats.overall.accounts}</span>
+          </button>
+          {bbOpen ? (
+            <div className="bb-grid">
+              {[{ label: 'Long', s: bbStats.long }, { label: 'Short', s: bbStats.short }, { label: 'Overall', s: bbStats.overall }].map(({ label, s }) => (
+                <div className="bb-card" key={label}>
+                  <div className="bb-card-head"><strong>{label}</strong><span className="muted">{s.accounts} acct</span></div>
+                  <div className="bb-passrate">
+                    <div className="combo-bar-track"><i style={{ width: `${Math.round(s.passRate * 100)}%`, background: 'var(--success)' }} /></div>
+                    <span className="positive">{Math.round(s.passRate * 100)}%</span>
+                  </div>
+                  <div className="bb-stats muted">
+                    <span>{s.passed}/{s.accounts} passed</span>
+                    <span>{s.fired} fired</span>
+                    <span>{s.avgDaysToPass != null ? `~${Math.round(s.avgDaysToPass)}d to pass` : 'no passes yet'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Combo × Prop firm heatmap (B5) ─────────────────── */}
+      {comboFirm.combos.length && comboFirm.firms.length > 1 ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setHeatOpen((v) => !v)}>
+            <ChevronDown className={heatOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Combo × Prop firm</h3>
+            <span className="muted">Avg PnL/day by combo under each firm's rules</span>
+          </button>
+          {heatOpen ? (() => {
+            const maxAbs = Math.max(1, ...comboFirm.matrix.flatMap((r) => r.cells.map((c) => Math.abs(c.avgPnl || 0))));
+            return (
+              <div className="table-wrap">
+                <table className="ops-table heatmap-table">
+                  <thead>
+                    <tr>
+                      <th>Combo</th>
+                      {comboFirm.firms.map((f) => <th key={f}>{f}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comboFirm.matrix.map((row) => (
+                      <tr key={row.combo}>
+                        <td><strong>{row.combo}</strong></td>
+                        {row.cells.map((c) => {
+                          if (c.avgPnl == null) return <td key={c.firm} className="muted">-</td>;
+                          const alpha = 0.15 + 0.55 * (Math.abs(c.avgPnl) / maxAbs);
+                          const bg = c.avgPnl >= 0 ? `rgba(var(--success-rgb), ${alpha})` : `rgba(var(--error-rgb), ${alpha})`;
+                          return (
+                            <td key={c.firm} style={{ background: bg }} title={`${c.days} day-runs`}>
+                              {c.avgPnl >= 0 ? '+' : ''}{fmt(c.avgPnl)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })() : null}
+        </section>
+      ) : null}
+
+      {/* ── Algo history from logs (team-wide, dead accounts incl.) ── */}
+      {logAlgoAgg.length ? (
+        <section className="panel">
+          <button className="registry-toggle" onClick={() => setLogHistOpen((v) => !v)}>
+            <ChevronDown className={logHistOpen ? 'chevron open' : 'chevron'} size={16} />
+            <h3>Algo history (from logs)</h3>
+            <span className="muted">Team-wide realized PnL by algo + direction, incl. accounts no longer active</span>
+          </button>
+          {logHistOpen ? (
+            <div className="table-wrap">
+              <table className="ops-table">
+                <thead>
+                  <tr>
+                    <th>Algo</th>
+                    <th>Realized</th>
+                    <th>Long</th>
+                    <th>Short</th>
+                    <th>Accounts</th>
+                    <th>Days</th>
+                    <th>Round trips</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logAlgoAgg.map((row) => (
+                    <tr key={row.family}>
+                      <td><strong>{row.family}</strong></td>
+                      <td className={row.totalPnl >= 0 ? 'positive' : 'negative'}>{row.totalPnl >= 0 ? '+' : ''}{fmt(row.totalPnl)}</td>
+                      <td className={row.byDirection.Long >= 0 ? 'positive' : 'negative'}>{fmt(row.byDirection.Long)}</td>
+                      <td className={row.byDirection.Short >= 0 ? 'positive' : 'negative'}>{fmt(row.byDirection.Short)}</td>
+                      <td className="muted">{row.accounts}</td>
+                      <td className="muted">{row.days}</td>
+                      <td className="muted">{row.roundTrips}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                Derived from NinjaTrader logs (executions x contract value) — realized PnL only, no balances. Includes accounts that no longer exist; no client assignment needed. Upload logs in Data Tools to grow it.
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* ── Lifecycle by algo ──────────────────────────────── */}
+      <section className="panel">
+        <button className="registry-toggle" onClick={() => setLifecycleOpen((v) => !v)}>
+          <ChevronDown className={lifecycleOpen ? 'chevron open' : 'chevron'} size={16} />
+          <h3>Lifecycle by algo</h3>
+          <span className="muted">Which combo gets accounts funded, lasts longer, survives</span>
+        </button>
+        {lifecycleOpen ? (
+          <>
+            <LifecycleByAlgo clients={teamClients} />
+            <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+              Funded rate + lifespan by the algo stack set on each account. F / X / Active = funded / failed / still active. Set an account&apos;s algo stack below to feed this.
+            </p>
+          </>
+        ) : null}
+      </section>
+
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
         <div className="panel-heading">
           <h3>Team Algo Performance</h3>
-          <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs · all history</span>
+          <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs</span>
+          <select
+            className="window-select"
+            value={windowDays}
+            onChange={(e) => setWindowDays(Number(e.target.value))}
+            title="Trend / recent-average window"
+          >
+            {[7, 30, 60, 90, 180].map((d) => <option key={d} value={d}>{`Last ${d}d`}</option>)}
+          </select>
         </div>
         {comboPerf.length === 0 ? (
           <p className="muted" style={{ padding: '12px 0' }}>No strategy data across clients yet - upload daily closes to populate.</p>
@@ -252,6 +672,23 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
               Aggregated from every client running each algo combination. Use this to evaluate what's working across the portfolio - not a per-client guarantee.
             </p>
+            {(() => {
+              const maxAbs = Math.max(...comboPerf.map((c) => Math.abs(c.avgPnl)), 1);
+              return (
+                <div className="combo-bars">
+                  {comboPerf.slice(0, 8).map((row) => (
+                    <div className="combo-bar-row" key={row.combo}>
+                      <span className="combo-bar-label" title={row.combo}>{row.combo}</span>
+                      <div className="combo-bar-track">
+                        <i style={{ width: `${(Math.abs(row.avgPnl) / maxAbs) * 100}%`, background: row.avgPnl >= 0 ? 'var(--success)' : 'var(--error)' }} />
+                      </div>
+                      <span className={row.avgPnl >= 0 ? 'positive' : 'negative'}>{row.avgPnl >= 0 ? '+' : ''}{fmt(row.avgPnl)}</span>
+                      <span className="muted">{row.winRate}% win</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -259,8 +696,8 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                     <th>Combo</th>
                     <th>Avg P&amp;L / day</th>
                     <th>Win rate</th>
-                    <th>Trend (7d)</th>
-                    <th>Last 7d avg</th>
+                    <th>Trend ({windowDays}d)</th>
+                    <th>Last {windowDays}d avg</th>
                     <th>Accounts</th>
                     <th>Clients</th>
                     <th>Total days</th>
@@ -283,8 +720,8 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                           {row.trend}
                         </span>
                       </td>
-                      <td className={row.recent7Avg != null ? (row.recent7Avg >= 0 ? 'positive' : 'negative') : 'muted'}>
-                        {row.recent7Avg != null ? `${row.recent7Avg >= 0 ? '+' : ''}${fmt(row.recent7Avg)}` : '-'}
+                      <td className={row.recentAvg != null ? (row.recentAvg >= 0 ? 'positive' : 'negative') : 'muted'}>
+                        {row.recentAvg != null ? `${row.recentAvg >= 0 ? '+' : ''}${fmt(row.recentAvg)}` : '-'}
                       </td>
                       <td>{row.accounts}</td>
                       <td>{row.clients}</td>
@@ -313,7 +750,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                 <tr>
                   <th>Account</th>
                   <th>Current combo</th>
-                  <th>This acct 7d avg</th>
+                  <th>This acct {windowDays}d avg</th>
                   <th>Team avg (same combo)</th>
                   <th>vs Team</th>
                   <th>Insight</th>
@@ -324,11 +761,11 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                   <tr key={row.accountName}>
                     <td><strong>{row.alias}</strong></td>
                     <td><span className="badge muted">{row.currentCombo}</span></td>
-                    <td className={row.accountAvg7 >= 0 ? 'positive' : 'negative'}>
-                      {row.accountAvg7 >= 0 ? '+' : ''}{fmt(row.accountAvg7)}
+                    <td className={row.accountAvg >= 0 ? 'positive' : 'negative'}>
+                      {row.accountAvg >= 0 ? '+' : ''}{fmt(row.accountAvg)}
                     </td>
                     <td className="muted">
-                      {row.teamAvg7 != null ? `${row.teamAvg7 >= 0 ? '+' : ''}${fmt(row.teamAvg7)}` : '-'}
+                      {row.teamAvg != null ? `${row.teamAvg >= 0 ? '+' : ''}${fmt(row.teamAvg)}` : '-'}
                     </td>
                     <td className={row.delta == null ? 'muted' : row.delta >= 0 ? 'positive' : 'negative'}>
                       {row.delta != null ? `${row.delta >= 0 ? '+' : ''}${fmt(row.delta)}` : '-'}

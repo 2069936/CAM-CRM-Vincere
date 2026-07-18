@@ -78,6 +78,7 @@ create table if not exists public.trading_accounts (
   start_balance numeric,
   target_profit numeric,
   max_drawdown_limit numeric,
+  risk_level text,
   bullet_bot_pass_type text,
   bullet_bot_direction text,
   algo_stack text,
@@ -221,6 +222,8 @@ create table if not exists public.activity_logs (
   trading_account_id uuid references public.trading_accounts(id) on delete set null,
   type text not null,
   text text not null,
+  log_date date,
+  log_pnl numeric,
   created_by_user_id uuid references public.app_users(id) on delete set null,
   created_at timestamptz default now()
 );
@@ -310,3 +313,31 @@ create index if not exists idx_executions_import_order_id on public.executions(d
 create index if not exists idx_flags_client_status on public.operational_flags(client_id, status);
 create index if not exists idx_tasks_client_done on public.tasks(client_id, done);
 create index if not exists idx_activity_client_created on public.activity_logs(client_id, created_at desc);
+
+-- Manual strategy classifications (family + parameter signature -> version + risk).
+create table if not exists public.strategy_classifications (
+  id uuid primary key default gen_random_uuid(),
+  match_key text unique not null,
+  family text not null,
+  signature jsonb,
+  version text,
+  risk_level text,
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists strategy_classifications_family_idx on public.strategy_classifications(family);
+
+-- Team-wide algo history from NinjaTrader logs (no client; dead accounts included).
+create table if not exists public.log_algo_history (
+  id uuid primary key default gen_random_uuid(),
+  log_date date,
+  account_name text,
+  family text,
+  direction text,
+  realized_pnl numeric,
+  round_trips integer,
+  created_at timestamptz default now(),
+  unique (log_date, account_name, family)
+);
+create index if not exists log_algo_history_family_idx on public.log_algo_history(family);

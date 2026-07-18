@@ -81,22 +81,36 @@ describe('buildPayoutAlerts', () => {
     expect(buildPayoutAlerts({ accountRegistry: {} }, null)).toHaveLength(0);
   });
 
-  it('alerts when funded balance reaches 90% of target', () => {
+  it('alerts within 10% of the profit target, measured from the start balance', () => {
     const client = {
       accountRegistry: {
-        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', targetProfit: 53000, payoutState: 'Not requested' },
+        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', startBalance: 50000, targetProfit: 54000, payoutState: 'Not requested' },
       },
     };
-    const di = makeDailyImport([{ name: 'MFF1', balance: 47800 }]); // 90.2% of 53000
+    // profit 3700 of 4000 needed = 92.5% -> 93%
+    const di = makeDailyImport([{ name: 'MFF1', balance: 53700 }]);
     const alerts = buildPayoutAlerts(client, di);
     expect(alerts).toHaveLength(1);
+    expect(alerts[0].pct).toBe(93);
+    expect(alerts[0].profit).toBe(3700);
     expect(alerts[0].ready).toBe(false); // not fully at target yet
   });
 
-  it('marks ready=true when balance meets or exceeds target', () => {
+  it('does NOT alert for an account below its start balance (progress from start, not zero)', () => {
     const client = {
       accountRegistry: {
-        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', targetProfit: 53000, payoutState: 'Not requested' },
+        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', startBalance: 50000, targetProfit: 54000, payoutState: 'Not requested' },
+      },
+    };
+    // 49k on a 50k->54k account is -25% of target, not 91%.
+    const di = makeDailyImport([{ name: 'MFF1', balance: 49000 }]);
+    expect(buildPayoutAlerts(client, di)).toHaveLength(0);
+  });
+
+  it('marks ready=true when balance meets or exceeds the absolute target', () => {
+    const client = {
+      accountRegistry: {
+        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', startBalance: 50000, targetProfit: 53000, payoutState: 'Not requested' },
       },
     };
     const di = makeDailyImport([{ name: 'MFF1', balance: 53500 }]);
@@ -107,7 +121,7 @@ describe('buildPayoutAlerts', () => {
   it('suppresses alert when payout already requested', () => {
     const client = {
       accountRegistry: {
-        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', targetProfit: 53000, payoutState: 'Payout requested' },
+        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Active', startBalance: 50000, targetProfit: 53000, payoutState: 'Payout requested' },
       },
     };
     const di = makeDailyImport([{ name: 'MFF1', balance: 54000 }]);
@@ -117,7 +131,7 @@ describe('buildPayoutAlerts', () => {
   it('suppresses alert for Failed accounts', () => {
     const client = {
       accountRegistry: {
-        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Failed', targetProfit: 53000, payoutState: 'Not requested' },
+        MFF1: { accountName: 'MFF1', accountType: 'Funded', status: 'Failed', startBalance: 50000, targetProfit: 53000, payoutState: 'Not requested' },
       },
     };
     const di = makeDailyImport([{ name: 'MFF1', balance: 54000 }]);
@@ -127,13 +141,13 @@ describe('buildPayoutAlerts', () => {
   it('sorts results by pct descending', () => {
     const client = {
       accountRegistry: {
-        ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active', targetProfit: 50000, payoutState: 'Not requested' },
-        ACC2: { accountName: 'ACC2', accountType: 'Funded', status: 'Active', targetProfit: 50000, payoutState: 'Not requested' },
+        ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active', startBalance: 50000, targetProfit: 54000, payoutState: 'Not requested' },
+        ACC2: { accountName: 'ACC2', accountType: 'Funded', status: 'Active', startBalance: 50000, targetProfit: 54000, payoutState: 'Not requested' },
       },
     };
     const di = makeDailyImport([
-      { name: 'ACC1', balance: 45000 }, // 90%
-      { name: 'ACC2', balance: 49000 }, // 98%
+      { name: 'ACC1', balance: 53600 }, // profit 3600/4000 = 90%
+      { name: 'ACC2', balance: 53900 }, // profit 3900/4000 = 98%
     ]);
     const alerts = buildPayoutAlerts(client, di);
     expect(alerts[0].accountName).toBe('ACC2');

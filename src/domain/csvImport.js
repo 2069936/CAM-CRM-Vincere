@@ -26,6 +26,7 @@ const HEADER_ALIASES = {
   quantity: 'quantity',
   rate: 'rate',
   realized: 'realized',
+  realizedpnl: 'grossRealizedPnl',
   remaining: 'remaining',
   state: 'state',
   stop: 'stop',
@@ -280,6 +281,28 @@ function keepRow(type, row) {
   if (type === 'strategies') return Boolean(row.accountName || row.strategyName);
   if (type === 'orders' || type === 'executions') return Boolean(row.accountName);
   return Object.values(row).some((value) => value !== '');
+}
+
+export const REQUIRED_UPLOAD_TYPES = ['accounts', 'strategies', 'orders', 'executions'];
+
+// Summarize a set of parsed upload files so the UI can warn when the daily
+// upload is incomplete (missing one of the four required NinjaTrader exports) or
+// when a dropped file was not recognized. Computed from the per-file parsed
+// array, the only layer that distinguishes an absent type from an unknown file.
+export function summarizeUploadTypes(parsedFiles = []) {
+  const foundTypes = [];
+  const unknownFiles = [];
+  for (const file of parsedFiles) {
+    if (file?.type === 'unknown') unknownFiles.push(file.fileName || '');
+    else if (file?.type && !foundTypes.includes(file.type)) foundTypes.push(file.type);
+  }
+  const missingTypes = REQUIRED_UPLOAD_TYPES.filter((type) => !foundTypes.includes(type));
+  return {
+    foundTypes,
+    missingTypes,
+    unknownFiles,
+    isComplete: missingTypes.length === 0 && unknownFiles.length === 0,
+  };
 }
 
 export function parseNinjaTraderCsvText(csvText, fileName = '') {

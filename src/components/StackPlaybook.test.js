@@ -58,4 +58,22 @@ describe('buildAlgoComboPerformance', () => {
     expect(result).toHaveLength(1);
     expect(result[0].totalDays).toBe(1);
   });
+
+  it('computes the recent-window average by real date, not array position', () => {
+    // 6 closes 2026-06-01..06; a 3-day window covers only the last three dates
+    const clients = [makeClient({ id: 'c1', accountName: 'ACC1', pnls: [10, 20, 30, 40, 50, 60] })];
+    const result = buildAlgoComboPerformance(clients, { windowDays: 3 });
+    expect(result[0].recentDays).toBe(3);
+    expect(result[0].recentAvg).toBeCloseTo((40 + 50 + 60) / 3);
+  });
+
+  it('aligns the window across clients with different import cadences (date, not tail)', () => {
+    const c1 = makeClient({ id: 'c1', accountName: 'A1', pnls: [1, 2, 3, 4, 5, 6] }); // 06-01..06-06
+    const c2 = makeClient({ id: 'c2', accountName: 'A2', pnls: [100, 200] }); // 06-01..06-02
+    const result = buildAlgoComboPerformance([c1, c2], { windowDays: 2 });
+    // anchor = 2026-06-06; the 2-day window is 06-05/06-06 — c2 has nothing there,
+    // so its tail (100,200) must NOT leak into the recent window.
+    expect(result[0].recentDays).toBe(2);
+    expect(result[0].recentAvg).toBeCloseTo((5 + 6) / 2);
+  });
 });
