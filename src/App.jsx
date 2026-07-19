@@ -6092,7 +6092,12 @@ function MonthlyReportPanel({ client, month, onClose }) {
   });
 
   return (
-    <div className="report-overlay">
+    <div
+      className="report-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="report-sheet">
         <div className="report-actions no-print">
           <button
@@ -6101,8 +6106,14 @@ function MonthlyReportPanel({ client, month, onClose }) {
           >
             <FileText size={14} /> Print / Save PDF
           </button>
-          <button className="ghost-button" onClick={onClose}>
-            Close
+          <button
+            className="report-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            title="Close report"
+          >
+            <X size={18} />
           </button>
         </div>
         <header className="report-header">
@@ -6336,7 +6347,12 @@ function ReportPanel({ client, dailyImport, onClose }) {
   };
 
   return (
-    <div className="report-overlay">
+    <div
+      className="report-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="report-sheet">
         <div className="report-actions no-print">
           <span className={`remote-pill ${saveStatus === "error" ? "error" : saveStatus === "saved" ? "connected" : ""}`}>
@@ -6354,8 +6370,14 @@ function ReportPanel({ client, dailyImport, onClose }) {
           >
             <FileText size={14} /> Print / Save PDF
           </button>
-          <button className="ghost-button" onClick={onClose}>
-            Close
+          <button
+            className="report-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            title="Close report"
+          >
+            <X size={18} />
           </button>
         </div>
         {saveStatus === "error" ? (
@@ -6554,7 +6576,12 @@ function CamDayReportPanel({ clients, date, camName, onClose }) {
   const totalPnl = rows.reduce((s, r) => s + Number(r.report.totals.grossRealizedPnl || 0), 0);
   const sign = (n) => (n >= 0 ? "+" : "");
   return (
-    <div className="report-overlay">
+    <div
+      className="report-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="report-sheet">
         <div className="report-actions no-print">
           <button
@@ -6563,7 +6590,15 @@ function CamDayReportPanel({ clients, date, camName, onClose }) {
           >
             <FileText size={14} /> Print / Save PDF
           </button>
-          <button className="ghost-button" onClick={onClose}>Close</button>
+          <button
+            className="report-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            title="Close report"
+          >
+            <X size={18} />
+          </button>
         </div>
         <header className="report-header">
           <div>
