@@ -2349,6 +2349,31 @@ textarea {
   -webkit-backdrop-filter: blur(12px);
 }
 
+.report-close-button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+  color: #dc2626;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  cursor: pointer;
+}
+
+.report-close-button:hover {
+  border-color: #f87171;
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.report-close-button:focus-visible {
+  outline: 3px solid rgba(220, 38, 38, 0.24);
+  outline-offset: 2px;
+}
+
 .remote-pill {
   align-items: center;
   align-self: center;
