@@ -7088,6 +7088,26 @@ function ClientOverview({
               </div>
             ));
         })()}
+        {(() => {
+          const bb = buildClientSegments(client, dailyImport).bulletBot;
+          if (!bb.count) return null;
+          // Bullet bot: passing matters more than balance, but the accumulated
+          // balance vs the typical 50k start is a quick health read - if the
+          // average is well under 50k, most are deep in the hole.
+          const start = 50000;
+          const avg = bb.balance / bb.count;
+          const healthPct = Math.round((avg / start - 1) * 100);
+          const tone = avg >= start * 0.98 ? "positive" : avg >= start * 0.94 ? "warning" : "negative";
+          return (
+            <div className="metric" key="bulletBot">
+              <span>Bullet Bot · {bb.count}</span>
+              <strong>{formatCurrency(bb.balance)}</strong>
+              <small className={tone}>
+                avg {formatCurrency(avg)} vs {formatCurrency(start)} ({healthPct >= 0 ? "+" : ""}{healthPct}%)
+              </small>
+            </div>
+          );
+        })()}
         {lifetime && (
           <>
             <div className="metric">
