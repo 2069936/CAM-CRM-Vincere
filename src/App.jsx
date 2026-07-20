@@ -4864,8 +4864,8 @@ function ManagerOverview({
                     "Strategies",
                     "Daily PnL",
                     "Weekly PnL",
-                    "Buffer",
-                    "Buffer %",
+                    "Trailing",
+                    "Trailing %",
                     "Target %",
                     "Payout State",
                   ];
@@ -4938,7 +4938,7 @@ function ManagerOverview({
                         <th>Strategies</th>
                         <SortTh col="dailyPnl" label="Daily PnL" />
                         <SortTh col="weeklyPnl" label="Weekly PnL" />
-                        <SortTh col="buffer" label="Buffer" />
+                        <SortTh col="buffer" label="Trailing" />
                         <SortTh col="targetPct" label="Target" />
                         <th>Payout</th>
                         <th></th>
@@ -6309,7 +6309,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
       return `${formatCurrency(remaining)} remaining (${pct}% used)`;
     }
     if (rawDD !== 0) {
-      return rawDD <= 0 ? "BREACHED" : `${formatCurrency(rawDD)} buffer`;
+      return rawDD <= 0 ? "BREACHED" : `${formatCurrency(rawDD)} trailing`;
     }
     return "-";
   }
@@ -9015,7 +9015,7 @@ function CamOverview({
                     <th>Account</th>
                     <th>Client</th>
                     <th>Today P&L</th>
-                    <th>DD Buffer</th>
+                    <th>Trailing</th>
                     <th>Target %</th>
                     <th>Payout</th>
                   </tr>
@@ -13084,7 +13084,7 @@ export default function App() {
                       const templates = [
                         {
                           label: "Daily update",
-                          text: `Hola ${clientName} 👋\n\nAquí tu resumen de hoy:\n📊 P&L: [AMOUNT]\n📉 Drawdown buffer: [BUFFER]\n✅ Todo bien - seguimos mañana!`,
+                          text: `Hola ${clientName} 👋\n\nAquí tu resumen de hoy:\n📊 P&L: [AMOUNT]\n📉 Trailing: [TRAILING]\n✅ Todo bien - seguimos mañana!`,
                         },
                         {
                           label: "Drawdown warning",
@@ -13104,7 +13104,7 @@ export default function App() {
                         },
                         {
                           label: "Account at risk",
-                          text: `${clientName} - importante:\n\n🚨 Tu cuenta está en zona de riesgo.\nDrawdown buffer: [BUFFER]\n\nPor favor revisa tu VPS y confirma que todo esté corriendo bien. Si necesitas pausar la estrategia, avísame ANTES de hacer cambios.`,
+                          text: `${clientName} - importante:\n\n🚨 Tu cuenta está en zona de riesgo.\nTrailing: [TRAILING]\n\nPor favor revisa tu VPS y confirma que todo esté corriendo bien. Si necesitas pausar la estrategia, avísame ANTES de hacer cambios.`,
                         },
                         {
                           label: "VPS issue detected",
