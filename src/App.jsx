@@ -1580,7 +1580,7 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
 }
 
 function buildTeamMessageReport(clients, camProfiles, totals, cams) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIsoDate();
   const sign = (n) => (n >= 0 ? "+" : "");
   const fmt = (n) =>
     new Intl.NumberFormat("en-US", {
@@ -4268,7 +4268,7 @@ function ManagerOverview({
                   });
                   return;
                 }
-                const today = new Date().toISOString().slice(0, 10);
+                const today = todayIsoDate();
                 const parsed = [];
                 for (const f of files) {
                   try {
@@ -4386,7 +4386,7 @@ function ManagerOverview({
                     const files = [...ev.target.files];
                     ev.target.value = "";
                     if (!files.length) return;
-                    const today = new Date().toISOString().slice(0, 10);
+                    const today = todayIsoDate();
                     const parsed = [];
                     for (const f of files) {
                       try {
@@ -11200,19 +11200,27 @@ export default function App() {
   const accessibleClients = isManagerSession
     ? state.clients || []
     : currentCamClients;
+  // Resolve the selected client. Only auto-pick the first client when nothing is
+  // selected yet. If a client IS selected but can't be found in the current list
+  // (e.g. a stale id right after an upload+reload, or a client filtered out of
+  // scope), do NOT silently fall back to currentCamClients[0] — showing a
+  // different client's accounts looks like the selected client's data was
+  // wiped. Show the empty state instead so nothing gets misattributed.
   const selectedClient =
     currentCamClients.find((client) => client.id === state.selectedClientId) ||
-    currentCamClients[0] ||
+    (state.selectedClientId ? null : currentCamClients[0]) ||
     null;
 
-  // Auto-navigate to most recent import date when selected client has no import for selectedDate
+  // When switching clients, keep the date on local-today if that's where we are —
+  // the CAM opens a client precisely to upload today's close, which doesn't exist
+  // yet, so don't yank the date back to the last close. Only auto-navigate to the
+  // latest import when browsing some OTHER date that has no data (history review).
   useEffect(() => {
     if (!selectedClient) return;
-    const hasToday = getClientImportByDate(selectedClient, selectedDate);
-    if (!hasToday) {
-      const latest = selectedClient.dailyImports?.at(-1);
-      if (latest?.date) setSelectedDate(latest.date);
-    }
+    if (selectedDate === todayIsoDate()) return;
+    if (getClientImportByDate(selectedClient, selectedDate)) return;
+    const latest = selectedClient.dailyImports?.at(-1);
+    if (latest?.date) setSelectedDate(latest.date);
   }, [selectedClient?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dailyImport = selectedClient
@@ -12904,7 +12912,7 @@ export default function App() {
                       ) : null}
                       <p>
                         {dailyImport
-                          ? `${dailyImport.status} · ${(dailyImport.flags || []).length} flags`
+                          ? `${dailyImport.status} · ${(dailyImport.flags || []).filter((f) => f.status !== "Resolved" && f.status !== "Acknowledged").length} open flags`
                           : "No close loaded for this date"}
                       </p>
                     </div>

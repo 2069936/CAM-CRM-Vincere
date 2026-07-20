@@ -373,10 +373,12 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
 
   const summary = summarizeAccountRows(rows);
   const enrichedRows = rows;
-  const relevantAccountNames = new Set(rows.map((row) => row.accountName));
+  // Show ALL open flags for the close, not only those on the active tab's accounts.
+  // Flags are account-level, so a Funded-account flag used to be invisible on the
+  // Evaluations/Cash tab — the header could say "3 flags" with an empty list and
+  // no way to act on them. Each row shows its account so the CAM knows where it is.
   const flags = (dailyImport.flags || [])
-    .filter((flag) => flag.status !== 'Acknowledged' && flag.status !== 'Resolved')
-    .filter((flag) => !flag.accountName || relevantAccountNames.has(flag.accountName));
+    .filter((flag) => flag.status !== 'Acknowledged' && flag.status !== 'Resolved');
   const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');
   const isCash = mode === 'cash';
 

@@ -192,10 +192,26 @@ function reportError(label, error) {
   if (error) throw new Error(`${label}: ${error.message}`);
 }
 
+// Supabase/PostgREST caps an unbounded select at 1000 rows. Without pagination a
+// team with many accounts (including dead ones), snapshots, orders or executions
+// would silently load only the first 1000 rows of each table — dropping whole
+// clients, their assignments, or their history. Page through with a stable order
+// (id) so every table loads in full.
 async function loadTable(table, columns = '*') {
-  const { data, error } = await supabase.from(table).select(columns);
-  reportError(table, error);
-  return data || [];
+  const pageSize = 1000;
+  const all = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1);
+    reportError(table, error);
+    const rows = data || [];
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+  return all;
 }
 
 export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}) {
@@ -1229,8 +1245,21 @@ export async function upsertSupabaseDailyImport(clientId, importResult) {
     .single();
   if (importError) throw new Error(importError.message);
 
-  const childTables = ['strategy_snapshots', 'account_snapshots', 'orders', 'executions', 'operational_flags'];
+  // Re-uploading a close replaces its detail rows. Guard against a partial or
+  // mis-parsed file silently wiping a good prior close for this date: only clear a
+  // detail table when the new file actually carries rows for it — an empty section
+  // (e.g. the orders export missing) keeps the previous data instead of deleting
+  // it. account_snapshots is handled separately below via upsert (not delete), so
+  // a file with fewer accounts updates only those and never blanks the rest.
+  // Flags are derived, so they are always refreshed to reflect the latest close.
+  const childRowCounts = {
+    strategy_snapshots: (importResult.strategies || []).length,
+    orders: (importResult.orders || []).length,
+    executions: (importResult.executions || []).length,
+  };
+  const childTables = ['strategy_snapshots', 'orders', 'executions', 'operational_flags'];
   for (const table of childTables) {
+    if (table !== 'operational_flags' && !childRowCounts[table]) continue;
     const { error } = await supabase.from(table).delete().eq('daily_import_id', dailyImport.id);
     if (error) throw new Error(error.message);
   }
@@ -1252,9 +1281,12 @@ export async function upsertSupabaseDailyImport(clientId, importResult) {
 
   let snapshotByName = {};
   if (snapshotRows.length) {
+    // Upsert (not delete+insert) on the (daily_import_id, account_name) unique
+    // constraint so re-uploading a date with fewer accounts updates only those
+    // and leaves the other accounts' snapshots for the day intact — never zeros.
     const { data, error } = await supabase
       .from('account_snapshots')
-      .insert(snapshotRows)
+      .upsert(snapshotRows, { onConflict: 'daily_import_id,account_name' })
       .select();
     if (error) throw new Error(error.message);
     snapshotByName = Object.fromEntries((data || []).map((snapshot) => [
