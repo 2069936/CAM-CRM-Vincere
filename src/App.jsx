@@ -12638,6 +12638,11 @@ export default function App() {
                               return null;
                             })()}
                           </span>
+                          {client.credentials?.ip ? (
+                            <small className="sidebar-ip" title="VPS IP">
+                              {client.credentials.ip}
+                            </small>
+                          ) : null}
                           {(() => {
                             const latest = client.dailyImports?.at(-1);
                             if (!latest) return null;
