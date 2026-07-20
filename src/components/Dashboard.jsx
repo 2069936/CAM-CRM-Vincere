@@ -418,11 +418,23 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
                   </strong>
                   <span>{flag.message}</span>
                 </div>
-                {onResolveFlag ? (
-                  <button className="ghost-button icon-only flag-resolve-btn" title="Resolve - dismiss this flag" style={{flexShrink:0}} onClick={() => onResolveFlag(flag.id, 'Resolved')}>
-                    <X size={14} />
-                  </button>
-                ) : null}
+                <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                  {onResolveFlag && flag.severity !== 'Critical' ? (
+                    <button
+                      className="ghost-button"
+                      title="Acknowledge - seen, hide for now. Reappears on the next close if still true."
+                      style={{ fontSize: 11, padding: '2px 6px' }}
+                      onClick={() => onResolveFlag(flag.id, 'Acknowledged')}
+                    >
+                      Ack
+                    </button>
+                  ) : null}
+                  {onResolveFlag ? (
+                    <button className="ghost-button icon-only flag-resolve-btn" title="Resolve - dismiss this flag" onClick={() => onResolveFlag(flag.id, 'Resolved')}>
+                      <X size={14} />
+                    </button>
+                  ) : null}
+                </span>
               </div>
             ))}
           </div>
