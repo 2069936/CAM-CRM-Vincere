@@ -6450,7 +6450,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
                     <th>Daily PnL</th>
                     <th>Weekly PnL</th>
                     {group !== "cash" ? <th>Drawdown</th> : null}
-                    {group === "cash" ? <th>Balance</th> : null}
+                    <th>Balance</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -6498,9 +6498,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
                             {drawdownLabel(row)}
                           </td>
                         ) : null}
-                        {group === "cash" ? (
-                          <td>{formatCurrency(row.accountBalance)}</td>
-                        ) : null}
+                        <td>{formatCurrency(row.accountBalance)}</td>
                       </tr>
                     );
                   })}
