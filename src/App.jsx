@@ -92,6 +92,7 @@ import {
   reconcileDailyImport,
 } from "./domain/reconcile";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
+import { buildBatchImportPlan } from "./domain/batchImport";
 import { suggestAccountDefaults } from "./domain/accountTargets";
 import {
   parseNinjaTraderLogFile,
@@ -3501,6 +3502,68 @@ function ManagerOverview({
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
   const [batchImportResult, setBatchImportResult] = useState(null);
+
+  function readFileText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
+
+  // Shared handler for the bulk drop/browse: parse every dropped CSV, then group them by
+  // the export date in each filename so one drop can cover many days at once (dropping
+  // 15-20 days, or repeat/duplicate exports, is fine — same-day repeats are de-duped by
+  // the time stamp in the name). Falls back to today for files whose name has no date.
+  async function runBatchImport(fileList) {
+    const files = [...fileList].filter((f) => f.name.toLowerCase().endsWith(".csv"));
+    if (!files.length) {
+      setBatchImportResult({
+        error: "No CSV files found. Drop NinjaTrader .csv export files here.",
+      });
+      return;
+    }
+    const parsedFiles = [];
+    for (const f of files) {
+      try {
+        parsedFiles.push(parseNinjaTraderCsvText(await readFileText(f), f.name));
+      } catch {
+        /* skip unreadable file */
+      }
+    }
+    const plan = buildBatchImportPlan({
+      parsedFiles,
+      clients,
+      fallbackDate: todayIsoDate(),
+    });
+    if (!plan.totalMatches) {
+      setBatchImportResult({
+        error:
+          "No matching client accounts found. Include the NT Accounts CSV and make sure the accounts are registered to a client.",
+      });
+      return;
+    }
+    setBatchImportResult(plan);
+  }
+
+  function removeBatchMatch(date, clientId) {
+    setBatchImportResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            dates: prev.dates.map((day) =>
+              day.date === date
+                ? {
+                    ...day,
+                    clientMatches: day.clientMatches.filter((m) => m.clientId !== clientId),
+                  }
+                : day,
+            ),
+          }
+        : prev,
+    );
+  }
   const [drillDate, setDrillDate] = useState("");
   const [teamCopyDone, setTeamCopyDone] = useState(false);
   const [weeklyCopyDone, setWeeklyCopyDone] = useState(false);
@@ -4256,108 +4319,9 @@ function ManagerOverview({
             <div
               className="batch-drop-zone"
               onDragOver={(e) => e.preventDefault()}
-              onDrop={async (e) => {
+              onDrop={(e) => {
                 e.preventDefault();
-                const files = [...e.dataTransfer.files].filter((f) =>
-                  f.name.toLowerCase().endsWith(".csv"),
-                );
-                if (!files.length) {
-                  setBatchImportResult({
-                    error:
-                      "No CSV files found. Drop NinjaTrader .csv export files here.",
-                  });
-                  return;
-                }
-                const today = todayIsoDate();
-                const parsed = [];
-                for (const f of files) {
-                  try {
-                    const text = await new Promise((res, rej) => {
-                      const r = new FileReader();
-                      r.onload = () => res(String(r.result));
-                      r.onerror = rej;
-                      r.readAsText(f);
-                    });
-                    parsed.push(parseNinjaTraderCsvText(text, f.name));
-                  } catch {
-                    /* skip unreadable file */
-                  }
-                }
-                const grouped = parsed.reduce((acc, p) => {
-                  if (p.type !== "unknown")
-                    acc[p.type] = [...(acc[p.type] || []), ...p.rows];
-                  return acc;
-                }, {});
-                const accountNamesLower = new Set(
-                  (grouped.accounts || []).map((a) =>
-                    a.accountName.toLowerCase(),
-                  ),
-                );
-                if (!accountNamesLower.size) {
-                  setBatchImportResult({
-                    error:
-                      "No account data found in the uploaded files. Make sure to include the NT Accounts CSV.",
-                  });
-                  return;
-                }
-                const clientMatches = clients
-                  .map((client) => {
-                    const myAccounts = Object.keys(
-                      client.accountRegistry || {},
-                    ).filter((an) => accountNamesLower.has(an.toLowerCase()));
-                    if (!myAccounts.length) return null;
-                    const myAccountsLower = new Set(
-                      myAccounts.map((a) => a.toLowerCase()),
-                    );
-                    const filteredGrouped = {
-                      accounts: (grouped.accounts || []).filter((a) =>
-                        myAccountsLower.has(a.accountName.toLowerCase()),
-                      ),
-                      strategies: (grouped.strategies || []).filter((a) =>
-                        myAccountsLower.has(a.accountName.toLowerCase()),
-                      ),
-                      orders: (grouped.orders || []).filter((a) =>
-                        myAccountsLower.has(a.accountName.toLowerCase()),
-                      ),
-                      executions: (grouped.executions || []).filter((a) =>
-                        myAccountsLower.has(a.accountName.toLowerCase()),
-                      ),
-                    };
-                    try {
-                      const result = reconcileDailyImport({
-                        clientId: client.id,
-                        date: today,
-                        registry: client.accountRegistry,
-                        parsed: filteredGrouped,
-                      });
-                      return {
-                        client,
-                        result,
-                        accountCount: myAccounts.length,
-                      };
-                    } catch {
-                      return null;
-                    }
-                  })
-                  .filter(Boolean);
-                const unmatched = [
-                  ...new Set(
-                    (grouped.accounts || []).map((a) => a.accountName),
-                  ),
-                ].filter(
-                  (an) =>
-                    !clients.some((c) =>
-                      Object.keys(c.accountRegistry || {})
-                        .map((k) => k.toLowerCase())
-                        .includes(an.toLowerCase()),
-                    ),
-                );
-                setBatchImportResult({
-                  clientMatches,
-                  unmatched,
-                  today,
-                  filesLoaded: files.length,
-                });
+                runBatchImport(e.dataTransfer.files);
               }}
             >
               <span>Drag & drop NT CSV files here</span>
@@ -4382,95 +4346,10 @@ function ManagerOverview({
                   accept=".csv"
                   multiple
                   style={{ display: "none" }}
-                  onChange={async (ev) => {
-                    const files = [...ev.target.files];
+                  onChange={(ev) => {
+                    const files = ev.target.files;
+                    runBatchImport(files);
                     ev.target.value = "";
-                    if (!files.length) return;
-                    const today = todayIsoDate();
-                    const parsed = [];
-                    for (const f of files) {
-                      try {
-                        const text = await new Promise((res, rej) => {
-                          const r = new FileReader();
-                          r.onload = () => res(String(r.result));
-                          r.onerror = rej;
-                          r.readAsText(f);
-                        });
-                        parsed.push(parseNinjaTraderCsvText(text, f.name));
-                      } catch {}
-                    }
-                    const grouped = parsed.reduce((acc, p) => {
-                      if (p.type !== "unknown")
-                        acc[p.type] = [...(acc[p.type] || []), ...p.rows];
-                      return acc;
-                    }, {});
-                    const accountNamesLower2 = new Set(
-                      (grouped.accounts || []).map((a) =>
-                        a.accountName.toLowerCase(),
-                      ),
-                    );
-                    if (!accountNamesLower2.size) {
-                      setBatchImportResult({ error: "No account data found." });
-                      return;
-                    }
-                    const clientMatches = clients
-                      .map((client) => {
-                        const myAccounts = Object.keys(
-                          client.accountRegistry || {},
-                        ).filter((an) =>
-                          accountNamesLower2.has(an.toLowerCase()),
-                        );
-                        if (!myAccounts.length) return null;
-                        const mal = new Set(
-                          myAccounts.map((a) => a.toLowerCase()),
-                        );
-                        const fg = {
-                          accounts: (grouped.accounts || []).filter((a) =>
-                            mal.has(a.accountName.toLowerCase()),
-                          ),
-                          strategies: (grouped.strategies || []).filter((a) =>
-                            mal.has(a.accountName.toLowerCase()),
-                          ),
-                          orders: (grouped.orders || []).filter((a) =>
-                            mal.has(a.accountName.toLowerCase()),
-                          ),
-                          executions: (grouped.executions || []).filter((a) =>
-                            mal.has(a.accountName.toLowerCase()),
-                          ),
-                        };
-                        try {
-                          return {
-                            client,
-                            result: reconcileDailyImport({
-                              clientId: client.id,
-                              date: today,
-                              registry: client.accountRegistry,
-                              parsed: fg,
-                            }),
-                            accountCount: myAccounts.length,
-                          };
-                        } catch {
-                          return null;
-                        }
-                      })
-                      .filter(Boolean);
-                    setBatchImportResult({
-                      clientMatches,
-                      unmatched: [
-                        ...new Set(
-                          (grouped.accounts || []).map((a) => a.accountName),
-                        ),
-                      ].filter(
-                        (an) =>
-                          !clients.some((c) =>
-                            Object.keys(c.accountRegistry || {})
-                              .map((k) => k.toLowerCase())
-                              .includes(an.toLowerCase()),
-                          ),
-                      ),
-                      today,
-                      filesLoaded: files.length,
-                    });
                   }}
                 />
               </label>
@@ -4484,92 +4363,105 @@ function ManagerOverview({
               <div style={{ marginTop: 12 }}>
                 <p className="muted" style={{ fontSize: 12 }}>
                   <strong className="positive">
-                    {batchImportResult.clientMatches.length} clients matched
+                    {batchImportResult.datesCount} day
+                    {batchImportResult.datesCount !== 1 ? "s" : ""} ·{" "}
+                    {batchImportResult.totalMatches} close
+                    {batchImportResult.totalMatches !== 1 ? "s" : ""} matched
                   </strong>
-                  {batchImportResult.unmatched?.length > 0 ? (
-                    <span className="negative">
-                      {" "}
-                      · {batchImportResult.unmatched.length} unregistered
-                      accounts: {batchImportResult.unmatched.join(", ")}
-                    </span>
-                  ) : null}
                   {batchImportResult.filesLoaded ? (
                     <span> · {batchImportResult.filesLoaded} files loaded</span>
                   ) : null}
                 </p>
-                <div className="table-wrap" style={{ marginTop: 8 }}>
-                  <table className="ops-table">
-                    <thead>
-                      <tr>
-                        <th>Client</th>
-                        <th>Accounts found</th>
-                        <th>Flags</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batchImportResult.clientMatches.map(
-                        ({ client, result, accountCount }) => (
-                          <tr key={client.id}>
-                            <td>
-                              <strong>{client.name}</strong>
-                            </td>
-                            <td>{accountCount}</td>
-                            <td>
-                              {(result.flags || []).filter(
-                                (f) => f.severity === "Critical",
-                              ).length > 0 ? (
-                                <span className="negative">
-                                  {
-                                    (result.flags || []).filter(
+                {batchImportResult.dates.map((day) => (
+                  <div key={day.date} style={{ marginTop: 12 }}>
+                    <p style={{ fontSize: 13, fontWeight: 600 }}>
+                      {day.date}
+                      <span className="muted" style={{ fontWeight: 400 }}>
+                        {" "}
+                        · {day.clientMatches.length} client
+                        {day.clientMatches.length !== 1 ? "s" : ""}
+                        {day.unmatched?.length > 0 ? (
+                          <span className="negative">
+                            {" "}
+                            · {day.unmatched.length} unregistered:{" "}
+                            {day.unmatched.join(", ")}
+                          </span>
+                        ) : null}
+                      </span>
+                    </p>
+                    {day.clientMatches.length ? (
+                      <div className="table-wrap" style={{ marginTop: 6 }}>
+                        <table className="ops-table">
+                          <thead>
+                            <tr>
+                              <th>Client</th>
+                              <th>Accounts found</th>
+                              <th>Flags</th>
+                              <th>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {day.clientMatches.map(
+                              ({ clientId, clientName, result, accountCount }) => (
+                                <tr key={clientId}>
+                                  <td>
+                                    <strong>{clientName}</strong>
+                                  </td>
+                                  <td>{accountCount}</td>
+                                  <td>
+                                    {(result.flags || []).filter(
                                       (f) => f.severity === "Critical",
-                                    ).length
-                                  }{" "}
-                                  critical
-                                </span>
-                              ) : (
-                                <span className="positive">
-                                  {(result.flags || []).length} flags
-                                </span>
-                              )}
-                            </td>
-                            <td>
-                              <button
-                                className="primary-button"
-                                style={{ padding: "3px 10px", fontSize: 11 }}
-                                onClick={() => {
-                                  onAppendDailyImport?.(client.id, result);
-                                  setBatchImportResult((prev) => ({
-                                    ...prev,
-                                    clientMatches: prev.clientMatches.filter(
-                                      (m) => m.client.id !== client.id,
-                                    ),
-                                  }));
-                                }}
-                              >
-                                Import
-                              </button>
-                            </td>
-                          </tr>
-                        ),
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                {batchImportResult.clientMatches.length > 1 && (
+                                    ).length > 0 ? (
+                                      <span className="negative">
+                                        {
+                                          (result.flags || []).filter(
+                                            (f) => f.severity === "Critical",
+                                          ).length
+                                        }{" "}
+                                        critical
+                                      </span>
+                                    ) : (
+                                      <span className="positive">
+                                        {(result.flags || []).length} flags
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <button
+                                      className="primary-button"
+                                      style={{ padding: "3px 10px", fontSize: 11 }}
+                                      onClick={() => {
+                                        onAppendDailyImport?.(clientId, result);
+                                        removeBatchMatch(day.date, clientId);
+                                      }}
+                                    >
+                                      Import
+                                    </button>
+                                  </td>
+                                </tr>
+                              ),
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {batchImportResult.totalMatches > 1 && (
                   <button
                     className="secondary-button"
-                    style={{ marginTop: 8 }}
+                    style={{ marginTop: 12 }}
                     onClick={() => {
-                      batchImportResult.clientMatches.forEach(
-                        ({ client, result }) =>
-                          onAppendDailyImport?.(client.id, result),
+                      batchImportResult.dates.forEach((day) =>
+                        day.clientMatches.forEach(({ clientId, result }) =>
+                          onAppendDailyImport?.(clientId, result),
+                        ),
                       );
                       setBatchImportResult(null);
                       setShowBatchImport(false);
                     }}
                   >
-                    Import all {batchImportResult.clientMatches.length} clients
+                    Import all {batchImportResult.totalMatches} closes
                   </button>
                 )}
               </div>
