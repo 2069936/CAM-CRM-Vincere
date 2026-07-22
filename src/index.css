@@ -47,6 +47,11 @@
   --positive: var(--success);
   --negative: var(--error);
   --accent: var(--info);
+  /* Client-kind identity colours. Deliberately NOT success/error/warning:
+     those already mean profit, loss and alert everywhere else in the UI. */
+  --kind-cash: #2dd4bf;
+  --kind-prop: #a78bfa;
+  --kind-mixed: #818cf8;
   --accent-rgb: 69, 163, 255;
   --accent-bg: #223142;
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
@@ -6423,19 +6428,19 @@ tr:nth-child(2) .rank-badge {
   border: 1px solid transparent;
 }
 .client-kind-cash {
-  background: color-mix(in srgb, var(--success) 16%, transparent);
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--kind-cash) 16%, transparent);
+  color: var(--kind-cash);
+  border-color: color-mix(in srgb, var(--kind-cash) 38%, transparent);
 }
 .client-kind-prop {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--kind-prop) 15%, transparent);
+  color: var(--kind-prop);
+  border-color: color-mix(in srgb, var(--kind-prop) 35%, transparent);
 }
 .client-kind-mixed {
-  background: color-mix(in srgb, var(--warning) 16%, transparent);
-  color: var(--warning);
-  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  background: color-mix(in srgb, var(--kind-mixed) 15%, transparent);
+  color: var(--kind-mixed);
+  border-color: color-mix(in srgb, var(--kind-mixed) 35%, transparent);
 }
 
 /* Client lifecycle: stat grid + dated timeline. */

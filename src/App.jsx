@@ -108,10 +108,11 @@ import {
   buildCamDayReport,
   formatCurrency,
 } from "./domain/report";
-import { buildClientSegments, clientAccountMix } from "./domain/clientSegments";
+import { buildClientSegments } from "./domain/clientSegments";
 import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import ClientKindBadge from "./components/ClientKindBadge";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -3898,7 +3899,10 @@ function ManagerOverview({
                         closeMobileSidebar();
                       }}
                     >
-                      <span>{client.name}</span>
+                      <span>
+                        {client.name}
+                        <ClientKindBadge client={client} />
+                      </span>
                       <small className="muted">{cam?.name || "-"}</small>
                     </button>
                   ))
@@ -5541,6 +5545,7 @@ function ManagerOverview({
                         >
                           <td>
                             <strong>{client.name}</strong>
+                            <ClientKindBadge client={client} />
                           </td>
                           <td>
                             <small>
@@ -6285,7 +6290,9 @@ function ReportPanel({ client, dailyImport, onClose }) {
   const GROUP_LABELS = {
     evaluations: "Evaluations",
     funded: "Funded Accounts",
-    cash: "Cash Accounts",
+    cashIra: "Cash Accounts - IRA",
+    cashStraight: "Cash Accounts - Straight",
+    cashLegacy: "Cash Accounts (unclassified)",
   };
 
   return (
@@ -6376,7 +6383,9 @@ function ReportPanel({ client, dailyImport, onClose }) {
           {[
             { key: "funded", label: "Funded" },
             { key: "evalStandard", label: "Evaluations" },
-            { key: "cash", label: "Cash" },
+            { key: "cashIra", label: "Cash - IRA" },
+            { key: "cashStraight", label: "Cash - Straight" },
+            { key: "cashLegacy", label: "Cash (unclassified)" },
           ]
             .filter(({ key }) => report.segments[key].count > 0)
             .map(({ key, label }) => (
@@ -6390,7 +6399,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
             ))}
         </section>
 
-        {["evaluations", "funded", "cash"].map((group) =>
+        {["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
               <h2>{GROUP_LABELS[group]}</h2>
@@ -7030,7 +7039,9 @@ function ClientOverview({
           return [
             { key: "funded", label: "Funded" },
             { key: "evalStandard", label: "Evaluations" },
-            { key: "cash", label: "Cash" },
+            { key: "cashIra", label: "Cash - IRA" },
+            { key: "cashStraight", label: "Cash - Straight" },
+            { key: "cashLegacy", label: "Cash (unclassified)" },
           ]
             .filter(({ key }) => seg[key].count > 0)
             .map(({ key, label }) => (
@@ -12635,19 +12646,7 @@ export default function App() {
                             )}
                           <span>
                             {client.name}
-                            {(() => {
-                              // Cash clients are managed differently from
-                              // funded/evaluation clients, so mark the mix.
-                              const mix = clientAccountMix(client);
-                              return mix.label ? (
-                                <span
-                                  className={`client-kind client-kind-${mix.kind}`}
-                                  title={`${mix.cash} cash · ${mix.prop} prop account${mix.prop === 1 ? "" : "s"}`}
-                                >
-                                  {mix.label}
-                                </span>
-                              ) : null;
-                            })()}
+                            <ClientKindBadge client={client} />
                             {(() => {
                               const d = lastContactDaysAgo(client);
                               return d !== null && d > 3 ? (

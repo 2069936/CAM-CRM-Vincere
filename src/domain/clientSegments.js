@@ -16,7 +16,12 @@ function accountMetaFor(client, dailyImport, accountName) {
 
 function segmentKey(accountType) {
   if (accountType === ACCOUNT_TYPES.FUNDED) return 'funded';
-  if (isCashType(accountType)) return 'cash';
+  // IRA and straight cash run different algos and are measured differently, so
+  // they get their own buckets. Legacy 'Cash' rows land in the combined bucket
+  // until someone reclassifies them.
+  if (accountType === ACCOUNT_TYPES.CASH_IRA) return 'cashIra';
+  if (accountType === ACCOUNT_TYPES.CASH_STRAIGHT) return 'cashStraight';
+  if (isCashType(accountType)) return 'cashLegacy';
   if (accountType === ACCOUNT_TYPES.EVALUATION_BULLET) return 'bulletBot';
   if (accountType === ACCOUNT_TYPES.EVALUATION_STANDARD) return 'evalStandard';
   return 'other';
@@ -29,7 +34,12 @@ export function buildClientSegments(client, dailyImport) {
   const empty = () => ({ balance: 0, dailyPnl: 0, weeklyPnl: 0, count: 0, accounts: [] });
   const segments = {
     funded: empty(),
+    // `cash` is every cash account combined; cashIra / cashStraight are the
+    // separately reportable splits. A cash account lands in both.
     cash: empty(),
+    cashIra: empty(),
+    cashStraight: empty(),
+    cashLegacy: empty(),
     evalStandard: empty(),
     bulletBot: empty(),
     other: empty(),
@@ -37,11 +47,18 @@ export function buildClientSegments(client, dailyImport) {
 
   for (const snapshot of dailyImport?.snapshots || []) {
     const meta = accountMetaFor(client, dailyImport, snapshot.accountName);
-    const seg = segments[segmentKey(meta.accountType)];
+    const key = segmentKey(meta.accountType);
+    const buckets = [segments[key]];
+    // An IRA or straight-cash account also rolls into the combined cash total so
+    // every existing surface keeps showing one cash number.
+    if (key === 'cashIra' || key === 'cashStraight' || key === 'cashLegacy') {
+      buckets.push(segments.cash);
+    }
     const balance = Number(snapshot.accountBalance) || 0;
     const dailyPnl = Number(snapshot.grossRealizedPnl) || 0;
     const weeklyPnl = Number(snapshot.weeklyPnl) || 0;
     const trailing = Number(snapshot.trailingMaxDrawdown) || 0;
+    for (const seg of buckets) {
     seg.balance += balance;
     seg.dailyPnl += dailyPnl;
     seg.weeklyPnl += weeklyPnl;
@@ -56,6 +73,7 @@ export function buildClientSegments(client, dailyImport) {
       trailing,
       connection: snapshot.connection || '',
     });
+    }
   }
 
   return segments;
