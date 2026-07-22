@@ -6403,3 +6403,6 @@ tr:nth-child(2) .rank-badge {
 /* Per-type segment strip in report + client overview */
 .report-segments div, .metric { position: relative; }
 .report-segments div small, .metric small { display: block; font-size: 11px; margin-top: 3px; }
+
+/* VPS IP under the client name in the left sidebar list (light bg -> dark text) */
+.sidebar-ip { display: block; font-size: 10px; color: #4a5a6a; font-variant-numeric: tabular-nums; line-height: 1.3; }
