@@ -47,7 +47,7 @@ export function buildBatchImportPlan({ parsedFiles = [], clients = [], fallbackD
     );
 
     const clientMatches = registryNamesLower
-      .map(({ client, names }) => {
+      .map(({ client }) => {
         const myAccounts = Object.keys(client.accountRegistry || {}).filter((an) =>
           accountNamesLower.has(an.toLowerCase()),
         );
