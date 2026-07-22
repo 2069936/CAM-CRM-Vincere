@@ -5,7 +5,7 @@
 // split by type, and also list which prop firms (connections) the client runs
 // on so a CAM can see what to enable.
 
-import { ACCOUNT_TYPES } from './reconcile';
+import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType, isPropAccountType } from './reconcile';
 
 function accountMetaFor(client, dailyImport, accountName) {
   const lower = String(accountName || '').toLowerCase();
@@ -16,7 +16,7 @@ function accountMetaFor(client, dailyImport, accountName) {
 
 function segmentKey(accountType) {
   if (accountType === ACCOUNT_TYPES.FUNDED) return 'funded';
-  if (accountType === ACCOUNT_TYPES.CASH) return 'cash';
+  if (isCashType(accountType)) return 'cash';
   if (accountType === ACCOUNT_TYPES.EVALUATION_BULLET) return 'bulletBot';
   if (accountType === ACCOUNT_TYPES.EVALUATION_STANDARD) return 'evalStandard';
   return 'other';
@@ -77,4 +77,44 @@ export function buildClientPropFirms(client, dailyImport) {
     });
   }
   return Object.values(firms).sort((a, b) => b.count - a.count);
+}
+
+export const CLIENT_KINDS = { CASH: 'cash', PROP: 'prop', MIXED: 'mixed', NONE: 'none' };
+
+// Client-level account mix, derived from the persistent account registry (NOT
+// from a daily import) so every surface that lists clients can classify one
+// without needing a CSV close that day. Cash clients are managed differently
+// from funded/evaluation clients and must be distinguishable everywhere.
+// A client can legitimately hold both, so "mixed" is a first-class state.
+export function clientAccountMix(client) {
+  let cash = 0;
+  let prop = 0;
+  for (const meta of Object.values(client?.accountRegistry || {})) {
+    if (!meta) continue;
+    // Dead accounts do not define how a client is managed today.
+    if (meta.status === ACCOUNT_STATUSES.INACTIVE || meta.status === ACCOUNT_STATUSES.FAILED) continue;
+    if (isCashType(meta.accountType)) cash += 1;
+    else if (isPropAccountType(meta.accountType)) prop += 1;
+  }
+  const kind = cash && prop
+    ? CLIENT_KINDS.MIXED
+    : cash
+      ? CLIENT_KINDS.CASH
+      : prop
+        ? CLIENT_KINDS.PROP
+        : CLIENT_KINDS.NONE;
+  return {
+    cash,
+    prop,
+    kind,
+    isCash: kind === CLIENT_KINDS.CASH || kind === CLIENT_KINDS.MIXED,
+    label:
+      kind === CLIENT_KINDS.CASH
+        ? 'Cash'
+        : kind === CLIENT_KINDS.MIXED
+          ? 'Cash + Prop'
+          : kind === CLIENT_KINDS.PROP
+            ? 'Prop'
+            : '',
+  };
 }

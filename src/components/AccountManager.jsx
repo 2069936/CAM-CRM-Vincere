@@ -1,15 +1,25 @@
 import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS } from '../domain/reconcile';
+import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS, isCashType } from '../domain/reconcile';
 
 const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.UNASSIGNED,
   ACCOUNT_TYPES.EVALUATION_BULLET,
   ACCOUNT_TYPES.EVALUATION_STANDARD,
   ACCOUNT_TYPES.FUNDED,
-  ACCOUNT_TYPES.CASH,
+  ACCOUNT_TYPES.CASH_IRA,
+  ACCOUNT_TYPES.CASH_STRAIGHT,
   ACCOUNT_TYPES.IGNORE,
 ];
+
+// Accounts classified before the IRA/Straight split still hold the legacy 'Cash'
+// value. Offer it only on those rows, so the dropdown shows their real value
+// instead of silently snapping to another type, and the CAM can reclassify.
+function typeOptionsFor(accountType) {
+  return accountType === ACCOUNT_TYPES.CASH
+    ? [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.CASH]
+    : ACCOUNT_TYPE_OPTIONS;
+}
 
 const STATUS_OPTIONS = Object.values(ACCOUNT_STATUSES);
 const PAYOUT_OPTIONS = Object.values(PAYOUT_STATES);
@@ -97,7 +107,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
                   value={account.accountType || ACCOUNT_TYPES.UNASSIGNED}
                   onChange={(event) => onUpdateAccount(account.accountName, { accountType: event.target.value })}
                 >
-                  {ACCOUNT_TYPE_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                  {typeOptionsFor(account.accountType).map((option) => <option key={option}>{option}</option>)}
                 </select>
               </td>
               <td>
@@ -118,7 +128,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               </td>
               {!isCash ? (
                 <td>
-                  {account.accountType === ACCOUNT_TYPES.CASH ? <span className="field-na">N/A</span> : (
+                  {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
                     <select
                       value={account.bulletBotPassType || ''}
                       disabled={account.accountType !== ACCOUNT_TYPES.EVALUATION_BULLET}
@@ -131,7 +141,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               ) : null}
               {!isCash ? (
                 <td>
-                  {account.accountType === ACCOUNT_TYPES.CASH ? <span className="field-na">N/A</span> : (
+                  {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
                     <select
                       value={account.bulletBotDirection || ''}
                       disabled={account.accountType !== ACCOUNT_TYPES.EVALUATION_BULLET}
@@ -144,7 +154,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               ) : null}
               {!isCash ? (
                 <td>
-                  {account.accountType === ACCOUNT_TYPES.CASH ? <span className="field-na">N/A</span> : (
+                  {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
                     <select
                       value={account.payoutState || PAYOUT_STATES.NOT_REQUESTED}
                       onChange={(event) => onUpdateAccount(account.accountName, { payoutState: event.target.value })}
@@ -156,7 +166,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               ) : null}
               {!isCash ? (
                 <td>
-                  {account.accountType === ACCOUNT_TYPES.CASH ? <span className="field-na">N/A</span> : (
+                  {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
                     <input
                       type="number"
                       value={account.startBalance ?? ''}
@@ -168,7 +178,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               ) : null}
               {!isCash ? (
                 <td>
-                  {account.accountType === ACCOUNT_TYPES.CASH ? <span className="field-na">N/A</span> : (
+                  {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
                     <input
                       type="number"
                       value={account.targetProfit ?? ''}
@@ -180,7 +190,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
               ) : null}
               {!isCash ? (
                 <td>
-                  {account.accountType === ACCOUNT_TYPES.CASH ? <span className="field-na">N/A</span> : (
+                  {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
                     <input
                       type="number"
                       value={account.maxDrawdownLimit ?? ''}

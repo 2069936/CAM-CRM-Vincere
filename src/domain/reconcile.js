@@ -3,9 +3,38 @@ export const ACCOUNT_TYPES = {
   EVALUATION_BULLET: 'Evaluation - Bullet Bot',
   EVALUATION_STANDARD: 'Evaluation - Standard',
   FUNDED: 'Funded',
+  CASH_IRA: 'Cash - IRA',
+  CASH_STRAIGHT: 'Cash - Straight',
+  // LEGACY. Rows written before the IRA/Straight split still store 'Cash' in
+  // Supabase (trading_accounts.account_type is free text, no CHECK constraint),
+  // so this key must stay: removing it would make every pre-split row fall
+  // through to Unassigned behaviour.
   CASH: 'Cash',
   IGNORE: 'Inactive / Ignore',
 };
+
+// Every value that must behave like cash: no profit target, no drawdown limit,
+// balance-only reporting. Branch on isCashType(), never on a single string.
+export const CASH_ACCOUNT_TYPES = [
+  ACCOUNT_TYPES.CASH_IRA,
+  ACCOUNT_TYPES.CASH_STRAIGHT,
+  ACCOUNT_TYPES.CASH,
+];
+
+export function isCashType(accountType) {
+  return CASH_ACCOUNT_TYPES.includes(accountType);
+}
+
+export function isLegacyCashType(accountType) {
+  return accountType === ACCOUNT_TYPES.CASH;
+}
+
+// Prop-firm family: funded plus any evaluation. Unassigned and Inactive / Ignore
+// deliberately match neither this nor isCashType.
+export function isPropAccountType(accountType) {
+  const value = String(accountType || '').trim();
+  return value === ACCOUNT_TYPES.FUNDED || value.startsWith('Evaluation');
+}
 
 export const ACCOUNT_STATUSES = {
   ACTIVE: 'Active',

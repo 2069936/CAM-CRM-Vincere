@@ -90,6 +90,7 @@ import { buildCamOverview } from "./domain/camOverview";
 import {
   recalculateDailyImport,
   reconcileDailyImport,
+  isCashType,
 } from "./domain/reconcile";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import { buildBatchImportPlan } from "./domain/batchImport";
@@ -107,7 +108,9 @@ import {
   buildCamDayReport,
   formatCurrency,
 } from "./domain/report";
-import { buildClientSegments } from "./domain/clientSegments";
+import { buildClientSegments, clientAccountMix } from "./domain/clientSegments";
+import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
+import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -435,7 +438,7 @@ export function filteredAccountsForTab(client, dailyImport, tab) {
       if (tab === "Evaluations")
         return account.accountType?.startsWith("Evaluation");
       if (tab === "Funded") return account.accountType === "Funded";
-      if (tab === "Cash") return account.accountType === "Cash";
+      if (tab === "Cash") return isCashType(account.accountType);
       return true;
     }),
   );
@@ -477,7 +480,7 @@ export function buildVisibleTabs(client, dailyImport) {
     tabs.push("Evaluations");
   if (values.some((account) => account.accountType === "Funded"))
     tabs.push("Funded");
-  if (values.some((account) => account.accountType === "Cash"))
+  if (values.some((account) => isCashType(account.accountType)))
     tabs.push("Cash");
   return ["Overview", ...tabs, ...STATIC_TABS];
 }
@@ -630,7 +633,7 @@ export function buildClientOverview(client, dailyImport) {
     .map((snapshot) => {
       const meta = ciMeta(registry, snapshot.accountName);
       if (
-        meta.accountType === "Cash" ||
+        isCashType(meta.accountType) ||
         meta.accountType === "Inactive / Ignore"
       )
         return null;
@@ -1226,7 +1229,7 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
       const meta = ciMeta(registry, snapshot.accountName);
       if (
         meta.accountType === "Inactive / Ignore" ||
-        meta.accountType === "Cash"
+        isCashType(meta.accountType)
       )
         continue;
       if (["Inactive", "Failed"].includes(meta.status)) continue;
@@ -5315,6 +5318,11 @@ function ManagerOverview({
           </section>
         ) : null}
 
+        <LifecycleRollupPanel
+          rollup={buildLifecycleRollup(clients || [])}
+          title="Team lifecycle & retention"
+        />
+
         {camPerf.length > 0 ? (
           <section className="panel">
             <div className="panel-heading">
@@ -6828,6 +6836,7 @@ function ClientOverview({
   client,
   dailyImport,
   allClients = [],
+  camName = "",
   onRequestMonthlyReport,
   onLogPayout,
 }) {
@@ -6863,6 +6872,9 @@ function ClientOverview({
 
   return (
     <div className="dashboard-stack">
+      <ClientLifecyclePanel
+        lifecycle={buildClientLifecycle(client, { camName })}
+      />
       {hasContact && (
         <section className="contact-card">
           {profile.fullName && (
@@ -7881,6 +7893,10 @@ export function buildPortfolioInsights(clients) {
 }
 
 function InsightFeedPanel({ insights, onSelectClient }) {
+  // Collapsed by default. A portfolio can produce hundreds of signals and the
+  // same rule repeats across clients, so the feed shows one row per signal type
+  // and the CAM opens only the group they're actually working.
+  const [expandedTypes, setExpandedTypes] = useState(() => new Set());
   if (!insights.length) {
     return (
       <section className="panel">
@@ -7912,6 +7928,33 @@ function InsightFeedPanel({ insights, onSelectClient }) {
     info: { label: "Info", cls: "insight-info", dot: "var(--info)" },
   };
 
+  // One group per signal type, worst severity first, then biggest group.
+  const severityRank = { critical: 0, warning: 1, "info-green": 2, info: 3 };
+  const groupsByType = new Map();
+  for (const item of insights) {
+    const key = item.type || "Other";
+    if (!groupsByType.has(key)) groupsByType.set(key, []);
+    groupsByType.get(key).push(item);
+  }
+  const groups = [...groupsByType.entries()]
+    .map(([type, items]) => ({
+      type,
+      items,
+      critical: items.filter((i) => i.severity === "critical").length,
+      warning: items.filter((i) => i.severity === "warning").length,
+      rank: Math.min(...items.map((i) => severityRank[i.severity] ?? 3)),
+    }))
+    .sort((a, b) => a.rank - b.rank || b.items.length - a.items.length);
+
+  function toggleType(type) {
+    setExpandedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }
+
   return (
     <section className={`panel ${criticalCount ? "danger-panel" : ""}`}>
       <div className="panel-heading">
@@ -7927,35 +7970,74 @@ function InsightFeedPanel({ insights, onSelectClient }) {
         </div>
       </div>
       <div className="insight-feed">
-        {insights.map((item, i) => {
-          const cfg = severityConfig[item.severity] || severityConfig.info;
+        {groups.map((group) => {
+          const isOpen = expandedTypes.has(group.type);
           return (
-            <button
-              key={i}
-              className={`insight-item ${cfg.cls}`}
-              onClick={() => onSelectClient && onSelectClient(item.clientId)}
-              title={`Open ${item.clientName}`}
-            >
-              <span className="insight-dot" style={{ background: cfg.dot }} />
-              <div className="insight-body">
-                <div className="insight-head">
-                  <span className="insight-type">{item.type}</span>
-                  <span className="insight-client">{item.clientName}</span>
-                  {item.accountAlias ? (
-                    <span className="insight-account">
-                      · {item.accountAlias}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="insight-message">{item.message}</p>
-                <small className="insight-action">→ {item.action}</small>
-              </div>
-              <span
-                className={`insight-severity-badge insight-sev-${item.severity}`}
+            <div className="insight-group" key={group.type}>
+              <button
+                className="insight-group-head"
+                onClick={() => toggleType(group.type)}
+                aria-expanded={isOpen}
+                title={isOpen ? "Collapse" : "Expand"}
               >
-                {cfg.label}
-              </span>
-            </button>
+                <ChevronDown
+                  className={isOpen ? "chevron open" : "chevron"}
+                  size={14}
+                />
+                <span className="insight-type">{group.type}</span>
+                <span className="insight-group-count">
+                  {group.items.length}
+                </span>
+                {group.critical ? (
+                  <span className="badge danger">{group.critical} critical</span>
+                ) : null}
+                {group.warning ? (
+                  <span className="badge warning">{group.warning} warning</span>
+                ) : null}
+              </button>
+              {isOpen
+                ? group.items.map((item, i) => {
+                    const cfg =
+                      severityConfig[item.severity] || severityConfig.info;
+                    return (
+                      <button
+                        key={i}
+                        className={`insight-item ${cfg.cls}`}
+                        onClick={() =>
+                          onSelectClient && onSelectClient(item.clientId)
+                        }
+                        title={`Open ${item.clientName}`}
+                      >
+                        <span
+                          className="insight-dot"
+                          style={{ background: cfg.dot }}
+                        />
+                        <div className="insight-body">
+                          <div className="insight-head">
+                            <span className="insight-client">
+                              {item.clientName}
+                            </span>
+                            {item.accountAlias ? (
+                              <span className="insight-account">
+                                · {item.accountAlias}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="insight-message">{item.message}</p>
+                          <small className="insight-action">
+                            → {item.action}
+                          </small>
+                        </div>
+                        <span
+                          className={`insight-severity-badge insight-sev-${item.severity}`}
+                        >
+                          {cfg.label}
+                        </span>
+                      </button>
+                    );
+                  })
+                : null}
+            </div>
           );
         })}
       </div>
@@ -8811,6 +8893,11 @@ function CamOverview({
           <strong>{overview.totals.openDeviationFlags}</strong>
         </div>
       </div>
+
+      <LifecycleRollupPanel
+        rollup={buildLifecycleRollup(clients || [])}
+        title="My book - lifecycle & retention"
+      />
 
       <section className="panel">
         <div className="panel-heading">
@@ -12496,6 +12583,19 @@ export default function App() {
                           <span>
                             {client.name}
                             {(() => {
+                              // Cash clients are managed differently from
+                              // funded/evaluation clients, so mark the mix.
+                              const mix = clientAccountMix(client);
+                              return mix.label ? (
+                                <span
+                                  className={`client-kind client-kind-${mix.kind}`}
+                                  title={`${mix.cash} cash · ${mix.prop} prop account${mix.prop === 1 ? "" : "s"}`}
+                                >
+                                  {mix.label}
+                                </span>
+                              ) : null;
+                            })()}
+                            {(() => {
                               const d = lastContactDaysAgo(client);
                               return d !== null && d > 3 ? (
                                 <span
@@ -13140,6 +13240,7 @@ export default function App() {
                         client={selectedClient}
                         dailyImport={dailyImport}
                         allClients={state.clients || []}
+                        camName={currentCamProfile?.name || ""}
                         onRequestMonthlyReport={(month) =>
                           setMonthlyReportMonth(month)
                         }

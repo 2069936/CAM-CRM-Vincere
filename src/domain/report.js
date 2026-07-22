@@ -1,4 +1,5 @@
 import { buildClientSegments } from './clientSegments';
+import { isCashType } from './reconcile';
 
 function ciLookup(registry, accountName) {
   if (!registry || !accountName) return {};
@@ -162,7 +163,7 @@ export function buildDailyReportSummary(client, dailyImport) {
   for (const snapshot of snapshots) {
     const meta = ciLookup(registry, snapshot.accountName) || {};
     const row = { ...snapshot, meta };
-    if (meta.accountType === 'Cash') grouped.cash.push(row);
+    if (isCashType(meta.accountType)) grouped.cash.push(row);
     else if (meta.accountType === 'Funded') grouped.funded.push(row);
     else if (meta.accountType === 'Inactive / Ignore') grouped.ignored.push(row);
     else if (meta.accountType?.startsWith('Evaluation')) grouped.evaluations.push(row);
