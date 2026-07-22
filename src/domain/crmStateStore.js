@@ -3,7 +3,14 @@ function createId(prefix) {
 }
 
 export function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  // Local calendar date, NOT UTC. new Date().toISOString() is UTC, so for a user
+  // behind UTC (e.g. UTC-5) it rolls to "tomorrow" in the evening — which made the
+  // daily close default to the wrong day. Build the date from local components.
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 export function createInitialState() {

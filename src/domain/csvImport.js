@@ -322,3 +322,28 @@ export function parseNinjaTraderCsvText(csvText, fileName = '') {
     errors: result.errors,
   };
 }
+
+// NinjaTrader grid exports are named like "NinjaTrader Grid 2026-07-21 04-07 PM1.csv".
+// Pull the export date from the name so a bulk drop can file each day under its own
+// date instead of all under "today". Returns 'YYYY-MM-DD' or null when no valid date
+// is present (the caller falls back to today).
+export function parseNinjaTraderFileDate(fileName = '') {
+  const match = String(fileName).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  const [, year, month, day] = match;
+  const m = Number(month);
+  const d = Number(day);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return `${year}-${month}-${day}`;
+}
+
+// Sortable recency for picking the most recent of several exports of the same grid for
+// one day (e.g. a bad export followed by a good re-export). Uses the "HH-MM AM/PM" stamp
+// in the name; files without a stamp sort earliest (return 0).
+export function parseNinjaTraderFileTimeKey(fileName = '') {
+  const match = String(fileName).match(/(\d{1,2})-(\d{2})\s*(AM|PM)/i);
+  if (!match) return 0;
+  let hour = Number(match[1]) % 12;
+  if (/PM/i.test(match[3])) hour += 12;
+  return hour * 60 + Number(match[2]);
+}

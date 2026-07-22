@@ -61,9 +61,10 @@ function createDefaultAccount(account, existing = {}) {
 
 function makeFlag({ type, severity = 'Warning', accountName = '', message }) {
   return {
-    // Deterministic id (no random) so a recalculated flag maps to its prior
-    // triage status instead of coming back as a brand-new Open flag.
-    id: `${type}|${accountName || 'client'}|${message || ''}`,
+    // Unique id so flags never collide as React keys (which made them vanish).
+    // Recalculate preserves triage by matching on type|account|message instead,
+    // so a stable id is not needed for that.
+    id: `${type}-${accountName || 'client'}-${Math.random().toString(36).slice(2, 9)}`,
     type,
     severity,
     accountName,
@@ -160,7 +161,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
       }));
     }
 
-    if (meta.accountType === ACCOUNT_TYPES.UNASSIGNED) {
+    if (meta.accountType === ACCOUNT_TYPES.UNASSIGNED && meta.status !== ACCOUNT_STATUSES.RESERVE) {
       flags.push(makeFlag({
         type: 'Unassigned account',
         severity: 'Warning',

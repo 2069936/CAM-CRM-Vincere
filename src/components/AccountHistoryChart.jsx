@@ -86,7 +86,7 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
         {hasBuffer ? (
           <div className="ahc-plot">
             <div className="ahc-plot-head">
-              <span className="muted">Drawdown buffer</span>
+              <span className="muted">Trailing</span>
               <strong style={{ color: bufferColor(currentBuffer) }}>{money(currentBuffer)}</strong>
             </div>
             <MiniLine
@@ -94,7 +94,7 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
               pick={buffer}
               color={bufferColor(currentBuffer)}
               baseline={0}
-              title={`${alias} drawdown buffer, breach at 0. Current ${money(currentBuffer)}`}
+              title={`${alias} trailing room, breach at 0. Current ${money(currentBuffer)}`}
             />
           </div>
         ) : null}
@@ -129,7 +129,7 @@ export default function AccountHistoryChart({ series = [], ddLimit = 0, alias = 
             ~{breach.daysToBreach}d to breach
           </span>
         ) : hasBuffer ? (
-          <span className="muted">buffer stable</span>
+          <span className="muted">trailing stable</span>
         ) : null}
         <span className="muted">{streaks.tradingDays} trading days</span>
       </div>
