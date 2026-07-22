@@ -339,7 +339,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           <button className="registry-toggle" onClick={() => setHistoryOpen((v) => !v)}>
             <ChevronDown className={historyOpen ? 'chevron open' : 'chevron'} size={16} />
             <h3>Account history</h3>
-            <span className="muted">Equity curve + drawdown buffer over every close</span>
+            <span className="muted">Equity curve + trailing over every close</span>
             <span className="count">{chartAccounts.length}</span>
           </button>
           {historyOpen ? (
@@ -367,7 +367,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                       {stratVersions.length ? <small className="muted">{stratVersions.join(' · ')}</small> : null}
                       {safe ? (
                         <small className={safe.safeLevel < mult ? 'negative' : 'muted'}>
-                          buffer supports ~{safe.safeLevel}x{mult ? ` (running ${mult}x)` : ''}
+                          trailing supports ~{safe.safeLevel}x{mult ? ` (running ${mult}x)` : ''}
                         </small>
                       ) : null}
                       <small
@@ -804,7 +804,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                 <tr>
                   <th>Account</th>
                   <th>Live combo</th>
-                  <th>Drawdown buffer</th>
+                  <th>Trailing</th>
                   <th>Assign algo stack</th>
                   <th>Change note</th>
                   <th>Daily Loss Limit</th>
