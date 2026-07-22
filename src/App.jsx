@@ -493,15 +493,24 @@ function tabMode(tab) {
   return "standard";
 }
 
-function latestImports(clients = []) {
+// The close a client had on a given date, or their most recent one when no date
+// is pinned. Every date-sensitive read on the Operations page goes through this,
+// so moving the date re-scopes the whole view instead of one panel.
+export function importAsOf(client, asOfDate = "") {
+  const imports = client?.dailyImports || [];
+  if (!asOfDate) return imports.at(-1) || null;
+  return imports.find((di) => di.date === asOfDate) || null;
+}
+
+function latestImports(clients = [], asOfDate = "") {
   return clients.map((client) => ({
     client,
-    dailyImport: client.dailyImports?.at(-1) || null,
+    dailyImport: importAsOf(client, asOfDate),
   }));
 }
 
-export function buildManagerSummary(clients = []) {
-  const imports = latestImports(clients);
+export function buildManagerSummary(clients = [], asOfDate = "") {
+  const imports = latestImports(clients, asOfDate);
   const snapshots = imports.flatMap(
     ({ dailyImport }) => dailyImport?.snapshots || [],
   );
@@ -3587,7 +3596,8 @@ function ManagerOverview({
         : prev,
     );
   }
-  const [drillDate, setDrillDate] = useState("");
+  // Pins the whole Operations page to one trading day. Empty = latest close.
+  const [asOfDate, setAsOfDate] = useState("");
   const [teamCopyDone, setTeamCopyDone] = useState(false);
   const [weeklyCopyDone, setWeeklyCopyDone] = useState(false);
   const [newClientForm, setNewClientForm] = useState({
@@ -3614,7 +3624,7 @@ function ManagerOverview({
   const cams = useMemo(
     () =>
       activeCamProfiles.map((profile) => {
-        const summary = buildManagerSummary(clientsForCam(clients, profile));
+        const summary = buildManagerSummary(clientsForCam(clients, profile), asOfDate);
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
     [clients, activeCamProfiles],
@@ -3663,7 +3673,7 @@ function ManagerOverview({
         (p.clientIds || []).includes(client.id),
       );
       const reg = client.accountRegistry || {};
-      const latestImport = (client.dailyImports || []).at(-1);
+      const latestImport = importAsOf(client, asOfDate);
       for (const [accountName, meta] of Object.entries(reg)) {
         if (!meta.accountType?.startsWith("Evaluation")) continue;
         if (meta.status === "Failed" || meta.status === "Inactive") continue;
@@ -3771,7 +3781,7 @@ function ManagerOverview({
     const critFlags = clients.reduce(
       (n, c) =>
         n +
-        (c.dailyImports?.at(-1)?.flags || []).filter(
+        (importAsOf(c, asOfDate)?.flags || []).filter(
           (f) =>
             f.severity === "Critical" &&
             f.status !== "Resolved" &&
@@ -4006,12 +4016,15 @@ function ManagerOverview({
           <div>
             <span className="eyebrow">
               Vincere Trading ·{" "}
-              {new Date().toLocaleDateString("en-US", {
+              {new Date(
+                (asOfDate || todayIsoDate()) + "T12:00:00",
+              ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
               })}
+              {asOfDate ? " · as of" : ""}
             </span>
             <h1>Operations Command Center</h1>
             <div className="occ-status-row">
@@ -4023,6 +4036,57 @@ function ManagerOverview({
               {totals.flags > 0 && (
                 <span className="badge danger">
                   {totals.flags} open flag{totals.flags !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            {/* Pins the whole page to one trading day: metrics, flags, rosters
+                and every client's numbers come from that day's close. */}
+            <div className="date-nav occ-date-nav">
+              <button
+                className="ghost-button icon-only"
+                title="Previous day"
+                onClick={() => {
+                  const base = asOfDate || todayIsoDate();
+                  const d = new Date(base + "T12:00:00");
+                  d.setDate(d.getDate() - 1);
+                  setAsOfDate(d.toISOString().slice(0, 10));
+                }}
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <label className="date-control">
+                <CalendarDays size={16} />
+                <input
+                  type="date"
+                  value={asOfDate}
+                  onChange={(event) => setAsOfDate(event.target.value)}
+                  title="Show the whole page as of this day"
+                />
+              </label>
+              <button
+                className="ghost-button icon-only"
+                title="Next day"
+                onClick={() => {
+                  const base = asOfDate || todayIsoDate();
+                  const d = new Date(base + "T12:00:00");
+                  d.setDate(d.getDate() + 1);
+                  setAsOfDate(d.toISOString().slice(0, 10));
+                }}
+              >
+                <ChevronRight size={15} />
+              </button>
+              {asOfDate ? (
+                <button
+                  className="ghost-button"
+                  style={{ fontSize: 11 }}
+                  onClick={() => setAsOfDate("")}
+                  title="Back to each client's latest close"
+                >
+                  Latest
+                </button>
+              ) : (
+                <span className="muted" style={{ fontSize: 11 }}>
+                  Latest close
                 </span>
               )}
             </div>
@@ -4233,7 +4297,7 @@ function ManagerOverview({
               const cam = activeCamProfiles.find((p) =>
                 (p.clientIds || []).includes(client.id),
               );
-              const latest = client.dailyImports?.at(-1);
+              const latest = importAsOf(client, asOfDate);
               const pnl = (latest?.snapshots || []).reduce(
                 (s, sn) => s + Number(sn.grossRealizedPnl || 0),
                 0,
@@ -4591,7 +4655,7 @@ function ManagerOverview({
               // Latest close only. Scanning every historical import counted the
               // same still-open flag once per day it appeared, which inflated
               // this table far past the open-flag chip in the header.
-              [c.dailyImports?.at(-1)].filter(Boolean).flatMap((di) =>
+              [importAsOf(c, asOfDate)].filter(Boolean).flatMap((di) =>
                 (di.flags || [])
                   .filter(
                     (f) =>
@@ -5497,7 +5561,7 @@ function ManagerOverview({
                 const cam = activeCamProfiles.find((p) =>
                   (p.clientIds || []).includes(client.id),
                 );
-                const latest = client.dailyImports?.at(-1);
+                const latest = importAsOf(client, asOfDate);
                 const dailyPnl = (latest?.snapshots || []).reduce(
                   (s, sn) => s + Number(sn.grossRealizedPnl || 0),
                   0,
@@ -5609,8 +5673,8 @@ function ManagerOverview({
             <h3>Historical date drill-down</h3>
             <input
               type="date"
-              value={drillDate}
-              onChange={(e) => setDrillDate(e.target.value)}
+              value={asOfDate}
+              onChange={(e) => setAsOfDate(e.target.value)}
               style={{
                 marginLeft: "auto",
                 fontSize: 12,
@@ -5621,28 +5685,28 @@ function ManagerOverview({
                 color: "var(--text)",
               }}
             />
-            {drillDate && (
+            {asOfDate && (
               <button
                 className="ghost-button"
                 style={{ fontSize: 11 }}
-                onClick={() => setDrillDate("")}
+                onClick={() => setAsOfDate("")}
               >
                 Clear
               </button>
             )}
           </div>
-          {!drillDate && (
+          {!asOfDate && (
             <p className="muted" style={{ fontSize: 12 }}>
               Pick a date to see every client's P&L, accounts, and flags for
               that day.
             </p>
           )}
-          {drillDate &&
+          {asOfDate &&
             (() => {
               const drillRows = clients
                 .map((client) => {
                   const imp = (client.dailyImports || []).find(
-                    (d) => d.date === drillDate,
+                    (d) => d.date === asOfDate,
                   );
                   if (!imp) return null;
                   const pnl = (imp.snapshots || []).reduce(
@@ -5666,7 +5730,7 @@ function ManagerOverview({
               if (!drillRows.length)
                 return (
                   <p className="muted" style={{ fontSize: 12 }}>
-                    No data uploaded for {drillDate}.
+                    No data uploaded for {asOfDate}.
                   </p>
                 );
               const total = drillRows.reduce((s, r) => s + r.pnl, 0);
@@ -12714,7 +12778,7 @@ export default function App() {
                             </small>
                           ) : null}
                           {(() => {
-                            const latest = client.dailyImports?.at(-1);
+                            const latest = importAsOf(client, asOfDate);
                             if (!latest) return null;
                             const pnl = (latest.snapshots || []).reduce(
                               (s, snap) =>

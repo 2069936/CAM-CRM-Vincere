@@ -6521,3 +6521,11 @@ tr:nth-child(2) .rank-badge {
   border-radius: 999px;
   padding: 1px 8px;
 }
+
+/* Operations as-of date control sits under the page title. */
+.occ-date-nav {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
