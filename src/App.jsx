@@ -111,6 +111,7 @@ import {
 import { buildClientSegments, clientAccountMix } from "./domain/clientSegments";
 import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
+import CollapsiblePanel from "./components/CollapsiblePanel";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -1335,6 +1336,24 @@ export function buildPayoutPipeline(clients = [], camProfiles = []) {
   return rows.sort(
     (a, b) => order.indexOf(a.payoutState) - order.indexOf(b.payoutState),
   );
+}
+
+// Bucket flag rows by their type so a long roster of open flags reads as a few
+// named groups instead of one continuous table.
+function groupByFlagType(rows = []) {
+  const map = new Map();
+  for (const row of rows) {
+    const type = row.type || "Other";
+    if (!map.has(type)) map.set(type, []);
+    map.get(type).push(row);
+  }
+  return [...map.entries()]
+    .map(([type, items]) => ({
+      type,
+      items,
+      critical: items.filter((f) => f.severity === "Critical").length,
+    }))
+    .sort((a, b) => b.critical - a.critical || b.items.length - a.items.length);
 }
 
 function clientsForCam(clients = [], camProfile = null) {
@@ -4565,7 +4584,10 @@ function ManagerOverview({
         {(() => {
           const allFlags = clients
             .flatMap((c) =>
-              (c.dailyImports || []).flatMap((di) =>
+              // Latest close only. Scanning every historical import counted the
+              // same still-open flag once per day it appeared, which inflated
+              // this table far past the open-flag chip in the header.
+              [c.dailyImports?.at(-1)].filter(Boolean).flatMap((di) =>
                 (di.flags || [])
                   .filter(
                     (f) =>
@@ -4598,15 +4620,32 @@ function ManagerOverview({
           const critCount = allFlags.filter(
             (f) => f.severity === "Critical",
           ).length;
+          const flagTypeGroups = groupByFlagType(allFlags);
           return (
-            <section className="panel open-flags-panel">
-              <div className="panel-heading">
-                <h3>Open flags - all clients</h3>
+            <CollapsiblePanel
+              title="Open flags - all clients"
+              count={allFlags.length}
+              tone="open-flags-panel"
+              badges={
                 <span className={`badge ${critCount ? "danger" : "warning"}`}>
                   {allFlags.length} open
                   {critCount ? ` · ${critCount} critical` : ""}
                 </span>
-              </div>
+              }
+            >
+              {flagTypeGroups.map((group) => (
+                <CollapsiblePanel
+                  key={group.type}
+                  title={group.type}
+                  count={group.items.length}
+                  badges={
+                    group.critical ? (
+                      <span className="badge danger">
+                        {group.critical} critical
+                      </span>
+                    ) : null
+                  }
+                >
               <div className="ops-table-wrap">
                 <table className="ops-table">
                   <thead>
@@ -4620,9 +4659,9 @@ function ManagerOverview({
                     </tr>
                   </thead>
                   <tbody>
-                    {allFlags.map((f, i) => (
+                    {group.items.map((f) => (
                       <tr
-                        key={i}
+                        key={f.id}
                         style={
                           f.severity === "Critical"
                             ? {
@@ -4671,7 +4710,9 @@ function ManagerOverview({
                   </tbody>
                 </table>
               </div>
-            </section>
+                </CollapsiblePanel>
+              ))}
+            </CollapsiblePanel>
           );
         })()}
 
@@ -4742,9 +4783,11 @@ function ManagerOverview({
         </section>
 
         {allFunded.length > 0 && (
-          <section className="panel">
-            <div className="panel-heading">
-              <h3>All funded accounts</h3>
+          <CollapsiblePanel
+            title="All funded accounts"
+            count={allFunded.length}
+            badges={
+              <>
               <span className="badge muted">{allFunded.length} accounts</span>
               <button
                 className="ghost-button"
@@ -4794,7 +4837,9 @@ function ManagerOverview({
               >
                 <Download size={14} /> Export CSV
               </button>
-            </div>
+              </>
+            }
+          >
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -5003,15 +5048,19 @@ function ManagerOverview({
                 </tbody>
               </table>
             </div>
-          </section>
+          </CollapsiblePanel>
         )}
 
         {allEvals.length > 0 && (
-          <section className="panel">
-            <div className="panel-heading">
-              <h3>All evaluation accounts</h3>
+          <CollapsiblePanel
+            title="All evaluation accounts"
+            count={allEvals.length}
+            badges={
+              <>
               <span className="badge muted">{allEvals.length} active</span>
-            </div>
+              </>
+            }
+          >
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -5086,7 +5135,7 @@ function ManagerOverview({
                 </tbody>
               </table>
             </div>
-          </section>
+          </CollapsiblePanel>
         )}
 
         <section className="panel">
@@ -5460,13 +5509,17 @@ function ManagerOverview({
                 (a.cam?.name || "zzz").localeCompare(b.cam?.name || "zzz"),
               );
             return (
-              <section className="panel">
-                <div className="panel-heading">
-                  <h3>Client roster</h3>
+              <CollapsiblePanel
+                title="Client roster"
+                count={clients.length}
+                badges={
+                  <>
                   <span className="badge muted">
                     {clients.length} clients · drag or reassign CAM
                   </span>
-                </div>
+                  </>
+                }
+              >
                 <div className="table-wrap">
                   <table className="ops-table">
                     <thead>
@@ -5542,7 +5595,7 @@ function ManagerOverview({
                     </tbody>
                   </table>
                 </div>
-              </section>
+              </CollapsiblePanel>
             );
           })()}
 
