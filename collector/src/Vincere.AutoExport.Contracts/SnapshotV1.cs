@@ -84,6 +84,9 @@ namespace Vincere.AutoExport.Contracts
         [JsonProperty("weeklyPnl")]
         public decimal? WeeklyPnl { get; set; }
 
+        [JsonProperty("trailingMaxDrawdown")]
+        public decimal? TrailingMaxDrawdown { get; set; }
+
         [JsonProperty("buyingPower")]
         public decimal? BuyingPower { get; set; }
 
@@ -140,6 +143,15 @@ namespace Vincere.AutoExport.Contracts
 
         [JsonProperty("enabled")]
         public bool? Enabled { get; set; }
+
+        [JsonProperty("sync")]
+        public bool? Sync { get; set; }
+
+        [JsonProperty("dataSeries")]
+        public string DataSeries { get; set; }
+
+        [JsonProperty("connectionName")]
+        public string ConnectionName { get; set; }
 
         [JsonProperty("startedAt")]
         public DateTimeOffset? StartedAt { get; set; }
@@ -246,14 +258,26 @@ namespace Vincere.AutoExport.Contracts
         [JsonProperty("marketPosition")]
         public string MarketPosition { get; set; }
 
+        [JsonProperty("entryExit")]
+        public string EntryExit { get; set; }
+
+        [JsonProperty("name")]
+        public string Name { get; set; }
+
         [JsonProperty("commission")]
         public decimal? Commission { get; set; }
 
         [JsonProperty("fee")]
         public decimal? Fee { get; set; }
 
+        [JsonProperty("rate")]
+        public decimal? Rate { get; set; }
+
         [JsonProperty("realizedPnl")]
         public decimal? RealizedPnl { get; set; }
+
+        [JsonProperty("connectionName")]
+        public string ConnectionName { get; set; }
 
         [JsonProperty("nativeId")]
         public string NativeId { get; set; }

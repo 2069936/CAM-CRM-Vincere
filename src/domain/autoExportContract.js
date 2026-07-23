@@ -2,13 +2,13 @@ const ROW_SCHEMAS = {
   accounts: {
     required: ['accountName'],
     strings: ['connectionName', 'displayName', 'currency', 'status'],
-    numbers: ['netLiquidation', 'cashValue', 'realizedPnl', 'grossRealizedPnl', 'unrealizedPnl', 'totalPnl', 'weeklyPnl', 'buyingPower', 'excessIntradayMargin', 'initialMargin', 'maintenanceMargin'],
+    numbers: ['netLiquidation', 'cashValue', 'realizedPnl', 'grossRealizedPnl', 'unrealizedPnl', 'totalPnl', 'weeklyPnl', 'trailingMaxDrawdown', 'buyingPower', 'excessIntradayMargin', 'initialMargin', 'maintenanceMargin'],
   },
   strategies: {
     required: ['strategyId', 'strategyName', 'accountName', 'instrument', 'state', 'parameterCaptureStatus'],
-    strings: ['strategyDisplayName', 'position', 'parameterCaptureStatus'],
+    strings: ['strategyDisplayName', 'position', 'dataSeries', 'connectionName', 'parameterCaptureStatus'],
     numbers: ['quantity', 'averagePrice', 'realizedPnl', 'unrealizedPnl'],
-    booleans: ['enabled'],
+    booleans: ['enabled', 'sync'],
     timestamps: ['startedAt'],
     objects: ['parameters'],
   },
@@ -20,8 +20,8 @@ const ROW_SCHEMAS = {
   },
   executions: {
     required: ['executionId', 'accountName', 'instrument', 'action', 'time'],
-    strings: ['orderId', 'strategyId', 'strategyName', 'instrument', 'action', 'marketPosition', 'nativeId'],
-    numbers: ['quantity', 'price', 'commission', 'fee', 'realizedPnl'],
+    strings: ['orderId', 'strategyId', 'strategyName', 'instrument', 'action', 'marketPosition', 'entryExit', 'name', 'connectionName', 'nativeId'],
+    numbers: ['quantity', 'price', 'commission', 'fee', 'rate', 'realizedPnl'],
     timestamps: ['time'],
   },
 };

@@ -37,6 +37,7 @@ const HEADER_ALIASES = {
   tif: 'tif',
   time: 'time',
   totalpnl: 'totalPnl',
+  trailingmaxdrawdown: 'trailingMaxDrawdown',
   type: 'orderType',
   unrealized: 'unrealizedPnl',
   unrealizedpnl: 'unrealizedPnl',
@@ -219,6 +220,7 @@ function mapRow(type, row) {
       unrealizedPnl: parseNumber(row.unrealizedPnl),
       totalPnl: parseNumber(row.totalPnl),
       weeklyPnl: parseNumber(row.weeklyPnl),
+      trailingMaxDrawdown: parseNumber(row.trailingMaxDrawdown),
       status: row.status || '',
     };
   }

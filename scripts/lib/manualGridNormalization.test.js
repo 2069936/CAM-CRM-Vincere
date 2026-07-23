@@ -81,8 +81,8 @@ describe('manual NinjaTrader grid normalization', () => {
 
   it('preserves the additional columns present in the real four-grid exports', () => {
     const account = normalizeManualGridFile([
-      'ConnectionStatus,Connection,Display name,Cash value,Weekly PnL,Unrealized PnL,Realized PnL,Gross realized PnL,Total PnL',
-      'Connected,Live,SIM-01,$1000,$25,$3,$10,$12,$13',
+      'ConnectionStatus,Connection,Display name,Cash value,Weekly PnL,Trailing max drawdown,Unrealized PnL,Realized PnL,Gross realized PnL,Total PnL',
+      'Connected,Live,SIM-01,$1000,$25,-$1500,$3,$10,$12,$13',
     ].join('\n')).rows[0];
     const strategy = normalizeManualGridFile([
       'Strategy,Account display name,Instrument,Data series,Parameters,Sync,Enabled',
@@ -98,7 +98,8 @@ describe('manual NinjaTrader grid normalization', () => {
     ].join('\n')).rows[0];
 
     expect(account).toMatchObject({
-      status: 'Connected', weeklyPnl: 25, unrealizedPnl: 3, totalPnl: 13,
+      status: 'Connected', weeklyPnl: 25, trailingMaxDrawdown: -1500,
+      unrealizedPnl: 3, totalPnl: 13,
     });
     expect(strategy).toMatchObject({ dataSeries: 'NQ 1 Minute', sync: true });
     expect(order).toMatchObject({ name: 'Entry', oco: 'oco-1', tif: 'Day' });

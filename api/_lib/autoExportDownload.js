@@ -17,13 +17,14 @@ export const CSV_COLUMNS = Object.freeze({
   accounts: Object.freeze([
     'accountName', 'connectionName', 'displayName', 'netLiquidation', 'cashValue',
     'realizedPnl', 'grossRealizedPnl', 'unrealizedPnl', 'totalPnl', 'weeklyPnl',
-    'buyingPower', 'excessIntradayMargin', 'initialMargin', 'maintenanceMargin',
-    'currency', 'status',
+    'trailingMaxDrawdown', 'buyingPower', 'excessIntradayMargin', 'initialMargin',
+    'maintenanceMargin', 'currency', 'status',
   ]),
   strategies: Object.freeze([
     'strategyId', 'strategyName', 'strategyDisplayName', 'accountName', 'instrument',
     'state', 'quantity', 'position', 'averagePrice', 'realizedPnl', 'unrealizedPnl',
-    'enabled', 'startedAt', 'parameters', 'parameterCaptureStatus',
+    'enabled', 'sync', 'dataSeries', 'connectionName', 'startedAt', 'parameters',
+    'parameterCaptureStatus',
   ]),
   orders: Object.freeze([
     'orderId', 'accountName', 'strategyId', 'strategyName', 'instrument', 'action',
@@ -33,7 +34,8 @@ export const CSV_COLUMNS = Object.freeze({
   executions: Object.freeze([
     'executionId', 'orderId', 'accountName', 'strategyId', 'strategyName',
     'instrument', 'action', 'quantity', 'price', 'time', 'marketPosition',
-    'commission', 'fee', 'realizedPnl', 'nativeId',
+    'entryExit', 'name', 'commission', 'fee', 'rate', 'realizedPnl',
+    'connectionName', 'nativeId',
   ]),
 });
 

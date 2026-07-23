@@ -22,6 +22,7 @@
       "unrealizedPnl": null,
       "totalPnl": 125.5,
       "weeklyPnl": null,
+      "trailingMaxDrawdown": null,
       "buyingPower": 204983,
       "excessIntradayMargin": null,
       "initialMargin": 500,
@@ -44,6 +45,9 @@
       "realizedPnl": 125.5,
       "unrealizedPnl": null,
       "enabled": true,
+      "sync": null,
+      "dataSeries": null,
+      "connectionName": "Simulated Data Feed",
       "startedAt": "2026-07-23T09:30:00-04:00",
       "parameters": {
         "MyTradeDirection": "Long",
@@ -91,9 +95,13 @@
       "price": 20120.25,
       "time": "2026-07-23T16:44:46-04:00",
       "marketPosition": "Long",
+      "entryExit": null,
+      "name": "RBO entry",
       "commission": 1.24,
-      "fee": 0.35,
+      "fee": null,
+      "rate": 1,
       "realizedPnl": 125.5,
+      "connectionName": "Simulated Data Feed",
       "nativeId": "native-execution-redacted-01"
     }
   ]

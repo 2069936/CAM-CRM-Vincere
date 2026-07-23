@@ -10,10 +10,10 @@ const requiredKeys = {
 };
 
 const numericOrNullKeys = {
-  accounts: ['netLiquidation', 'cashValue', 'realizedPnl', 'grossRealizedPnl', 'unrealizedPnl', 'totalPnl', 'weeklyPnl', 'buyingPower', 'excessIntradayMargin', 'initialMargin', 'maintenanceMargin'],
+  accounts: ['netLiquidation', 'cashValue', 'realizedPnl', 'grossRealizedPnl', 'unrealizedPnl', 'totalPnl', 'weeklyPnl', 'trailingMaxDrawdown', 'buyingPower', 'excessIntradayMargin', 'initialMargin', 'maintenanceMargin'],
   strategies: ['quantity', 'averagePrice', 'realizedPnl', 'unrealizedPnl'],
   orders: ['quantity', 'filled', 'remaining', 'limitPrice', 'stopPrice', 'averageFillPrice'],
-  executions: ['quantity', 'price', 'commission', 'fee', 'realizedPnl'],
+  executions: ['quantity', 'price', 'commission', 'fee', 'rate', 'realizedPnl'],
 };
 
 const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -47,7 +47,9 @@ describe('auto-export snapshot v1 contract', () => {
 
     expect(snapshot.strategies[0].parameters).toEqual(expect.any(Object));
     expect(snapshot.orders[0].remaining).toBeGreaterThan(0);
-    expect(snapshot.executions[0]).toEqual(expect.objectContaining({ commission: expect.any(Number), fee: expect.any(Number) }));
+    expect(snapshot.executions[0]).toEqual(expect.objectContaining({
+      commission: expect.any(Number), fee: null, rate: expect.any(Number),
+    }));
     for (const timestamp of [snapshot.strategies[0].startedAt, snapshot.orders[0].time, snapshot.executions[0].time]) {
       expect(timestamp === null || isoTimestamp.test(timestamp)).toBe(true);
     }
@@ -65,6 +67,27 @@ describe('auto-export snapshot v1 contract', () => {
         'orders[0].orderId is required',
       ]),
     );
+  });
+
+  it('validates the grid fields needed for manual-import parity', () => {
+    const invalid = structuredClone(snapshot);
+    invalid.accounts[0].trailingMaxDrawdown = '$2,000';
+    invalid.strategies[0].dataSeries = 5;
+    invalid.strategies[0].sync = 'true';
+    invalid.executions[0].entryExit = false;
+    invalid.executions[0].name = 42;
+    invalid.executions[0].rate = '1.0';
+    invalid.executions[0].connectionName = {};
+
+    expect(validateAutoExportSnapshot(invalid).errors).toEqual(expect.arrayContaining([
+      'accounts[0].trailingMaxDrawdown must be a number or null',
+      'strategies[0].dataSeries must be a string or null',
+      'strategies[0].sync must be a boolean or null',
+      'executions[0].entryExit must be a string or null',
+      'executions[0].name must be a string or null',
+      'executions[0].rate must be a number or null',
+      'executions[0].connectionName must be a string or null',
+    ]));
   });
 
   it.each([Number.NaN, Number.POSITIVE_INFINITY])('rejects non-finite strategy parameter scalars: %s', (value) => {

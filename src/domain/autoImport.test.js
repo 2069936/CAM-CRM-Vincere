@@ -89,7 +89,7 @@ describe('normalizeAutoImportSnapshot', () => {
     ]);
     expect(normalized.parsed.executions).toEqual([
       expect.objectContaining({
-        id: 'execution-redacted-01', commission: 1.24, fee: 0.35,
+        id: 'execution-redacted-01', commission: 1.24, fee: null, rate: 1,
       }),
     ]);
     expect(normalized.metadata).toMatchObject({
@@ -116,6 +116,37 @@ describe('normalizeAutoImportSnapshot', () => {
     expect(dailyImport.snapshots).toEqual([
       expect.objectContaining({ accountName: 'LIVE-REDACTED-01', grossRealizedPnl: 125.5 }),
     ]);
+  });
+
+  it('preserves the additional NinjaTrader grid fields used by manual imports', () => {
+    const snapshot = snapshotWithLiveAccount();
+    snapshot.accounts[0].trailingMaxDrawdown = -1750.25;
+    Object.assign(snapshot.strategies[0], {
+      dataSeries: 'NQ 1 Minute',
+      sync: true,
+      connectionName: 'Strategy connection',
+    });
+    Object.assign(snapshot.executions[0], {
+      entryExit: 'Entry',
+      name: 'Long entry',
+      rate: 1,
+      connectionName: 'Execution connection',
+    });
+
+    const normalized = normalizeAutoImportSnapshot(snapshot);
+
+    expect(normalized.parsed.accounts[0].trailingMaxDrawdown).toBe(-1750.25);
+    expect(normalized.parsed.strategies[0]).toMatchObject({
+      dataSeries: 'NQ 1 Minute',
+      sync: true,
+      connection: 'Strategy connection',
+    });
+    expect(normalized.parsed.executions[0]).toMatchObject({
+      entryExit: 'Entry',
+      name: 'Long entry',
+      rate: 1,
+      connection: 'Execution connection',
+    });
   });
 
   it.each(['accounts', 'strategies', 'orders', 'executions'])('keeps a valid empty %s section as incomplete metadata', (section) => {
