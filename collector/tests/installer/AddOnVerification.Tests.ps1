@@ -5,7 +5,7 @@ BeforeAll {
     [IO.File]::WriteAllText($addOnPath, 'test-addon-binary')
 
     function New-ValidParityEvidence {
-        $section = [ordered]@{ passed = $true; apiRowCount = 1; gridRowCount = 1; statusCounts = @{} }
+        $newSection = { [ordered]@{ passed = $true; apiRowCount = 1; gridRowCount = 1; statusCounts = @{} } }
         return [ordered]@{
             schemaVersion = 1
             captureMethod = 'supported-api'
@@ -26,10 +26,10 @@ BeforeAll {
                 currentSessionExecutionsConfirmed = $true
             }
             sections = [ordered]@{
-                accounts = $section
-                strategies = $section
-                orders = $section
-                executions = $section
+                accounts = & $newSection
+                strategies = & $newSection
+                orders = & $newSection
+                executions = & $newSection
             }
             decisions = @()
         }

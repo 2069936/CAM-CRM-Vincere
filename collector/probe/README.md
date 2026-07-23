@@ -49,7 +49,7 @@ Primary references:
    **New → Export Vincere Probe Snapshot** between 4:30 and 4:50 p.m. New York
    time.
 6. Immediately export Accounts, Strategies, Orders, and Executions manually.
-7. Copy the five artifacts to an encrypted temporary folder and run:
+7. Copy the six artifacts to an encrypted temporary folder and run:
 
    ```powershell
    npm run probe:compare -- `
@@ -60,6 +60,24 @@ Primary references:
      --executions C:\secure-temp\Executions.csv `
      --out C:\secure-temp\comparison
    ```
+
+8. Inspect every mismatch and missing field. Copy
+   `parity-review.template.json` into the encrypted folder, record the controlled
+   environment and checks, and add one explicit decision for every
+   `missing-api` or `missing-grid` field. Then create sanitized, report-bound
+   evidence:
+
+   ```powershell
+   npm run probe:evidence -- `
+     --comparison C:\secure-temp\comparison\comparison.json `
+     --review C:\secure-temp\parity-review.json `
+     --out C:\secure-temp\parity-evidence.json
+   ```
+
+   The command refuses missing rows, value mismatches, incomplete checks,
+   required fields preserved as null, and pixel/mouse/OCR actions. Its output
+   contains no row keys or API/grid values and includes the SHA-256 of the exact
+   comparison report. Raw probe, CSV, and comparison files remain sensitive.
 
 The comparator detects each CSV by headers, not filename or column position. It
 keeps realized and gross PnL separate. `Rate` in the Executions grid remains a
@@ -75,4 +93,3 @@ powershell -ExecutionPolicy Bypass -File collector\probe\uninstall-probe.ps1
 
 The uninstall script removes only the Vincere probe source file. It does not
 touch NinjaTrader-owned files or captured probe output.
-

@@ -46,6 +46,10 @@ grid with the column enabled so the production decision is explicit.
 6. Review every `missing-api`, `missing-grid`, and `value-mismatch` result.
 7. Repeat after the daily reset to confirm that Realized PnL and Gross Realized
    PnL remain distinct and that a zero Realized value is not treated as absent.
+8. Complete `collector/probe/parity-review.template.json` and run
+   `npm run probe:evidence`. The resulting evidence must be bound to the exact
+   comparison SHA-256; a manually authored `allFourSectionsPassed` boolean is
+   not accepted by the installer release gate.
 
 Do not commit raw client data. Commit only a redacted comparison, a redacted
 real-shape fixture, and the field decision table.
