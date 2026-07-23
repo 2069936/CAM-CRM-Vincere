@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 const installerRoot = new URL('../collector/src/Vincere.AutoExport.Installer/', import.meta.url);
 const addon = await readFile(new URL('AddOn.Package.wxs', installerRoot), 'utf8');
 const bundle = await readFile(new URL('Bundle.wxs', installerRoot), 'utf8');
+const bundleProject = await readFile(new URL('Vincere.AutoExport.Bundle.wixproj', installerRoot), 'utf8');
 const workflow = await readFile(new URL('../.github/workflows/collector-windows.yml', import.meta.url), 'utf8');
 
 describe('guided NinjaTrader profile installer authoring', () => {
@@ -26,6 +27,7 @@ describe('guided NinjaTrader profile installer authoring', () => {
   });
 
   it('compiles the AddOn MSI and full bundle authoring on every portable Windows run', () => {
+    expect(bundleProject).toMatch(/<OutputType>Bundle<\/OutputType>/);
     expect(workflow).toMatch(/name: Compile disposable AddOn MSI and bundle authoring/);
     expect(workflow).toMatch(/Vincere\.AutoExport\.AddOn\.Installer\.wixproj/);
     expect(workflow).toMatch(/Vincere\.AutoExport\.Bundle\.wixproj/);
