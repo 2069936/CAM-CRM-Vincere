@@ -111,6 +111,24 @@ built or signed dynamically; client enrollment happens through the one-time
 pairing code. This keeps distribution scalable and the executable verifiable by
 Windows.
 
+The preferred AddOn distribution is a compiled, versioned Vincere assembly
+installed by the custom setup program into NinjaTrader's documented
+`Documents\NinjaTrader 8\bin\Custom` location. The installer must:
+
+- stop before changing files if NinjaTrader cannot be closed safely;
+- copy only Vincere-owned, uniquely named files;
+- never overwrite NinjaTrader-deployed files or unrelated custom scripts;
+- verify checksums after installation;
+- keep enough state to roll back a partial or failed installation;
+- provide an uninstall path that removes only Vincere-owned files; and
+- require or perform a controlled NinjaTrader restart before the connectivity
+  test.
+
+The collector probe must validate the compiled-assembly installation against the
+actual NinjaTrader versions in the VPS fleet. The standard NinjaScript ZIP
+import remains a supported manual recovery path, but it is not the normal
+employee workflow because it requires Control Center menu interaction.
+
 ### 4.4 CRM Ingest Service
 
 The enrollment endpoint consumes the one-time code and binds the machine to the
@@ -449,6 +467,8 @@ must be documented before choosing a fallback.
   revocation tests.
 - Installer detection, partial-install rollback, restart guidance, and
   successful unattended service-start tests on supported Windows versions.
+- AddOn install, upgrade, uninstall, checksum, and compatibility tests that
+  prove unrelated NinjaTrader files are never overwritten.
 - Server structural validation and idempotency tests.
 - Normalization parity tests comparing AddOn JSON with existing CSV fixtures.
 - Open-day replacement and closed-day late-arrival tests.
@@ -489,3 +509,14 @@ days before the manual process is retired.
   reconstructed four-CSV package.
 - Automatic snapshots match the corresponding manual exports during the pilot
   for every required field exposed by NinjaTrader.
+
+## 16. External Technical References
+
+- NinjaTrader AddOn Development Overview:
+  <https://ninjatrader.com/support/helpguides/nt8/addon_development_overview.htm>
+- NinjaScript Distribution Procedure:
+  <https://ninjatrader.com/support/helpGuides/nt8/distribution_procedure.htm>
+- NinjaTrader Best Practices for Custom Installers:
+  <https://ninjatrader.com/support/helpguides/nt8/best_practices.htm>
+- Importing and updating third-party AddOns:
+  <https://ninjatrader.com/support/helpGuides/nt8/using_3rd_party_add-ons.htm>
