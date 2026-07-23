@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Vincere.AutoExport.Agent/Vincere.AutoExport.Agent.csproj" />
+    <ProjectReference Include="../../src/Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
+  </ItemGroup>
+</Project>

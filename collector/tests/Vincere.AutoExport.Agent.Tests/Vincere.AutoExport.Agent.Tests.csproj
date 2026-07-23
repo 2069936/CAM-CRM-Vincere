@@ -17,5 +17,6 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Vincere.AutoExport.Agent/Vincere.AutoExport.Agent.csproj" />
     <ProjectReference Include="../../src/Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
+    <ProjectReference Include="../Vincere.AutoExport.Queue.CrashHost/Vincere.AutoExport.Queue.CrashHost.csproj" />
   </ItemGroup>
 </Project>
