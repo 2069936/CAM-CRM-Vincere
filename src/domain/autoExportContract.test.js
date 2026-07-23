@@ -77,4 +77,28 @@ describe('auto-export snapshot v1 contract', () => {
       ]),
     );
   });
+
+  it.each([
+    '2026-02-28T24:00:00-04:00',
+    '2026-02-28T23:60:00-04:00',
+    '2026-02-28T23:59:60-04:00',
+    '2026-02-28T23:59:59+14:01',
+    '2026-02-28T23:59:59+15:00',
+  ])('rejects ISO timestamps with invalid clock or offset component: %s', (timestamp) => {
+    const invalid = structuredClone(snapshot);
+    invalid.strategies[0].startedAt = timestamp;
+
+    expect(validateAutoExportSnapshot(invalid).errors).toEqual(
+      expect.arrayContaining([
+        'strategies[0].startedAt must be an ISO-8601 timestamp with an offset or null',
+      ]),
+    );
+  });
+
+  it('accepts 23:59:59 with the conservative maximum +14:00 offset', () => {
+    const valid = structuredClone(snapshot);
+    valid.strategies[0].startedAt = '2026-02-28T23:59:59+14:00';
+
+    expect(validateAutoExportSnapshot(valid)).toEqual({ ok: true, errors: [] });
+  });
 });

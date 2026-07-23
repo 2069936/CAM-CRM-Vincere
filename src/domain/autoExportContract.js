@@ -26,7 +26,8 @@ const ROW_SCHEMAS = {
   },
 };
 
-const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+// Accept UTC or real-world numeric UTC offsets through the conservative ±14:00 limit.
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function hasOwn(object, key) {
@@ -39,8 +40,7 @@ function isObject(value) {
 
 function isIsoTimestamp(value) {
   if (typeof value !== 'string') return false;
-  const match = value.match(ISO_TIMESTAMP);
-  return match !== null && isDate(value.slice(0, 10));
+  return ISO_TIMESTAMP.test(value) && isDate(value.slice(0, 10));
 }
 
 function isDate(value) {
