@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 const sourcePath = fileURLToPath(new URL('./Vincere.AutoExport.Probe.cs', import.meta.url));
 const source = readFileSync(sourcePath, 'utf8');
+const workflowPath = fileURLToPath(new URL('../../.github/workflows/collector-windows.yml', import.meta.url));
+const workflow = readFileSync(workflowPath, 'utf8');
 
 describe('supported-API NinjaTrader probe source', () => {
   it('does not depend on desktop or grid automation', () => {
@@ -40,6 +42,20 @@ describe('supported-API NinjaTrader probe source', () => {
       '"connectionName"',
     ]) {
       expect(source).toContain(field);
+    }
+  });
+
+  it('publishes a bounded diagnostic ZIP with installation and review files', () => {
+    expect(workflow).toContain('Vincere-NinjaTrader-Parity-Probe.zip');
+    expect(workflow).toContain('ninjatrader-parity-probe-${{ github.run_number }}');
+    for (const file of [
+      'Vincere.AutoExport.Probe.cs',
+      'install-probe.ps1',
+      'uninstall-probe.ps1',
+      'parity-review.template.json',
+      'README.md',
+    ]) {
+      expect(workflow).toContain(file);
     }
   });
 });

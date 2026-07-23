@@ -67,10 +67,30 @@ jobs:
       - name: Run installer unit tests
         shell: pwsh
         run: Invoke-Pester collector\tests\installer -CI
+      - name: Build supported-API parity probe ZIP
+        shell: pwsh
+        run: |
+          $probeStage = 'artifacts\parity-probe'
+          New-Item -ItemType Directory -Path $probeStage -Force | Out-Null
+          Copy-Item -LiteralPath @(
+            'collector\probe\Vincere.AutoExport.Probe.cs',
+            'collector\probe\install-probe.ps1',
+            'collector\probe\uninstall-probe.ps1',
+            'collector\probe\parity-review.template.json',
+            'collector\probe\README.md'
+          ) -Destination $probeStage
+          Compress-Archive -Path "$probeStage\*" `
+            -DestinationPath 'artifacts\Vincere-NinjaTrader-Parity-Probe.zip' -Force
       - uses: actions/upload-artifact@v4
         with:
           name: collector-machine-msi-${{ github.run_number }}
           path: artifacts/installer/*.msi
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ninjatrader-parity-probe-${{ github.run_number }}
+          path: artifacts/Vincere-NinjaTrader-Parity-Probe.zip
           retention-days: 7
           if-no-files-found: error
 

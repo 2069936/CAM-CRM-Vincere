@@ -36,20 +36,25 @@ Primary references:
 
 ## Install and run
 
-1. Close NinjaTrader.
-2. In an ordinary PowerShell window from this repository, run:
+1. Download the `ninjatrader-parity-probe-<run>` artifact from a green
+   **Collector Windows** workflow run and extract
+   `Vincere-NinjaTrader-Parity-Probe.zip`. A repository checkout is not needed
+   on the VPS.
+2. Close NinjaTrader.
+3. In an ordinary PowerShell window from the extracted folder, run:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File collector\probe\install-probe.ps1
+   powershell -ExecutionPolicy Bypass -File .\install-probe.ps1
    ```
 
-3. Open NinjaTrader, then open NinjaScript Editor and press `F5`.
-4. Confirm zero compile errors and restart NinjaTrader completely.
-5. Connect the approved test account and choose
+4. Open NinjaTrader, then open NinjaScript Editor and press `F5`.
+5. Confirm zero compile errors and restart NinjaTrader completely.
+6. Connect the approved test account and choose
    **New → Export Vincere Probe Snapshot** between 4:30 and 4:50 p.m. New York
    time.
-6. Immediately export Accounts, Strategies, Orders, and Executions manually.
-7. Copy the six artifacts to an encrypted temporary folder and run:
+7. Immediately export Accounts, Strategies, Orders, and Executions manually.
+8. Copy the six artifacts to an encrypted temporary folder on a workstation
+   with this repository and run:
 
    ```powershell
    npm run probe:compare -- `
@@ -61,7 +66,7 @@ Primary references:
      --out C:\secure-temp\comparison
    ```
 
-8. Inspect every mismatch and missing field. Copy
+9. Inspect every mismatch and missing field. Copy
    `parity-review.template.json` into the encrypted folder, record the controlled
    environment and checks, and add one explicit decision for every
    `missing-api` or `missing-grid` field. Then create sanitized, report-bound
@@ -88,7 +93,7 @@ currency-conversion rate and is never relabeled as a fee.
 Close NinjaTrader and run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File collector\probe\uninstall-probe.ps1
+powershell -ExecutionPolicy Bypass -File .\uninstall-probe.ps1
 ```
 
 The uninstall script removes only the Vincere probe source file. It does not
