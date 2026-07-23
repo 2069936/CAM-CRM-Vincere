@@ -14,6 +14,19 @@ public sealed record AgentOptions
     [JsonProperty("scheduleTime")]
     public string ScheduleTime { get; init; } = "16:45";
 
+    [JsonProperty("captureCutoffTime")]
+    public string CaptureCutoffTime { get; init; } = "17:00";
+
+    [JsonProperty("enabledTradingDays")]
+    public string[] EnabledTradingDays { get; init; } = new[]
+    {
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+    };
+
     [JsonProperty("timeZone")]
     public string TimeZone { get; init; } = "America/New_York";
 

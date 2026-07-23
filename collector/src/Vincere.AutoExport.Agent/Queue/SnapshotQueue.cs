@@ -13,7 +13,14 @@ using Vincere.AutoExport.Contracts;
 
 namespace Vincere.AutoExport.Agent.Queue;
 
-public sealed class SnapshotQueue
+public interface ISnapshotQueueWriter
+{
+    Task<QueueEnqueueResult> EnqueueAsync(
+        AutoExportSnapshotV1 snapshot,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class SnapshotQueue : ISnapshotQueueWriter
 {
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
     private readonly IAgentDirectorySecurity directorySecurity;

@@ -19,6 +19,12 @@ public sealed class RedactedAgentState
     [JsonProperty("scheduleTime")]
     public string ScheduleTime { get; private init; }
 
+    [JsonProperty("captureCutoffTime")]
+    public string CaptureCutoffTime { get; private init; }
+
+    [JsonProperty("enabledTradingDays")]
+    public string[] EnabledTradingDays { get; private init; }
+
     [JsonProperty("timeZone")]
     public string TimeZone { get; private init; }
 
@@ -50,6 +56,8 @@ public sealed class RedactedAgentState
             ConfigurationVersion = options.ConfigurationVersion,
             CrmBaseUrl = options.CrmBaseUrl,
             ScheduleTime = options.ScheduleTime,
+            CaptureCutoffTime = options.CaptureCutoffTime,
+            EnabledTradingDays = options.EnabledTradingDays,
             TimeZone = options.TimeZone,
             DeviceId = options.DeviceId,
             ClientName = options.ClientName,

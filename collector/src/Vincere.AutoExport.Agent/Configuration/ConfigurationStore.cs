@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,7 +10,13 @@ using Vincere.AutoExport.Agent.Security;
 
 namespace Vincere.AutoExport.Agent.Configuration;
 
-public sealed class ConfigurationStore
+public interface IAgentOptionsStore
+{
+    Task<ConfigurationLoadResult> LoadAsync(CancellationToken cancellationToken = default);
+    Task SaveAsync(AgentOptions options, CancellationToken cancellationToken = default);
+}
+
+public sealed class ConfigurationStore : IAgentOptionsStore
 {
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
     private readonly SemaphoreSlim gate = new(1, 1);
@@ -133,8 +141,20 @@ public sealed class ConfigurationStore
             throw new AgentConfigurationException("configuration_version_unsupported", "Unsupported collector configuration version.");
         if (options.TimeZone != "America/New_York")
             throw new AgentConfigurationException("configuration_timezone_invalid", "Collector time zone must be America/New_York.");
-        if (!TimeOnly.TryParseExact(options.ScheduleTime, "HH:mm", out _))
+        if (!TimeOnly.TryParseExact(options.ScheduleTime, "HH:mm", out TimeOnly scheduleTime)
+            || !TimeOnly.TryParseExact(options.CaptureCutoffTime, "HH:mm", out TimeOnly cutoffTime)
+            || cutoffTime <= scheduleTime)
             throw new AgentConfigurationException("configuration_schedule_invalid", "Collector schedule must use 24-hour HH:mm format.");
+        if (options.EnabledTradingDays == null || options.EnabledTradingDays.Length == 0)
+            throw new AgentConfigurationException("configuration_schedule_invalid", "At least one trading day must be enabled.");
+        HashSet<DayOfWeek> days = new();
+        if (options.EnabledTradingDays.Any(day =>
+            !Enum.TryParse(day, ignoreCase: false, out DayOfWeek parsed)
+            || !Enum.IsDefined(parsed)
+            || !days.Add(parsed)))
+        {
+            throw new AgentConfigurationException("configuration_schedule_invalid", "Enabled trading days are invalid or duplicated.");
+        }
         if (!string.IsNullOrWhiteSpace(options.CrmBaseUrl)
             && (!Uri.TryCreate(options.CrmBaseUrl, UriKind.Absolute, out Uri endpoint)
                 || (endpoint.Scheme != Uri.UriSchemeHttps

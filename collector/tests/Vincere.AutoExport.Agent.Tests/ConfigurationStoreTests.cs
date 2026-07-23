@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Security;
@@ -23,9 +24,32 @@ public sealed class ConfigurationStoreTests : IDisposable
         Assert.False(result.RecoveredFromBackup);
         Assert.Equal("16:45", result.Options.ScheduleTime);
         Assert.Equal("America/New_York", result.Options.TimeZone);
+        Assert.Equal("17:00", result.Options.CaptureCutoffTime);
+        Assert.Equal(
+            new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday" },
+            result.Options.EnabledTradingDays.ToArray());
         Assert.Equal(1, result.Options.ConfigurationVersion);
         Assert.Null(result.Options.DeviceId);
         Assert.Equal(1, securityApplications);
+    }
+
+    [Fact]
+    public async Task SavingRejectsInvalidTradingDaysAndCutoff()
+    {
+        ConfigurationStore store = CreateStore();
+        AgentConfigurationException invalidDay = await Assert.ThrowsAsync<AgentConfigurationException>(() =>
+            store.SaveAsync(AgentOptions.CreateDefault() with
+            {
+                EnabledTradingDays = new[] { "Monday", "99" },
+            }));
+        AgentConfigurationException invalidCutoff = await Assert.ThrowsAsync<AgentConfigurationException>(() =>
+            store.SaveAsync(AgentOptions.CreateDefault() with
+            {
+                CaptureCutoffTime = "16:45",
+            }));
+
+        Assert.Equal("configuration_schedule_invalid", invalidDay.Code);
+        Assert.Equal("configuration_schedule_invalid", invalidCutoff.Code);
     }
 
     [Fact]
