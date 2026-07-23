@@ -16,7 +16,34 @@ namespace Vincere.AutoExport.Contracts.Tests
         {
             var fixtureJson = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "snapshot-v1.json"));
             var snapshot = JsonConvert.DeserializeObject<AutoExportSnapshotV1>(fixtureJson);
-            var serializedJson = JsonConvert.SerializeObject(
+            var serializedJson = Serialize(snapshot);
+
+            AssertJsonShapeEqual(JToken.Parse(fixtureJson), JToken.Parse(serializedJson), "$");
+        }
+
+        [Fact]
+        public void SnapshotV1_round_trip_preserves_null_for_every_numeric_row_field()
+        {
+            var fixture = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "snapshot-v1.json")));
+            fixture.SelectToken("accounts[0].realizedPnl").Replace(JValue.CreateNull());
+            fixture.SelectToken("accounts[0].grossRealizedPnl").Replace(JValue.CreateNull());
+            fixture.SelectToken("orders[0].quantity").Replace(JValue.CreateNull());
+            fixture.SelectToken("executions[0].quantity").Replace(JValue.CreateNull());
+            fixture.SelectToken("executions[0].price").Replace(JValue.CreateNull());
+
+            var snapshot = JsonConvert.DeserializeObject<AutoExportSnapshotV1>(fixture.ToString());
+            var roundTripped = JObject.Parse(Serialize(snapshot));
+
+            Assert.Equal(JTokenType.Null, roundTripped.SelectToken("accounts[0].realizedPnl").Type);
+            Assert.Equal(JTokenType.Null, roundTripped.SelectToken("accounts[0].grossRealizedPnl").Type);
+            Assert.Equal(JTokenType.Null, roundTripped.SelectToken("orders[0].quantity").Type);
+            Assert.Equal(JTokenType.Null, roundTripped.SelectToken("executions[0].quantity").Type);
+            Assert.Equal(JTokenType.Null, roundTripped.SelectToken("executions[0].price").Type);
+        }
+
+        private static string Serialize(AutoExportSnapshotV1 snapshot)
+        {
+            return JsonConvert.SerializeObject(
                 snapshot,
                 new JsonSerializerSettings
                 {
@@ -29,8 +56,6 @@ namespace Vincere.AutoExport.Contracts.Tests
                     },
                     NullValueHandling = NullValueHandling.Include,
                 });
-
-            AssertJsonShapeEqual(JToken.Parse(fixtureJson), JToken.Parse(serializedJson), "$");
         }
 
         private static void AssertJsonShapeEqual(JToken expected, JToken actual, string path)

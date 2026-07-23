@@ -70,10 +70,10 @@ namespace Vincere.AutoExport.Contracts
         public decimal? CashValue { get; set; }
 
         [JsonProperty("realizedPnl")]
-        public decimal RealizedPnl { get; set; }
+        public decimal? RealizedPnl { get; set; }
 
         [JsonProperty("grossRealizedPnl")]
-        public decimal GrossRealizedPnl { get; set; }
+        public decimal? GrossRealizedPnl { get; set; }
 
         [JsonProperty("unrealizedPnl")]
         public decimal? UnrealizedPnl { get; set; }
@@ -175,7 +175,7 @@ namespace Vincere.AutoExport.Contracts
         public string OrderType { get; set; }
 
         [JsonProperty("quantity")]
-        public decimal Quantity { get; set; }
+        public decimal? Quantity { get; set; }
 
         [JsonProperty("filled")]
         public decimal? Filled { get; set; }
@@ -235,10 +235,10 @@ namespace Vincere.AutoExport.Contracts
         public string Action { get; set; }
 
         [JsonProperty("quantity")]
-        public decimal Quantity { get; set; }
+        public decimal? Quantity { get; set; }
 
         [JsonProperty("price")]
-        public decimal Price { get; set; }
+        public decimal? Price { get; set; }
 
         [JsonProperty("time")]
         public DateTimeOffset Time { get; set; }
