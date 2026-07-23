@@ -94,42 +94,79 @@ describe('step 28 auto-collection migration contract', () => {
   });
 
   it('returns an explicit atomic claim winner for concurrent duplicate retries', () => {
-    const claiming = functionDefinition('claim_ingest_batch_v2');
+    const claiming = functionDefinition('claim_ingest_batch_v3');
     expect(claiming).toContain('security definer');
     expect(claiming).toContain('for update');
     expect(claiming).toMatch(/pg_advisory_xact_lock/);
-    expect(claiming).toMatch(/'claimed'\s*,\s*false/);
-    expect(claiming).toMatch(/'claimed'\s*,\s*true/);
-    expect(normalizedSql).toMatch(/grant execute on function public\.claim_ingest_batch_v2\([^;]+to service_role/);
+    expect(claiming).toContain("'outcome', 'owned'");
+    expect(claiming).toContain("'outcome', 'busy'");
+    expect(claiming).toContain("'outcome', 'terminal'");
+    expect(claiming).toContain("'outcome', 'failed'");
+    expect(claiming).toMatch(/processing_lease_expires_at[^;]+v_now/);
+    expect(claiming).toMatch(/processing_token = p_processing_token/);
+    expect(normalizedSql).toMatch(/add column if not exists processing_token uuid/);
+    expect(normalizedSql).toContain('ingest_batches_processing_lease_check');
+    expect(normalizedSql).toMatch(/status = 'processing'[^;]+processing_token is not null[^;]+processing_lease_expires_at is not null/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.claim_ingest_batch_v3\([^;]+to service_role/);
+    expect(normalizedSql).toMatch(/revoke execute on function public\.claim_ingest_batch_v2\([^;]+from service_role/);
+    expect(normalizedSql).toMatch(/revoke execute on function public\.claim_ingest_batch\([^;]+from service_role/);
   });
 
   it('persists normalized automatic imports atomically and refuses closed-day replacement', () => {
-    const persistence = functionDefinition('persist_auto_daily_import');
+    const persistence = functionDefinition('persist_auto_daily_import_v2');
+    const internalPersistence = functionDefinition('persist_auto_daily_import');
     expect(normalizedSql).toMatch(/add column if not exists source_type text/);
     expect(normalizedSql).toMatch(/add column if not exists source_batch_id uuid/);
     expect(persistence).toContain('security definer');
     expect(persistence).toContain('for update');
     expect(persistence).toMatch(/status is not distinct from 'closed'/);
     expect(persistence).toContain('daily_import_closed');
-    expect(persistence).toMatch(/status = 'replaced'/);
-    expect(persistence).toMatch(/replaces_batch_id = v_daily\.source_batch_id/);
-    expect(persistence).toMatch(/jsonb_array_length[^;]+> 0/);
+    expect(persistence).toMatch(/v_device\.status is distinct from 'active'/);
+    expect(persistence).toMatch(/processing_token is distinct from p_processing_token/);
+    expect(persistence).toMatch(/processing_lease_expires_at <= clock_timestamp\(\)/);
+    expect(persistence).toMatch(/v_batch\.captured_at <= v_prior_batch\.captured_at/);
+    expect(persistence).toContain("'disposition', 'superseded'");
+    expect(persistence).toContain('public.persist_auto_daily_import');
+    expect(internalPersistence).toMatch(/status = 'replaced'/);
+    expect(internalPersistence).toMatch(/status in \('processed', 'incomplete', 'processing'\)/);
+    expect(internalPersistence).toMatch(/replaces_batch_id = v_daily\.source_batch_id/);
+    expect(internalPersistence).toMatch(/jsonb_array_length[^;]+> 0/);
     for (const table of ['trading_accounts', 'daily_imports', 'account_snapshots', 'strategy_snapshots', 'orders', 'executions', 'operational_flags']) {
-      expect(persistence).toContain(`public.${table}`);
+      expect(`${persistence} ${internalPersistence}`).toContain(`public.${table}`);
     }
-    expect(normalizedSql).toMatch(/grant execute on function public\.persist_auto_daily_import\([^;]+to service_role/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.persist_auto_daily_import_v2\([^;]+to service_role/);
+    expect(normalizedSql).toMatch(/revoke execute on function public\.persist_auto_daily_import\([^;]+from service_role/);
   });
 
   it('atomically finalizes the batch, device health, one audit and the closed-day alert', () => {
-    const finalize = functionDefinition('finalize_ingest_batch');
+    const finalize = functionDefinition('finalize_ingest_batch_v2');
+    const internalFinalize = functionDefinition('finalize_ingest_batch');
     expect(finalize).toContain('security definer');
     expect(finalize.match(/for update/g).length).toBeGreaterThanOrEqual(2);
     expect(finalize).toContain('public.ingest_batches');
     expect(finalize).toContain('public.ingest_devices');
-    expect(finalize).toContain('public.audit_logs');
-    expect(finalize).toContain('public.operational_flags');
+    expect(finalize).toContain('public.finalize_ingest_batch');
+    expect(internalFinalize).toContain('public.audit_logs');
+    expect(internalFinalize).toContain('public.operational_flags');
     expect(finalize).toMatch(/p_status = 'late_closed_day'/);
-    expect(normalizedSql).toMatch(/grant execute on function public\.finalize_ingest_batch\([^;]+to service_role/);
+    expect(finalize).toMatch(/processing_token is distinct from p_processing_token/);
+    expect(finalize).toMatch(/processing_lease_expires_at <= clock_timestamp\(\)/);
+    expect(finalize).toMatch(/captured_at is distinct from p_captured_at/);
+    expect(finalize).toMatch(/row_counts is distinct from p_row_counts/);
+    expect(finalize).toMatch(/client_id is distinct from p_client_id/);
+    expect(finalize).toMatch(/v_device\.status is distinct from 'active'/);
+    expect(finalize).toMatch(/p_status = 'replaced'/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.finalize_ingest_batch_v2\([^;]+to service_role/);
+    expect(normalizedSql).toMatch(/revoke execute on function public\.finalize_ingest_batch\([^;]+from service_role/);
+  });
+
+  it('provides a service-only token-checked lease release for transient pre-storage failures', () => {
+    const release = functionDefinition('release_ingest_batch_lease');
+    expect(release).toContain('security definer');
+    expect(release).toContain('for update');
+    expect(release).toMatch(/processing_token is distinct from p_processing_token/);
+    expect(release).toMatch(/status = 'received'/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.release_ingest_batch_lease\([^;]+to service_role/);
   });
 
   it('creates a private bucket and composes a restrictive browser denial with Storage policies', () => {

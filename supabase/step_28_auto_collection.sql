@@ -232,6 +232,47 @@ begin
 end
 $daily_import_source_constraint$;
 
+alter table public.ingest_batches
+  add column if not exists processing_token uuid,
+  add column if not exists processing_lease_expires_at timestamptz,
+  add column if not exists processing_attempts integer not null default 0;
+
+do $batch_processing_attempts_constraint$
+begin
+  if not exists (
+    select 1 from pg_catalog.pg_constraint
+    where conrelid = 'public.ingest_batches'::regclass
+      and conname = 'ingest_batches_processing_attempts_check'
+  ) then
+    alter table public.ingest_batches
+      add constraint ingest_batches_processing_attempts_check
+      check (processing_attempts >= 0);
+  end if;
+end
+$batch_processing_attempts_constraint$;
+
+update public.ingest_batches
+set status = 'received', processing_token = null, processing_lease_expires_at = null
+where status = 'processing'
+  and (processing_token is null or processing_lease_expires_at is null);
+update public.ingest_batches
+set processing_token = null, processing_lease_expires_at = null
+where status <> 'processing'
+  and (processing_token is not null or processing_lease_expires_at is not null);
+
+alter table public.ingest_batches
+  drop constraint if exists ingest_batches_processing_lease_check;
+alter table public.ingest_batches
+  add constraint ingest_batches_processing_lease_check
+  check (
+    (status = 'processing'
+      and processing_token is not null
+      and processing_lease_expires_at is not null)
+    or (status <> 'processing'
+      and processing_token is null
+      and processing_lease_expires_at is null)
+  );
+
 create index if not exists idx_ingest_batches_client_trading_date
   on public.ingest_batches(client_id, trading_date desc);
 
@@ -1618,10 +1659,14 @@ begin
     and v_daily.source_batch_id is not null
     and v_daily.source_batch_id is distinct from p_source_batch_id then
     update public.ingest_batches
-    set status = 'replaced'
+    set status = 'replaced',
+        daily_import_id = v_daily.id,
+        processing_token = null,
+        processing_lease_expires_at = null,
+        processed_at = coalesce(processed_at, clock_timestamp())
     where id = v_daily.source_batch_id
       and client_id = p_client_id
-      and status in ('processed', 'incomplete');
+      and status in ('processed', 'incomplete', 'processing');
     update public.ingest_batches
     set replaces_batch_id = v_daily.source_batch_id
     where id = p_source_batch_id;
@@ -1856,7 +1901,7 @@ declare
   v_device public.ingest_devices;
 begin
   if p_batch_id is null or p_device_id is null
-    or p_status not in ('processed', 'incomplete', 'late_closed_day', 'failed')
+    or p_status not in ('processed', 'incomplete', 'late_closed_day', 'replaced', 'failed')
     or p_captured_at is null
     or p_success is null
     or p_completeness is null
@@ -1895,6 +1940,8 @@ begin
       completeness = p_completeness,
       error_code = p_error_code,
       error_detail = null,
+      processing_token = null,
+      processing_lease_expires_at = null,
       processed_at = clock_timestamp()
   where id = p_batch_id
   returning * into v_batch;
@@ -1958,5 +2005,321 @@ revoke all on function public.finalize_ingest_batch(
 grant execute on function public.finalize_ingest_batch(
   uuid, uuid, text, uuid, timestamptz, boolean, text, jsonb, jsonb, text
 ) to service_role;
+
+create or replace function public.claim_ingest_batch_v3(
+  p_device_id uuid,
+  p_capture_id uuid,
+  p_trading_date date,
+  p_captured_at timestamptz,
+  p_schema_version integer,
+  p_storage_path text,
+  p_content_sha256 text,
+  p_byte_count bigint,
+  p_row_counts jsonb,
+  p_processing_token uuid,
+  p_lease_seconds integer
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_device public.ingest_devices;
+  v_batch public.ingest_batches;
+  v_now timestamptz := clock_timestamp();
+  v_retry_after integer;
+begin
+  if p_device_id is null or p_capture_id is null or p_trading_date is null
+    or p_captured_at is null or p_schema_version is null or p_schema_version <= 0
+    or nullif(btrim(p_storage_path), '') is null
+    or p_content_sha256 !~ '^[0-9a-f]{64}$'
+    or p_byte_count is null or p_byte_count < 0
+    or p_row_counts is null
+    or not public.ingest_row_counts_are_nonnegative(p_row_counts)
+    or p_processing_token is null
+    or p_lease_seconds is null or p_lease_seconds not between 30 and 600 then
+    raise exception 'invalid_batch_claim'
+      using errcode = '22023';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_device_id::text || ':' || p_capture_id::text, 0));
+  select device.* into v_device
+  from public.ingest_devices as device
+  where device.id = p_device_id
+  for update;
+  if not found or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
+  end if;
+  if p_storage_path is distinct from
+    (v_device.client_id::text || '/' || p_trading_date::text || '/' || p_capture_id::text || '.json.gz') then
+    raise exception 'invalid_batch_claim' using errcode = '22023';
+  end if;
+
+  select batch.* into v_batch
+  from public.ingest_batches as batch
+  where batch.device_id = p_device_id and batch.capture_id = p_capture_id
+  for update;
+  if found then
+    if v_batch.trading_date is distinct from p_trading_date
+      or v_batch.captured_at is distinct from p_captured_at
+      or v_batch.schema_version is distinct from p_schema_version
+      or v_batch.storage_path is distinct from p_storage_path
+      or v_batch.content_sha256 is distinct from p_content_sha256
+      or v_batch.byte_count is distinct from p_byte_count
+      or v_batch.row_counts is distinct from p_row_counts then
+      raise exception 'capture_metadata_conflict' using errcode = 'P0001';
+    end if;
+
+    if v_batch.status in ('processed', 'incomplete', 'late_closed_day', 'replaced') then
+      return jsonb_build_object('outcome', 'terminal', 'retry_after_seconds', 0, 'batch', to_jsonb(v_batch));
+    end if;
+    if v_batch.status = 'failed' then
+      return jsonb_build_object('outcome', 'failed', 'retry_after_seconds', 0, 'batch', to_jsonb(v_batch));
+    end if;
+    if v_batch.status = 'processing'
+      and v_batch.processing_lease_expires_at is not null
+      and v_batch.processing_lease_expires_at > v_now then
+      v_retry_after := greatest(1, ceil(extract(epoch from (v_batch.processing_lease_expires_at - v_now)))::integer);
+      return jsonb_build_object('outcome', 'busy', 'retry_after_seconds', v_retry_after, 'batch', to_jsonb(v_batch));
+    end if;
+
+    update public.ingest_batches
+    set status = 'processing',
+        processing_token = p_processing_token,
+        processing_lease_expires_at = v_now + make_interval(secs => p_lease_seconds),
+        processing_attempts = processing_attempts + 1
+    where id = v_batch.id
+    returning * into v_batch;
+    return jsonb_build_object('outcome', 'owned', 'retry_after_seconds', 0, 'batch', to_jsonb(v_batch));
+  end if;
+
+  insert into public.ingest_batches (
+    capture_id, device_id, client_id, trading_date, captured_at, status,
+    schema_version, storage_path, content_sha256, byte_count, row_counts,
+    processing_token, processing_lease_expires_at, processing_attempts
+  ) values (
+    p_capture_id, p_device_id, v_device.client_id, p_trading_date, p_captured_at,
+    'processing', p_schema_version, p_storage_path, p_content_sha256,
+    p_byte_count, p_row_counts, p_processing_token,
+    v_now + make_interval(secs => p_lease_seconds), 1
+  ) returning * into v_batch;
+  return jsonb_build_object('outcome', 'owned', 'retry_after_seconds', 0, 'batch', to_jsonb(v_batch));
+end;
+$function$;
+
+revoke all on function public.claim_ingest_batch_v3(
+  uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb, uuid, integer
+) from public, anon, authenticated;
+grant execute on function public.claim_ingest_batch_v3(
+  uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb, uuid, integer
+) to service_role;
+revoke execute on function public.claim_ingest_batch_v2(
+  uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb
+) from service_role;
+revoke execute on function public.claim_ingest_batch(
+  uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb
+) from service_role;
+
+create or replace function public.release_ingest_batch_lease(
+  p_batch_id uuid,
+  p_device_id uuid,
+  p_processing_token uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_device public.ingest_devices;
+  v_batch public.ingest_batches;
+begin
+  select device.* into v_device from public.ingest_devices as device
+  where device.id = p_device_id for update;
+  if not found or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
+    raise exception 'processing_lease_lost' using errcode = 'P0001';
+  end if;
+  select batch.* into v_batch from public.ingest_batches as batch
+  where batch.id = p_batch_id for update;
+  if not found or v_batch.device_id is distinct from p_device_id
+    or v_batch.status is distinct from 'processing'
+    or v_batch.processing_token is distinct from p_processing_token then
+    raise exception 'processing_lease_lost' using errcode = 'P0001';
+  end if;
+  update public.ingest_batches
+  set status = 'received', processing_token = null, processing_lease_expires_at = null
+  where id = p_batch_id;
+end;
+$function$;
+
+revoke all on function public.release_ingest_batch_lease(uuid, uuid, uuid)
+  from public, anon, authenticated;
+grant execute on function public.release_ingest_batch_lease(uuid, uuid, uuid)
+  to service_role;
+
+create or replace function public.persist_auto_daily_import_v2(
+  p_client_id uuid,
+  p_source_batch_id uuid,
+  p_processing_token uuid,
+  p_import_result jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_client public.clients;
+  v_batch public.ingest_batches;
+  v_device public.ingest_devices;
+  v_daily public.daily_imports;
+  v_prior_batch public.ingest_batches;
+begin
+  select client.* into v_client from public.clients as client
+  where client.id = p_client_id for update;
+  if not found then raise exception 'invalid_auto_daily_import' using errcode = 'P0002'; end if;
+
+  select batch.* into v_batch from public.ingest_batches as batch
+  where batch.id = p_source_batch_id;
+  if not found then raise exception 'invalid_auto_daily_import' using errcode = 'P0002'; end if;
+
+  select device.* into v_device from public.ingest_devices as device
+  where device.id = v_batch.device_id for update;
+  if not found or v_device.status is distinct from 'active' or v_device.revoked_at is not null
+    or v_device.client_id is distinct from p_client_id then
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
+  end if;
+
+  select batch.* into v_batch from public.ingest_batches as batch
+  where batch.id = p_source_batch_id for update;
+  if v_batch.client_id is distinct from p_client_id
+    or v_batch.status is distinct from 'processing'
+    or v_batch.processing_token is distinct from p_processing_token
+    or v_batch.processing_lease_expires_at is null
+    or v_batch.processing_lease_expires_at <= clock_timestamp() then
+    raise exception 'processing_lease_lost' using errcode = 'P0001';
+  end if;
+
+  select daily.* into v_daily from public.daily_imports as daily
+  where daily.client_id = p_client_id and daily.trading_date = v_batch.trading_date
+  for update;
+  if found and v_daily.status is not distinct from 'Closed' then
+    raise exception 'daily_import_closed'
+      using errcode = 'P0001', detail = v_daily.id::text;
+  end if;
+  if found and v_daily.source_batch_id is not null
+    and v_daily.source_batch_id is distinct from p_source_batch_id then
+    select batch.* into v_prior_batch from public.ingest_batches as batch
+    where batch.id = v_daily.source_batch_id for update;
+    if found and v_batch.captured_at <= v_prior_batch.captured_at then
+      update public.ingest_batches set replaces_batch_id = v_prior_batch.id
+      where id = p_source_batch_id;
+      return jsonb_build_object('disposition', 'superseded', 'daily_import', to_jsonb(v_daily));
+    end if;
+  end if;
+
+  v_daily := public.persist_auto_daily_import(p_client_id, p_source_batch_id, p_import_result);
+  return jsonb_build_object('disposition', 'persisted', 'daily_import', to_jsonb(v_daily));
+end;
+$function$;
+
+revoke all on function public.persist_auto_daily_import_v2(uuid, uuid, uuid, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.persist_auto_daily_import_v2(uuid, uuid, uuid, jsonb)
+  to service_role;
+revoke execute on function public.persist_auto_daily_import(uuid, uuid, jsonb)
+  from service_role;
+
+-- The legacy finalizer is kept as an internal implementation detail. Only this
+-- token-checked wrapper remains executable by service_role.
+create or replace function public.finalize_ingest_batch_v2(
+  p_batch_id uuid,
+  p_device_id uuid,
+  p_client_id uuid,
+  p_processing_token uuid,
+  p_status text,
+  p_daily_import_id uuid,
+  p_captured_at timestamptz,
+  p_success boolean,
+  p_error_code text,
+  p_completeness jsonb,
+  p_row_counts jsonb,
+  p_event_type text
+)
+returns public.ingest_batches
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_client public.clients;
+  v_device public.ingest_devices;
+  v_batch public.ingest_batches;
+  v_daily public.daily_imports;
+begin
+  if not (
+    (p_status in ('processed', 'incomplete') and p_event_type = 'ingest_batch_processed' and p_success)
+    or (p_status = 'late_closed_day' and p_event_type = 'ingest_batch_late_closed_day' and p_success)
+    or (p_status = 'replaced' and p_event_type = 'ingest_batch_superseded' and p_success)
+    or (p_status = 'failed' and p_event_type = 'ingest_batch_failed' and not p_success)
+  ) then
+    raise exception 'invalid_batch_finalization' using errcode = '22023';
+  end if;
+
+  select client.* into v_client from public.clients as client
+  where client.id = p_client_id for update;
+  if not found then raise exception 'invalid_batch_finalization' using errcode = 'P0002'; end if;
+  select device.* into v_device from public.ingest_devices as device
+  where device.id = p_device_id for update;
+  if not found or v_device.status is distinct from 'active' or v_device.revoked_at is not null
+    or v_device.client_id is distinct from p_client_id then
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
+  end if;
+  select batch.* into v_batch from public.ingest_batches as batch
+  where batch.id = p_batch_id for update;
+  if not found or v_batch.device_id is distinct from p_device_id
+    or v_batch.client_id is distinct from p_client_id
+    or v_batch.status is distinct from 'processing'
+    or v_batch.processing_token is distinct from p_processing_token
+    or v_batch.processing_lease_expires_at is null
+    or v_batch.processing_lease_expires_at <= clock_timestamp()
+    or v_batch.captured_at is distinct from p_captured_at
+    or v_batch.row_counts is distinct from p_row_counts then
+    raise exception 'processing_lease_lost' using errcode = 'P0001';
+  end if;
+
+  if p_status <> 'failed' then
+    select daily.* into v_daily from public.daily_imports as daily
+    where daily.id = p_daily_import_id for update;
+    if not found or v_daily.client_id is distinct from p_client_id
+      or v_daily.trading_date is distinct from v_batch.trading_date then
+      raise exception 'invalid_batch_finalization' using errcode = '22023';
+    end if;
+  elsif p_daily_import_id is not null then
+    raise exception 'invalid_batch_finalization' using errcode = '22023';
+  end if;
+
+  v_batch := public.finalize_ingest_batch(
+    p_batch_id, p_device_id, p_status, p_daily_import_id, p_captured_at,
+    p_success, p_error_code, p_completeness, p_row_counts, p_event_type
+  );
+  update public.ingest_batches
+  set processing_token = null, processing_lease_expires_at = null
+  where id = p_batch_id
+  returning * into v_batch;
+  return v_batch;
+end;
+$function$;
+
+revoke all on function public.finalize_ingest_batch_v2(
+  uuid, uuid, uuid, uuid, text, uuid, timestamptz, boolean, text, jsonb, jsonb, text
+) from public, anon, authenticated;
+grant execute on function public.finalize_ingest_batch_v2(
+  uuid, uuid, uuid, uuid, text, uuid, timestamptz, boolean, text, jsonb, jsonb, text
+) to service_role;
+revoke execute on function public.finalize_ingest_batch(
+  uuid, uuid, text, uuid, timestamptz, boolean, text, jsonb, jsonb, text
+) from service_role;
 
 commit;

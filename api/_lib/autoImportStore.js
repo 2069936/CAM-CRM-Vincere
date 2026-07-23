@@ -97,6 +97,39 @@ function batchFromRow(row = {}) {
   };
 }
 
+function leaseError(error) {
+  const details = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toLowerCase();
+  if (!details.includes('processing_lease_lost')) return null;
+  const conflict = new ApiError(409, 'capture_lease_lost');
+  conflict.code = 'capture_lease_lost';
+  return conflict;
+}
+
+function storageNotFound(error) {
+  const status = Number(error?.statusCode || error?.status);
+  const message = String(error?.message || '').toLowerCase();
+  return status === 404 || message.includes('not found') || message.includes('not_found');
+}
+
+async function blobBuffer(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value && typeof value.arrayBuffer === 'function') return Buffer.from(await value.arrayBuffer());
+  throw new Error('Storage download returned no object bytes.');
+}
+
+function verifyRawEvidence(compressed, { sha256, byteCount }) {
+  let utf8;
+  try {
+    utf8 = gunzipSync(compressed, { maxOutputLength: byteCount });
+  } catch {
+    throw new ApiError(409, 'immutable_object_conflict');
+  }
+  const actualHash = createHash('sha256').update(utf8).digest('hex');
+  if (utf8.length !== byteCount || actualHash !== sha256) {
+    throw new ApiError(409, 'immutable_object_conflict');
+  }
+}
+
 function registryFromRows(rows = []) {
   return Object.fromEntries(rows.map((row) => [row.account_name, {
     accountName: row.account_name,
@@ -125,7 +158,7 @@ function registryFromRows(rows = []) {
 export function createAutoImportStore(admin) {
   return {
     async claimBatch(payload) {
-      const { data, error } = await admin.rpc('claim_ingest_batch_v2', {
+      const { data, error } = await admin.rpc('claim_ingest_batch_v3', {
         p_device_id: payload.deviceId,
         p_capture_id: payload.captureId,
         p_trading_date: payload.tradingDate,
@@ -135,26 +168,60 @@ export function createAutoImportStore(admin) {
         p_content_sha256: payload.sha256,
         p_byte_count: payload.byteCount,
         p_row_counts: payload.rowCounts,
+        p_processing_token: payload.processingToken,
+        p_lease_seconds: payload.leaseSeconds,
       });
-      if (error) throw error;
+      if (error) {
+        const details = `${error.code || ''} ${error.message || ''} ${error.details || ''}`.toLowerCase();
+        if (details.includes('capture_metadata_conflict')) {
+          const conflict = new ApiError(409, 'capture_metadata_conflict');
+          conflict.code = 'capture_metadata_conflict';
+          throw conflict;
+        }
+        throw error;
+      }
       const result = rpcValue(data);
-      if (!result || typeof result.claimed !== 'boolean' || !result.batch?.id) {
+      if (!result || !['owned', 'busy', 'terminal', 'failed'].includes(result.outcome) || !result.batch?.id) {
         throw new Error('Batch claim RPC returned no result.');
       }
       return {
-        claimed: result.claimed,
-        duplicate: !result.claimed,
+        outcome: result.outcome,
+        retryAfterSeconds: result.retry_after_seconds || 0,
         batch: batchFromRow(result.batch),
       };
     },
 
-    async storeRaw(path, gzip) {
-      const { error } = await admin.storage.from(AUTO_IMPORT_BUCKET).upload(path, gzip, {
+    async ensureRaw(path, gzip, evidence) {
+      const bucket = admin.storage.from(AUTO_IMPORT_BUCKET);
+      const existing = await bucket.download(path);
+      if (!existing.error) {
+        verifyRawEvidence(await blobBuffer(existing.data), evidence);
+        return { existed: true };
+      }
+      if (!storageNotFound(existing.error)) throw existing.error;
+
+      const uploaded = await bucket.upload(path, gzip, {
         contentType: 'application/gzip',
         cacheControl: '31536000',
         upsert: false,
       });
-      if (error) throw error;
+      if (!uploaded.error) return { existed: false };
+
+      // A reclaimed owner can race only with the previous stale worker. Never
+      // overwrite: re-read and require the exact canonical evidence.
+      const raced = await bucket.download(path);
+      if (raced.error) throw uploaded.error;
+      verifyRawEvidence(await blobBuffer(raced.data), evidence);
+      return { existed: true };
+    },
+
+    async releaseLease({ batchId, deviceId, processingToken }) {
+      const { error } = await admin.rpc('release_ingest_batch_lease', {
+        p_batch_id: batchId,
+        p_device_id: deviceId,
+        p_processing_token: processingToken,
+      });
+      if (error) throw leaseError(error) || error;
     },
 
     async loadRegistry(clientUuid) {
@@ -163,14 +230,15 @@ export function createAutoImportStore(admin) {
       return registryFromRows(data || []);
     },
 
-    createPersistenceAdapter() {
+    createPersistenceAdapter(processingToken) {
       return {
         isAtomic: true,
         supportsDailyImportSourceColumns: true,
         async persistDailyImportAtomic({ clientUuid, importResult, sourceBatchId }) {
-          const { data, error } = await admin.rpc('persist_auto_daily_import', {
+          const { data, error } = await admin.rpc('persist_auto_daily_import_v2', {
             p_client_id: clientUuid,
             p_source_batch_id: sourceBatchId,
+            p_processing_token: processingToken,
             p_import_result: importResult,
           });
           if (error) {
@@ -182,19 +250,23 @@ export function createAutoImportStore(admin) {
               closed.dailyImportId = error.details || null;
               throw closed;
             }
-            throw error;
+            throw leaseError(error) || error;
           }
-          const row = rpcValue(data);
-          if (!row?.id) throw new Error('Daily import RPC returned no result.');
-          return row;
+          const result = rpcValue(data);
+          if (!['persisted', 'superseded'].includes(result?.disposition) || !result.daily_import?.id) {
+            throw new Error('Daily import RPC returned no result.');
+          }
+          return { ...result.daily_import, disposition: result.disposition };
         },
       };
     },
 
     async completeBatch(payload) {
-      const { data, error } = await admin.rpc('finalize_ingest_batch', {
+      const { data, error } = await admin.rpc('finalize_ingest_batch_v2', {
         p_batch_id: payload.batchId,
         p_device_id: payload.deviceId,
+        p_client_id: payload.clientId,
+        p_processing_token: payload.processingToken,
         p_status: payload.status,
         p_daily_import_id: payload.dailyImportId || null,
         p_captured_at: payload.capturedAt,
@@ -204,7 +276,7 @@ export function createAutoImportStore(admin) {
         p_row_counts: payload.rowCounts || {},
         p_event_type: payload.eventType,
       });
-      if (error) throw error;
+      if (error) throw leaseError(error) || error;
       const row = rpcValue(data);
       if (!row?.id) throw new Error('Batch finalization RPC returned no result.');
       return batchFromRow(row);

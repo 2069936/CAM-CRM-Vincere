@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
 import { DailyImportClosedError } from '../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../src/domain/reconcile.js';
+import { ApiError } from '../_lib/http.js';
 import { createHandler, config } from './daily.js';
 
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
@@ -23,18 +24,19 @@ function snapshot(overrides = {}) {
 }
 
 function response() {
-  return { setHeader() {}, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false } = {}) {
-  const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [] };
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete } = {}) {
+  const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
-    async claimBatch(value) { calls.order.push('claim'); calls.claim.push(value); return claim ? claim(value) : { claimed: true, duplicate: false, batch }; },
-    async storeRaw(...args) { calls.order.push('storage'); calls.storeRaw.push(args); if (storeRaw) return storeRaw(...args); },
+    async claimBatch(value) { calls.order.push('claim'); calls.claim.push(value); return claim ? claim(value) : { outcome: 'owned', batch: { ...batch, status: 'processing' } }; },
+    async ensureRaw(...args) { calls.order.push('storage'); calls.storeRaw.push(args); if (storeRaw) return storeRaw(...args); return { existed: false }; },
+    async releaseLease(value) { calls.release.push(value); },
     async loadRegistry() { calls.order.push('registry'); return registry || {}; },
-    createPersistenceAdapter() { return { persistDailyImportAtomic: async (value) => persist(value), supportsDailyImportSourceColumns: true }; },
-    async finalizeBatch(value) { calls.terminal.push(value); return { ...batch, ...value }; },
+    createPersistenceAdapter(processingToken) { return { persistDailyImportAtomic: async (value) => persist(value), supportsDailyImportSourceColumns: true, processingToken }; },
+    async finalizeBatch(value) { calls.terminal.push(value); if (complete) return complete(value); return { ...batch, ...value }; },
     async recordDeviceResult(value) { calls.device.push(value); },
     async writeAudit(value) { calls.audit.push(value); },
   };
@@ -45,6 +47,7 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authe
     reconcile: (value) => { calls.order.push('reconcile'); if (useRealDomain) return reconcileDailyImport(value); return reconcile ? reconcile(value) : { id: 'import-1', date: value.date, accounts: {}, snapshots: [], strategies: [], orders: [], executions: [], flags: [] }; },
     persist: async (value) => { calls.order.push('persist'); calls.persist.push(value); return persist ? persist(value) : { id: 'daily-1', status: 'Needs review' }; },
     now: now || (() => new Date('2026-07-23T21:00:00Z')),
+    createProcessingToken: () => '99999999-9999-4999-8999-999999999999',
   });
   return { handler, calls };
 }
@@ -74,12 +77,31 @@ describe('daily snapshot ingest', () => {
     expect(calls.device).toEqual([expect.objectContaining({ deviceId: DEVICE_ID, success: true })]);
   });
 
-  it('returns the original identifiers for a duplicate without storing or processing again', async () => {
-    const { handler, calls } = setup({ claim: () => ({ claimed: false, duplicate: true, batch: { id: 'batch-old', dailyImportId: 'daily-old', status: 'processed' } }) });
+  it('returns the original identifiers only for a confirmed terminal duplicate', async () => {
+    const { handler, calls } = setup({ claim: () => ({ outcome: 'terminal', batch: { id: 'batch-old', dailyImportId: 'daily-old', status: 'processed' } }) });
     const res = await ingest(handler);
     expect(res).toMatchObject({ statusCode: 200, body: { ok: true, duplicate: true, batchId: 'batch-old', dailyImportId: 'daily-old', status: 'processed' } });
     expect(calls.storeRaw).toHaveLength(0);
     expect(calls.audit).toHaveLength(0);
+  });
+
+  it.each([
+    ['busy', 'processing', 409, 'capture_processing'],
+    ['failed', 'failed', 409, 'capture_requires_replay'],
+  ])('never acknowledges a %s duplicate as success', async (outcome, status, statusCode, error) => {
+    const { handler, calls } = setup({ claim: () => ({ outcome, retryAfterSeconds: 12, batch: { id: 'batch-old', dailyImportId: null, status } }) });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({ statusCode, body: { error, batchId: 'batch-old', status } });
+    expect(res.body).not.toHaveProperty('ok');
+    if (outcome === 'busy') expect(res.headers).toMatchObject({ 'Retry-After': '12' });
+    expect(calls.storeRaw).toHaveLength(0);
+  });
+
+  it.each(['received', 'processing', 'failed'])('never acknowledges terminal outcome carrying %s', async (status) => {
+    const { handler } = setup({ claim: () => ({ outcome: 'terminal', batch: { id: 'batch-old', dailyImportId: null, status } }) });
+    const res = await ingest(handler);
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toHaveProperty('ok');
   });
 
   it('marks an incomplete snapshot without auto-closing it', async () => {
@@ -89,13 +111,53 @@ describe('daily snapshot ingest', () => {
     expect(calls.terminal[0]).toMatchObject({ status: 'incomplete', completeness: { isComplete: false, emptySections: ['accounts', 'strategies', 'orders', 'executions'] } });
   });
 
-  it('retains and marks a batch failed when immutable storage fails', async () => {
+  it('keeps a transient pre-storage failure immediately reclaimable', async () => {
     const { handler, calls } = setup({ storeRaw: () => { throw new Error('bucket secret'); } });
     const res = await ingest(handler);
     expect(res).toMatchObject({ statusCode: 503, body: { error: 'snapshot_ingest_failed' } });
     expect(JSON.stringify(res.body)).not.toContain('bucket secret');
-    expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'storage_failed' });
-    expect(calls.device[0]).toMatchObject({ success: false, errorCode: 'storage_failed' });
+    expect(calls.terminal).toHaveLength(0);
+    expect(calls.release).toEqual([expect.objectContaining({ batchId: 'batch-1', processingToken: '99999999-9999-4999-8999-999999999999' })]);
+  });
+
+  it('fails a batch with a stable conflict when deterministic raw evidence mismatches', async () => {
+    const mismatch = new ApiError(409, 'immutable_object_conflict');
+    const { handler, calls } = setup({ storeRaw: () => { throw mismatch; } });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({ statusCode: 409, body: { error: 'immutable_object_conflict' } });
+    expect(calls.release).toHaveLength(0);
+    expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'immutable_object_conflict' });
+  });
+
+  it('returns a stable 409 for the same capture ID with different immutable metadata', async () => {
+    const conflict = Object.assign(new Error('database detail'), { status: 409, code: 'capture_metadata_conflict' });
+    const { handler } = setup({ claim: () => { throw conflict; } });
+    expect(await ingest(handler)).toMatchObject({ statusCode: 409, body: { error: 'capture_metadata_conflict' } });
+  });
+
+  it('quarantines unsupported schema and missing arrays after raw storage with precise stable codes', async () => {
+    for (const [payload, code] of [
+      [snapshot({ schemaVersion: 2 }), 'unsupported_schema_version'],
+      [Object.fromEntries(Object.entries(snapshot()).filter(([key]) => key !== 'orders')), 'invalid_auto_import_snapshot'],
+      [snapshot({ accounts: [{}] }), 'invalid_auto_import_snapshot'],
+    ]) {
+      const { handler, calls } = setup({ useRealDomain: true });
+      const res = await ingest(handler, payload);
+      expect(res).toMatchObject({ statusCode: 422, body: { error: code } });
+      expect(calls.storeRaw).toHaveLength(1);
+      expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: code });
+    }
+  });
+
+  it.each([
+    [{ tradingDate: '2026-02-30' }, 'impossible trading date'],
+    [{ capturedAt: '2026-07-23T20:45:00' }, 'offsetless capturedAt'],
+    [{ captureId: 'not-a-uuid' }, 'malformed capture identity'],
+  ])('rejects %s before PostgREST claim', async (change) => {
+    const { handler, calls } = setup();
+    const res = await ingest(handler, snapshot(change));
+    expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_snapshot_envelope' } });
+    expect(calls.claim).toHaveLength(0);
   });
 
   it('retains raw storage and marks normalization or reconciliation failures with stable codes', async () => {
@@ -127,6 +189,28 @@ describe('daily snapshot ingest', () => {
     expect(calls.claim).toHaveLength(2);
     expect(calls.persist).toHaveLength(2);
     expect(calls.claim[1].captureId).not.toBe(calls.claim[0].captureId);
+  });
+
+  it('retains an older arrival as replaced without overwriting the current daily import', async () => {
+    const { handler, calls } = setup({ persist: () => ({ id: 'daily-newer', disposition: 'superseded' }) });
+    const res = await ingest(handler, snapshot({ accounts: [{ accountName: 'A' }] }));
+    expect(res).toMatchObject({
+      statusCode: 201,
+      body: { ok: true, duplicate: false, dailyImportId: 'daily-newer', status: 'replaced' },
+    });
+    expect(calls.terminal[0]).toMatchObject({
+      status: 'replaced', eventType: 'ingest_batch_superseded', dailyImportId: 'daily-newer',
+    });
+  });
+
+  it('keeps a persisted batch recoverable when terminal finalization fails', async () => {
+    const { handler, calls } = setup({ complete: () => { throw new Error('finalize transport'); } });
+    const res = await ingest(handler, snapshot({ accounts: [{ accountName: 'A' }] }));
+    expect(res).toMatchObject({ statusCode: 503, body: { error: 'snapshot_finalization_pending' } });
+    expect(calls.persist).toHaveLength(1);
+    expect(calls.terminal).toHaveLength(1);
+    expect(calls.terminal[0].status).toBe('processed');
+    expect(calls.release).toHaveLength(0);
   });
 
   it('rejects a device capture timestamp beyond the five-minute server skew before claiming', async () => {
