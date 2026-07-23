@@ -16,6 +16,13 @@ function functionDefinition(name) {
   return match?.[0].toLowerCase().replace(/\s+/g, ' ') ?? '';
 }
 
+function auditStatements() {
+  return (sql.match(/insert\s+into\s+public\.audit_logs\s*\([\s\S]*?\)\s*values\s*\([\s\S]*?\)\s*;/gi) || [])
+    .join(' ')
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
 describe('step 28 auto-collection migration contract', () => {
   it('exists and is tracked after the legacy ingest-device migration', () => {
     expect(migrationExists).toBe(true);
@@ -93,7 +100,7 @@ describe('step 28 auto-collection migration contract', () => {
   });
 
   it('defines locked, idempotent SECURITY DEFINER RPCs executable only by service_role', () => {
-    const pairing = functionDefinition('pair_ingest_device');
+    const pairing = functionDefinition('pair_ingest_device_v2');
     const claiming = functionDefinition('claim_ingest_batch');
 
     for (const definition of [pairing, claiming]) {
@@ -110,8 +117,8 @@ describe('step 28 auto-collection migration contract', () => {
     expect(claiming).toMatch(/where device_id = p_device_id and capture_id = p_capture_id[\s\S]*for update/);
     expect(claiming).toMatch(/storage_path is distinct from p_storage_path/);
 
-    expect(normalizedSql).toMatch(/revoke all on function public\.pair_ingest_device\([^;]+from public, anon, authenticated/);
-    expect(normalizedSql).toMatch(/grant execute on function public\.pair_ingest_device\([^;]+to service_role/);
+    expect(normalizedSql).toMatch(/revoke all on function public\.pair_ingest_device_v2\([^;]+from public, anon, authenticated/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.pair_ingest_device_v2\([^;]+to service_role/);
     expect(normalizedSql).toMatch(/revoke all on function public\.claim_ingest_batch\([^;]+from public, anon, authenticated/);
     expect(normalizedSql).toMatch(/grant execute on function public\.claim_ingest_batch\([^;]+to service_role/);
   });
@@ -142,8 +149,13 @@ describe('step 28 auto-collection migration contract', () => {
     expect(generating).toMatch(/update public\.ingest_devices[\s\S]*credential_hash = null[\s\S]*credential_prefix = null/);
     expect(generating).toMatch(/update public\.ingest_enrollments[\s\S]*revoked_at = clock_timestamp\(\)/);
     expect(generating).toMatch(/insert into public\.ingest_enrollments/);
+    expect(generating).toMatch(/insert into public\.audit_logs/);
+    expect(generating).toMatch(/p_action_code/);
+    expect(generating).toMatch(/p_reason_code/);
     expect(revoking).toMatch(/p_client_id/);
     expect(revoking).toMatch(/update public\.ingest_(?:devices|enrollments)/);
+    expect(revoking).toMatch(/insert into public\.audit_logs/);
+    expect(revoking).toMatch(/p_actor_id/);
     for (const name of ['create_ingest_enrollment', 'revoke_ingest_access']) {
       expect(normalizedSql).toMatch(new RegExp(`revoke all on function public\\.${name}\\([^;]+from public, anon, authenticated`));
       expect(normalizedSql).toMatch(new RegExp(`grant execute on function public\\.${name}\\([^;]+to service_role`));
@@ -175,5 +187,64 @@ describe('step 28 auto-collection migration contract', () => {
 
   it('allows a rebind to the same machine only after the former active binding is revoked', () => {
     expect(normalizedSql).toMatch(/create unique index if not exists idx_ingest_devices_machine_id_hash_unique on public\.ingest_devices\(machine_id_hash\) where machine_id_hash is not null and status = 'active' and revoked_at is null/);
+  });
+
+  it('uses one deterministic deadlock-safe lock order: client, enrollment IDs, then device IDs', () => {
+    const generating = functionDefinition('create_ingest_enrollment');
+    const revoking = functionDefinition('revoke_ingest_access');
+    const pairing = functionDefinition('pair_ingest_device_v2');
+
+    const generationClient = generating.indexOf('from public.clients');
+    const generationEnrollments = generating.indexOf('from public.ingest_enrollments');
+    const generationDevices = generating.indexOf('from public.ingest_devices');
+    expect(generationClient).toBeGreaterThan(-1);
+    expect(generationClient).toBeLessThan(generationEnrollments);
+    expect(generationEnrollments).toBeLessThan(generationDevices);
+    expect(generating).toMatch(/from public\.ingest_enrollments as enrollment[\s\S]*order by enrollment\.id[\s\S]*for update/);
+    expect(generating).toMatch(/from public\.ingest_devices as device[\s\S]*order by device\.id[\s\S]*for update/);
+
+    expect(revoking.indexOf('from public.clients')).toBeLessThan(revoking.indexOf('from public.ingest_enrollments'));
+    expect(revoking.indexOf('from public.ingest_enrollments')).toBeLessThan(revoking.indexOf('from public.ingest_devices'));
+    expect(revoking).toMatch(/order by enrollment\.id[\s\S]*for update/);
+
+    const unlockedRead = pairing.indexOf('select enrollment.client_id');
+    const pairClientLock = pairing.indexOf('from public.clients');
+    const pairEnrollmentLock = pairing.indexOf('select enrollment.*');
+    const pairDeviceLock = pairing.indexOf('from public.ingest_devices');
+    expect(unlockedRead).toBeGreaterThan(-1);
+    expect(unlockedRead).toBeLessThan(pairClientLock);
+    expect(pairClientLock).toBeLessThan(pairEnrollmentLock);
+    expect(pairEnrollmentLock).toBeLessThan(pairDeviceLock);
+    expect(pairing).toMatch(/order by device\.id[\s\S]*for update/);
+  });
+
+  it('pairs and writes success audit atomically in v2 without a post-RPC client query', () => {
+    const pairing = functionDefinition('pair_ingest_device_v2');
+    expect(pairing).toContain('client_name');
+    expect(pairing).toMatch(/insert into public\.audit_logs/);
+    expect(pairing).toMatch(/ingest_pair\.succeeded/);
+    expect(pairing).toMatch(/code_not_found/);
+    expect(pairing).toMatch(/code_expired/);
+    expect(pairing).toMatch(/machine_conflict/);
+    expect(pairing).toMatch(/nonce_or_credential_conflict/);
+    expect(normalizedSql).toMatch(/revoke all on function public\.pair_ingest_device\([^;]+from public, anon, authenticated, service_role/);
+    expect(normalizedSql).not.toMatch(/grant execute on function public\.pair_ingest_device\([^;]+to service_role/);
+  });
+
+  it('keeps atomic audit payloads to IDs, allowlisted codes, and validated numeric versions', () => {
+    const definitions = [
+      functionDefinition('create_ingest_enrollment'),
+      functionDefinition('revoke_ingest_access'),
+      functionDefinition('pair_ingest_device_v2'),
+    ].join(' ');
+    const audits = auditStatements();
+    expect(audits).toMatch(/jsonb_build_object/);
+    expect(audits).not.toMatch(/code_hash|machine_id_hash|credential_hash|credential_prefix|product_key/);
+    expect(audits).not.toMatch(/request_body|pairing_nonce|ip_hash/);
+    expect(definitions).toMatch(/p_agent_version[^;]+\^\[0-9\]/);
+    expect(definitions).toMatch(/p_agent_version is null/);
+    expect(definitions).toMatch(/p_addon_version is null/);
+    expect(definitions).toMatch(/vps_rebuilt/);
+    expect(definitions).toMatch(/security_revoke/);
   });
 });

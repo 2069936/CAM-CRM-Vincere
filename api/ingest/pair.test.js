@@ -1,6 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, createPairRateLimiter, createPairStore } from './pair.js';
+import {
+  createHandler,
+  createPairRateLimiter,
+  createPairStore,
+  PairingDeniedError,
+} from './pair.js';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
@@ -71,16 +76,12 @@ describe('public ingest pairing', () => {
   it('returns the deterministic device token once with client and 16:45 New York schedule', async () => {
     const { handler, calls } = setup();
     const res = await pair(handler);
-    expect(res).toMatchObject({
-      statusCode: 200,
-      body: {
-        deviceToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
-        deviceId: DEVICE_ID,
-        clientName: 'Acme Trading',
-        schedule: { time: '16:45', timeZone: 'America/New_York' },
-        agentVersion: '1.2.3',
-        addonVersion: '4.5.6',
-      },
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      deviceToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      deviceId: DEVICE_ID,
+      clientName: 'Acme Trading',
+      schedule: { time: '16:45', timeZone: 'America/New_York' },
     });
     expect(calls.limit).toHaveLength(1);
     expect(calls.pair).toEqual([expect.objectContaining({
@@ -89,11 +90,7 @@ describe('public ingest pairing', () => {
       credentialHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       credentialPrefix: res.body.deviceToken.slice(0, 8),
     })]);
-    expect(calls.audit).toEqual([expect.objectContaining({
-      action: 'ingest_pair.succeeded',
-      entityId: DEVICE_ID,
-      afterData: { clientId: CLIENT_ID, deviceId: DEVICE_ID, agentVersion: '1.2.3', addonVersion: '4.5.6' },
-    })]);
+    expect(calls.audit).toHaveLength(0);
   });
 
   it('returns the same token and device for an exact lost-response retry', async () => {
@@ -113,7 +110,7 @@ describe('public ingest pairing', () => {
     const { handler } = setup({
       pairImpl: async (payload) => {
         if (!winningHash) winningHash = payload.credentialHash;
-        if (payload.credentialHash !== winningHash) throw Object.assign(new Error('consumed detail'), { code: 'INVALID_PAIRING' });
+        if (payload.credentialHash !== winningHash) throw new PairingDeniedError('nonce_or_credential_conflict');
         return { deviceId: DEVICE_ID, clientId: CLIENT_ID, clientName: 'Acme', scheduleTime: '16:45:00', scheduleTimezone: 'America/New_York' };
       },
     });
@@ -122,7 +119,8 @@ describe('public ingest pairing', () => {
   });
 
   it.each(['invalid', 'expired', 'used', 'revoked'])('uses one public status and body for an %s code', async (reason) => {
-    const { handler } = setup({ pairImpl: async () => { throw Object.assign(new Error(reason), { code: 'INVALID_PAIRING' }); } });
+    const reasonCode = { invalid: 'code_not_found', expired: 'code_expired', used: 'code_consumed', revoked: 'code_revoked' }[reason];
+    const { handler } = setup({ pairImpl: async () => { throw new PairingDeniedError(reasonCode); } });
     expect(await pair(handler)).toMatchObject({ statusCode: 400, body: { error: 'invalid_or_expired_code' } });
   });
 
@@ -134,12 +132,15 @@ describe('public ingest pairing', () => {
       body({ pairingNonce: 'short' }),
       body({ agentVersion: '' }),
       body({ addonVersion: 'x'.repeat(65) }),
+      body({ agentVersion: '1.2.3-beta' }),
+      body({ addonVersion: 'a'.repeat(64) }),
     ]) {
       expect(await pair(handler, payload)).toMatchObject({ statusCode: 400, body: { error: 'invalid_or_expired_code' } });
     }
     expect(calls.pair).toHaveLength(0);
-    expect(calls.audit).toHaveLength(5);
+    expect(calls.audit).toHaveLength(7);
     expect(calls.audit.every((entry) => entry.afterData.reasonCode === 'invalid_request')).toBe(true);
+    expect(JSON.stringify(calls.audit)).not.toContain('a'.repeat(64));
   });
 
   it('uses the generic public denial for malformed JSON', async () => {
@@ -179,6 +180,16 @@ describe('public ingest pairing', () => {
     expect(calls.pair).toHaveLength(3);
   });
 
+  it('returns pairing_unavailable when durable rate-limit infrastructure fails', async () => {
+    const { handler, calls } = setup({ limiterImpl: async () => { throw new Error('rpc offline'); } });
+    expect(await pair(handler)).toMatchObject({ statusCode: 500, body: { error: 'pairing_unavailable' } });
+    expect(calls.pair).toHaveLength(0);
+    expect(calls.audit).toEqual([expect.objectContaining({
+      afterData: { reasonCode: 'rate_limit_unavailable', agentVersion: '1.2.3', addonVersion: '4.5.6' },
+    })]);
+    expect(JSON.stringify(calls.audit)).not.toContain('rpc offline');
+  });
+
   it('never passes raw code, machine, nonce, token, IP, or request body to persistence or audit', async () => {
     const { handler, calls } = setup();
     const res = await pair(handler);
@@ -189,25 +200,72 @@ describe('public ingest pairing', () => {
     expect(persisted).not.toContain(NONCE);
     expect(persisted).not.toContain(res.body.deviceToken);
     expect(persisted).not.toContain('203.0.113.8');
-    expect(calls.audit[0].afterData).toEqual({ clientId: CLIENT_ID, deviceId: DEVICE_ID, agentVersion: '1.2.3', addonVersion: '4.5.6' });
+    expect(calls.audit).toHaveLength(0);
+  });
+
+  it.each([
+    ['code_not_found', 'ingest_pair.denied'],
+    ['code_expired', 'ingest_pair.expired'],
+    ['code_revoked', 'ingest_pair.denied'],
+    ['code_consumed', 'ingest_pair.denied'],
+    ['machine_conflict', 'ingest_pair.denied'],
+    ['nonce_or_credential_conflict', 'ingest_pair.denied'],
+    ['device_revoked', 'ingest_pair.denied'],
+  ])('audits stable internal denial %s while preserving the generic public error', async (reasonCode, action) => {
+    const { handler, calls } = setup({ pairImpl: async () => { throw new PairingDeniedError(reasonCode); } });
+    expect(await pair(handler)).toMatchObject({ statusCode: 400, body: { error: 'invalid_or_expired_code' } });
+    expect(calls.audit).toEqual([expect.objectContaining({
+      action,
+      afterData: { reasonCode, agentVersion: '1.2.3', addonVersion: '4.5.6' },
+    })]);
+  });
+
+  it('returns pairing_unavailable for unknown RPC/infrastructure failures without mislabeling them', async () => {
+    const { handler, calls } = setup({ pairImpl: async () => { throw new Error('connection detail'); } });
+    expect(await pair(handler)).toMatchObject({ statusCode: 500, body: { error: 'pairing_unavailable' } });
+    expect(calls.audit).toEqual([expect.objectContaining({
+      action: 'ingest_pair.unavailable',
+      afterData: { reasonCode: 'pairing_unavailable', agentVersion: '1.2.3', addonVersion: '4.5.6' },
+    })]);
+    expect(JSON.stringify(calls.audit)).not.toContain('connection detail');
   });
 });
 
 describe('pairing Supabase adapters', () => {
   it('uses atomic RPCs for pairing and durable rate limiting', async () => {
     const rpc = vi.fn(async (name) => ({
-      data: name === 'pair_ingest_device'
-        ? { id: DEVICE_ID, client_id: CLIENT_ID, schedule_time: '16:45:00', schedule_timezone: 'America/New_York' }
+      data: name === 'pair_ingest_device_v2'
+        ? { device_id: DEVICE_ID, client_id: CLIENT_ID, client_name: 'Acme Trading', schedule_time: '16:45:00', schedule_timezone: 'America/New_York' }
         : { allowed: true, retry_after_seconds: 0 },
       error: null,
     }));
-    const clientQuery = { select: vi.fn(() => clientQuery), eq: vi.fn(() => clientQuery), maybeSingle: vi.fn(async () => ({ data: { name: 'Acme Trading' }, error: null })) };
-    const admin = { rpc, from: vi.fn(() => clientQuery) };
+    const admin = { rpc, from: vi.fn() };
     const store = createPairStore(admin);
     const limiter = createPairRateLimiter(admin, { maxAttempts: 5, windowSeconds: 60, blockSeconds: 120 });
     await store.pairDevice({ codeHash: 'a'.repeat(64), machineHash: 'b'.repeat(64), credentialHash: 'c'.repeat(64), credentialPrefix: 'prefix12', agentVersion: '1.2.3', addonVersion: '4.5.6' });
     await limiter.check({ keyHash: 'd'.repeat(64), now: new Date('2026-07-23T12:00:00Z') });
-    expect(rpc.mock.calls.map(([name]) => name)).toEqual(['pair_ingest_device', 'check_ingest_pair_rate_limit']);
+    expect(rpc.mock.calls.map(([name]) => name)).toEqual(['pair_ingest_device_v2', 'check_ingest_pair_rate_limit']);
     expect(rpc.mock.calls[1][1]).toMatchObject({ p_max_attempts: 5, p_window_seconds: 60, p_block_seconds: 120 });
+    expect(admin.from).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['CODE_NOT_FOUND', 'code_not_found'],
+    ['CODE_EXPIRED', 'code_expired'],
+    ['CODE_REVOKED', 'code_revoked'],
+    ['CODE_CONSUMED', 'code_consumed'],
+    ['MACHINE_CONFLICT', 'machine_conflict'],
+    ['NONCE_OR_CREDENTIAL_CONFLICT', 'nonce_or_credential_conflict'],
+    ['DEVICE_REVOKED', 'device_revoked'],
+  ])('maps known SQL denial %s to stable internal code %s', async (message, reasonCode) => {
+    const admin = { rpc: vi.fn(async () => ({ data: null, error: { code: 'P0001', message } })), from: vi.fn() };
+    await expect(createPairStore(admin).pairDevice({})).rejects.toMatchObject({ reasonCode });
+    expect(admin.from).not.toHaveBeenCalled();
+  });
+
+  it('propagates unknown SQL failures without classifying them as invalid code', async () => {
+    const sqlError = { code: '08006', message: 'connection_failure' };
+    const admin = { rpc: vi.fn(async () => ({ data: null, error: sqlError })), from: vi.fn() };
+    await expect(createPairStore(admin).pairDevice({})).rejects.toBe(sqlError);
   });
 });

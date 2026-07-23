@@ -31,12 +31,14 @@ npm test
 
 Evidence recorded on 2026-07-23:
 
-- Focused contract: 1 file passed, 11 tests passed.
+- Focused contract: 1 file passed, 14 tests passed.
 - Targeted ESLint: exited 0 with no findings.
-- Full Vitest suite: 43 files passed, 505 tests passed.
+- Full Vitest suite: 43 files passed, 531 tests passed.
 - `git diff --check`: exited 0 with no findings.
-- PostgreSQL 18.3 `psql` client is installed, but no local server is listening on
-  `127.0.0.1:5432`; SQL execution and catalog evidence therefore remain pending.
+- PostgreSQL 18.3 disposable local cluster: baseline schema plus Step 22 applied,
+  revised Step 28 applied twice successfully, and the three new RPCs were
+  confirmed `SECURITY DEFINER`. This is local syntax/rerun evidence only; live
+  Supabase catalog and concurrency evidence remain pending.
 
 ## Pending disposable/staging verification
 
@@ -50,7 +52,7 @@ file.
    drift. `CREATE OR REPLACE FUNCTION` replaces the RPC bodies and the migration
    reapplies their explicit revokes/grants; a future signature or return-type
    change requires a reviewed drop migration.
-3. Exercise two concurrent pairing calls with identical hashes. Confirm both
+3. Exercise two concurrent `pair_ingest_device_v2` calls with identical hashes. Confirm both
    return the same device ID. Repeat with a different machine or credential hash
    and confirm the consumed enrollment is rejected.
 4. Exercise two concurrent batch claims with identical metadata. Confirm both
@@ -144,6 +146,7 @@ join pg_catalog.pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public'
   and p.proname in ('create_ingest_enrollment', 'revoke_ingest_access',
                     'check_ingest_pair_rate_limit', 'pair_ingest_device',
+                    'pair_ingest_device_v2',
                     'claim_ingest_batch')
 order by p.proname;
 
@@ -152,6 +155,7 @@ from information_schema.routine_privileges
 where specific_schema = 'public'
   and routine_name in ('create_ingest_enrollment', 'revoke_ingest_access',
                        'check_ingest_pair_rate_limit', 'pair_ingest_device',
+                       'pair_ingest_device_v2',
                        'claim_ingest_batch')
 order by routine_name, grantee;
 ```

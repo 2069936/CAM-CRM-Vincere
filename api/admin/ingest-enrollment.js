@@ -4,7 +4,8 @@ import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from 
 import { issueEnrollmentCode } from '../_lib/ingestTokens.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const REASON_PATTERN = /^[a-z0-9_-]{1,64}$/;
+export const REBIND_REASONS = Object.freeze(['vps_rebuilt', 'device_replaced', 'support_reset']);
+export const REVOKE_REASONS = Object.freeze(['client_offboarded', 'security_revoke', 'support_reset']);
 
 function requireUuid(value, field) {
   const normalized = String(value || '').trim();
@@ -12,9 +13,9 @@ function requireUuid(value, field) {
   return normalized;
 }
 
-function normalizeReason(value) {
-  const reason = value == null || value === '' ? 'operator_request' : String(value).trim().toLowerCase();
-  if (!REASON_PATTERN.test(reason)) throw new ApiError(400, 'invalid_reason');
+function requireAllowedReason(value, allowed) {
+  const reason = String(value || '').trim().toLowerCase();
+  if (!allowed.includes(reason)) throw new ApiError(400, 'invalid_reason');
   return reason;
 }
 
@@ -32,13 +33,15 @@ function stableStoreError(error) {
 
 export function createIngestEnrollmentStore(admin) {
   return {
-    async createEnrollment({ clientId, codeHash, createdBy, expiresAt, rebind }) {
+    async createEnrollment({ clientId, codeHash, createdBy, expiresAt, rebind, actionCode, reasonCode }) {
       const { data, error } = await admin.rpc('create_ingest_enrollment', {
         p_client_id: clientId,
         p_code_hash: codeHash,
         p_created_by: createdBy,
         p_expires_at: expiresAt,
         p_rebind: rebind,
+        p_action_code: actionCode,
+        p_reason_code: reasonCode,
       });
       if (error) throw stableStoreError(error);
       const row = unwrapRpcRow(data);
@@ -52,28 +55,18 @@ export function createIngestEnrollmentStore(admin) {
       };
     },
 
-    async revokeAccess({ clientId, enrollmentId, deviceId, reason }) {
+    async revokeAccess({ clientId, enrollmentId, deviceId, reasonCode, actorId }) {
       const { data, error } = await admin.rpc('revoke_ingest_access', {
         p_client_id: clientId,
         p_enrollment_id: enrollmentId || null,
         p_device_id: deviceId || null,
-        p_reason: reason,
+        p_reason_code: reasonCode,
+        p_actor_id: actorId,
       });
       if (error) throw stableStoreError(error);
       const row = unwrapRpcRow(data);
       if (!row?.revoked_id) throw new Error('Revoke RPC returned no row.');
       return { clientId: row.client_id, kind: row.revoked_kind, id: row.revoked_id };
-    },
-
-    async writeAudit({ actorId, entityType, entityId, action, afterData }) {
-      const { error } = await admin.from('audit_logs').insert({
-        user_id: actorId || null,
-        entity_type: entityType,
-        entity_id: entityId || null,
-        action,
-        after_data: afterData,
-      });
-      if (error) throw error;
     },
   };
 }
@@ -98,6 +91,7 @@ export function createHandler({
     try {
       requireMethod(req, ['POST', 'DELETE']);
       const body = await readJsonBody(req, { maxBytes: 8 * 1024 });
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'invalid_request');
       if ('productKey' in body || 'product_key' in body) throw new ApiError(400, 'invalid_request');
       const clientId = requireUuid(body.clientUuid, 'client_uuid');
       const { admin, auth } = createClients();
@@ -112,6 +106,8 @@ export function createHandler({
       if (req.method === 'POST') {
         const action = body.action == null || body.action === '' ? 'generate' : String(body.action).toLowerCase();
         if (!['generate', 'rebind'].includes(action)) throw new ApiError(400, 'invalid_action');
+        if (action === 'generate' && body.reason != null) throw new ApiError(400, 'invalid_reason');
+        const reasonCode = action === 'rebind' ? requireAllowedReason(body.reason, REBIND_REASONS) : null;
         const issued = issueCode({ pepper, now: now() });
         const created = await store.createEnrollment({
           clientId,
@@ -119,19 +115,8 @@ export function createHandler({
           createdBy: actor.id,
           expiresAt: issued.record.expiresAt,
           rebind: action === 'rebind',
-        });
-        await store.writeAudit({
-          actorId: actor.id,
-          entityType: 'ingest_enrollment',
-          entityId: created.enrollmentId,
-          action: action === 'rebind' ? 'ingest_enrollment.rebound' : 'ingest_enrollment.generated',
-          afterData: {
-            clientId: created.clientId,
-            enrollmentId: created.enrollmentId,
-            expiresAt: created.expiresAt,
-            actorRole: actor.role,
-            ...(action === 'rebind' ? { revokedDeviceIds: created.revokedDeviceIds } : {}),
-          },
+          actionCode: action === 'rebind' ? 'rebound' : 'generated',
+          reasonCode,
         });
         return sendJson(res, 201, {
           enrollment: {
@@ -147,15 +132,8 @@ export function createHandler({
       const enrollmentId = body.enrollmentId ? requireUuid(body.enrollmentId, 'enrollment_id') : null;
       const deviceId = body.deviceId ? requireUuid(body.deviceId, 'device_id') : null;
       if (Boolean(enrollmentId) === Boolean(deviceId)) throw new ApiError(400, 'invalid_revoke_target');
-      const reason = normalizeReason(body.reason);
-      const revoked = await store.revokeAccess({ clientId, enrollmentId, deviceId, reason });
-      await store.writeAudit({
-        actorId: actor.id,
-        entityType: revoked.kind === 'device' ? 'ingest_device' : 'ingest_enrollment',
-        entityId: revoked.id,
-        action: revoked.kind === 'device' ? 'ingest_device.revoked' : 'ingest_enrollment.revoked',
-        afterData: { clientId: revoked.clientId, id: revoked.id, kind: revoked.kind, reason, actorRole: actor.role },
-      });
+      const reasonCode = requireAllowedReason(body.reason, REVOKE_REASONS);
+      const revoked = await store.revokeAccess({ clientId, enrollmentId, deviceId, reasonCode, actorId: actor.id });
       return sendJson(res, 200, { revoked });
     } catch (error) {
       return handleApiError(res, publicAdminError(error), { fallbackMessage: 'enrollment_request_failed' });

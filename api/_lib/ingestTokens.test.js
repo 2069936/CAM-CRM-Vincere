@@ -59,6 +59,20 @@ describe('ingest tokens', () => {
     expect(() => normalizePairingNonce(`${nonce}=`)).toThrow('Invalid pairing nonce.');
   });
 
+  it('canonicalizes accepted base64url nonce spellings with nonzero unused pad bits', () => {
+    const canonical = Buffer.alloc(32, 7).toString('base64url');
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const lastIndex = alphabet.indexOf(canonical.at(-1));
+    const alternate = `${canonical.slice(0, -1)}${alphabet[(lastIndex & 0b110000) | 0b001111]}`;
+    expect(alternate).not.toBe(canonical);
+    expect(Buffer.from(alternate, 'base64url')).toEqual(Buffer.from(canonical, 'base64url'));
+    expect(normalizePairingNonce(alternate)).toBe(canonical);
+
+    const baseArgs = { enrollmentCode: 'ABCDEFGHJK', machineId: 'machine-guid', pepper: 'test-pepper' };
+    expect(deriveDeviceToken({ ...baseArgs, pairingNonce: alternate }))
+      .toEqual(deriveDeviceToken({ ...baseArgs, pairingNonce: canonical }));
+  });
+
   it('derives a deterministic pseudorandom token bound to code, machine, and nonce', () => {
     const args = {
       enrollmentCode: 'ABCDEFGHJK',

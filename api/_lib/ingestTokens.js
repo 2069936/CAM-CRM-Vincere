@@ -59,11 +59,11 @@ export function normalizeMachineId(value) {
 
 export function normalizePairingNonce(value) {
   const normalized = String(value || '');
-  if (!PAIRING_NONCE_PATTERN.test(normalized)
-    || Buffer.from(normalized, 'base64url').length !== 32) {
+  const decoded = Buffer.from(normalized, 'base64url');
+  if (!PAIRING_NONCE_PATTERN.test(normalized) || decoded.length !== 32) {
     throw new Error('Invalid pairing nonce.');
   }
-  return normalized;
+  return decoded.toString('base64url');
 }
 
 export function deriveDeviceToken({ enrollmentCode, machineId, pairingNonce, pepper } = {}) {

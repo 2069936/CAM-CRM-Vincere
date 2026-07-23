@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, createIngestEnrollmentStore } from './ingest-enrollment.js';
+import {
+  createHandler,
+  createIngestEnrollmentStore,
+  REBIND_REASONS,
+  REVOKE_REASONS,
+} from './ingest-enrollment.js';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const ENROLLMENT_ID = '22222222-2222-4222-8222-222222222222';
@@ -84,7 +89,8 @@ describe('admin ingest enrollment', () => {
       codeHash: 'a'.repeat(64),
       rebind: false,
     })]);
-    expect(calls.audit).toEqual([expect.objectContaining({ action: 'ingest_enrollment.generated' })]);
+    expect(calls.create[0]).toMatchObject({ actionCode: 'generated', reasonCode: null });
+    expect(calls.audit).toHaveLength(0);
   });
 
   it('denies an unassigned CAM before any enrollment mutation', async () => {
@@ -98,13 +104,10 @@ describe('admin ingest enrollment', () => {
   it('uses an atomic rebind operation that revokes active devices and old codes', async () => {
     const { handler, calls } = setup();
     const res = response();
-    await handler(request('POST', { action: 'rebind', clientUuid: CLIENT_ID }), res);
+    await handler(request('POST', { action: 'rebind', clientUuid: CLIENT_ID, reason: 'vps_rebuilt' }), res);
     expect(res.statusCode).toBe(201);
-    expect(calls.create[0]).toMatchObject({ rebind: true });
-    expect(calls.audit[0]).toMatchObject({
-      action: 'ingest_enrollment.rebound',
-      afterData: expect.objectContaining({ revokedDeviceIds: [DEVICE_ID] }),
-    });
+    expect(calls.create[0]).toMatchObject({ rebind: true, actionCode: 'rebound', reasonCode: 'vps_rebuilt' });
+    expect(calls.audit).toHaveLength(0);
   });
 
   it('returns a stable eligibility error without exposing a client product key or database detail', async () => {
@@ -118,14 +121,14 @@ describe('admin ingest enrollment', () => {
   it('atomically revokes a client-scoped enrollment or device with a sanitized reason', async () => {
     const { handler, calls } = setup();
     const enrollmentRes = response();
-    await handler(request('DELETE', { clientUuid: CLIENT_ID, enrollmentId: ENROLLMENT_ID, reason: 'operator_request' }), enrollmentRes);
+    await handler(request('DELETE', { clientUuid: CLIENT_ID, enrollmentId: ENROLLMENT_ID, reason: 'support_reset' }), enrollmentRes);
     expect(enrollmentRes).toMatchObject({ statusCode: 200, body: { revoked: { kind: 'enrollment', id: ENROLLMENT_ID } } });
-    expect(calls.revoke[0]).toMatchObject({ clientId: CLIENT_ID, enrollmentId: ENROLLMENT_ID, reason: 'operator_request' });
+    expect(calls.revoke[0]).toMatchObject({ clientId: CLIENT_ID, enrollmentId: ENROLLMENT_ID, reasonCode: 'support_reset', actorId: 'actor-1' });
 
     const deviceRes = response();
-    await handler(request('DELETE', { clientUuid: CLIENT_ID, deviceId: DEVICE_ID }), deviceRes);
+    await handler(request('DELETE', { clientUuid: CLIENT_ID, deviceId: DEVICE_ID, reason: 'security_revoke' }), deviceRes);
     expect(deviceRes).toMatchObject({ statusCode: 200, body: { revoked: { kind: 'device', id: DEVICE_ID } } });
-    expect(calls.audit.at(-1)).toMatchObject({ action: 'ingest_device.revoked' });
+    expect(calls.audit).toHaveLength(0);
   });
 
   it('rejects malformed UUIDs, actions, reasons, and ambiguous revoke targets', async () => {
@@ -134,6 +137,7 @@ describe('admin ingest enrollment', () => {
       ['POST', { clientUuid: 'not-a-uuid' }],
       ['POST', { clientUuid: CLIENT_ID, action: 'rotate' }],
       ['DELETE', { clientUuid: CLIENT_ID, enrollmentId: ENROLLMENT_ID, deviceId: DEVICE_ID }],
+      ['POST', { clientUuid: CLIENT_ID, action: 'rebind', reason: 'operator_request' }],
       ['DELETE', { clientUuid: CLIENT_ID, enrollmentId: ENROLLMENT_ID, reason: '<secret>' }],
     ]) {
       const res = response();
@@ -153,6 +157,30 @@ describe('admin ingest enrollment', () => {
     expect(sideEffects).not.toContain('product_key');
     expect(JSON.stringify(calls.audit)).not.toContain('a'.repeat(64));
   });
+
+  it('exports narrow rebind and revoke reason allowlists and rejects secret-shaped reasons', async () => {
+    expect(REBIND_REASONS).toEqual(['vps_rebuilt', 'device_replaced', 'support_reset']);
+    expect(REVOKE_REASONS).toEqual(['client_offboarded', 'security_revoke', 'support_reset']);
+    const { handler, calls } = setup();
+    for (const [method, payload] of [
+      ['POST', { action: 'rebind', clientUuid: CLIENT_ID, reason: 'a'.repeat(64) }],
+      ['DELETE', { clientUuid: CLIENT_ID, deviceId: DEVICE_ID, reason: 'b'.repeat(64) }],
+    ]) {
+      expect(await (async () => { const res = response(); await handler(request(method, payload), res); return res; })())
+        .toMatchObject({ statusCode: 400 });
+    }
+    expect(calls.create).toHaveLength(0);
+    expect(calls.revoke).toHaveLength(0);
+    expect(calls.audit).toHaveLength(0);
+  });
+
+  it.each(['null', '42', '"text"'])('returns controlled 400 for primitive JSON body %s', async (rawBody) => {
+    const { handler, calls } = setup();
+    const res = response();
+    await handler({ method: 'POST', body: rawBody, headers: { authorization: 'Bearer browser-session' } }, res);
+    expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_request' } });
+    expect(calls.create).toHaveLength(0);
+  });
 });
 
 describe('ingest enrollment Supabase store', () => {
@@ -165,10 +193,30 @@ describe('ingest enrollment Supabase store', () => {
     }));
     const admin = { rpc, from: vi.fn(() => ({ insert: vi.fn(async () => ({ error: null })) })) };
     const store = createIngestEnrollmentStore(admin);
-    expect(await store.createEnrollment({ clientId: CLIENT_ID, codeHash: 'a'.repeat(64), createdBy: 'actor-1', expiresAt: '2026-07-23T13:00:00Z', rebind: false }))
+    expect(await store.createEnrollment({ clientId: CLIENT_ID, codeHash: 'a'.repeat(64), createdBy: 'actor-1', expiresAt: '2026-07-23T13:00:00Z', rebind: false, actionCode: 'generated', reasonCode: null }))
       .toMatchObject({ enrollmentId: ENROLLMENT_ID, clientName: 'Acme Trading' });
-    expect(await store.revokeAccess({ clientId: CLIENT_ID, deviceId: DEVICE_ID, reason: 'operator_request' }))
+    expect(await store.revokeAccess({ clientId: CLIENT_ID, deviceId: DEVICE_ID, reasonCode: 'security_revoke', actorId: 'actor-1' }))
       .toEqual({ clientId: CLIENT_ID, kind: 'device', id: DEVICE_ID });
     expect(rpc.mock.calls.map(([name]) => name)).toEqual(['create_ingest_enrollment', 'revoke_ingest_access']);
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_action_code: 'generated', p_reason_code: null });
+    expect(rpc.mock.calls[1][1]).toMatchObject({ p_actor_id: 'actor-1', p_reason_code: 'security_revoke' });
+    expect(admin.from).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt a post-commit audit when an atomic mutation RPC fails', async () => {
+    const admin = {
+      rpc: vi.fn(async () => ({ data: null, error: { message: 'audit insert failed' } })),
+      from: vi.fn(),
+    };
+    await expect(createIngestEnrollmentStore(admin).createEnrollment({
+      clientId: CLIENT_ID,
+      codeHash: 'a'.repeat(64),
+      createdBy: 'actor-1',
+      expiresAt: '2026-07-23T13:00:00Z',
+      rebind: false,
+      actionCode: 'generated',
+      reasonCode: null,
+    })).rejects.toThrow();
+    expect(admin.from).not.toHaveBeenCalled();
   });
 });

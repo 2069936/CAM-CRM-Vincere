@@ -12,6 +12,24 @@ import {
 } from '../_lib/ingestTokens.js';
 
 const PUBLIC_PAIR_ERROR = 'invalid_or_expired_code';
+const VERSION_PATTERN = /^\d{1,5}(?:\.\d{1,5}){1,3}$/;
+const SQL_DENIAL_CODES = Object.freeze({
+  CODE_NOT_FOUND: 'code_not_found',
+  CODE_EXPIRED: 'code_expired',
+  CODE_REVOKED: 'code_revoked',
+  CODE_CONSUMED: 'code_consumed',
+  MACHINE_CONFLICT: 'machine_conflict',
+  NONCE_OR_CREDENTIAL_CONFLICT: 'nonce_or_credential_conflict',
+  DEVICE_REVOKED: 'device_revoked',
+});
+
+export class PairingDeniedError extends Error {
+  constructor(reasonCode) {
+    super('Pairing denied.');
+    this.name = 'PairingDeniedError';
+    this.reasonCode = reasonCode;
+  }
+}
 
 function hasControlCharacter(value) {
   return Array.from(value).some((character) => {
@@ -27,7 +45,7 @@ function positiveInteger(value, fallback) {
 
 function normalizeVersion(value) {
   const normalized = String(value || '').trim();
-  if (!normalized || normalized.length > 64 || hasControlCharacter(normalized)) {
+  if (normalized.length > 23 || hasControlCharacter(normalized) || !VERSION_PATTERN.test(normalized)) {
     throw new Error('Invalid version.');
   }
   return normalized;
@@ -37,10 +55,16 @@ function unwrapRpcRow(data) {
   return Array.isArray(data) ? data[0] : data;
 }
 
+function pairingDenial(error) {
+  const source = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toUpperCase();
+  const matched = Object.keys(SQL_DENIAL_CODES).find((code) => source.includes(code));
+  return matched ? new PairingDeniedError(SQL_DENIAL_CODES[matched]) : null;
+}
+
 export function createPairStore(admin) {
   return {
     async pairDevice({ codeHash, machineHash, credentialHash, credentialPrefix, agentVersion, addonVersion }) {
-      const { data, error } = await admin.rpc('pair_ingest_device', {
+      const { data, error } = await admin.rpc('pair_ingest_device_v2', {
         p_code_hash: codeHash,
         p_machine_hash: machineHash,
         p_credential_hash: credentialHash,
@@ -48,19 +72,13 @@ export function createPairStore(admin) {
         p_agent_version: agentVersion,
         p_addon_version: addonVersion,
       });
-      if (error) throw Object.assign(new Error('Pairing denied.'), { code: 'INVALID_PAIRING' });
+      if (error) throw pairingDenial(error) || error;
       const device = unwrapRpcRow(data);
-      if (!device?.id || !device?.client_id) throw new Error('Pairing RPC returned no device.');
-      const { data: client, error: clientError } = await admin
-        .from('clients')
-        .select('name')
-        .eq('id', device.client_id)
-        .maybeSingle();
-      if (clientError || !client?.name) throw new Error('Paired client was not found.');
+      if (!device?.device_id || !device?.client_id || !device?.client_name) throw new Error('Pairing RPC returned no device.');
       return {
-        deviceId: device.id,
+        deviceId: device.device_id,
         clientId: device.client_id,
-        clientName: client.name,
+        clientName: device.client_name,
         scheduleTime: device.schedule_time,
         scheduleTimezone: device.schedule_timezone,
         agentVersion: device.agent_version,
@@ -178,7 +196,7 @@ export function createHandler({
         limit = await limiter.check({ keyHash, now: now() });
       } catch {
         await safeAudit(store, denialAudit('rate_limit_unavailable', { agentVersion, addonVersion }));
-        return sendJson(res, 429, { error: PUBLIC_PAIR_ERROR });
+        return sendJson(res, 500, { error: 'pairing_unavailable' });
       }
       if (!limit.allowed) {
         const retryAfter = Math.max(1, Math.ceil(limit.retryAfterSeconds));
@@ -197,12 +215,6 @@ export function createHandler({
           agentVersion,
           addonVersion,
         });
-        await safeAudit(store, {
-          entityType: 'ingest_device',
-          entityId: paired.deviceId,
-          action: 'ingest_pair.succeeded',
-          afterData: { clientId: paired.clientId, deviceId: paired.deviceId, agentVersion, addonVersion },
-        });
         return sendJson(res, 200, {
           deviceToken: issued.token,
           clientName: paired.clientName,
@@ -211,16 +223,23 @@ export function createHandler({
             time: String(paired.scheduleTime || '16:45:00').slice(0, 5),
             timeZone: paired.scheduleTimezone || 'America/New_York',
           },
-          agentVersion: paired.agentVersion || agentVersion,
-          addonVersion: paired.addonVersion || addonVersion,
         });
-      } catch {
-        await safeAudit(store, denialAudit('invalid_or_expired_code', { agentVersion, addonVersion }));
-        return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR });
+      } catch (error) {
+        if (error instanceof PairingDeniedError) {
+          const entry = denialAudit(error.reasonCode, { agentVersion, addonVersion });
+          if (error.reasonCode === 'code_expired') entry.action = 'ingest_pair.expired';
+          await safeAudit(store, entry);
+          return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR });
+        }
+        await safeAudit(store, {
+          ...denialAudit('pairing_unavailable', { agentVersion, addonVersion }),
+          action: 'ingest_pair.unavailable',
+        });
+        return sendJson(res, 500, { error: 'pairing_unavailable' });
       }
     } catch (error) {
-      const publicError = error instanceof ApiError ? error : new ApiError(500, 'pairing_failed');
-      return handleApiError(res, publicError, { fallbackMessage: 'pairing_failed' });
+      const publicError = error instanceof ApiError ? error : new ApiError(500, 'pairing_unavailable');
+      return handleApiError(res, publicError, { fallbackMessage: 'pairing_unavailable' });
     }
   };
 }

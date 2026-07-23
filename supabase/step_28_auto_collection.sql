@@ -346,6 +346,10 @@ begin
 end
 $policies$;
 
+-- Remove the pre-audit overload from deployments that applied an earlier Step
+-- 28 revision. The replacement below owns mutation and audit in one transaction.
+drop function if exists public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean);
+
 -- Create or replace a one-time enrollment while holding the client lock. This
 -- makes eligibility, active-device handling, old-code revocation, and insertion
 -- one transaction. Product keys are checked only as server-side eligibility and
@@ -355,7 +359,9 @@ create or replace function public.create_ingest_enrollment(
   p_code_hash text,
   p_created_by uuid,
   p_expires_at timestamptz,
-  p_rebind boolean default false
+  p_rebind boolean,
+  p_action_code text,
+  p_reason_code text
 )
 returns table (
   enrollment_id uuid,
@@ -383,6 +389,19 @@ begin
       using errcode = '22023';
   end if;
 
+  if (coalesce(p_rebind, false) and (
+        p_action_code is distinct from 'rebound'
+        or p_reason_code is null
+        or p_reason_code not in ('vps_rebuilt', 'device_replaced', 'support_reset')
+      ))
+    or (not coalesce(p_rebind, false) and (
+        p_action_code is distinct from 'generated'
+        or p_reason_code is not null
+      )) then
+    raise exception 'INVALID_ENROLLMENT_AUDIT_CODE'
+      using errcode = '22023';
+  end if;
+
   select client.*
   into v_client
   from public.clients as client
@@ -397,13 +416,21 @@ begin
       using errcode = 'P0001';
   end if;
 
-  -- Lock every currently active device before deciding whether generation is
-  -- permitted. Rebind deliberately invalidates credentials before a new code.
+  -- Every ingest transaction uses client -> enrollment IDs -> device IDs.
+  perform 1
+  from public.ingest_enrollments as enrollment
+  where enrollment.client_id = p_client_id
+    and enrollment.consumed_at is null
+    and enrollment.revoked_at is null
+  order by enrollment.id
+  for update;
+
   perform 1
   from public.ingest_devices as device
   where device.client_id = p_client_id
     and device.status = 'active'
     and device.revoked_at is null
+  order by device.id
   for update;
 
   select coalesce(array_agg(device.id order by device.id), array[]::uuid[])
@@ -429,13 +456,6 @@ begin
       and revoked_at is null;
   end if;
 
-  perform 1
-  from public.ingest_enrollments as enrollment
-  where enrollment.client_id = p_client_id
-    and enrollment.consumed_at is null
-    and enrollment.revoked_at is null
-  for update;
-
   update public.ingest_enrollments
   set revoked_at = clock_timestamp()
   where client_id = p_client_id
@@ -456,6 +476,27 @@ begin
   )
   returning * into v_enrollment;
 
+  insert into public.audit_logs (
+    user_id,
+    entity_type,
+    entity_id,
+    action,
+    after_data
+  )
+  values (
+    p_created_by,
+    'ingest_enrollment',
+    v_enrollment.id,
+    case when p_rebind then 'ingest_enrollment.rebound' else 'ingest_enrollment.generated' end,
+    jsonb_build_object(
+      'clientId', p_client_id,
+      'enrollmentId', v_enrollment.id,
+      'actionCode', p_action_code,
+      'reasonCode', p_reason_code,
+      'revokedDeviceIds', v_revoked_device_ids
+    )
+  );
+
   return query
   select v_enrollment.id,
          v_enrollment.client_id,
@@ -465,18 +506,21 @@ begin
 end;
 $function$;
 
-revoke all on function public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean)
+revoke all on function public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean, text, text)
   from public, anon, authenticated;
-grant execute on function public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean)
+grant execute on function public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean, text, text)
   to service_role;
 
 -- Revoke exactly one enrollment or device after locking both the client and the
 -- scoped target. Device credential digests are erased as part of revocation.
+drop function if exists public.revoke_ingest_access(uuid, uuid, uuid, text);
+
 create or replace function public.revoke_ingest_access(
   p_client_id uuid,
   p_enrollment_id uuid,
   p_device_id uuid,
-  p_reason text
+  p_reason_code text,
+  p_actor_id uuid
 )
 returns table (
   client_id uuid,
@@ -491,7 +535,9 @@ as $function$
 begin
   if p_client_id is null
     or ((p_enrollment_id is null) = (p_device_id is null))
-    or nullif(btrim(p_reason), '') is null then
+    or p_actor_id is null
+    or p_reason_code is null
+    or p_reason_code not in ('client_offboarded', 'security_revoke', 'support_reset') then
     raise exception 'INVALID_REVOKE_REQUEST'
       using errcode = '22023';
   end if;
@@ -505,13 +551,21 @@ begin
       using errcode = 'P0002';
   end if;
 
+  -- Lock all client enrollments in ID order even for device revocation, keeping
+  -- the global client -> enrollment -> device order consistent.
+  perform 1
+  from public.ingest_enrollments as enrollment
+  where enrollment.client_id = p_client_id
+  order by enrollment.id
+  for update;
+
   if p_enrollment_id is not null then
-    perform 1
-    from public.ingest_enrollments as enrollment
-    where enrollment.id = p_enrollment_id
-      and enrollment.client_id = p_client_id
-    for update;
-    if not found then
+    if not exists (
+      select 1
+      from public.ingest_enrollments as enrollment
+      where enrollment.id = p_enrollment_id
+        and enrollment.client_id = p_client_id
+    ) then
       raise exception 'INGEST_ACCESS_NOT_FOUND'
         using errcode = 'P0002';
     end if;
@@ -521,6 +575,20 @@ begin
     where id = p_enrollment_id
       and client_id = p_client_id;
 
+    insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+    values (
+      p_actor_id,
+      'ingest_enrollment',
+      p_enrollment_id,
+      'ingest_enrollment.revoked',
+      jsonb_build_object(
+        'clientId', p_client_id,
+        'id', p_enrollment_id,
+        'kind', 'enrollment',
+        'reasonCode', p_reason_code
+      )
+    );
+
     return query select p_client_id, 'enrollment'::text, p_enrollment_id;
     return;
   end if;
@@ -529,6 +597,7 @@ begin
   from public.ingest_devices as device
   where device.id = p_device_id
     and device.client_id = p_client_id
+  order by device.id
   for update;
   if not found then
     raise exception 'INGEST_ACCESS_NOT_FOUND'
@@ -543,13 +612,27 @@ begin
   where id = p_device_id
     and client_id = p_client_id;
 
+  insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+  values (
+    p_actor_id,
+    'ingest_device',
+    p_device_id,
+    'ingest_device.revoked',
+    jsonb_build_object(
+      'clientId', p_client_id,
+      'id', p_device_id,
+      'kind', 'device',
+      'reasonCode', p_reason_code
+    )
+  );
+
   return query select p_client_id, 'device'::text, p_device_id;
 end;
 $function$;
 
-revoke all on function public.revoke_ingest_access(uuid, uuid, uuid, text)
+revoke all on function public.revoke_ingest_access(uuid, uuid, uuid, text, uuid)
   from public, anon, authenticated;
-grant execute on function public.revoke_ingest_access(uuid, uuid, uuid, text)
+grant execute on function public.revoke_ingest_access(uuid, uuid, uuid, text, uuid)
   to service_role;
 
 -- Durable, serverless-safe limiter. The API supplies only a domain-separated
@@ -750,8 +833,213 @@ end;
 $function$;
 
 revoke all on function public.pair_ingest_device(text, text, text, text, text, text)
+  from public, anon, authenticated, service_role;
+
+-- Pairing v2 follows the same client -> enrollment -> device lock order as
+-- administration, returns the client display name from the transaction, and
+-- commits the success audit with the device mutation. The initial enrollment
+-- read is deliberately unlocked and used only to discover the client lock key;
+-- the enrollment is reselected and fully revalidated after that lock is held.
+create or replace function public.pair_ingest_device_v2(
+  p_code_hash text,
+  p_machine_hash text,
+  p_credential_hash text,
+  p_credential_prefix text,
+  p_agent_version text,
+  p_addon_version text
+)
+returns table (
+  device_id uuid,
+  client_id uuid,
+  client_name text,
+  schedule_time time without time zone,
+  schedule_timezone text
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+#variable_conflict use_column
+declare
+  v_client_id uuid;
+  v_client public.clients;
+  v_enrollment public.ingest_enrollments;
+  v_device public.ingest_devices;
+begin
+  if nullif(btrim(p_code_hash), '') is null
+    or nullif(btrim(p_machine_hash), '') is null
+    or nullif(btrim(p_credential_hash), '') is null
+    or nullif(btrim(p_credential_prefix), '') is null
+    or p_agent_version is null
+    or p_addon_version is null
+    or p_agent_version !~ '^[0-9]{1,5}(\.[0-9]{1,5}){1,3}$'
+    or p_addon_version !~ '^[0-9]{1,5}(\.[0-9]{1,5}){1,3}$' then
+    raise exception 'INVALID_PAIR_REQUEST'
+      using errcode = '22023';
+  end if;
+
+  select enrollment.client_id
+  into v_client_id
+  from public.ingest_enrollments as enrollment
+  where enrollment.code_hash = p_code_hash;
+  if not found then
+    raise exception 'CODE_NOT_FOUND'
+      using errcode = 'P0002';
+  end if;
+
+  select client.*
+  into v_client
+  from public.clients as client
+  where client.id = v_client_id
+  for update;
+  if not found
+    or v_client.status is distinct from 'Active'
+    or v_client.deleted_at is not null then
+    raise exception 'CODE_REVOKED'
+      using errcode = 'P0001';
+  end if;
+
+  select enrollment.*
+  into v_enrollment
+  from public.ingest_enrollments as enrollment
+  where enrollment.code_hash = p_code_hash
+    and enrollment.client_id = v_client_id
+  for update;
+  if not found then
+    raise exception 'CODE_NOT_FOUND'
+      using errcode = 'P0002';
+  end if;
+
+  -- Lock every active device deterministically before selecting a consumed
+  -- target. The client lock prevents a concurrent admin flow from changing the
+  -- set between these steps.
+  perform 1
+  from public.ingest_devices as device
+  where device.client_id = v_client_id
+    and device.status = 'active'
+    and device.revoked_at is null
+  order by device.id
+  for update;
+
+  if v_enrollment.revoked_at is not null then
+    raise exception 'CODE_REVOKED'
+      using errcode = 'P0001';
+  end if;
+
+  if v_enrollment.consumed_by_device_id is not null then
+    select device.*
+    into v_device
+    from public.ingest_devices as device
+    where device.id = v_enrollment.consumed_by_device_id
+      and device.client_id = v_client_id
+    for update;
+
+    if not found then
+      raise exception 'CODE_CONSUMED'
+        using errcode = 'P0001';
+    end if;
+    if v_device.machine_id_hash is distinct from p_machine_hash then
+      raise exception 'MACHINE_CONFLICT'
+        using errcode = 'P0001';
+    end if;
+    if v_device.credential_hash is distinct from p_credential_hash then
+      raise exception 'NONCE_OR_CREDENTIAL_CONFLICT'
+        using errcode = 'P0001';
+    end if;
+    if v_device.status <> 'active' or v_device.revoked_at is not null then
+      raise exception 'DEVICE_REVOKED'
+        using errcode = 'P0001';
+    end if;
+
+    insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+    values (
+      null,
+      'ingest_device',
+      v_device.id,
+      'ingest_pair.succeeded',
+      jsonb_build_object(
+        'clientId', v_client_id,
+        'deviceId', v_device.id,
+        'agentVersion', p_agent_version,
+        'addonVersion', p_addon_version
+      )
+    );
+
+    return query
+    select v_device.id, v_client_id, v_client.name,
+           v_device.schedule_time, v_device.schedule_timezone;
+    return;
+  end if;
+
+  if v_enrollment.consumed_at is not null then
+    raise exception 'CODE_CONSUMED'
+      using errcode = 'P0001';
+  end if;
+  if v_enrollment.expires_at <= clock_timestamp() then
+    raise exception 'CODE_EXPIRED'
+      using errcode = 'P0001';
+  end if;
+  if exists (
+    select 1
+    from public.ingest_devices as device
+    where device.client_id = v_client_id
+      and device.status = 'active'
+      and device.revoked_at is null
+  ) then
+    raise exception 'CODE_CONSUMED'
+      using errcode = 'P0001';
+  end if;
+
+  insert into public.ingest_devices (
+    client_id,
+    machine_id_hash,
+    credential_hash,
+    credential_prefix,
+    status,
+    agent_version,
+    addon_version,
+    last_seen_at
+  )
+  values (
+    v_client_id,
+    p_machine_hash,
+    p_credential_hash,
+    p_credential_prefix,
+    'active',
+    p_agent_version,
+    p_addon_version,
+    clock_timestamp()
+  )
+  returning * into v_device;
+
+  update public.ingest_enrollments
+  set consumed_at = clock_timestamp(),
+      consumed_by_device_id = v_device.id
+  where id = v_enrollment.id;
+
+  insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+  values (
+    null,
+    'ingest_device',
+    v_device.id,
+    'ingest_pair.succeeded',
+    jsonb_build_object(
+      'clientId', v_client_id,
+      'deviceId', v_device.id,
+      'agentVersion', p_agent_version,
+      'addonVersion', p_addon_version
+    )
+  );
+
+  return query
+  select v_device.id, v_client_id, v_client.name,
+         v_device.schedule_time, v_device.schedule_timezone;
+end;
+$function$;
+
+revoke all on function public.pair_ingest_device_v2(text, text, text, text, text, text)
   from public, anon, authenticated;
-grant execute on function public.pair_ingest_device(text, text, text, text, text, text)
+grant execute on function public.pair_ingest_device_v2(text, text, text, text, text, text)
   to service_role;
 
 -- Serializing on the device closes the "no row exists yet" race. Once a claim
