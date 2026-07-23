@@ -50,6 +50,19 @@ function isDate(value) {
   return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 
+function tradingDateInNewYork(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function isScalarOrNull(value) {
   return value === null || ['string', 'number', 'boolean'].includes(typeof value);
 }
@@ -70,7 +83,7 @@ function validateRows(snapshot, section, errors) {
     }
 
     for (const key of schema.required) {
-      if (!hasOwn(row, key) || typeof row[key] !== 'string') errors.push(`${path}.${key} is required`);
+      if (!hasOwn(row, key) || typeof row[key] !== 'string' || !row[key].trim()) errors.push(`${path}.${key} is required`);
     }
     for (const key of schema.strings || []) {
       if (hasOwn(row, key) && row[key] !== null && typeof row[key] !== 'string') errors.push(`${path}.${key} must be a string or null`);
@@ -108,6 +121,10 @@ export function validateAutoExportSnapshot(snapshot) {
   }
   if (!isIsoTimestamp(snapshot.capturedAt)) errors.push('capturedAt must be an ISO-8601 timestamp with an offset');
   if (!isDate(snapshot.tradingDate)) errors.push('tradingDate must be an ISO date');
+  if (snapshot.timeZone !== 'America/New_York') errors.push('timeZone must be America/New_York');
+  if (isIsoTimestamp(snapshot.capturedAt) && isDate(snapshot.tradingDate) && tradingDateInNewYork(snapshot.capturedAt) !== snapshot.tradingDate) {
+    errors.push('tradingDate must match capturedAt in America/New_York');
+  }
   if (!isObject(snapshot.source)) {
     errors.push('source must be an object');
   } else {
