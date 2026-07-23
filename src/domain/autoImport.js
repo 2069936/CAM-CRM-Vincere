@@ -97,6 +97,23 @@ function duplicateErrors(snapshot) {
   return errors;
 }
 
+function accountReferenceErrors(snapshot) {
+  const accountsByLower = new Set(snapshot.accounts.map((account) => trimText(account.accountName).toLowerCase()));
+  const errors = [];
+  for (const section of ['strategies', 'orders', 'executions']) {
+    snapshot[section].forEach((row, index) => {
+      if (!accountsByLower.has(trimText(row.accountName).toLowerCase())) {
+        errors.push(`${section}[${index}].accountName does not reference an account`);
+      }
+    });
+  }
+  return errors;
+}
+
+function canonicalAccountName(accountName, accountNamesByLower) {
+  return accountNamesByLower.get(trimText(accountName).toLowerCase()) || trimText(accountName);
+}
+
 function mapAccount(row) {
   const pnl = selectDailyPnl(row);
   return {
@@ -116,9 +133,9 @@ function mapAccount(row) {
   };
 }
 
-function mapStrategy(row, connectionByAccount) {
+function mapStrategy(row, connectionByAccount, accountNamesByLower) {
   const params = mapParameters(row.parameters);
-  const accountName = trimText(row.accountName);
+  const accountName = canonicalAccountName(row.accountName, accountNamesByLower);
   return {
     id: trimText(row.strategyId),
     strategyName: trimText(row.strategyName),
@@ -142,7 +159,7 @@ function mapStrategy(row, connectionByAccount) {
   };
 }
 
-function mapOrder(row) {
+function mapOrder(row, accountNamesByLower) {
   return {
     instrument: trimText(row.instrument),
     action: trimText(row.action),
@@ -157,7 +174,7 @@ function mapOrder(row) {
     name: row.name || '',
     strategyName: row.strategyName || '',
     strategyId: trimText(row.strategyId),
-    accountName: trimText(row.accountName),
+    accountName: canonicalAccountName(row.accountName, accountNamesByLower),
     id: trimText(row.orderId),
     time: row.time,
     tif: row.tif,
@@ -166,7 +183,7 @@ function mapOrder(row) {
   };
 }
 
-function mapExecution(row) {
+function mapExecution(row, accountNamesByLower) {
   return {
     instrument: trimText(row.instrument),
     action: trimText(row.action),
@@ -183,7 +200,7 @@ function mapExecution(row) {
     commission: row.commission,
     fee: row.fee,
     realizedPnl: row.realizedPnl,
-    accountName: trimText(row.accountName),
+    accountName: canonicalAccountName(row.accountName, accountNamesByLower),
     connection: '',
     nativeId: row.nativeId,
   };
@@ -192,7 +209,7 @@ function mapExecution(row) {
 function validationError(snapshot) {
   const validation = validateAutoExportSnapshot(snapshot);
   const errors = [...validation.errors];
-  if (validation.ok) errors.push(...duplicateErrors(snapshot));
+  if (validation.ok) errors.push(...duplicateErrors(snapshot), ...accountReferenceErrors(snapshot));
   if (!errors.length) return null;
 
   const unsupported = snapshot && typeof snapshot === 'object'
@@ -205,12 +222,16 @@ export function normalizeAutoImportSnapshot(snapshot) {
   const error = validationError(snapshot);
   if (error) throw error;
 
+  const accountNamesByLower = new Map(snapshot.accounts.map((account) => {
+    const accountName = trimText(account.accountName);
+    return [accountName.toLowerCase(), accountName];
+  }));
   const connectionByAccount = new Map(snapshot.accounts.map((account) => [trimText(account.accountName), trimText(account.connectionName)]));
   const parsed = {
     accounts: snapshot.accounts.map(mapAccount),
-    strategies: snapshot.strategies.map((row) => mapStrategy(row, connectionByAccount)),
-    orders: snapshot.orders.map(mapOrder),
-    executions: snapshot.executions.map(mapExecution),
+    strategies: snapshot.strategies.map((row) => mapStrategy(row, connectionByAccount, accountNamesByLower)),
+    orders: snapshot.orders.map((row) => mapOrder(row, accountNamesByLower)),
+    executions: snapshot.executions.map((row) => mapExecution(row, accountNamesByLower)),
   };
   const sectionCounts = Object.fromEntries(SECTION_NAMES.map((section) => [section, snapshot[section].length]));
   const emptySections = SECTION_NAMES.filter((section) => sectionCounts[section] === 0);

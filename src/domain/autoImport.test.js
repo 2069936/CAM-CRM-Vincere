@@ -121,6 +121,11 @@ describe('normalizeAutoImportSnapshot', () => {
   it.each(['accounts', 'strategies', 'orders', 'executions'])('keeps a valid empty %s section as incomplete metadata', (section) => {
     const snapshot = snapshotWithLiveAccount();
     snapshot[section] = [];
+    if (section === 'accounts') {
+      snapshot.strategies = [];
+      snapshot.orders = [];
+      snapshot.executions = [];
+    }
 
     const normalized = normalizeAutoImportSnapshot(snapshot);
 
@@ -128,7 +133,7 @@ describe('normalizeAutoImportSnapshot', () => {
     expect(normalized.metadata).toMatchObject({
       sectionCounts: expect.objectContaining({ [section]: 0 }),
       missingSections: [],
-      emptySections: [section],
+      emptySections: section === 'accounts' ? ['accounts', 'strategies', 'orders', 'executions'] : [section],
       isComplete: false,
     });
   });
@@ -204,5 +209,54 @@ describe('normalizeAutoImportSnapshot', () => {
       realizedPnl: null,
       pnlSource: 'gross_missing_realized',
     });
+  });
+
+  it('preserves explicit account nulls through reconciliation while legacy undefined fields still fall back', () => {
+    const snapshot = snapshotWithLiveAccount();
+    Object.assign(snapshot.accounts[0], {
+      realizedPnl: null,
+      grossRealizedPnl: null,
+      cashValue: null,
+      weeklyPnl: null,
+      unrealizedPnl: null,
+    });
+
+    const normalized = normalizeAutoImportSnapshot(snapshot);
+    const dailyImport = reconcileDailyImport({
+      clientId: 'client-null', date: normalized.date, registry: {}, parsed: normalized.parsed,
+    });
+
+    expect(dailyImport.snapshots[0]).toMatchObject({
+      grossRealizedPnl: null,
+      trailingMaxDrawdown: null,
+      accountBalance: null,
+      weeklyPnl: null,
+      unrealizedPnl: null,
+    });
+  });
+
+  it('canonicalizes cross-section account casing before reconciliation', () => {
+    const snapshot = snapshotWithLiveAccount();
+    snapshot.strategies[0].accountName = 'live-redacted-01';
+    snapshot.orders[0].accountName = 'live-redacted-01';
+    snapshot.executions[0].accountName = 'live-redacted-01';
+
+    const normalized = normalizeAutoImportSnapshot(snapshot);
+    expect(normalized.parsed.strategies[0]).toMatchObject({ accountName: 'LIVE-REDACTED-01', connection: 'Simulated Data Feed' });
+    expect(normalized.parsed.orders[0].accountName).toBe('LIVE-REDACTED-01');
+    expect(normalized.parsed.executions[0].accountName).toBe('LIVE-REDACTED-01');
+
+    const dailyImport = reconcileDailyImport({
+      clientId: 'client-case', date: normalized.date, registry: {}, parsed: normalized.parsed,
+    });
+    expect(dailyImport.snapshots[0].strategies).toHaveLength(1);
+  });
+
+  it('rejects references to an account absent from the account section', () => {
+    const snapshot = snapshotWithLiveAccount();
+    snapshot.orders[0].accountName = 'MISSING-ACCOUNT';
+
+    const error = expectValidationFailure(snapshot);
+    expect(error.errors).toContain('orders[0].accountName does not reference an account');
   });
 });

@@ -67,6 +67,30 @@ describe('auto-export snapshot v1 contract', () => {
     );
   });
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY])('rejects non-finite strategy parameter scalars: %s', (value) => {
+    const invalid = structuredClone(snapshot);
+    invalid.strategies[0].parameters.BadNumber = value;
+
+    expect(validateAutoExportSnapshot(invalid).errors).toContain('strategies[0].parameters.BadNumber must be a scalar or null');
+  });
+
+  it('requires non-empty capture and source identifiers after trimming', () => {
+    const invalid = structuredClone(snapshot);
+    invalid.captureId = '   ';
+    invalid.source.machineId = ' ';
+    invalid.source.agentVersion = '\t';
+    invalid.source.addonVersion = '';
+    invalid.source.ninjaTraderVersion = '  ';
+
+    expect(validateAutoExportSnapshot(invalid).errors).toEqual(expect.arrayContaining([
+      'captureId is required',
+      'source.machineId is required',
+      'source.agentVersion is required',
+      'source.addonVersion is required',
+      'source.ninjaTraderVersion is required',
+    ]));
+  });
+
   it('rejects calendar-invalid ISO timestamps', () => {
     const invalid = structuredClone(snapshot);
     invalid.strategies[0].startedAt = '2026-02-31T09:30:00-04:00';

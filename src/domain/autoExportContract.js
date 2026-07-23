@@ -64,7 +64,10 @@ function tradingDateInNewYork(timestamp) {
 }
 
 function isScalarOrNull(value) {
-  return value === null || ['string', 'number', 'boolean'].includes(typeof value);
+  return value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+    || (typeof value === 'number' && Number.isFinite(value));
 }
 
 function validateRows(snapshot, section, errors) {
@@ -117,7 +120,7 @@ export function validateAutoExportSnapshot(snapshot) {
 
   if (snapshot.schemaVersion !== 1) errors.push('schemaVersion must be 1');
   for (const key of ['captureId', 'timeZone']) {
-    if (typeof snapshot[key] !== 'string') errors.push(`${key} is required`);
+    if (typeof snapshot[key] !== 'string' || !snapshot[key].trim()) errors.push(`${key} is required`);
   }
   if (!isIsoTimestamp(snapshot.capturedAt)) errors.push('capturedAt must be an ISO-8601 timestamp with an offset');
   if (!isDate(snapshot.tradingDate)) errors.push('tradingDate must be an ISO date');
@@ -129,7 +132,7 @@ export function validateAutoExportSnapshot(snapshot) {
     errors.push('source must be an object');
   } else {
     for (const key of ['machineId', 'agentVersion', 'addonVersion', 'ninjaTraderVersion']) {
-      if (typeof snapshot.source[key] !== 'string') errors.push(`source.${key} is required`);
+      if (typeof snapshot.source[key] !== 'string' || !snapshot.source[key].trim()) errors.push(`source.${key} is required`);
     }
   }
 

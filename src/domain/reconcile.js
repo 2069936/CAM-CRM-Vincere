@@ -132,11 +132,11 @@ function createSnapshot(account, strategies) {
   return {
     accountName: account.accountName,
     connection: account.connection || '',
-    grossRealizedPnl: account.grossRealizedPnl || 0,
-    trailingMaxDrawdown: account.trailingMaxDrawdown || 0,
-    accountBalance: account.accountBalance || 0,
-    weeklyPnl: account.weeklyPnl || 0,
-    unrealizedPnl: account.unrealizedPnl || 0,
+    grossRealizedPnl: account.grossRealizedPnl === undefined ? 0 : account.grossRealizedPnl,
+    trailingMaxDrawdown: account.trailingMaxDrawdown === undefined ? 0 : account.trailingMaxDrawdown,
+    accountBalance: account.accountBalance === undefined ? 0 : account.accountBalance,
+    weeklyPnl: account.weeklyPnl === undefined ? 0 : account.weeklyPnl,
+    unrealizedPnl: account.unrealizedPnl === undefined ? 0 : account.unrealizedPnl,
     strategies,
   };
 }
