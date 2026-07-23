@@ -70,6 +70,11 @@ Describe 'Installer safety authoring' {
         $machine | Should -Match '<ComponentGroupRef Id="SetupPayloadComponents"'
     }
 
+    It 'uses an advertised Start menu shortcut in the per-machine UI component' {
+        $machine | Should -Match '<Shortcut[^>]*Id="SetupStartMenuShortcut"[^>]*Advertise="yes"'
+        $machine | Should -Not -Match '<Shortcut[^>]*Id="SetupStartMenuShortcut"[^>]*Advertise="no"'
+    }
+
     It 'closes NinjaTrader before AddOn replacement and chains rollback-capable MSIs' {
         $addon | Should -Match 'CloseApplication[^>]*Target="NinjaTrader.exe"'
         $bundle | Should -Match 'MsiPackage Id="MachinePackage"[^>]*Vital="yes"'

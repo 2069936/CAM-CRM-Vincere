@@ -40,7 +40,7 @@
       <Component Id="SetupUiComponent" Directory="INSTALLFOLDER" Subdirectory="Setup" Guid="8A73F919-8E4F-4E0A-A115-7F06FF58AA7B">
         <File Id="SetupUiExe" Source="$(UiPublishDir)/Vincere.AutoExport.Agent.UI.exe" KeyPath="yes">
           <Shortcut Id="SetupStartMenuShortcut" Directory="ProgramMenuFolder" Name="Vincere Auto Export Setup"
-                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
         </File>
       </Component>
       <Component Id="ProgramDataAclComponent" Directory="AUTODATAROOT" Guid="3B0A4E0A-A8EA-4D64-9C7B-ED79DDB0AA63"
