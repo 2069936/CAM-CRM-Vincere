@@ -1,17 +1,17 @@
 import { Buffer } from 'node:buffer';
+import process from 'node:process';
 import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
 import {
   AUTO_IMPORT_BUCKET,
   DEFAULT_MAX_COMPRESSED_BYTES,
-  DEFAULT_MAX_UNCOMPRESSED_BYTES,
 } from '../_lib/autoImportStore.js';
 import {
   buildSnapshotZip,
-  DEFAULT_MAX_ZIP_BYTES,
   deterministicDownloadName,
   validateStoredSnapshotMetadata,
   verifyStoredSnapshot,
 } from '../_lib/autoExportDownload.js';
+import { deriveAutoExportLimits, resolveAutoCollectionLimits } from '../_lib/autoCollectionLimits.js';
 import { ApiError, handleApiError, requireMethod } from '../_lib/http.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -66,6 +66,9 @@ function isMissing(error) {
 }
 
 export async function storageObjectBytes(value, { maxBytes = DEFAULT_MAX_COMPRESSED_BYTES } = {}) {
+  // Vercel amendment: private objects are intentionally buffered only under
+  // the shared hard cap so every byte/hash can be verified before any response
+  // is emitted. Revisit streaming only if measured staging limits require it.
   if (Buffer.isBuffer(value)) {
     if (value.length === 0 || value.length > maxBytes) throw new ApiError(409, 'stored_snapshot_corrupt');
     return value;
@@ -114,7 +117,7 @@ export function createDownloadStore(admin, { maxCompressedBytes = DEFAULT_MAX_CO
 }
 
 function safeError(error) {
-  if (error instanceof ApiError || (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500)) return error;
+  if (error instanceof ApiError) return error;
   return new ApiError(500, 'batch_download_failed');
 }
 
@@ -131,9 +134,9 @@ export function createHandler({
   createClients = createApiClients,
   authorize = requireAppUser,
   createStore = createDownloadStore,
-  maxCompressedBytes = DEFAULT_MAX_COMPRESSED_BYTES,
-  maxUncompressedBytes = DEFAULT_MAX_UNCOMPRESSED_BYTES,
-  maxZipBytes = DEFAULT_MAX_ZIP_BYTES,
+  env = process.env,
+  maxCompressedBytes = resolveAutoCollectionLimits(env).maxCompressedBytes,
+  maxUncompressedBytes = resolveAutoCollectionLimits(env).maxUncompressedBytes,
 } = {}) {
   return async function handler(req, res) {
     try {
@@ -141,7 +144,7 @@ export function createHandler({
       const { admin, auth } = createClients();
       const actor = await authorize(req, { admin, authClient: auth, roles: ['Manager'] });
       const { batchId, format } = parseDownloadQuery(req.query || {});
-      const store = createStore(admin);
+      const store = createStore(admin, { maxCompressedBytes });
       const batch = await store.getBatch(batchId);
       if (!batch) throw new ApiError(404, 'batch_not_found');
       const storagePath = validateStoredSnapshotMetadata(batch, { maxUncompressedBytes });
@@ -149,7 +152,7 @@ export function createHandler({
       const verified = verifyStoredSnapshot({ batch, compressed, maxCompressedBytes, maxUncompressedBytes });
       const bytes = format === 'json'
         ? verified.jsonBytes
-        : buildSnapshotZip({ batch, ...verified, maxZipBytes });
+        : buildSnapshotZip({ batch, ...verified, ...deriveAutoExportLimits(maxUncompressedBytes) });
       await store.auditDownload({
         actorId: actor.id,
         batchId: batch.id,

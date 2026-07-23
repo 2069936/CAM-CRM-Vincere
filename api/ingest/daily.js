@@ -4,14 +4,13 @@ import { createServiceClient } from '../_lib/apiAuth.js';
 import {
   createAutoImportStore,
   decodeSnapshotRequest,
-  DEFAULT_MAX_COMPRESSED_BYTES,
-  DEFAULT_MAX_UNCOMPRESSED_BYTES,
 } from '../_lib/autoImportStore.js';
 import { createDeviceAuthStore, requireIngestDevice } from '../_lib/deviceAuth.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../_lib/http.js';
 import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
 import { persistDailyImportWithClient } from '../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../src/domain/reconcile.js';
+import { resolveAutoCollectionLimits } from '../_lib/autoCollectionLimits.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -109,11 +108,12 @@ export function createHandler({
   normalizeSnapshot = normalizeAutoImportSnapshot,
   reconcile = reconcileDailyImport,
   persist = persistDailyImportWithClient,
-  pepper = process.env.INGEST_TOKEN_PEPPER,
-  maxCompressedBytes = positiveLimit(process.env.AUTO_COLLECTION_MAX_COMPRESSED_BYTES, DEFAULT_MAX_COMPRESSED_BYTES),
-  maxUncompressedBytes = positiveLimit(process.env.AUTO_COLLECTION_MAX_UNCOMPRESSED_BYTES, DEFAULT_MAX_UNCOMPRESSED_BYTES),
+  env = process.env,
+  pepper = env.INGEST_TOKEN_PEPPER,
+  maxCompressedBytes = resolveAutoCollectionLimits(env).maxCompressedBytes,
+  maxUncompressedBytes = resolveAutoCollectionLimits(env).maxUncompressedBytes,
   leaseSeconds = Math.min(600, Math.max(30,
-    positiveLimit(process.env.AUTO_COLLECTION_PROCESSING_LEASE_SECONDS, 120))),
+    positiveLimit(env.AUTO_COLLECTION_PROCESSING_LEASE_SECONDS, 120))),
   createProcessingToken = randomUUID,
   now = () => new Date(),
 } = {}) {

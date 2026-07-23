@@ -138,7 +138,7 @@ function publicBatch(row = {}) {
 }
 
 function safeError(error) {
-  if (error instanceof ApiError || (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500)) return error;
+  if (error instanceof ApiError) return error;
   return new ApiError(500, 'batch_history_failed');
 }
 

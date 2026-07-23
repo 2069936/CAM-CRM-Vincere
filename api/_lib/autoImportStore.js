@@ -2,9 +2,12 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { ApiError } from './http.js';
+import {
+  DEFAULT_MAX_COMPRESSED_BYTES,
+  DEFAULT_MAX_UNCOMPRESSED_BYTES,
+} from './autoCollectionLimits.js';
 
-export const DEFAULT_MAX_COMPRESSED_BYTES = 2 * 1024 * 1024;
-export const DEFAULT_MAX_UNCOMPRESSED_BYTES = 16 * 1024 * 1024;
+export { DEFAULT_MAX_COMPRESSED_BYTES, DEFAULT_MAX_UNCOMPRESSED_BYTES };
 export const AUTO_IMPORT_BUCKET = 'ninjatrader-imports';
 
 function stableJson(value) {

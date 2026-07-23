@@ -3,7 +3,9 @@ import { gzipSync } from 'node:zlib';
 import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 import { strFromU8, unzipSync } from 'fflate';
+import Papa from 'papaparse';
 import { canonicalSnapshotPayload } from './autoImportStore.js';
+import { DEFAULT_MAX_UNCOMPRESSED_BYTES, deriveAutoExportLimits } from './autoCollectionLimits.js';
 import {
   buildSnapshotZip,
   CSV_COLUMNS,
@@ -122,6 +124,27 @@ describe('auto-export CSV and ZIP reconstruction', () => {
     expect(csv).toContain(',true,,');
   });
 
+  it.each(['=', '+', '-', '@', '\t', '\r', '\n'])(
+    'neutralizes Excel formulas beginning with %j in string cells without changing numeric negatives',
+    (trigger) => {
+      const csv = csvForSection('orders', [{
+        ...snapshot.orders[0],
+        quantity: -7,
+        name: `${trigger}DANGEROUS`,
+      }]);
+      const parsed = Papa.parse(csv, { header: true, skipEmptyLines: true }).data[0];
+      expect(parsed.name).toBe(`'${trigger}DANGEROUS`);
+      expect(parsed.quantity).toBe('-7');
+    },
+  );
+
+  it('neutralizes before RFC-4180 quoting and preserves embedded quotes/newlines', () => {
+    const dangerous = '=HYPERLINK("https://example.test", "line\nnext")';
+    const csv = csvForSection('orders', [{ ...snapshot.orders[0], name: dangerous }]);
+    expect(csv).toContain('"\'=HYPERLINK(""https://example.test"", ""line\nnext"")"');
+    expect(Papa.parse(csv, { header: true, skipEmptyLines: true }).data[0].name).toBe(`'${dangerous}`);
+  });
+
   it('builds the bounded four-CSV ZIP and a manifest with verifiable provenance', () => {
     const item = evidence();
     const verified = verifyStoredSnapshot(item);
@@ -148,6 +171,9 @@ describe('auto-export CSV and ZIP reconstruction', () => {
       selectedPnl: 125.5,
       source: 'realized',
     }]);
+    expect(manifest.csvSafety).toMatchObject({
+      excelFormulaNeutralization: expect.stringMatching(/apostrophe/i),
+    });
     expect(manifest.hashes.csvSha256).toEqual(expect.objectContaining({ accounts: expect.stringMatching(/^[0-9a-f]{64}$/) }));
     expect(manifest).not.toHaveProperty('storagePath');
     expect(manifest).not.toHaveProperty('errorDetail');
@@ -158,6 +184,21 @@ describe('auto-export CSV and ZIP reconstruction', () => {
     const verified = verifyStoredSnapshot(item);
     expect(() => buildSnapshotZip({ batch: item.batch, ...verified, maxZipBytes: 10 }))
       .toThrow(expect.objectContaining({ status: 413, message: 'download_too_large' }));
+  });
+
+  it('generates a ZIP for a snapshot accepted under a raised shared cap above 16 MiB', () => {
+    const changed = structuredClone(snapshot);
+    changed.orders[0].name = 'x'.repeat(DEFAULT_MAX_UNCOMPRESSED_BYTES + 1);
+    const payload = canonicalSnapshotPayload(changed);
+    expect(payload.utf8.length).toBeGreaterThan(DEFAULT_MAX_UNCOMPRESSED_BYTES);
+    const limits = deriveAutoExportLimits(payload.utf8.length);
+    const archive = buildSnapshotZip({
+      batch: evidence().batch,
+      snapshot: changed,
+      jsonBytes: payload.utf8,
+      ...limits,
+    });
+    expect(unzipSync(archive)['Orders.csv'].length).toBeGreaterThan(DEFAULT_MAX_UNCOMPRESSED_BYTES);
   });
 
   it('records the zero-realized Gross PnL fallback per account in the manifest', () => {

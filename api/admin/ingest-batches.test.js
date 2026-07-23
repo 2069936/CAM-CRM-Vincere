@@ -5,6 +5,7 @@ import {
   encodeBatchCursor,
   parseBatchFilters,
 } from './ingest-batches.js';
+import { ApiError } from '../_lib/http.js';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -140,11 +141,24 @@ describe('admin collector batch history', () => {
   });
 
   it('does not validate or query history before Manager authorization succeeds', async () => {
-    const { handler, list } = setup({ authorizeError: Object.assign(new Error('Manager permission required.'), { status: 403 }) });
+    const { handler, list } = setup({ authorizeError: new ApiError(403, 'Manager permission required.') });
     const res = response();
     await handler({ method: 'GET', headers: {}, query: { pageSize: '999' } }, res);
     expect(res).toMatchObject({ statusCode: 403, body: { error: 'Manager permission required.' } });
     expect(list).not.toHaveBeenCalled();
+  });
+
+  it('maps an untrusted dependency error with a forged 4xx status to one stable 500', async () => {
+    const res = response();
+    const secret = Object.assign(new Error('database secret should never escape'), { status: 400 });
+    const guarded = createHandler({
+      createClients: () => ({ admin: {}, auth: {} }),
+      authorize: async () => ({ id: 'manager-1' }),
+      createStore: () => ({ list: async () => { throw secret; } }),
+    });
+    await guarded({ method: 'GET', headers: {}, query: {} }, res);
+    expect(res).toMatchObject({ statusCode: 500, body: { error: 'batch_history_failed' } });
+    expect(JSON.stringify(res.body)).not.toContain('database secret');
   });
 
   it('rejects non-GET methods', async () => {

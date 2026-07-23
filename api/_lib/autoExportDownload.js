@@ -6,12 +6,12 @@ import { validateAutoExportSnapshot } from '../../src/domain/autoExportContract.
 import { selectDailyPnl } from '../../src/domain/autoImport.js';
 import { canonicalSnapshotPayload, DEFAULT_MAX_COMPRESSED_BYTES, DEFAULT_MAX_UNCOMPRESSED_BYTES } from './autoImportStore.js';
 import { ApiError } from './http.js';
+import { DEFAULT_AUTO_EXPORT_LIMITS } from './autoCollectionLimits.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SECTIONS = Object.freeze(['accounts', 'strategies', 'orders', 'executions']);
-export const DEFAULT_MAX_ZIP_BYTES = 20 * 1024 * 1024;
 
 export const CSV_COLUMNS = Object.freeze({
   accounts: Object.freeze([
@@ -135,7 +135,8 @@ export function validateStoredSnapshotMetadata(batch, {
 
 function csvValue(value) {
   if (value === null || value === undefined) return '';
-  const text = typeof value === 'object' ? stableJson(value) : String(value);
+  const source = typeof value === 'object' ? stableJson(value) : String(value);
+  const text = typeof value === 'string' && /^[=+\-@\t\r\n]/.test(source) ? `'${source}` : source;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -175,7 +176,13 @@ function pnlSourceDetails(accounts) {
   });
 }
 
-export function buildSnapshotZip({ batch, snapshot, jsonBytes, maxZipBytes = DEFAULT_MAX_ZIP_BYTES }) {
+export function buildSnapshotZip({
+  batch,
+  snapshot,
+  jsonBytes,
+  maxZipInputBytes = DEFAULT_AUTO_EXPORT_LIMITS.maxZipInputBytes,
+  maxZipBytes = DEFAULT_AUTO_EXPORT_LIMITS.maxZipBytes,
+}) {
   const csv = Object.fromEntries(SECTIONS.map((section) => [section, Buffer.from(csvForSection(section, snapshot[section]), 'utf8')]));
   const manifest = {
     schemaVersion: snapshot.schemaVersion,
@@ -206,10 +213,15 @@ export function buildSnapshotZip({ batch, snapshot, jsonBytes, maxZipBytes = DEF
     pnlSources: pnlSourceCounts(snapshot.accounts),
     pnlSourceDetails: pnlSourceDetails(snapshot.accounts),
     pnlSourcePolicy: 'Prefer realized PnL; when realized is zero and gross is non-zero, use gross as the fallback.',
+    csvSafety: {
+      excelFormulaNeutralization: 'String cells beginning with =, +, -, @, tab, CR, or LF are prefixed with a text apostrophe before RFC-4180 escaping.',
+    },
   };
   const inputBytes = Object.values(csv).reduce((total, bytes) => total + bytes.length, 0)
     + Buffer.byteLength(JSON.stringify(manifest), 'utf8');
-  if (!Number.isSafeInteger(maxZipBytes) || maxZipBytes <= 0 || inputBytes > DEFAULT_MAX_UNCOMPRESSED_BYTES) {
+  if (!Number.isSafeInteger(maxZipInputBytes) || maxZipInputBytes <= 0
+    || !Number.isSafeInteger(maxZipBytes) || maxZipBytes <= 0
+    || inputBytes > maxZipInputBytes) {
     throw new ApiError(413, 'download_too_large');
   }
   const archive = Buffer.from(zipSync({

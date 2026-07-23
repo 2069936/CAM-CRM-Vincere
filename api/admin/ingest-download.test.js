@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { unzipSync } from 'fflate';
 import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
 import { createDownloadStore, createHandler, storageObjectBytes } from './ingest-download.js';
+import { ApiError } from '../_lib/http.js';
+import { DEFAULT_MAX_COMPRESSED_BYTES } from '../_lib/autoCollectionLimits.js';
 
 const snapshot = JSON.parse(readFileSync(new URL('../../test/fixtures/auto-export/snapshot-v1.json', import.meta.url), 'utf8'));
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -106,6 +108,28 @@ describe('admin collector batch downloads', () => {
     expect(calls.audit[0]).toMatchObject({ format: 'zip', batchId: BATCH_ID });
   });
 
+  it('passes the shared configured compressed cap into Storage and snapshot verification', async () => {
+    const createStore = vi.fn(() => ({
+      getBatch: async () => batch(),
+      downloadObject: async () => canonical.gzip,
+      auditDownload: async () => {},
+    }));
+    const handler = createHandler({
+      createClients: () => ({ admin: {}, auth: {} }),
+      authorize: async () => ({ id: 'manager-1' }),
+      createStore,
+      env: {
+        AUTO_COLLECTION_MAX_COMPRESSED_BYTES: String(canonical.gzip.length - 1),
+        AUTO_COLLECTION_MAX_UNCOMPRESSED_BYTES: String(17 * 1024 * 1024),
+      },
+    });
+    const res = response();
+    await handler({ method: 'GET', headers: {}, query: { batchId: BATCH_ID, format: 'json' } }, res);
+    expect(createStore).toHaveBeenCalledWith({}, { maxCompressedBytes: canonical.gzip.length - 1 });
+    expect(res).toMatchObject({ statusCode: 409, body: { error: 'stored_snapshot_corrupt' } });
+    expect(DEFAULT_MAX_COMPRESSED_BYTES).toBeGreaterThan(canonical.gzip.length - 1);
+  });
+
   it.each([
     [{ batchId: 'bad', format: 'json' }, 'invalid_batch_id'],
     [{ batchId: BATCH_ID, format: 'xml' }, 'invalid_download_format'],
@@ -121,10 +145,21 @@ describe('admin collector batch downloads', () => {
   });
 
   it('authorizes before validating identifiers or reading private storage', async () => {
-    const { handler, calls } = setup({ authorizeError: Object.assign(new Error('Manager permission required.'), { status: 403 }) });
+    const { handler, calls } = setup({ authorizeError: new ApiError(403, 'Manager permission required.') });
     const res = response();
     await handler({ method: 'GET', headers: {}, query: { batchId: 'bad', format: 'json' } }, res);
     expect(res).toMatchObject({ statusCode: 403, body: { error: 'Manager permission required.' } });
+    expect(calls.download).toHaveLength(0);
+  });
+
+  it('maps an untrusted dependency error with a forged 4xx status to one stable 500', async () => {
+    const { handler, calls } = setup({
+      getError: Object.assign(new Error('private dependency secret'), { status: 400 }),
+    });
+    const res = response();
+    await handler({ method: 'GET', headers: {}, query: { batchId: BATCH_ID, format: 'json' } }, res);
+    expect(res).toMatchObject({ statusCode: 500, body: { error: 'batch_download_failed' } });
+    expect(JSON.stringify(res.body)).not.toContain('private dependency secret');
     expect(calls.download).toHaveLength(0);
   });
 
