@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
 import { DailyImportClosedError } from '../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../src/domain/reconcile.js';
+import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
 import { ApiError } from '../_lib/http.js';
 import { createHandler, config } from './daily.js';
 
@@ -27,7 +28,7 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release } = {}) {
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes } = {}) {
   const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
@@ -48,6 +49,7 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authe
     persist: async (value) => { calls.order.push('persist'); calls.persist.push(value); return persist ? persist(value) : { id: 'daily-1', status: 'Needs review' }; },
     now: now || (() => new Date('2026-07-23T21:00:00Z')),
     createProcessingToken: () => '99999999-9999-4999-8999-999999999999',
+    maxCompressedBytes,
   });
   return { handler, calls };
 }
@@ -263,6 +265,24 @@ describe('daily snapshot ingest', () => {
     const { handler, calls } = setup();
     const res = await ingest(handler, snapshot({ capturedAt: '2026-07-23T21:05:00.001Z' }));
     expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_snapshot_envelope' } });
+    expect(calls.claim).toHaveLength(0);
+  });
+
+  it('rejects a canonical gzip above the incoming compressed cap before claiming', async () => {
+    const value = snapshot({
+      accounts: Array.from({ length: 100 }, (_, index) => ({
+        z: 'abcdefghij'.repeat((index % 7) + 1),
+        a: String(index),
+        m: 'qwertyuiop'.repeat((index % 11) + 1),
+      })),
+    });
+    const incoming = gzipSync(Buffer.from(JSON.stringify(value)), { level: 9 });
+    const canonical = canonicalSnapshotPayload(value).gzip;
+    const cap = incoming.length + 1;
+    expect(canonical.length).toBeGreaterThan(cap);
+    const { handler, calls } = setup({ maxCompressedBytes: cap });
+    const res = await ingest(handler, value, { body: incoming });
+    expect(res).toMatchObject({ statusCode: 413, body: { error: 'compressed_payload_too_large' } });
     expect(calls.claim).toHaveLength(0);
   });
 });

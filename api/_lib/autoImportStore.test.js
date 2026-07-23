@@ -65,6 +65,23 @@ describe('immutable auto-import payloads', () => {
     })).resolves.toMatchObject({ snapshot: fixture });
   });
 
+  it('rejects a canonical gzip expansion above the same compressed cap', async () => {
+    const expanded = {
+      ...fixture,
+      accounts: Array.from({ length: 100 }, (_, index) => ({
+        z: 'abcdefghij'.repeat((index % 7) + 1),
+        a: String(index),
+        m: 'qwertyuiop'.repeat((index % 11) + 1),
+      })),
+    };
+    const incoming = gzipSync(Buffer.from(JSON.stringify(expanded)), { level: 9 });
+    const canonical = canonicalSnapshotPayload(expanded);
+    expect(incoming.length).toBeLessThan(canonical.gzip.length);
+    await expect(decodeSnapshotRequest(request(incoming), {
+      maxCompressedBytes: canonical.gzip.length - 1,
+    })).rejects.toMatchObject({ status: 413, message: 'compressed_payload_too_large' });
+  });
+
   it('requires raw gzip bytes and rejects malformed compression with stable errors', async () => {
     await expect(decodeSnapshotRequest({ body: fixture, headers: { 'content-encoding': 'gzip' } }))
       .rejects.toMatchObject({ status: 400, message: 'raw_gzip_body_required' });
@@ -189,6 +206,19 @@ describe('auto import Supabase store', () => {
       errorCode: 'validation_failed', completeness: {}, rowCounts: {},
       eventType: 'ingest_batch_failed',
     })).rejects.toMatchObject({ status: 409, message: 'capture_lease_lost' });
+  });
+
+  it.each([
+    ['invalid_ingest_device', 401, 'invalid_device_credential'],
+    ['processing_lease_lost', 409, 'capture_lease_lost'],
+  ])('maps release RPC %s without conflating revocation and lease loss', async (databaseCode, status, message) => {
+    const store = createAutoImportStore({ rpc: async () => ({
+      data: null, error: { code: 'P0001', message: databaseCode, details: 'private' },
+    }) });
+    await expect(store.releaseLease({
+      batchId: 'batch-1', deviceId: 'device-1',
+      processingToken: '99999999-9999-4999-8999-999999999999',
+    })).rejects.toMatchObject({ status, message });
   });
 
   it('maps the locked closed-day persistence result without exposing database details', async () => {

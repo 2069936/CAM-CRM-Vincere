@@ -2185,18 +2185,18 @@ begin
   select device.client_id into v_client_id from public.ingest_devices as device
   where device.id = p_device_id;
   if not found then
-    raise exception 'processing_lease_lost' using errcode = 'P0001';
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
   end if;
   select client.* into v_client from public.clients as client
   where client.id = v_client_id for update;
   if not found then
-    raise exception 'processing_lease_lost' using errcode = 'P0001';
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
   end if;
   select device.* into v_device from public.ingest_devices as device
   where device.id = p_device_id for update;
   if not found or v_device.client_id is distinct from v_client_id
     or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
-    raise exception 'processing_lease_lost' using errcode = 'P0001';
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
   end if;
   select batch.* into v_batch from public.ingest_batches as batch
   where batch.id = p_batch_id for update;

@@ -185,6 +185,8 @@ describe('step 28 auto-collection migration contract', () => {
     expect(release).toContain('for update');
     expect(release).toMatch(/processing_token is distinct from p_processing_token/);
     expect(release).toMatch(/status = 'received'/);
+    expect(release).toContain('invalid_ingest_device');
+    expect(release).toContain('processing_lease_lost');
     expect(release.indexOf('select client.*')).toBeLessThan(release.indexOf('select device.*'));
     expect(release.indexOf('select device.*')).toBeLessThan(release.indexOf('select batch.*'));
     expect(normalizedSql).toMatch(/grant execute on function public\.release_ingest_batch_lease\([^;]+to service_role/);
@@ -582,5 +584,38 @@ describe('step 28 PostgreSQL concurrency regression', () => {
       select status || '|' || (replaces_batch_id is null)::text || '|' || (daily_import_id = '${dailyId}')::text
       from public.ingest_batches where id = '${lateOlderBatch}'
     `)).resolves.toBe('replaced|true|true');
+  }, 15_000);
+
+  databaseIt('distinguishes revoked release credentials from token lease loss', async () => {
+    const clientId = '19191919-1919-4919-8919-191919191919';
+    const deviceId = '29292929-2929-4929-8929-292929292929';
+    const captureId = '51515151-5151-4151-8151-515151515151';
+    const token = '61616161-6161-4161-8161-616161616161';
+    await psql(`
+      insert into public.clients(id, name) values ('${clientId}', 'Task 7 Release')
+      on conflict (id) do nothing;
+      delete from public.ingest_batches where device_id = '${deviceId}';
+      delete from public.ingest_devices where id = '${deviceId}';
+      insert into public.ingest_devices(
+        id, client_id, machine_id_hash, credential_hash, credential_prefix, status
+      ) values ('${deviceId}', '${clientId}', repeat('e', 64), repeat('f', 64), 'task7rel', 'active');
+    `);
+    const batchId = await psql(`
+      select public.claim_ingest_batch_v3(
+        '${deviceId}', '${captureId}', '2026-07-26', '2026-07-26T16:45:00-04:00', 1,
+        '${clientId}/2026-07-26/${captureId}.json.gz', repeat('e', 64), 10,
+        '{"accounts":0,"strategies":0,"orders":0,"executions":0}'::jsonb,
+        '${token}', 120
+      )->'batch'->>'id'
+    `);
+    await expect(psql(`
+      select public.release_ingest_batch_lease(
+        '${batchId}', '${deviceId}', '62626262-6262-4262-8262-626262626262'
+      )
+    `)).rejects.toMatchObject({ stderr: expect.stringContaining('processing_lease_lost') });
+    await psql(`update public.ingest_devices set status = 'revoked', revoked_at = clock_timestamp() where id = '${deviceId}'`);
+    await expect(psql(`
+      select public.release_ingest_batch_lease('${batchId}', '${deviceId}', '${token}')
+    `)).rejects.toMatchObject({ stderr: expect.stringContaining('invalid_ingest_device') });
   }, 15_000);
 });

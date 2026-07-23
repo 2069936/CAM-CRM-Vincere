@@ -82,7 +82,11 @@ export async function decodeSnapshotRequest(req, {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
     throw new ApiError(400, 'invalid_snapshot_json');
   }
-  return { snapshot, ...canonicalSnapshotPayload(snapshot) };
+  const canonical = canonicalSnapshotPayload(snapshot);
+  if (canonical.gzip.length > maxCompressedBytes) {
+    throw new ApiError(413, 'compressed_payload_too_large');
+  }
+  return { snapshot, ...canonical };
 }
 
 function rpcValue(data) {
