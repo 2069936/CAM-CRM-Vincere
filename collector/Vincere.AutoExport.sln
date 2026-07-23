@@ -1,0 +1,42 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.Contracts", "src\Vincere.AutoExport.Contracts\Vincere.AutoExport.Contracts.csproj", "{7B6C7C46-0184-46A0-94B0-D2057246AA31}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.Agent", "src\Vincere.AutoExport.Agent\Vincere.AutoExport.Agent.csproj", "{2243DB1F-47C9-4A8B-97FD-241FBEF93F02}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.Agent.UI", "src\Vincere.AutoExport.Agent.UI\Vincere.AutoExport.Agent.UI.csproj", "{D5308034-154C-48A2-A94F-1B7D66EFD803}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.NinjaTrader", "src\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj", "{B20D75CF-709F-4769-A8E2-C2052052B804}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.Contracts.Tests", "tests\Vincere.AutoExport.Contracts.Tests\Vincere.AutoExport.Contracts.Tests.csproj", "{DF56601E-E772-4784-97BB-06B73109C405}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.Agent.Tests", "tests\Vincere.AutoExport.Agent.Tests\Vincere.AutoExport.Agent.Tests.csproj", "{9ED94056-C12F-4423-8B0A-38E7ED8C2906}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7B6C7C46-0184-46A0-94B0-D2057246AA31}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7B6C7C46-0184-46A0-94B0-D2057246AA31}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7B6C7C46-0184-46A0-94B0-D2057246AA31}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7B6C7C46-0184-46A0-94B0-D2057246AA31}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2243DB1F-47C9-4A8B-97FD-241FBEF93F02}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2243DB1F-47C9-4A8B-97FD-241FBEF93F02}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D5308034-154C-48A2-A94F-1B7D66EFD803}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D5308034-154C-48A2-A94F-1B7D66EFD803}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B20D75CF-709F-4769-A8E2-C2052052B804}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B20D75CF-709F-4769-A8E2-C2052052B804}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DF56601E-E772-4784-97BB-06B73109C405}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DF56601E-E772-4784-97BB-06B73109C405}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DF56601E-E772-4784-97BB-06B73109C405}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DF56601E-E772-4784-97BB-06B73109C405}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9ED94056-C12F-4423-8B0A-38E7ED8C2906}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9ED94056-C12F-4423-8B0A-38E7ED8C2906}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9ED94056-C12F-4423-8B0A-38E7ED8C2906}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9ED94056-C12F-4423-8B0A-38E7ED8C2906}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

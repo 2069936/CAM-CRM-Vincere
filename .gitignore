@@ -43,6 +43,7 @@ public/strategy-set-index.json
 *.ntvs*
 *.njsproj
 *.sln
+!collector/Vincere.AutoExport.sln
 *.sw?
 
 # Local CRM backups
