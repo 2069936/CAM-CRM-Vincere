@@ -6,7 +6,7 @@ BeforeAll {
 
 Describe 'NinjaTrader profile detection' {
     BeforeEach {
-        $script:testRoot = Join-Path $TestDrive 'Users'
+        $script:testRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:testRoot | Out-Null
     }
 
