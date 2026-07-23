@@ -520,3 +520,61 @@ days before the manual process is retired.
   <https://ninjatrader.com/support/helpguides/nt8/best_practices.htm>
 - Importing and updating third-party AddOns:
   <https://ninjatrader.com/support/helpGuides/nt8/using_3rd_party_add-ons.htm>
+
+## 17. Current CRM Integration Boundaries
+
+The implementation must reuse the current domain and database behavior rather
+than copy the draft persistence logic from `ItsJuanBlanco/Auto-Export`.
+
+### 17.1 Shared normalization and reconciliation
+
+- AddOn JSON is converted into the canonical row shapes already produced by
+  `src/domain/csvImport.js`.
+- The canonical payload is passed to `reconcileDailyImport` in
+  `src/domain/reconcile.js` so manual CSV and automatic JSON imports create the
+  same accounts, snapshots, strategy metadata, order/execution links, and flags.
+- Auto-import normalization is implemented as a pure domain module with fixture
+  parity tests. It must not depend on React, browser APIs, or Supabase.
+- Realized and Gross Realized PnL are retained separately until the approved
+  fallback rule is applied during canonical normalization.
+
+### 17.2 Shared persistence
+
+The current `upsertSupabaseDailyImport` function contains the authoritative
+mapping into `trading_accounts`, `daily_imports`, `account_snapshots`,
+`strategy_snapshots`, `orders`, `executions`, and `operational_flags`. It is
+currently coupled to the browser Supabase client, so the server endpoint cannot
+safely call it as-is.
+
+Implementation must extract the reusable persistence operation behind an
+explicit database adapter or transactional server function. Both the manual
+upload path and auto-import endpoint then invoke the same mapping. Required
+existing safeguards remain intact, including not deleting prior detail rows
+when a replacement payload has an empty section.
+
+Raw snapshot storage and `ingest_batches` metadata are added around this shared
+operation; they do not replace the existing daily-import tables.
+
+### 17.3 Server endpoints
+
+The server surface is separated by responsibility:
+
+- authenticated CRM action to create a one-time client enrollment code;
+- device enrollment to consume the code and issue a revocable credential;
+- heartbeat/version reporting;
+- idempotent daily snapshot ingest; and
+- authenticated Manager download of raw JSON or the reconstructed CSV package.
+
+Only server-side code may use the Supabase service-role key. Enrollment and
+ingest endpoints use narrow request schemas, payload-size limits, rate limits,
+redacted logs, and explicit method handling.
+
+### 17.4 Database migration
+
+A new migration extends the existing `ingest_devices` foundation with hashed
+device credentials, enrollment records, `ingest_batches`, indexes, status
+constraints, and storage policies. It also defines the Manager/CAM permissions
+needed to view device health and generate enrollment codes without granting
+direct access to other clients' raw snapshots.
+
+The migration must be additive and preserve all existing manual imports.
