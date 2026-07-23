@@ -77,6 +77,8 @@ function createDefaultAccount(account, existing = {}) {
     targetProfit: existing.targetProfit ?? '',
     maxDrawdownLimit: existing.maxDrawdownLimit ?? '',
     riskLevel: existing.riskLevel || '',
+    algoStack: existing.algoStack || '',
+    dailyLossLimit: existing.dailyLossLimit || '',
     bulletBotPassType: existing.bulletBotPassType || '',
     bulletBotDirection: existing.bulletBotDirection || '',
     notes: existing.notes || '',

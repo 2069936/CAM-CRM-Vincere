@@ -5,6 +5,7 @@ import {
   persistDailyImportWithClient,
   withLegacyDailyImportId,
 } from './dailyImportPersistence.js';
+import { reconcileDailyImport } from './reconcile.js';
 
 function makeDb({ existingImport = null, supportsSourceColumns = false } = {}) {
   const db = {
@@ -513,5 +514,55 @@ describe('withLegacyDailyImportId', () => {
 
     expect(result).toEqual(input);
     expect(result).not.toBe(input);
+  });
+});
+
+describe('manual reconcile to persistence', () => {
+  it('preserves configured algo stack and daily loss limit for a seen account', async () => {
+    const registry = {
+      ACC1: {
+        accountName: 'ACC1',
+        alias: 'Primary',
+        connection: 'Lucid',
+        accountType: 'Funded',
+        status: 'Active',
+        payoutState: 'Not requested',
+        riskLevel: 'Medium',
+        algoStack: 'RBO + URGO',
+        dailyLossLimit: '750',
+      },
+    };
+    const reconciled = reconcileDailyImport({
+      clientId: 'legacy-client',
+      date: '2026-07-23',
+      registry,
+      parsed: {
+        accounts: [{
+          accountName: 'ACC1',
+          connection: 'Lucid',
+          grossRealizedPnl: 125,
+          accountBalance: 50125,
+        }],
+        strategies: [{ accountName: 'ACC1', strategyName: 'RBO-1.8', enabled: true }],
+        orders: [],
+        executions: [],
+      },
+    });
+    const db = makeDb();
+
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: reconciled,
+    });
+
+    expect(db.upsertTradingAccounts).toHaveBeenCalledWith([
+      expect.objectContaining({
+        account_name: 'ACC1',
+        risk_level: 'Medium',
+        algo_stack: 'RBO + URGO',
+        daily_loss_limit: '750',
+      }),
+    ]);
   });
 });
