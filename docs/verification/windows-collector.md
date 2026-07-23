@@ -11,13 +11,13 @@ service, live ACL checks, the signed bundle, or Authenticode validation.
 
 | Field | Result |
 |---|---|
-| Workflow | [Collector Windows run 30048206306](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30048206306) |
-| Commit | `ad6270809a816d446c3dcb551cef5ed12931ef3c` |
+| Workflow | [Collector Windows run 30049258782](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30049258782) |
+| Commit | `5e2bf1b4d76b1d394cb2ad3546eba50f6fe78895` |
 | Runner | GitHub-hosted `windows-2025` |
-| .NET tests | 117 passed |
+| .NET tests | 135 passed, including 18 pure AddOn mapping/protocol tests |
 | Installer tests | 14 passed |
-| Artifact | `collector-machine-msi-9/Vincere.AutoExport.Machine.msi` |
-| Artifact SHA-256 | `4f0cebb6be9c9c3c0705d366ed2b62966fe32b0e01677760c73dbbcfe7082f26` |
+| Artifact | `collector-machine-msi-11/Vincere.AutoExport.Machine.msi` |
+| Artifact SHA-256 | `2e80b9c3e2eb0f6b22b810bc26895a0b8c3c3342bed6cc8df21cd1d514108b02` |
 
 The artifact is unsigned and retained for seven days. It is portable-gate
 evidence only and must not be distributed as the production installer.
