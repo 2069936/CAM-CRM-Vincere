@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createHandler, createIngestStatusStore, resolveInstallerRelease } from './ingest-status.js';
 
@@ -14,12 +16,28 @@ function response() {
   };
 }
 
-const releaseEnv = {
-  AUTO_COLLECTION_INSTALLER_URL: 'https://downloads.example.test/vincere-agent.msi',
-  AUTO_COLLECTION_INSTALLER_VERSION: '1.4.2',
-  AUTO_COLLECTION_INSTALLER_SHA256: 'a'.repeat(64),
-  AUTO_COLLECTION_INSTALLER_PUBLISHED_AT: '2026-07-23T14:00:00.000Z',
+const releaseManifest = {
+  schemaVersion: 1,
+  version: '1.4.2',
+  minimumAgentVersion: '1.4.2',
+  minimumSchemaVersion: 1,
+  publishedAt: '2026-07-23T14:00:00.000Z',
+  signingThumbprint: 'A'.repeat(40),
+  artifacts: [
+    { name: 'Vincere.AutoExport.Machine.msi', url: 'https://downloads.example.test/Vincere.AutoExport.Machine.msi', sha256: 'b'.repeat(64), size: 100 },
+    { name: 'Vincere.AutoExport.AddOn.msi', url: 'https://downloads.example.test/Vincere.AutoExport.AddOn.msi', sha256: 'c'.repeat(64), size: 200 },
+    { name: 'Vincere-AutoExport-Setup.exe', url: 'https://downloads.example.test/Vincere-AutoExport-Setup.exe', sha256: 'a'.repeat(64), size: 300 },
+  ],
 };
+const releaseManifestText = JSON.stringify(releaseManifest);
+const releaseEnv = {
+  AUTO_COLLECTION_RELEASE_MANIFEST_URL: 'https://downloads.example.test/release-manifest.json',
+  AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: createHash('sha256').update(releaseManifestText).digest('hex'),
+};
+const fetchRelease = vi.fn(async () => new Response(releaseManifestText, {
+  status: 200,
+  headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(releaseManifestText)) },
+}));
 
 function setup({ authorize, status } = {}) {
   const safeStatus = status || {
@@ -63,6 +81,7 @@ function setup({ authorize, status } = {}) {
     }),
     createStore: () => ({ load: vi.fn(async () => safeStatus) }),
     env: releaseEnv,
+    fetchRelease,
     production: true,
     now: () => new Date('2026-07-23T16:45:00.000Z'),
   });
@@ -122,32 +141,74 @@ describe('collector profile status endpoint', () => {
 });
 
 describe('installer release manifest validation', () => {
-  it('accepts a complete server-controlled HTTPS manifest', () => {
-    expect(resolveInstallerRelease(releaseEnv, { production: true })).toEqual({
-      url: releaseEnv.AUTO_COLLECTION_INSTALLER_URL,
+  it('fetches a pinned HTTPS manifest and selects the signed setup bundle', async () => {
+    await expect(resolveInstallerRelease(releaseEnv, { production: true, fetchImpl: fetchRelease })).resolves.toEqual({
+      url: 'https://downloads.example.test/Vincere-AutoExport-Setup.exe',
       version: '1.4.2',
       sha256: 'a'.repeat(64),
       publishedAt: '2026-07-23T14:00:00.000Z',
+      size: 300,
+      signingThumbprint: 'A'.repeat(40),
     });
+    expect(fetchRelease).toHaveBeenCalledWith(releaseEnv.AUTO_COLLECTION_RELEASE_MANIFEST_URL, expect.objectContaining({ redirect: 'error' }));
   });
 
-  it('returns unavailable only when the complete manifest is omitted', () => {
-    expect(resolveInstallerRelease({}, { production: true })).toBeNull();
+  it('reuses a verified immutable manifest instead of fetching once per client', async () => {
+    const fetchImpl = vi.fn(async () => new Response(releaseManifestText, { status: 200 }));
+    await resolveInstallerRelease(releaseEnv, { production: true, fetchImpl });
+    await resolveInstallerRelease(releaseEnv, { production: true, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns unavailable only when the manifest configuration is completely omitted', async () => {
+    await expect(resolveInstallerRelease({}, { production: true, fetchImpl: fetchRelease })).resolves.toBeNull();
   });
 
   it.each([
-    [{ ...releaseEnv, AUTO_COLLECTION_INSTALLER_URL: 'http://downloads.example.test/a.msi' }, true],
-    [{ ...releaseEnv, AUTO_COLLECTION_INSTALLER_SHA256: 'short' }, true],
-    [{ ...releaseEnv, AUTO_COLLECTION_INSTALLER_VERSION: 'latest' }, true],
-    [{ ...releaseEnv, AUTO_COLLECTION_INSTALLER_PUBLISHED_AT: 'tomorrow' }, true],
-    [{ AUTO_COLLECTION_INSTALLER_URL: releaseEnv.AUTO_COLLECTION_INSTALLER_URL }, true],
-  ])('rejects partial or invalid release configuration', (env, production) => {
-    expect(() => resolveInstallerRelease(env, { production })).toThrow('Invalid auto-collection installer manifest configuration.');
+    [{ ...releaseEnv, AUTO_COLLECTION_RELEASE_MANIFEST_URL: 'http://downloads.example.test/release-manifest.json' }, true],
+    [{ ...releaseEnv, AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: 'short' }, true],
+    [{ AUTO_COLLECTION_RELEASE_MANIFEST_URL: releaseEnv.AUTO_COLLECTION_RELEASE_MANIFEST_URL }, true],
+  ])('rejects partial or invalid release configuration', async (env, production) => {
+    await expect(resolveInstallerRelease(env, { production, fetchImpl: fetchRelease }))
+      .rejects.toThrow('Invalid auto-collection installer manifest configuration.');
   });
 
-  it('permits localhost HTTP only outside production', () => {
-    expect(resolveInstallerRelease({ ...releaseEnv, AUTO_COLLECTION_INSTALLER_URL: 'http://localhost:4173/agent.msi' }, { production: false }))
-      .toMatchObject({ url: 'http://localhost:4173/agent.msi' });
+  it('rejects a fetched manifest whose bytes do not match the pinned SHA-256', async () => {
+    await expect(resolveInstallerRelease({ ...releaseEnv, AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: 'd'.repeat(64) }, {
+      production: true,
+      fetchImpl: fetchRelease,
+    })).rejects.toThrow('Invalid auto-collection installer manifest configuration.');
+  });
+
+  it.each([
+    [{ ...releaseManifest, artifacts: releaseManifest.artifacts.filter(({ name }) => name !== 'Vincere-AutoExport-Setup.exe') }],
+    [{ ...releaseManifest, version: 'latest' }],
+    [{ ...releaseManifest, signingThumbprint: 'short' }],
+    [{ ...releaseManifest, artifacts: releaseManifest.artifacts.map((artifact) => artifact.name === 'Vincere-AutoExport-Setup.exe' ? { ...artifact, url: 'http://downloads.example.test/setup.exe' } : artifact) }],
+  ])('rejects a malformed or incomplete release manifest %#', async (manifest) => {
+    const text = JSON.stringify(manifest);
+    const env = {
+      ...releaseEnv,
+      AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: createHash('sha256').update(text).digest('hex'),
+    };
+    const fetchImpl = vi.fn(async () => new Response(text, { status: 200 }));
+    await expect(resolveInstallerRelease(env, { production: true, fetchImpl }))
+      .rejects.toThrow('Invalid auto-collection installer manifest configuration.');
+  });
+
+  it('permits localhost HTTP only outside production', async () => {
+    const localManifest = {
+      ...releaseManifest,
+      artifacts: releaseManifest.artifacts.map((artifact) => ({ ...artifact, url: artifact.url.replace('https://downloads.example.test', 'http://localhost:4173') })),
+    };
+    const text = JSON.stringify(localManifest);
+    const env = {
+      AUTO_COLLECTION_RELEASE_MANIFEST_URL: 'http://localhost:4173/release-manifest.json',
+      AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: createHash('sha256').update(text).digest('hex'),
+    };
+    const fetchImpl = vi.fn(async () => new Response(text, { status: 200 }));
+    await expect(resolveInstallerRelease(env, { production: false, fetchImpl }))
+      .resolves.toMatchObject({ url: 'http://localhost:4173/Vincere-AutoExport-Setup.exe' });
   });
 });
 

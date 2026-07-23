@@ -31,6 +31,28 @@ describe('Manager collector fleet endpoint', () => {
     expect(res.headers['Cache-Control']).toBe('private, no-store');
   });
 
+  it('uses the same pinned release manifest version as the Profile status endpoint', async () => {
+    const list = vi.fn(async () => ({ rows: [], summary: { total: 0 }, total: 0 }));
+    const resolveRelease = vi.fn(async () => ({ version: '2.3.4' }));
+    const env = { AUTO_COLLECTION_RELEASE_MANIFEST_URL: 'https://downloads.example.test/release-manifest.json' };
+    const fetchRelease = vi.fn();
+    const handler = createHandler({
+      createClients: () => ({ admin: {}, auth: {} }),
+      authorize: async () => ({ role: 'Manager' }),
+      createStore: () => ({ list }),
+      now: () => new Date('2026-07-23T21:00:00.000Z'),
+      resolveRelease,
+      env,
+      fetchRelease,
+      production: true,
+    });
+    const res = response();
+    await handler({ method: 'GET', query: {} }, res);
+    expect(resolveRelease).toHaveBeenCalledWith(env, { production: true, fetchImpl: fetchRelease });
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ releaseVersion: '2.3.4' }));
+    expect(res.statusCode).toBe(200);
+  });
+
   it.each([
     [{ page: '0' }, 'invalid_page'],
     [{ pageSize: '101' }, 'invalid_page_size'],

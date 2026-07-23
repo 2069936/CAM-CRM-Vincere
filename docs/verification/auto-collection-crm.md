@@ -54,10 +54,15 @@ environment; never prefix secrets with `VITE_`.
 | `AUTO_COLLECTION_MAX_COMPRESSED_BYTES` | server | default 2 MiB; hard cap 32 MiB |
 | `AUTO_COLLECTION_MAX_UNCOMPRESSED_BYTES` | server | default 16 MiB; hard cap 128 MiB |
 | `AUTO_COLLECTION_PROCESSING_LEASE_SECONDS` | server | default `120`; bounded 30–600 |
-| `AUTO_COLLECTION_INSTALLER_URL` | server | HTTPS release URL |
-| `AUTO_COLLECTION_INSTALLER_VERSION` | server | exact dotted release version |
-| `AUTO_COLLECTION_INSTALLER_SHA256` | server | lowercase 64-character SHA-256 |
-| `AUTO_COLLECTION_INSTALLER_PUBLISHED_AT` | server | ISO-8601 timestamp |
+| `AUTO_COLLECTION_RELEASE_MANIFEST_URL` | server | HTTPS URL of the exact signed-release `release-manifest.json` |
+| `AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` | server | lowercase SHA-256 of the raw manifest bytes, pinned during deployment |
+
+The CRM fetches the bounded manifest without redirects, verifies its pinned
+SHA-256, validates every field and same-origin HTTPS artifact, and exposes only
+the exact `Vincere-AutoExport-Setup.exe` entry. Profile and Manager therefore
+derive the current installer and update-required version from the same atomic
+release document. The detached CMS signature and Authenticode signatures are
+verified in the release workflow before an operator pins the manifest hash.
 
 The private Storage bucket name is fixed in code as `ninjatrader-imports` so a
 misconfigured environment cannot route raw data to a public bucket.

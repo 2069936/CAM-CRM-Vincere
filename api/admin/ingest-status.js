@@ -1,10 +1,11 @@
 import process from 'node:process';
 import { createApiClients, requireAppUser, requireClientAssignment } from '../_lib/apiAuth.js';
+import { resolveInstallerRelease } from '../_lib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../_lib/http.js';
 
+export { resolveInstallerRelease } from '../_lib/collectorRelease.js';
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const VERSION = /^[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_DEVICE_ERROR_CODES = new Set([
   'ninjatrader_not_running',
   'addon_unavailable',
@@ -26,40 +27,6 @@ function requireClientUuid(value) {
   const normalized = String(value || '').trim();
   if (!UUID.test(normalized)) throw new ApiError(400, 'invalid_client_uuid');
   return normalized.toLowerCase();
-}
-
-function canonicalTimestamp(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-export function resolveInstallerRelease(env = process.env, {
-  production = env.NODE_ENV === 'production',
-} = {}) {
-  const values = [
-    env.AUTO_COLLECTION_INSTALLER_URL,
-    env.AUTO_COLLECTION_INSTALLER_VERSION,
-    env.AUTO_COLLECTION_INSTALLER_SHA256,
-    env.AUTO_COLLECTION_INSTALLER_PUBLISHED_AT,
-  ];
-  if (values.every((value) => !String(value || '').trim())) return null;
-  if (values.some((value) => !String(value || '').trim())) {
-    throw new Error('Invalid auto-collection installer manifest configuration.');
-  }
-
-  try {
-    const url = new URL(String(values[0]).trim());
-    const isLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.username || url.password || (url.protocol !== 'https:' && (production || !isLoopback))) throw new Error('url');
-    const version = String(values[1]).trim();
-    const sha256 = String(values[2]).trim().toLowerCase();
-    const publishedAt = canonicalTimestamp(String(values[3]).trim());
-    if (!VERSION.test(version) || !SHA256.test(sha256) || !publishedAt) throw new Error('fields');
-    return { url: url.toString(), version, sha256, publishedAt };
-  } catch {
-    throw new Error('Invalid auto-collection installer manifest configuration.');
-  }
 }
 
 export function createIngestStatusStore(admin) {
@@ -139,6 +106,7 @@ export function createHandler({
   createStore = createIngestStatusStore,
   env = process.env,
   production = env.NODE_ENV === 'production',
+  fetchRelease = globalThis.fetch,
   now = () => new Date(),
 } = {}) {
   return async function handler(req, res) {
@@ -154,7 +122,7 @@ export function createHandler({
       const clientId = requireClientUuid(req.query?.clientUuid);
       await enforceAssignment(admin, actor, clientId);
       const status = await createStore(admin).load(clientId);
-      const release = resolveInstallerRelease(env, { production });
+      const release = await resolveInstallerRelease(env, { production, fetchImpl: fetchRelease });
       return sendJson(res, 200, {
         serverTime: now().toISOString(),
         client: { uuid: status.client.id, name: status.client.name },

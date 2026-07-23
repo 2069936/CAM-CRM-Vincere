@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
+import { resolveInstallerRelease } from '../_lib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../_lib/http.js';
 import { classifyFleetRow, newYorkTradingClock, summarizeFleet } from '../../src/domain/autoCollectionFleet.js';
 
@@ -101,7 +102,10 @@ export function createHandler({
   authorize = requireAppUser,
   createStore = createFleetStore,
   now = () => new Date(),
-  releaseVersion = process.env.AUTO_COLLECTION_INSTALLER_VERSION || null,
+  resolveRelease = resolveInstallerRelease,
+  env = process.env,
+  production = env.NODE_ENV === 'production',
+  fetchRelease = globalThis.fetch,
 } = {}) {
   return async function handler(req, res) {
     try {
@@ -111,6 +115,7 @@ export function createHandler({
       const filters = parseFleetQuery(req.query || {});
       const serverTime = now();
       const tradingDate = newYorkTradingClock(serverTime)?.date;
+      const releaseVersion = (await resolveRelease(env, { production, fetchImpl: fetchRelease }))?.version || null;
       const result = await createStore(admin).list({ ...filters, tradingDate, now: serverTime, releaseVersion });
       res.setHeader('Cache-Control', 'private, no-store');
       return sendJson(res, 200, { serverTime: serverTime.toISOString(), ...filters, ...result });
