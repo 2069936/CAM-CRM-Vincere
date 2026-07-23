@@ -115,4 +115,65 @@ describe('step 28 auto-collection migration contract', () => {
     expect(normalizedSql).toMatch(/revoke all on function public\.claim_ingest_batch\([^;]+from public, anon, authenticated/);
     expect(normalizedSql).toMatch(/grant execute on function public\.claim_ingest_batch\([^;]+to service_role/);
   });
+
+  it('corrects the new-device schedule default to 16:45 without rewriting existing rows', () => {
+    expect(normalizedSql).toMatch(/add column if not exists schedule_time time without time zone not null default '16:45:00'/);
+    expect(normalizedSql).toMatch(/alter table public\.ingest_devices alter column schedule_time set default '16:45:00'/);
+    expect(normalizedSql).not.toMatch(/update public\.ingest_devices set schedule_time/);
+  });
+
+  it('enforces one active unconsumed enrollment per client as a database backstop', () => {
+    expect(normalizedSql).toMatch(/create unique index if not exists idx_ingest_enrollments_one_open_per_client on public\.ingest_enrollments\(client_id\) where consumed_at is null and revoked_at is null/);
+  });
+
+  it('atomically generates, rebinds, and revokes client-scoped ingest access', () => {
+    const generating = functionDefinition('create_ingest_enrollment');
+    const revoking = functionDefinition('revoke_ingest_access');
+    for (const definition of [generating, revoking]) {
+      expect(definition).toContain('security definer');
+      expect(definition).toMatch(/set search_path\s*=\s*pg_catalog, public/);
+      expect(definition).toContain('for update');
+    }
+    expect(generating).toMatch(/from public\.clients[\s\S]*for update/);
+    expect(generating).toMatch(/status[^;]+active/);
+    expect(generating).toMatch(/deleted_at is not null/);
+    expect(generating).toMatch(/product_key/);
+    expect(generating).toMatch(/active_device_exists/);
+    expect(generating).toMatch(/update public\.ingest_devices[\s\S]*credential_hash = null[\s\S]*credential_prefix = null/);
+    expect(generating).toMatch(/update public\.ingest_enrollments[\s\S]*revoked_at = clock_timestamp\(\)/);
+    expect(generating).toMatch(/insert into public\.ingest_enrollments/);
+    expect(revoking).toMatch(/p_client_id/);
+    expect(revoking).toMatch(/update public\.ingest_(?:devices|enrollments)/);
+    for (const name of ['create_ingest_enrollment', 'revoke_ingest_access']) {
+      expect(normalizedSql).toMatch(new RegExp(`revoke all on function public\\.${name}\\([^;]+from public, anon, authenticated`));
+      expect(normalizedSql).toMatch(new RegExp(`grant execute on function public\\.${name}\\([^;]+to service_role`));
+    }
+  });
+
+  it('uses a durable HMAC-keyed pairing limiter with an atomic service-only RPC', () => {
+    expect(normalizedSql).toContain('create table if not exists public.ingest_pair_rate_limits');
+    expect(normalizedSql).toMatch(/key_hash text primary key/);
+    for (const column of ['window_started_at', 'attempt_count', 'blocked_until', 'updated_at']) {
+      expect(normalizedSql).toMatch(new RegExp(`\\b${column}\\b`));
+    }
+    expect(normalizedSql).toMatch(/alter table public\.ingest_pair_rate_limits enable row level security/);
+    expect(normalizedSql).toMatch(/revoke all on table public\.ingest_pair_rate_limits from public, anon, authenticated/);
+    expect(normalizedSql).toMatch(/grant select, insert, update, delete on table public\.ingest_pair_rate_limits to service_role/);
+    expect(normalizedSql).not.toMatch(/\bip_address\b|\braw_ip\b|\benrollment_code\b/);
+
+    const limiting = functionDefinition('check_ingest_pair_rate_limit');
+    expect(limiting).toContain('security definer');
+    expect(limiting).toContain('for update');
+    expect(limiting).toMatch(/p_max_attempts/);
+    expect(limiting).toMatch(/p_window_seconds/);
+    expect(limiting).toMatch(/p_block_seconds/);
+    expect(limiting).toMatch(/window_started_at/);
+    expect(limiting).toMatch(/blocked_until/);
+    expect(normalizedSql).toMatch(/revoke all on function public\.check_ingest_pair_rate_limit\([^;]+from public, anon, authenticated/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.check_ingest_pair_rate_limit\([^;]+to service_role/);
+  });
+
+  it('allows a rebind to the same machine only after the former active binding is revoked', () => {
+    expect(normalizedSql).toMatch(/create unique index if not exists idx_ingest_devices_machine_id_hash_unique on public\.ingest_devices\(machine_id_hash\) where machine_id_hash is not null and status = 'active' and revoked_at is null/);
+  });
 });

@@ -1,7 +1,14 @@
+import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 import {
+  deriveDeviceToken,
   digestDeviceToken,
   digestEnrollmentCode,
+  digestMachineId,
+  digestPairRateLimitKey,
+  normalizeEnrollmentCode,
+  normalizeMachineId,
+  normalizePairingNonce,
   isExpired,
   issueDeviceToken,
   issueEnrollmentCode,
@@ -36,5 +43,45 @@ describe('ingest tokens', () => {
     expect(safeEqualHex(digest, digest)).toBe(true);
     expect(safeEqualHex(digest, 'not hexadecimal')).toBe(false);
     expect(safeEqualHex(digest, digest.slice(2))).toBe(false);
+  });
+
+  it('normalizes Crockford enrollment codes and Windows MachineGuids', () => {
+    expect(normalizeEnrollmentCode(' abcd-efgh-jk ')).toBe('ABCDEFGHJK');
+    expect(normalizeMachineId('  A1B2-C3D4  ')).toBe('a1b2-c3d4');
+    expect(() => normalizeEnrollmentCode('ABCD-EFIO-JK')).toThrow('Invalid enrollment code.');
+    expect(() => normalizeMachineId('   ')).toThrow('Invalid machine ID.');
+  });
+
+  it('requires a canonical 32-byte base64url pairing nonce', () => {
+    const nonce = Buffer.alloc(32, 7).toString('base64url');
+    expect(normalizePairingNonce(nonce)).toBe(nonce);
+    expect(() => normalizePairingNonce('too-short')).toThrow('Invalid pairing nonce.');
+    expect(() => normalizePairingNonce(`${nonce}=`)).toThrow('Invalid pairing nonce.');
+  });
+
+  it('derives a deterministic pseudorandom token bound to code, machine, and nonce', () => {
+    const args = {
+      enrollmentCode: 'ABCDEFGHJK',
+      machineId: 'machine-guid',
+      pairingNonce: Buffer.alloc(32, 9).toString('base64url'),
+      pepper: 'test-pepper',
+    };
+    const first = deriveDeviceToken(args);
+    const retry = deriveDeviceToken(args);
+    expect(first).toEqual(retry);
+    expect(first.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(first.record.credentialHash).toBe(digestDeviceToken(first.token, args.pepper));
+    expect(JSON.stringify(first.record)).not.toContain(first.token);
+    expect(deriveDeviceToken({ ...args, machineId: 'other-machine' }).token).not.toBe(first.token);
+    expect(deriveDeviceToken({ ...args, pairingNonce: Buffer.alloc(32, 10).toString('base64url') }).token).not.toBe(first.token);
+  });
+
+  it('domain-separates machine and rate-limit identity HMACs', () => {
+    const machine = digestMachineId('machine-guid', 'test-pepper');
+    const rateKey = digestPairRateLimitKey('203.0.113.4', 'test-pepper');
+    expect(machine).toMatch(/^[a-f0-9]{64}$/);
+    expect(rateKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(machine).not.toBe(digestDeviceToken('machine-guid', 'test-pepper'));
+    expect(rateKey).not.toContain('203.0.113.4');
   });
 });

@@ -8,7 +8,8 @@ available in this task, so the migration has **not** been applied to staging and
 this document does not claim live SQL execution evidence.
 
 Local verification checks the migration text for the required additive columns,
-constraints, indexes, private bucket, RLS boundary, RPC locking/idempotency, and
+constraints, indexes, private bucket, RLS boundary, atomic enrollment
+administration, durable rate limiting, pairing/batch locking/idempotency, and
 service-role-only execution grants. It cannot prove catalog state or runtime
 behavior in PostgreSQL.
 
@@ -30,9 +31,9 @@ npm test
 
 Evidence recorded on 2026-07-23:
 
-- Focused contract: 1 file passed, 6 tests passed.
+- Focused contract: 1 file passed, 11 tests passed.
 - Targeted ESLint: exited 0 with no findings.
-- Full Vitest suite: 38 files passed, 423 tests passed.
+- Full Vitest suite: 43 files passed, 505 tests passed.
 - `git diff --check`: exited 0 with no findings.
 - PostgreSQL 18.3 `psql` client is installed, but no local server is listening on
   `127.0.0.1:5432`; SQL execution and catalog evidence therefore remain pending.
@@ -58,8 +59,13 @@ file.
 5. Attempt to update an existing batch's `storage_path` and confirm the immutable
    path trigger rejects it.
 6. Using anon and authenticated clients, confirm direct reads and writes to the
-   three ingest tables fail and that no raw Storage object can be listed or read.
-7. Run the catalog queries below and save sanitized result rows under a dated
+   four ingest tables fail and that no raw Storage object can be listed or read.
+7. Exercise `create_ingest_enrollment` concurrently for one client and confirm
+   only one open enrollment remains. Confirm normal generation rejects an active
+   device and explicit rebind revokes its credential before issuing a new code.
+8. Exercise `check_ingest_pair_rate_limit` through its threshold, block, and
+   window reset using only HMAC keys; confirm no raw IP or code is persisted.
+9. Run the catalog queries below and save sanitized result rows under a dated
    staging-evidence section in this document.
 
 The `ninjatrader-imports deny browser direct access` policy is restrictive.
@@ -76,7 +82,7 @@ service role; Supabase's service role retains its RLS bypass.
 select table_name, column_name, data_type, is_nullable
 from information_schema.columns
 where table_schema = 'public'
-  and table_name in ('ingest_enrollments', 'ingest_devices', 'ingest_batches')
+  and table_name in ('ingest_enrollments', 'ingest_devices', 'ingest_batches', 'ingest_pair_rate_limits')
 order by table_name, ordinal_position;
 
 -- Checks, foreign keys, uniqueness, and the immutable-path trigger.
@@ -100,7 +106,7 @@ where event_object_schema = 'public'
 select schemaname, tablename, indexname, indexdef
 from pg_catalog.pg_indexes
 where schemaname = 'public'
-  and tablename in ('ingest_enrollments', 'ingest_devices', 'ingest_batches')
+  and tablename in ('ingest_enrollments', 'ingest_devices', 'ingest_batches', 'ingest_pair_rate_limits')
 order by tablename, indexname;
 
 -- RLS and explicit browser-deny policies.
@@ -109,12 +115,12 @@ select n.nspname as schema_name, c.relname as table_name,
 from pg_catalog.pg_class c
 join pg_catalog.pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public'
-  and c.relname in ('ingest_enrollments', 'ingest_devices', 'ingest_batches');
+  and c.relname in ('ingest_enrollments', 'ingest_devices', 'ingest_batches', 'ingest_pair_rate_limits');
 
 select schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
 from pg_catalog.pg_policies
 where schemaname = 'public'
-  and tablename in ('ingest_enrollments', 'ingest_devices', 'ingest_batches')
+  and tablename in ('ingest_enrollments', 'ingest_devices', 'ingest_batches', 'ingest_pair_rate_limits')
 order by tablename, policyname;
 
 -- Private bucket and every Storage object policy. Review all broad policies and
@@ -136,12 +142,16 @@ select n.nspname as schema_name, p.proname, p.prosecdef, p.proconfig,
 from pg_catalog.pg_proc p
 join pg_catalog.pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public'
-  and p.proname in ('pair_ingest_device', 'claim_ingest_batch')
+  and p.proname in ('create_ingest_enrollment', 'revoke_ingest_access',
+                    'check_ingest_pair_rate_limit', 'pair_ingest_device',
+                    'claim_ingest_batch')
 order by p.proname;
 
 select routine_name, grantee, privilege_type
 from information_schema.routine_privileges
 where specific_schema = 'public'
-  and routine_name in ('pair_ingest_device', 'claim_ingest_batch')
+  and routine_name in ('create_ingest_enrollment', 'revoke_ingest_access',
+                       'check_ingest_pair_rate_limit', 'pair_ingest_device',
+                       'claim_ingest_batch')
 order by routine_name, grantee;
 ```

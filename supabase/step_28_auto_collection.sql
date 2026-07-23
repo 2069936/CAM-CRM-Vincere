@@ -26,7 +26,7 @@ alter table public.ingest_devices
   add column if not exists credential_hash text,
   add column if not exists credential_prefix text,
   add column if not exists status text not null default 'active',
-  add column if not exists schedule_time time without time zone not null default '06:00:00',
+  add column if not exists schedule_time time without time zone not null default '16:45:00',
   add column if not exists schedule_timezone text not null default 'America/New_York',
   add column if not exists agent_version text,
   add column if not exists addon_version text,
@@ -38,6 +38,12 @@ alter table public.ingest_devices
   add column if not exists last_error_at timestamptz,
   add column if not exists revoked_at timestamptz,
   add column if not exists metadata jsonb not null default '{}'::jsonb;
+
+-- ALTER COLUMN is required on rerun because ADD COLUMN IF NOT EXISTS does not
+-- correct the default installed by an earlier revision. Existing per-device
+-- schedule values are intentionally left untouched.
+alter table public.ingest_devices
+  alter column schedule_time set default '16:45:00';
 
 do $constraints$
 begin
@@ -65,9 +71,12 @@ begin
 end
 $constraints$;
 
+drop index if exists public.idx_ingest_devices_machine_id_hash_unique;
 create unique index if not exists idx_ingest_devices_machine_id_hash_unique
   on public.ingest_devices(machine_id_hash)
-  where machine_id_hash is not null;
+  where machine_id_hash is not null
+    and status = 'active'
+    and revoked_at is null;
 
 create unique index if not exists idx_ingest_devices_credential_hash_unique
   on public.ingest_devices(credential_hash)
@@ -92,6 +101,35 @@ create index if not exists idx_ingest_enrollments_client_created_at
 create index if not exists idx_ingest_enrollments_open_expiry
   on public.ingest_enrollments(expires_at)
   where consumed_at is null and revoked_at is null;
+
+-- Converge older deployments before installing the uniqueness backstop. The
+-- newest open code wins; superseded codes become unusable without exposing them.
+with ranked_open_enrollments as (
+  select id,
+         row_number() over (partition by client_id order by created_at desc, id desc) as position
+  from public.ingest_enrollments
+  where consumed_at is null and revoked_at is null
+)
+update public.ingest_enrollments as enrollment
+set revoked_at = clock_timestamp()
+from ranked_open_enrollments as ranked
+where enrollment.id = ranked.id
+  and ranked.position > 1;
+
+create unique index if not exists idx_ingest_enrollments_one_open_per_client
+  on public.ingest_enrollments(client_id)
+  where consumed_at is null and revoked_at is null;
+
+create table if not exists public.ingest_pair_rate_limits (
+  key_hash text primary key check (key_hash <> ''),
+  window_started_at timestamptz not null,
+  attempt_count integer not null default 0 check (attempt_count >= 0),
+  blocked_until timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_ingest_pair_rate_limits_updated_at
+  on public.ingest_pair_rate_limits(updated_at);
 
 -- CHECK constraints cannot contain a subquery. This immutable helper validates
 -- every dynamic row-count value while keeping the batch constraint declarative.
@@ -230,14 +268,17 @@ $storage_policy$;
 alter table public.ingest_enrollments enable row level security;
 alter table public.ingest_devices enable row level security;
 alter table public.ingest_batches enable row level security;
+alter table public.ingest_pair_rate_limits enable row level security;
 
 revoke all on table public.ingest_enrollments from public, anon, authenticated;
 revoke all on table public.ingest_devices from public, anon, authenticated;
 revoke all on table public.ingest_batches from public, anon, authenticated;
+revoke all on table public.ingest_pair_rate_limits from public, anon, authenticated;
 
 grant select, insert, update, delete on table public.ingest_enrollments to service_role;
 grant select, insert, update, delete on table public.ingest_devices to service_role;
 grant select, insert, update, delete on table public.ingest_batches to service_role;
+grant select, insert, update, delete on table public.ingest_pair_rate_limits to service_role;
 
 -- Restrictive deny policies make the browser boundary explicit even if table
 -- privileges are accidentally granted to anon/authenticated later.
@@ -287,8 +328,319 @@ begin
       using (false)
       with check (false);
   end if;
+
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'ingest_pair_rate_limits'
+      and policyname = 'ingest_pair_rate_limits deny browser direct access'
+  ) then
+    create policy "ingest_pair_rate_limits deny browser direct access"
+      on public.ingest_pair_rate_limits
+      as restrictive
+      for all
+      to anon, authenticated
+      using (false)
+      with check (false);
+  end if;
 end
 $policies$;
+
+-- Create or replace a one-time enrollment while holding the client lock. This
+-- makes eligibility, active-device handling, old-code revocation, and insertion
+-- one transaction. Product keys are checked only as server-side eligibility and
+-- are never returned by this function.
+create or replace function public.create_ingest_enrollment(
+  p_client_id uuid,
+  p_code_hash text,
+  p_created_by uuid,
+  p_expires_at timestamptz,
+  p_rebind boolean default false
+)
+returns table (
+  enrollment_id uuid,
+  client_id uuid,
+  client_name text,
+  expires_at timestamptz,
+  revoked_device_ids uuid[]
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+#variable_conflict use_column
+declare
+  v_client public.clients;
+  v_enrollment public.ingest_enrollments;
+  v_revoked_device_ids uuid[] := array[]::uuid[];
+begin
+  if p_client_id is null
+    or nullif(btrim(p_code_hash), '') is null
+    or p_created_by is null
+    or p_expires_at is null
+    or p_expires_at <= clock_timestamp() then
+    raise exception 'INVALID_ENROLLMENT_REQUEST'
+      using errcode = '22023';
+  end if;
+
+  select client.*
+  into v_client
+  from public.clients as client
+  where client.id = p_client_id
+  for update;
+
+  if not found
+    or v_client.status is distinct from 'Active'
+    or v_client.deleted_at is not null
+    or nullif(btrim(v_client.product_key), '') is null then
+    raise exception 'CLIENT_NOT_ELIGIBLE'
+      using errcode = 'P0001';
+  end if;
+
+  -- Lock every currently active device before deciding whether generation is
+  -- permitted. Rebind deliberately invalidates credentials before a new code.
+  perform 1
+  from public.ingest_devices as device
+  where device.client_id = p_client_id
+    and device.status = 'active'
+    and device.revoked_at is null
+  for update;
+
+  select coalesce(array_agg(device.id order by device.id), array[]::uuid[])
+  into v_revoked_device_ids
+  from public.ingest_devices as device
+  where device.client_id = p_client_id
+    and device.status = 'active'
+    and device.revoked_at is null;
+
+  if cardinality(v_revoked_device_ids) > 0 and not coalesce(p_rebind, false) then
+    raise exception 'ACTIVE_DEVICE_EXISTS'
+      using errcode = 'P0001';
+  end if;
+
+  if coalesce(p_rebind, false) then
+    update public.ingest_devices
+    set status = 'revoked',
+        revoked_at = clock_timestamp(),
+        credential_hash = null,
+        credential_prefix = null
+    where client_id = p_client_id
+      and status = 'active'
+      and revoked_at is null;
+  end if;
+
+  perform 1
+  from public.ingest_enrollments as enrollment
+  where enrollment.client_id = p_client_id
+    and enrollment.consumed_at is null
+    and enrollment.revoked_at is null
+  for update;
+
+  update public.ingest_enrollments
+  set revoked_at = clock_timestamp()
+  where client_id = p_client_id
+    and consumed_at is null
+    and revoked_at is null;
+
+  insert into public.ingest_enrollments (
+    client_id,
+    code_hash,
+    created_by,
+    expires_at
+  )
+  values (
+    p_client_id,
+    p_code_hash,
+    p_created_by,
+    p_expires_at
+  )
+  returning * into v_enrollment;
+
+  return query
+  select v_enrollment.id,
+         v_enrollment.client_id,
+         v_client.name,
+         v_enrollment.expires_at,
+         v_revoked_device_ids;
+end;
+$function$;
+
+revoke all on function public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean)
+  from public, anon, authenticated;
+grant execute on function public.create_ingest_enrollment(uuid, text, uuid, timestamptz, boolean)
+  to service_role;
+
+-- Revoke exactly one enrollment or device after locking both the client and the
+-- scoped target. Device credential digests are erased as part of revocation.
+create or replace function public.revoke_ingest_access(
+  p_client_id uuid,
+  p_enrollment_id uuid,
+  p_device_id uuid,
+  p_reason text
+)
+returns table (
+  client_id uuid,
+  revoked_kind text,
+  revoked_id uuid
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+#variable_conflict use_column
+begin
+  if p_client_id is null
+    or ((p_enrollment_id is null) = (p_device_id is null))
+    or nullif(btrim(p_reason), '') is null then
+    raise exception 'INVALID_REVOKE_REQUEST'
+      using errcode = '22023';
+  end if;
+
+  perform 1
+  from public.clients as client
+  where client.id = p_client_id
+  for update;
+  if not found then
+    raise exception 'INGEST_ACCESS_NOT_FOUND'
+      using errcode = 'P0002';
+  end if;
+
+  if p_enrollment_id is not null then
+    perform 1
+    from public.ingest_enrollments as enrollment
+    where enrollment.id = p_enrollment_id
+      and enrollment.client_id = p_client_id
+    for update;
+    if not found then
+      raise exception 'INGEST_ACCESS_NOT_FOUND'
+        using errcode = 'P0002';
+    end if;
+
+    update public.ingest_enrollments
+    set revoked_at = coalesce(revoked_at, clock_timestamp())
+    where id = p_enrollment_id
+      and client_id = p_client_id;
+
+    return query select p_client_id, 'enrollment'::text, p_enrollment_id;
+    return;
+  end if;
+
+  perform 1
+  from public.ingest_devices as device
+  where device.id = p_device_id
+    and device.client_id = p_client_id
+  for update;
+  if not found then
+    raise exception 'INGEST_ACCESS_NOT_FOUND'
+      using errcode = 'P0002';
+  end if;
+
+  update public.ingest_devices
+  set status = 'revoked',
+      revoked_at = coalesce(revoked_at, clock_timestamp()),
+      credential_hash = null,
+      credential_prefix = null
+  where id = p_device_id
+    and client_id = p_client_id;
+
+  return query select p_client_id, 'device'::text, p_device_id;
+end;
+$function$;
+
+revoke all on function public.revoke_ingest_access(uuid, uuid, uuid, text)
+  from public, anon, authenticated;
+grant execute on function public.revoke_ingest_access(uuid, uuid, uuid, text)
+  to service_role;
+
+-- Durable, serverless-safe limiter. The API supplies only a domain-separated
+-- HMAC of the trusted proxy IP, so neither raw IPs nor enrollment codes enter
+-- this table. The row lock serializes concurrent attempts for one caller.
+create or replace function public.check_ingest_pair_rate_limit(
+  p_key_hash text,
+  p_now timestamptz,
+  p_max_attempts integer,
+  p_window_seconds integer,
+  p_block_seconds integer
+)
+returns table (
+  allowed boolean,
+  retry_after_seconds integer
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+#variable_conflict use_column
+declare
+  v_limit public.ingest_pair_rate_limits;
+  v_now timestamptz := coalesce(p_now, clock_timestamp());
+  v_next_count integer;
+begin
+  if nullif(btrim(p_key_hash), '') is null
+    or p_max_attempts is null or p_max_attempts <= 0
+    or p_window_seconds is null or p_window_seconds <= 0
+    or p_block_seconds is null or p_block_seconds <= 0 then
+    raise exception 'INVALID_RATE_LIMIT_REQUEST'
+      using errcode = '22023';
+  end if;
+
+  insert into public.ingest_pair_rate_limits (
+    key_hash,
+    window_started_at,
+    attempt_count,
+    updated_at
+  )
+  values (p_key_hash, v_now, 0, v_now)
+  on conflict (key_hash) do nothing;
+
+  select rate_limit.*
+  into v_limit
+  from public.ingest_pair_rate_limits as rate_limit
+  where rate_limit.key_hash = p_key_hash
+  for update;
+
+  if v_limit.blocked_until is not null and v_limit.blocked_until > v_now then
+    return query
+    select false,
+           greatest(1, ceil(extract(epoch from (v_limit.blocked_until - v_now)))::integer);
+    return;
+  end if;
+
+  if v_limit.blocked_until is not null
+    or v_now >= v_limit.window_started_at + make_interval(secs => p_window_seconds) then
+    update public.ingest_pair_rate_limits
+    set window_started_at = v_now,
+        attempt_count = 1,
+        blocked_until = null,
+        updated_at = v_now
+    where key_hash = p_key_hash;
+    return query select true, 0;
+    return;
+  end if;
+
+  v_next_count := v_limit.attempt_count + 1;
+  if v_next_count > p_max_attempts then
+    update public.ingest_pair_rate_limits
+    set attempt_count = v_next_count,
+        blocked_until = v_now + make_interval(secs => p_block_seconds),
+        updated_at = v_now
+    where key_hash = p_key_hash;
+    return query select false, p_block_seconds;
+    return;
+  end if;
+
+  update public.ingest_pair_rate_limits
+  set attempt_count = v_next_count,
+      updated_at = v_now
+  where key_hash = p_key_hash;
+  return query select true, 0;
+end;
+$function$;
+
+revoke all on function public.check_ingest_pair_rate_limit(text, timestamptz, integer, integer, integer)
+  from public, anon, authenticated;
+grant execute on function public.check_ingest_pair_rate_limit(text, timestamptz, integer, integer, integer)
+  to service_role;
 
 -- Atomically consume a one-time enrollment. The enrollment row lock serializes
 -- concurrent calls. A retry with the winning machine and credential hashes gets

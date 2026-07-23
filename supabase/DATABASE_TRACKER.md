@@ -13,6 +13,12 @@ Last updated: 2026-07-23
   - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - Server-only env key expected for user management:
   - `SUPABASE_SERVICE_ROLE_KEY`
+- Server-only env keys expected for collector enrollment:
+  - `INGEST_TOKEN_PEPPER`
+  - `INGEST_PAIR_RATE_LIMIT_MAX_ATTEMPTS`
+  - `INGEST_PAIR_RATE_LIMIT_WINDOW_SECONDS`
+  - `INGEST_PAIR_RATE_LIMIT_BLOCK_SECONDS`
+  - `AUTO_COLLECTION_MIN_AGENT_VERSION`
 - App integration status: Supabase is required for authentication and operational data.
 - RLS status: not production-hardened yet. Manager/CAM restrictions exist in app flow and server API checks, but final hard enforcement should be completed with Supabase RLS policies before production use.
 
@@ -83,6 +89,7 @@ Cleanup:
 | `ingest_enrollments` | One-time, expiring device-pairing enrollments | Server API/service role only |
 | `ingest_devices` | Legacy watcher bindings plus hashed collector credentials and health | Server API/service role only |
 | `ingest_batches` | Immutable raw auto-collection batch claims and processing state | Server API/service role only |
+| `ingest_pair_rate_limits` | Durable HMAC-keyed pairing attempt windows and blocks | Server API/service role only |
 
 ## Frontend Read Model
 
@@ -142,6 +149,7 @@ state
 - [x] Add Google Sheet intake fetch/import audit logging.
 - [ ] Expand audit coverage to every low-level data mutation.
 - [ ] Apply and verify `step_28_auto_collection.sql` twice on disposable/staging Supabase; local static contract coverage is documented in `docs/verification/auto-collection-schema.md`.
+- [x] Add atomic enrollment generation/rebind/revoke RPCs and durable pairing rate-limit state to `step_28_auto_collection.sql`.
 
 ## Permission Direction
 
