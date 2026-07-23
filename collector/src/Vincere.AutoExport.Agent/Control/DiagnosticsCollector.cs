@@ -68,22 +68,28 @@ public sealed class DiagnosticsCollector : IDiagnosticsCollector
         if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
         try
         {
-            await using FileStream output = new(temporaryPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
-            using (ZipArchive archive = new(output, ZipArchiveMode.Create, leaveOpen: true))
+            await using (FileStream output = new(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.None))
             {
-                WriteJson(archive, "configuration.json", redacted);
-                WriteJson(archive, "status.json", new
+                using (ZipArchive archive = new(output, ZipArchiveMode.Create, leaveOpen: true))
                 {
-                    generatedAt = now,
-                    agentVersion,
-                    addonVersion,
-                    runtime = state.Snapshot(),
-                    queue = queueStatus,
-                });
-                AddBoundedLogs(archive);
+                    WriteJson(archive, "configuration.json", redacted);
+                    WriteJson(archive, "status.json", new
+                    {
+                        generatedAt = now,
+                        agentVersion,
+                        addonVersion,
+                        runtime = state.Snapshot(),
+                        queue = queueStatus,
+                    });
+                    AddBoundedLogs(archive);
+                }
+                await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                output.Flush(true);
             }
-            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-            output.Flush(true);
             File.Move(temporaryPath, finalPath, true);
             return finalPath;
         }
