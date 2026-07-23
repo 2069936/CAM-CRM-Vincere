@@ -48,6 +48,16 @@ describe('requireAppUser', () => {
     )).rejects.toMatchObject({ status: 403 });
   });
 
+  it('rejects users whose database status is missing or unexpected', async () => {
+    for (const status of [null, 'Pending']) {
+      const { admin, auth } = fakeClients({ appUser: { id: 'app-1', role: 'Manager', status } });
+      await expect(requireAppUser(
+        { headers: { authorization: 'Bearer valid' } },
+        { admin, authClient: auth, roles: ['Manager'] },
+      )).rejects.toMatchObject({ status: 403 });
+    }
+  });
+
   it('allows a CAM only for a client assigned to its linked CAM profile', async () => {
     const { admin, auth, calls } = fakeClients({ appUser: { id: 'app-1', role: 'CAM', status: 'Active', cam_profile_id: 'cam-1' }, assigned: true });
     const user = await requireAppUser(

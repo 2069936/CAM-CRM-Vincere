@@ -16,6 +16,12 @@ describe('ingest tokens', () => {
     expect(isExpired(issued.record.expiresAt, new Date('2026-01-01T00:01:00Z'))).toBe(true);
   });
 
+  it('uses an exact 60-minute enrollment expiration by default', () => {
+    const now = new Date('2026-01-01T00:00:00Z');
+    const issued = issueEnrollmentCode({ pepper: 'test-pepper', now });
+    expect(issued.record.expiresAt).toBe('2026-01-01T01:00:00.000Z');
+  });
+
   it('never stores or logs the raw device token', () => {
     const issued = issueDeviceToken({ pepper: 'test-pepper' });
     expect(issued.token).toMatch(/^[A-Za-z0-9_-]+$/);

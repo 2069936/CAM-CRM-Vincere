@@ -28,6 +28,18 @@ function parseJson(value) {
   }
 }
 
+function requireBodyWithinLimit(body, maxBytes) {
+  let serialized;
+  try {
+    serialized = JSON.stringify(body);
+  } catch {
+    throw new ApiError(400, 'Invalid JSON request body.');
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > maxBytes) {
+    throw new ApiError(413, 'Request body is too large.');
+  }
+}
+
 async function readStream(req, maxBytes) {
   const chunks = [];
   let size = 0;
@@ -41,7 +53,10 @@ async function readStream(req, maxBytes) {
 }
 
 export async function readJsonBody(req, { maxBytes = 64 * 1024 } = {}) {
-  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) return req.body;
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    requireBodyWithinLimit(req.body, maxBytes);
+    return req.body;
+  }
   if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
     const value = String(req.body);
     if (Buffer.byteLength(value) > maxBytes) throw new ApiError(413, 'Request body is too large.');

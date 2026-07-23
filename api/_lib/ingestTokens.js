@@ -16,7 +16,7 @@ export function digestDeviceToken(token, pepper) {
   return digest(token, pepper);
 }
 
-export function issueEnrollmentCode({ pepper, now = new Date(), ttlMs = 15 * 60 * 1000 } = {}) {
+export function issueEnrollmentCode({ pepper, now = new Date(), ttlMs = 60 * 60 * 1000 } = {}) {
   const bytes = randomBytes(10);
   const code = Array.from(bytes, (byte) => CROCKFORD_BASE32[byte & 31]).join('');
   return {

@@ -72,7 +72,7 @@ export async function requireAppUser(req, {
     .maybeSingle();
   if (error) throw error;
   const appUser = data || (bootstrap ? await bootstrap({ admin: clients.admin, authUser }) : null);
-  if (!appUser || appUser.status === 'Inactive' || (roles && !roles.includes(appUser.role))) {
+  if (!appUser || appUser.status !== 'Active' || (roles && !roles.includes(appUser.role))) {
     throw new ApiError(403, roles?.length === 1 && roles[0] === 'Manager'
       ? 'Manager permission required.'
       : 'App user permission required.');

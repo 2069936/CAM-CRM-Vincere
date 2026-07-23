@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Buffer } from 'node:buffer';
 import {
   ApiError,
   handleApiError,
@@ -34,6 +35,18 @@ describe('http helpers', () => {
   it('rejects request bodies beyond its byte limit', async () => {
     await expect(readJsonBody({ body: '{"value":"too-long"}' }, { maxBytes: 8 }))
       .rejects.toMatchObject({ status: 413 });
+  });
+
+  it('enforces the byte limit for an already-parsed UTF-8 body', async () => {
+    const body = { note: '💣'.repeat(5) };
+    const maxBytes = Buffer.byteLength(JSON.stringify(body), 'utf8') - 1;
+    await expect(readJsonBody({ body }, { maxBytes })).rejects.toMatchObject({ status: 413 });
+  });
+
+  it('accepts an already-parsed body that fits its byte limit', async () => {
+    const body = { note: 'ok' };
+    const result = await readJsonBody({ body }, { maxBytes: Buffer.byteLength(JSON.stringify(body), 'utf8') });
+    expect(result).toEqual(body);
   });
 
   it('sends JSON with the requested status', () => {
