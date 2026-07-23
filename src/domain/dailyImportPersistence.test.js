@@ -57,6 +57,19 @@ function mutationCalls(db) {
 }
 
 describe('persistDailyImportWithClient', () => {
+  it('delegates automatic imports to the adapter atomic persistence boundary', async () => {
+    const persistDailyImportAtomic = vi.fn().mockResolvedValue({ id: 'daily-atomic' });
+    const result = await persistDailyImportWithClient({
+      db: { persistDailyImportAtomic, isAtomic: true },
+      clientUuid: 'client-uuid',
+      importResult: { date: '2026-07-23' },
+      sourceBatchId: 'batch-1',
+    });
+    expect(result).toEqual({ id: 'daily-atomic' });
+    expect(persistDailyImportAtomic).toHaveBeenCalledWith({
+      clientUuid: 'client-uuid', importResult: { date: '2026-07-23' }, sourceBatchId: 'batch-1',
+    });
+  });
   it('rejects a missing import date before accessing the adapter', async () => {
     const db = makeDb();
 

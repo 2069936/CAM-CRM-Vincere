@@ -86,10 +86,50 @@ describe('step 28 auto-collection migration contract', () => {
     expect(normalizedSql).toMatch(/create index if not exists idx_ingest_batches_device_received_at/);
     expect(normalizedSql).toMatch(/create index if not exists idx_ingest_batches_status_received_at/);
     expect(normalizedSql).toMatch(/status in\s*\([^)]*'active'[^)]*'revoked'/);
-    expect(normalizedSql).toMatch(/status in\s*\([^)]*'received'[^)]*'processing'[^)]*'processed'[^)]*'failed'[^)]*'replaced'/);
+    expect(normalizedSql).toMatch(/status in\s*\([^)]*'received'[^)]*'processing'[^)]*'processed'[^)]*'incomplete'[^)]*'late_closed_day'[^)]*'failed'[^)]*'replaced'/);
+    expect(normalizedSql).toMatch(/drop constraint if exists ingest_batches_status_check/);
     expect(normalizedSql).toMatch(/schedule_timezone\s*=\s*'america\/new_york'/);
     expect(normalizedSql).toMatch(/schema_version\s*>\s*0/);
     expect(normalizedSql).toContain('ingest_row_counts_are_nonnegative(row_counts)');
+  });
+
+  it('returns an explicit atomic claim winner for concurrent duplicate retries', () => {
+    const claiming = functionDefinition('claim_ingest_batch_v2');
+    expect(claiming).toContain('security definer');
+    expect(claiming).toContain('for update');
+    expect(claiming).toMatch(/pg_advisory_xact_lock/);
+    expect(claiming).toMatch(/'claimed'\s*,\s*false/);
+    expect(claiming).toMatch(/'claimed'\s*,\s*true/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.claim_ingest_batch_v2\([^;]+to service_role/);
+  });
+
+  it('persists normalized automatic imports atomically and refuses closed-day replacement', () => {
+    const persistence = functionDefinition('persist_auto_daily_import');
+    expect(normalizedSql).toMatch(/add column if not exists source_type text/);
+    expect(normalizedSql).toMatch(/add column if not exists source_batch_id uuid/);
+    expect(persistence).toContain('security definer');
+    expect(persistence).toContain('for update');
+    expect(persistence).toMatch(/status is not distinct from 'closed'/);
+    expect(persistence).toContain('daily_import_closed');
+    expect(persistence).toMatch(/status = 'replaced'/);
+    expect(persistence).toMatch(/replaces_batch_id = v_daily\.source_batch_id/);
+    expect(persistence).toMatch(/jsonb_array_length[^;]+> 0/);
+    for (const table of ['trading_accounts', 'daily_imports', 'account_snapshots', 'strategy_snapshots', 'orders', 'executions', 'operational_flags']) {
+      expect(persistence).toContain(`public.${table}`);
+    }
+    expect(normalizedSql).toMatch(/grant execute on function public\.persist_auto_daily_import\([^;]+to service_role/);
+  });
+
+  it('atomically finalizes the batch, device health, one audit and the closed-day alert', () => {
+    const finalize = functionDefinition('finalize_ingest_batch');
+    expect(finalize).toContain('security definer');
+    expect(finalize.match(/for update/g).length).toBeGreaterThanOrEqual(2);
+    expect(finalize).toContain('public.ingest_batches');
+    expect(finalize).toContain('public.ingest_devices');
+    expect(finalize).toContain('public.audit_logs');
+    expect(finalize).toContain('public.operational_flags');
+    expect(finalize).toMatch(/p_status = 'late_closed_day'/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.finalize_ingest_batch\([^;]+to service_role/);
   });
 
   it('creates a private bucket and composes a restrictive browser denial with Storage policies', () => {

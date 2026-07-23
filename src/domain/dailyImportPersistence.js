@@ -229,6 +229,11 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
   if (!importResult?.date) throw new Error('Import date is required.');
   if (!String(clientUuid || '').trim()) throw new Error('Client UUID is required.');
 
+  if (typeof db?.persistDailyImportAtomic === 'function') {
+    if (db.isAtomic !== true) throw new Error('Automatic daily import persistence must be atomic.');
+    return db.persistDailyImportAtomic({ clientUuid, importResult, sourceBatchId });
+  }
+
   return db.transaction(async (tx) => {
     await tx.guardDailyImportWritable(clientUuid, importResult.date);
 

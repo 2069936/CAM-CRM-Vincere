@@ -193,7 +193,7 @@ create table if not exists public.ingest_batches (
   processed_at timestamptz,
   constraint ingest_batches_device_capture_unique unique (device_id, capture_id),
   constraint ingest_batches_status_check
-    check (status in ('received', 'processing', 'processed', 'failed', 'replaced')),
+    check (status in ('received', 'processing', 'processed', 'incomplete', 'late_closed_day', 'failed', 'replaced')),
   constraint ingest_batches_schema_version_check check (schema_version > 0),
   constraint ingest_batches_storage_path_check check (storage_path <> ''),
   constraint ingest_batches_content_sha256_check check (content_sha256 <> ''),
@@ -201,6 +201,36 @@ create table if not exists public.ingest_batches (
   constraint ingest_batches_row_counts_check
     check (public.ingest_row_counts_are_nonnegative(row_counts))
 );
+
+-- Named CHECK constraints do not converge through CREATE TABLE IF NOT EXISTS.
+-- Recreate this additive lifecycle constraint so rerunning the migration also
+-- upgrades databases that installed the earlier Task 2 status set.
+alter table public.ingest_batches
+  drop constraint if exists ingest_batches_status_check;
+alter table public.ingest_batches
+  add constraint ingest_batches_status_check
+  check (status in (
+    'received', 'processing', 'processed', 'incomplete',
+    'late_closed_day', 'failed', 'replaced'
+  ));
+
+alter table public.daily_imports
+  add column if not exists source_type text,
+  add column if not exists source_batch_id uuid references public.ingest_batches(id) on delete set null;
+
+do $daily_import_source_constraint$
+begin
+  if not exists (
+    select 1 from pg_catalog.pg_constraint
+    where conrelid = 'public.daily_imports'::regclass
+      and conname = 'daily_imports_source_type_check'
+  ) then
+    alter table public.daily_imports
+      add constraint daily_imports_source_type_check
+      check (source_type is null or source_type in ('manual', 'automatic'));
+  end if;
+end
+$daily_import_source_constraint$;
 
 create index if not exists idx_ingest_batches_client_trading_date
   on public.ingest_batches(client_id, trading_date desc);
@@ -1412,5 +1442,521 @@ revoke all on function public.claim_ingest_batch(uuid, uuid, date, timestamptz, 
   from public, anon, authenticated;
 grant execute on function public.claim_ingest_batch(uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb)
   to service_role;
+
+-- V2 returns the ownership decision as data. The advisory key serializes the
+-- exact device/capture tuple even before a row exists, while the device lock
+-- preserves the credential lifecycle ordering used by the other ingest RPCs.
+create or replace function public.claim_ingest_batch_v2(
+  p_device_id uuid,
+  p_capture_id uuid,
+  p_trading_date date,
+  p_captured_at timestamptz,
+  p_schema_version integer,
+  p_storage_path text,
+  p_content_sha256 text,
+  p_byte_count bigint,
+  p_row_counts jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_device public.ingest_devices;
+  v_batch public.ingest_batches;
+begin
+  if p_device_id is null
+    or p_capture_id is null
+    or p_trading_date is null
+    or p_captured_at is null
+    or p_schema_version is null
+    or p_schema_version <= 0
+    or nullif(btrim(p_storage_path), '') is null
+    or p_storage_path !~ '^[0-9a-f-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9a-f-]+\.json\.gz$'
+    or p_content_sha256 !~ '^[0-9a-f]{64}$'
+    or p_byte_count is null
+    or p_byte_count < 0
+    or p_row_counts is null
+    or not public.ingest_row_counts_are_nonnegative(p_row_counts) then
+    raise exception 'batch claim metadata is invalid'
+      using errcode = '22023';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_device_id::text || ':' || p_capture_id::text, 0)
+  );
+
+  select device.*
+  into v_device
+  from public.ingest_devices as device
+  where device.id = p_device_id
+  for update;
+
+  if not found or v_device.status <> 'active' or v_device.revoked_at is not null then
+    raise exception 'ingest device is invalid'
+      using errcode = 'P0001';
+  end if;
+
+  if p_storage_path is distinct from
+    (v_device.client_id::text || '/' || p_trading_date::text || '/' || p_capture_id::text || '.json.gz') then
+    raise exception 'batch storage path is invalid'
+      using errcode = '22023';
+  end if;
+
+  select batch.*
+  into v_batch
+  from public.ingest_batches as batch
+  where device_id = p_device_id
+    and capture_id = p_capture_id
+  for update;
+
+  if found then
+    if v_batch.trading_date is distinct from p_trading_date
+      or v_batch.captured_at is distinct from p_captured_at
+      or v_batch.schema_version is distinct from p_schema_version
+      or v_batch.storage_path is distinct from p_storage_path
+      or v_batch.content_sha256 is distinct from p_content_sha256
+      or v_batch.byte_count is distinct from p_byte_count
+      or v_batch.row_counts is distinct from p_row_counts then
+      raise exception 'capture ID was already claimed with different metadata'
+        using errcode = '22023';
+    end if;
+    return jsonb_build_object('claimed', false, 'batch', to_jsonb(v_batch));
+  end if;
+
+  insert into public.ingest_batches (
+    capture_id, device_id, client_id, trading_date, captured_at, status,
+    schema_version, storage_path, content_sha256, byte_count, row_counts
+  ) values (
+    p_capture_id, p_device_id, v_device.client_id, p_trading_date, p_captured_at,
+    'received', p_schema_version, p_storage_path, p_content_sha256,
+    p_byte_count, p_row_counts
+  )
+  returning * into v_batch;
+
+  return jsonb_build_object('claimed', true, 'batch', to_jsonb(v_batch));
+end;
+$function$;
+
+revoke all on function public.claim_ingest_batch_v2(uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.claim_ingest_batch_v2(uuid, uuid, date, timestamptz, integer, text, text, bigint, jsonb)
+  to service_role;
+
+-- Persist the same reconciled object consumed by the browser adapter, but in a
+-- single server transaction. Empty detail sections intentionally preserve the
+-- prior rows, matching the manual replacement safeguard.
+create or replace function public.persist_auto_daily_import(
+  p_client_id uuid,
+  p_source_batch_id uuid,
+  p_import_result jsonb
+)
+returns public.daily_imports
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+#variable_conflict use_column
+declare
+  v_client public.clients;
+  v_batch public.ingest_batches;
+  v_daily public.daily_imports;
+  v_date date;
+  v_item jsonb;
+  v_account_name text;
+  v_account_id uuid;
+  v_snapshot_id uuid;
+begin
+  if p_client_id is null
+    or p_source_batch_id is null
+    or jsonb_typeof(p_import_result) <> 'object'
+    or nullif(p_import_result ->> 'date', '') is null then
+    raise exception 'invalid_auto_daily_import'
+      using errcode = '22023';
+  end if;
+
+  begin
+    v_date := (p_import_result ->> 'date')::date;
+  exception when others then
+    raise exception 'invalid_auto_daily_import'
+      using errcode = '22023';
+  end;
+
+  select client.* into v_client
+  from public.clients as client
+  where client.id = p_client_id
+  for update;
+  if not found then
+    raise exception 'invalid_auto_daily_import'
+      using errcode = 'P0002';
+  end if;
+
+  select batch.* into v_batch
+  from public.ingest_batches as batch
+  where batch.id = p_source_batch_id
+  for update;
+  if not found
+    or v_batch.client_id is distinct from p_client_id
+    or v_batch.trading_date is distinct from v_date
+    or v_batch.status not in ('received', 'processing') then
+    raise exception 'invalid_auto_daily_import'
+      using errcode = '22023';
+  end if;
+
+  select daily.* into v_daily
+  from public.daily_imports as daily
+  where daily.client_id = p_client_id
+    and daily.trading_date = v_date
+  for update;
+  if found and v_daily.status is not distinct from 'Closed' then
+    raise exception 'daily_import_closed'
+      using errcode = 'P0001', detail = v_daily.id::text;
+  end if;
+
+  if found
+    and v_daily.source_batch_id is not null
+    and v_daily.source_batch_id is distinct from p_source_batch_id then
+    update public.ingest_batches
+    set status = 'replaced'
+    where id = v_daily.source_batch_id
+      and client_id = p_client_id
+      and status in ('processed', 'incomplete');
+    update public.ingest_batches
+    set replaces_batch_id = v_daily.source_batch_id
+    where id = p_source_batch_id;
+  end if;
+
+  for v_account_name, v_item in
+    select entry.key, entry.value
+    from jsonb_each(coalesce(p_import_result -> 'accounts', '{}'::jsonb)) as entry
+  loop
+    insert into public.trading_accounts (
+      client_id, legacy_key, account_name, alias, connection, account_type,
+      status, payout_state, start_balance, target_profit, max_drawdown_limit,
+      risk_level, bullet_bot_pass_type, bullet_bot_direction, algo_stack,
+      daily_loss_limit, notes, date_added, date_funded, date_failed,
+      date_last_payout, payout_count, updated_at
+    ) values (
+      p_client_id,
+      coalesce(nullif(v_item ->> 'accountName', ''), v_account_name),
+      coalesce(nullif(v_item ->> 'accountName', ''), v_account_name),
+      coalesce(nullif(v_item ->> 'alias', ''), v_account_name),
+      coalesce(v_item ->> 'connection', ''),
+      coalesce(nullif(v_item ->> 'accountType', ''), 'Unassigned'),
+      coalesce(nullif(v_item ->> 'status', ''), 'Active'),
+      coalesce(nullif(v_item ->> 'payoutState', ''), 'Not requested'),
+      nullif(v_item ->> 'startBalance', '')::numeric,
+      nullif(v_item ->> 'targetProfit', '')::numeric,
+      nullif(v_item ->> 'maxDrawdownLimit', '')::numeric,
+      coalesce(v_item ->> 'riskLevel', ''),
+      coalesce(v_item ->> 'bulletBotPassType', ''),
+      coalesce(v_item ->> 'bulletBotDirection', ''),
+      coalesce(v_item ->> 'algoStack', ''),
+      coalesce(v_item ->> 'dailyLossLimit', ''),
+      coalesce(v_item ->> 'notes', ''),
+      nullif(v_item ->> 'dateAdded', '')::date,
+      nullif(v_item ->> 'dateFunded', '')::date,
+      nullif(v_item ->> 'dateFailed', '')::date,
+      nullif(v_item ->> 'dateLastPayout', '')::date,
+      coalesce(nullif(v_item ->> 'payoutCount', '')::integer, 0),
+      clock_timestamp()
+    )
+    on conflict (client_id, account_name) do update set
+      alias = excluded.alias,
+      connection = excluded.connection,
+      account_type = excluded.account_type,
+      status = excluded.status,
+      payout_state = excluded.payout_state,
+      start_balance = excluded.start_balance,
+      target_profit = excluded.target_profit,
+      max_drawdown_limit = excluded.max_drawdown_limit,
+      risk_level = excluded.risk_level,
+      bullet_bot_pass_type = excluded.bullet_bot_pass_type,
+      bullet_bot_direction = excluded.bullet_bot_direction,
+      algo_stack = excluded.algo_stack,
+      daily_loss_limit = excluded.daily_loss_limit,
+      notes = excluded.notes,
+      date_added = excluded.date_added,
+      date_funded = excluded.date_funded,
+      date_failed = excluded.date_failed,
+      date_last_payout = excluded.date_last_payout,
+      payout_count = excluded.payout_count,
+      updated_at = excluded.updated_at;
+  end loop;
+
+  insert into public.daily_imports (
+    client_id, legacy_key, trading_date, imported_at, status, source_summary,
+    source_type, source_batch_id, updated_at
+  ) values (
+    p_client_id,
+    coalesce(nullif(p_import_result ->> 'id', ''), p_client_id::text || '-' || v_date::text),
+    v_date,
+    coalesce(nullif(p_import_result ->> 'importedAt', '')::timestamptz, clock_timestamp()),
+    coalesce(nullif(p_import_result ->> 'status', ''), 'Needs review'),
+    jsonb_build_object(
+      'accounts', jsonb_array_length(coalesce(p_import_result -> 'snapshots', '[]'::jsonb)),
+      'strategies', jsonb_array_length(coalesce(p_import_result -> 'strategies', '[]'::jsonb)),
+      'orders', jsonb_array_length(coalesce(p_import_result -> 'orders', '[]'::jsonb)),
+      'executions', jsonb_array_length(coalesce(p_import_result -> 'executions', '[]'::jsonb)),
+      'flags', jsonb_array_length(coalesce(p_import_result -> 'flags', '[]'::jsonb)),
+      'source_type', 'automatic',
+      'source_batch_id', p_source_batch_id
+    ),
+    'automatic', p_source_batch_id, clock_timestamp()
+  )
+  on conflict (client_id, trading_date) do update set
+    legacy_key = excluded.legacy_key,
+    imported_at = excluded.imported_at,
+    status = excluded.status,
+    source_summary = excluded.source_summary,
+    source_type = excluded.source_type,
+    source_batch_id = excluded.source_batch_id,
+    updated_at = excluded.updated_at
+  returning * into v_daily;
+
+  for v_item in select value from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb))
+  loop
+    v_account_name := coalesce(v_item ->> 'accountName', '');
+    select id into v_account_id from public.trading_accounts
+      where client_id = p_client_id and lower(account_name) = lower(v_account_name);
+    insert into public.account_snapshots (
+      daily_import_id, trading_account_id, account_name, connection,
+      gross_realized_pnl, trailing_max_drawdown, account_balance, weekly_pnl,
+      unrealized_pnl
+    ) values (
+      v_daily.id, v_account_id, v_account_name, coalesce(v_item ->> 'connection', ''),
+      coalesce(nullif(v_item ->> 'grossRealizedPnl', '')::numeric, 0),
+      coalesce(nullif(v_item ->> 'trailingMaxDrawdown', '')::numeric, 0),
+      coalesce(nullif(v_item ->> 'accountBalance', '')::numeric, 0),
+      coalesce(nullif(v_item ->> 'weeklyPnl', '')::numeric, 0),
+      coalesce(nullif(v_item ->> 'unrealizedPnl', '')::numeric, 0)
+    ) on conflict (daily_import_id, account_name) do update set
+      trading_account_id = excluded.trading_account_id,
+      connection = excluded.connection,
+      gross_realized_pnl = excluded.gross_realized_pnl,
+      trailing_max_drawdown = excluded.trailing_max_drawdown,
+      account_balance = excluded.account_balance,
+      weekly_pnl = excluded.weekly_pnl,
+      unrealized_pnl = excluded.unrealized_pnl;
+  end loop;
+
+  if jsonb_array_length(coalesce(p_import_result -> 'strategies', '[]'::jsonb)) > 0 then
+    delete from public.strategy_snapshots where daily_import_id = v_daily.id;
+    for v_item in select value from jsonb_array_elements(p_import_result -> 'strategies')
+    loop
+      v_account_name := coalesce(v_item ->> 'accountName', '');
+      select id into v_account_id from public.trading_accounts
+        where client_id = p_client_id and lower(account_name) = lower(v_account_name);
+      select id into v_snapshot_id from public.account_snapshots
+        where daily_import_id = v_daily.id and lower(account_name) = lower(v_account_name);
+      insert into public.strategy_snapshots (
+        daily_import_id, trading_account_id, account_snapshot_id, strategy_name,
+        strategy_family, strategy_version, instrument, data_series,
+        parameters_raw, params_parsed, direction, enabled, realized, unrealized
+      ) values (
+        v_daily.id, v_account_id, v_snapshot_id, coalesce(v_item ->> 'strategyName', ''),
+        coalesce(v_item ->> 'strategyFamily', ''), coalesce(v_item ->> 'strategyVersion', ''),
+        coalesce(v_item ->> 'instrument', ''), coalesce(v_item ->> 'dataSeries', ''),
+        coalesce(v_item ->> 'parametersRaw', ''), coalesce(v_item -> 'params', '{}'::jsonb),
+        coalesce(v_item ->> 'direction', ''), coalesce((v_item ->> 'enabled')::boolean, false),
+        coalesce(nullif(v_item ->> 'realized', '')::numeric, 0),
+        coalesce(nullif(v_item ->> 'unrealized', '')::numeric, 0)
+      );
+    end loop;
+  end if;
+
+  if jsonb_array_length(coalesce(p_import_result -> 'orders', '[]'::jsonb)) > 0 then
+    delete from public.orders where daily_import_id = v_daily.id;
+    for v_item in select value from jsonb_array_elements(p_import_result -> 'orders')
+    loop
+      select id into v_account_id from public.trading_accounts
+        where client_id = p_client_id and lower(account_name) = lower(coalesce(v_item ->> 'accountName', ''));
+      insert into public.orders (
+        daily_import_id, trading_account_id, external_order_id, strategy_name,
+        instrument, action, order_type, quantity, limit_price, stop_price,
+        state, filled, avg_price, remaining, name, time_text
+      ) values (
+        v_daily.id, v_account_id, coalesce(v_item ->> 'id', ''), coalesce(v_item ->> 'strategyName', ''),
+        coalesce(v_item ->> 'instrument', ''), coalesce(v_item ->> 'action', ''), coalesce(v_item ->> 'orderType', ''),
+        nullif(v_item ->> 'quantity', '')::numeric, nullif(v_item ->> 'limit', '')::numeric,
+        nullif(v_item ->> 'stop', '')::numeric, coalesce(v_item ->> 'state', ''),
+        nullif(v_item ->> 'filled', '')::numeric, nullif(v_item ->> 'avgPrice', '')::numeric,
+        nullif(v_item ->> 'remaining', '')::numeric, coalesce(v_item ->> 'name', ''), coalesce(v_item ->> 'time', '')
+      );
+    end loop;
+  end if;
+
+  if jsonb_array_length(coalesce(p_import_result -> 'executions', '[]'::jsonb)) > 0 then
+    delete from public.executions where daily_import_id = v_daily.id;
+    for v_item in select value from jsonb_array_elements(p_import_result -> 'executions')
+    loop
+      select id into v_account_id from public.trading_accounts
+        where client_id = p_client_id and lower(account_name) = lower(coalesce(v_item ->> 'accountName', ''));
+      insert into public.executions (
+        daily_import_id, trading_account_id, external_execution_id,
+        external_order_id, strategy_name, instrument, action, quantity, price,
+        time_text, entry_exit, position, name, commission, rate, connection
+      ) values (
+        v_daily.id, v_account_id, coalesce(v_item ->> 'id', ''), coalesce(v_item ->> 'orderId', ''),
+        coalesce(v_item ->> 'strategyName', ''), coalesce(v_item ->> 'instrument', ''),
+        coalesce(v_item ->> 'action', ''), nullif(v_item ->> 'quantity', '')::numeric,
+        nullif(v_item ->> 'price', '')::numeric, coalesce(v_item ->> 'time', ''),
+        coalesce(v_item ->> 'entryExit', ''), coalesce(v_item ->> 'position', ''),
+        coalesce(v_item ->> 'name', ''), nullif(v_item ->> 'commission', '')::numeric,
+        nullif(v_item ->> 'rate', '')::numeric, coalesce(v_item ->> 'connection', '')
+      );
+    end loop;
+  end if;
+
+  delete from public.operational_flags where daily_import_id = v_daily.id;
+  for v_item in select value from jsonb_array_elements(coalesce(p_import_result -> 'flags', '[]'::jsonb))
+  loop
+    select id into v_account_id from public.trading_accounts
+      where client_id = p_client_id and lower(account_name) = lower(coalesce(v_item ->> 'accountName', ''));
+    insert into public.operational_flags (
+      daily_import_id, client_id, trading_account_id, type, severity,
+      message, status, resolved_at, resolved_by_user_id
+    ) values (
+      v_daily.id, p_client_id, v_account_id, coalesce(v_item ->> 'type', 'Import review'),
+      coalesce(v_item ->> 'severity', 'Warning'), coalesce(v_item ->> 'message', ''),
+      coalesce(v_item ->> 'status', 'Open'), nullif(v_item ->> 'resolvedAt', '')::timestamptz,
+      nullif(v_item ->> 'resolvedByUserId', '')::uuid
+    );
+  end loop;
+
+  return v_daily;
+end;
+$function$;
+
+revoke all on function public.persist_auto_daily_import(uuid, uuid, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.persist_auto_daily_import(uuid, uuid, jsonb)
+  to service_role;
+
+create or replace function public.finalize_ingest_batch(
+  p_batch_id uuid,
+  p_device_id uuid,
+  p_status text,
+  p_daily_import_id uuid,
+  p_captured_at timestamptz,
+  p_success boolean,
+  p_error_code text,
+  p_completeness jsonb,
+  p_row_counts jsonb,
+  p_event_type text
+)
+returns public.ingest_batches
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_batch public.ingest_batches;
+  v_device public.ingest_devices;
+begin
+  if p_batch_id is null or p_device_id is null
+    or p_status not in ('processed', 'incomplete', 'late_closed_day', 'failed')
+    or p_captured_at is null
+    or p_success is null
+    or p_completeness is null
+    or p_row_counts is null
+    or nullif(btrim(p_event_type), '') is null
+    or (p_success and p_status = 'failed')
+    or (not p_success and p_status <> 'failed')
+    or (p_status = 'failed' and nullif(btrim(p_error_code), '') is null)
+    or (p_status <> 'failed' and p_error_code is not null) then
+    raise exception 'invalid_batch_finalization'
+      using errcode = '22023';
+  end if;
+
+  select batch.* into v_batch
+  from public.ingest_batches as batch
+  where batch.id = p_batch_id
+  for update;
+  if not found or v_batch.device_id is distinct from p_device_id
+    or v_batch.status not in ('received', 'processing') then
+    raise exception 'invalid_batch_finalization'
+      using errcode = 'P0001';
+  end if;
+
+  select device.* into v_device
+  from public.ingest_devices as device
+  where device.id = p_device_id
+  for update;
+  if not found or v_device.client_id is distinct from v_batch.client_id then
+    raise exception 'invalid_batch_finalization'
+      using errcode = 'P0001';
+  end if;
+
+  update public.ingest_batches
+  set status = p_status,
+      daily_import_id = p_daily_import_id,
+      completeness = p_completeness,
+      error_code = p_error_code,
+      error_detail = null,
+      processed_at = clock_timestamp()
+  where id = p_batch_id
+  returning * into v_batch;
+
+  update public.ingest_devices
+  set last_capture_at = case
+        when last_capture_at is null then p_captured_at
+        else greatest(last_capture_at, p_captured_at)
+      end,
+      last_success_at = case
+        when not p_success then last_success_at
+        when last_success_at is null then p_captured_at
+        else greatest(last_success_at, p_captured_at)
+      end,
+      last_error_code = case when p_success then null else p_error_code end,
+      last_error_at = case when p_success then null else clock_timestamp() end
+  where id = p_device_id;
+
+  if p_status = 'late_closed_day' then
+    if p_daily_import_id is null then
+      raise exception 'closed day link is required'
+        using errcode = '22023';
+    end if;
+    insert into public.operational_flags (
+      daily_import_id, client_id, type, severity, message, status
+    ) values (
+      p_daily_import_id,
+      v_batch.client_id,
+      'Late automatic snapshot',
+      'Warning',
+      'A later automatic snapshot was retained and requires explicit Manager review.',
+      'Open'
+    );
+  end if;
+
+  insert into public.audit_logs (
+    user_id, entity_type, entity_id, action, after_data
+  ) values (
+    null,
+    'ingest_batch',
+    p_batch_id,
+    p_event_type,
+    jsonb_build_object(
+      'clientId', v_batch.client_id,
+      'deviceId', p_device_id,
+      'batchId', p_batch_id,
+      'dailyImportId', p_daily_import_id,
+      'status', p_status,
+      'rowCounts', p_row_counts,
+      'errorCode', p_error_code
+    )
+  );
+
+  return v_batch;
+end;
+$function$;
+
+revoke all on function public.finalize_ingest_batch(
+  uuid, uuid, text, uuid, timestamptz, boolean, text, jsonb, jsonb, text
+) from public, anon, authenticated;
+grant execute on function public.finalize_ingest_batch(
+  uuid, uuid, text, uuid, timestamptz, boolean, text, jsonb, jsonb, text
+) to service_role;
 
 commit;
