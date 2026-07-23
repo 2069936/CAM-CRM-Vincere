@@ -2,8 +2,9 @@
 
 Status: **portable Windows gate passed; controlled VPS gate pending**. The
 hosted Windows Server 2025 workflow compiled and tested the portable service,
-setup UI, DPAPI and named-pipe logic, built the unsigned machine MSI, ran the
-installer authoring tests, and uploaded the MSI artifact. This does not claim
+setup UI, DPAPI and named-pipe logic, built the unsigned machine MSI, compiled
+a disposable AddOn MSI and full Burn bundle to validate the WiX authoring, ran
+the installer tests, and uploaded the portable artifacts. This does not claim
 that the collector has passed NinjaTrader parity, an installed LocalSystem
 service, live ACL checks, the signed bundle, or Authenticode validation.
 
@@ -11,15 +12,16 @@ service, live ACL checks, the signed bundle, or Authenticode validation.
 
 | Field | Result |
 |---|---|
-| Workflow | [Collector Windows run 30050555668](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30050555668) |
-| Commit | `37a465bfb4bd66879006ae337233b3724fa94a9c` |
+| Workflow | [Collector Windows run 30052857125](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30052857125) |
+| Commit | `bcff1b4bed9fd6023300aefc8c826b3ec1897254` |
 | Runner | GitHub-hosted `windows-2025` |
 | .NET tests | 135 passed, including 18 pure AddOn mapping/protocol tests |
-| Installer tests | 17 passed, including strong parity-evidence enforcement |
-| MSI artifact | `collector-machine-msi-14/Vincere.AutoExport.Machine.msi` |
-| MSI SHA-256 | `6e181f3352f83477d5f5f68e7e7981cf5a0e72cdfaec114480f1f32f8585ca65` |
-| Probe artifact | `ninjatrader-parity-probe-14/Vincere-NinjaTrader-Parity-Probe.zip` |
-| Probe ZIP SHA-256 | `06c6a0f7e2a881bf0802fbc1f378d4835d657597ad65b324f4d7e9b589ece3b9` |
+| Installer tests | 18 passed, including profile detection and strong parity-evidence enforcement |
+| WiX authoring | Disposable AddOn MSI and full Burn bundle compiled successfully; setup EXE deleted in CI and not published |
+| MSI artifact | `collector-machine-msi-18/Vincere.AutoExport.Machine.msi` |
+| MSI SHA-256 | `95b5584ccc05da3e13a06529d8cdb7ecb35fecdbb0bc679c84516c5d1579951d` |
+| Probe artifact | `ninjatrader-parity-probe-18/Vincere-NinjaTrader-Parity-Probe.zip` |
+| Probe ZIP SHA-256 | `568c4c0c04dd021a8f871909887a967064d8e0ca842cdc1f3236655359b3ec70` |
 
 The artifact is unsigned and retained for seven days. It is portable-gate
 evidence only and must not be distributed as the production installer.
