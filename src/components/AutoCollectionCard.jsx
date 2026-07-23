@@ -80,15 +80,15 @@ function ConnectionStep({ number, title, description, state = 'future', children
   );
 }
 
-function SetupConfirmation({ action, clientName, busy, onCancel, onConfirm }) {
+function SetupConfirmation({ action, clientName, busy, onCancel, onConfirm, returnFocusRef }) {
   const [typed, setTyped] = useState('');
   const [reason, setReason] = useState(action?.kind === 'rebind' ? 'vps_rebuilt' : 'security_revoke');
   const dialogRef = useRef(null);
-  const returnFocus = useRef(null);
   useEffect(() => {
-    returnFocus.current = document.activeElement;
-    return () => returnFocus.current?.focus?.();
-  }, []);
+    if (!action) return undefined;
+    const target = returnFocusRef.current;
+    return () => target?.focus?.();
+  }, [action, returnFocusRef]);
   if (!action) return null;
   const phrase = confirmationPhrase(action.kind, clientName);
   const reasonOptions = action.kind === 'rebind' ? REBIND_REASON_OPTIONS : REVOKE_REASON_OPTIONS;
@@ -187,6 +187,12 @@ export default function AutoCollectionCard({
   const activeRequest = useRef(null);
   const clockAnchor = useRef(null);
   const copyTimer = useRef(null);
+  const confirmationTrigger = useRef(null);
+
+  function openConfirmation(action, trigger) {
+    confirmationTrigger.current = trigger;
+    setConfirmation(action);
+  }
 
   const calibrateClock = useCallback((serverTime) => {
     const server = Date.parse(serverTime || '');
@@ -377,12 +383,12 @@ export default function AutoCollectionCard({
               <span>{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy unavailable' : formatCountdown(enrollmentSeconds)}</span>
             </div>
           ) : !device && status?.permissions?.generate ? (
-            <button type="button" className="secondary-button auto-collection-step-action" onClick={() => setConfirmation({
+            <button type="button" className="secondary-button auto-collection-step-action" onClick={(event) => openConfirmation({
               kind: 'generate',
               title: 'Generate a one-time code?',
               description: 'Any older unused code for this client will stop working.',
               confirmLabel: 'Generate one-time code',
-            })}><KeyRound size={14} /> Generate one-time code</button>
+            }, event.currentTarget)}><KeyRound size={14} /> Generate one-time code</button>
           ) : null}
         </ConnectionStep>
         <ConnectionStep
@@ -409,8 +415,8 @@ export default function AutoCollectionCard({
         <footer className="auto-collection-footer">
           <span>Only rebind or revoke when the VPS assignment intentionally changes.</span>
           <div>
-            {status?.permissions?.rebind ? <button type="button" className="ghost-button" onClick={() => setConfirmation({ kind: 'rebind', title: 'Rebind this client to another VPS?', description: 'The current VPS and all unused codes will immediately lose access.', confirmLabel: 'Rebind VPS' })}><RotateCcw size={14} /> Rebind VPS</button> : null}
-            {status?.permissions?.revoke && (activeDevice || activeEnrollment) ? <button type="button" className="ghost-button danger-text" onClick={() => setConfirmation({ kind: 'revoke', title: 'Revoke automatic collection access?', description: 'Uploads from the current VPS will stop immediately.', confirmLabel: 'Revoke access' })}><Ban size={14} /> Revoke access</button> : null}
+            {status?.permissions?.rebind ? <button type="button" className="ghost-button" onClick={(event) => openConfirmation({ kind: 'rebind', title: 'Rebind this client to another VPS?', description: 'The current VPS and all unused codes will immediately lose access.', confirmLabel: 'Rebind VPS' }, event.currentTarget)}><RotateCcw size={14} /> Rebind VPS</button> : null}
+            {status?.permissions?.revoke && (activeDevice || activeEnrollment) ? <button type="button" className="ghost-button danger-text" onClick={(event) => openConfirmation({ kind: 'revoke', title: 'Revoke automatic collection access?', description: 'Uploads from the current VPS will stop immediately.', confirmLabel: 'Revoke access' }, event.currentTarget)}><Ban size={14} /> Revoke access</button> : null}
           </div>
         </footer>
       ) : null}
@@ -420,6 +426,7 @@ export default function AutoCollectionCard({
         action={confirmation}
         clientName={displayClientName}
         busy={busy}
+        returnFocusRef={confirmationTrigger}
         onCancel={() => { if (!busy) setConfirmation(null); }}
         onConfirm={runConfirmedAction}
       />
