@@ -66,4 +66,15 @@ describe('auto-export snapshot v1 contract', () => {
       ]),
     );
   });
+
+  it('rejects calendar-invalid ISO timestamps', () => {
+    const invalid = structuredClone(snapshot);
+    invalid.strategies[0].startedAt = '2026-02-31T09:30:00-04:00';
+
+    expect(validateAutoExportSnapshot(invalid).errors).toEqual(
+      expect.arrayContaining([
+        'strategies[0].startedAt must be an ISO-8601 timestamp with an offset or null',
+      ]),
+    );
+  });
 });

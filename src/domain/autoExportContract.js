@@ -38,7 +38,9 @@ function isObject(value) {
 }
 
 function isIsoTimestamp(value) {
-  return typeof value === 'string' && ISO_TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value));
+  if (typeof value !== 'string') return false;
+  const match = value.match(ISO_TIMESTAMP);
+  return match !== null && isDate(value.slice(0, 10));
 }
 
 function isDate(value) {
