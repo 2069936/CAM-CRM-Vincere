@@ -9,6 +9,8 @@ const HEADER_ALIASES = {
   commission: 'commission',
   connection: 'connectionName',
   connectionname: 'connectionName',
+  connectionstatus: 'status',
+  dataseries: 'dataSeries',
   displayname: 'displayName',
   enabled: 'enabled',
   ex: 'entryExit',
@@ -17,21 +19,28 @@ const HEADER_ALIASES = {
   id: 'id',
   instrument: 'instrument',
   limit: 'limitPrice',
+  name: 'name',
+  oco: 'oco',
   orderid: 'orderId',
   parameters: 'parametersRaw',
   position: 'marketPosition',
   price: 'price',
   quantity: 'quantity',
-  rate: 'fee',
+  rate: 'rate',
   realized: 'realizedPnl',
   realizedpnl: 'realizedPnl',
   remaining: 'remaining',
   state: 'state',
   stop: 'stopPrice',
   strategy: 'strategyName',
+  sync: 'sync',
+  tif: 'tif',
   time: 'time',
+  totalpnl: 'totalPnl',
   type: 'orderType',
   unrealized: 'unrealizedPnl',
+  unrealizedpnl: 'unrealizedPnl',
+  weeklypnl: 'weeklyPnl',
 };
 
 function normalizeHeader(value) {
@@ -207,6 +216,10 @@ function mapRow(type, row) {
       cashValue: parseNumber(row.cashValue),
       realizedPnl: parseNumber(row.realizedPnl),
       grossRealizedPnl: parseNumber(row.grossRealizedPnl),
+      unrealizedPnl: parseNumber(row.unrealizedPnl),
+      totalPnl: parseNumber(row.totalPnl),
+      weeklyPnl: parseNumber(row.weeklyPnl),
+      status: row.status || '',
     };
   }
   if (type === 'strategies') {
@@ -219,6 +232,8 @@ function mapRow(type, row) {
       realizedPnl: parseNumber(row.realizedPnl),
       unrealizedPnl: parseNumber(row.unrealizedPnl),
       enabled: parseBoolean(row.enabled),
+      sync: parseBoolean(row.sync),
+      dataSeries: row.dataSeries || '',
       parametersRaw: row.parametersRaw || '',
     };
   }
@@ -238,6 +253,9 @@ function mapRow(type, row) {
       averageFillPrice: parseNumber(row.averageFillPrice),
       state: row.state || '',
       time: row.time || '',
+      tif: row.tif || '',
+      oco: row.oco || '',
+      name: row.name || '',
     };
   }
   if (type === 'executions') {
@@ -252,8 +270,10 @@ function mapRow(type, row) {
       time: row.time || '',
       marketPosition: row.marketPosition || '',
       entryExit: row.entryExit || '',
+      name: row.name || '',
       commission: parseNumber(row.commission),
-      fee: parseNumber(row.fee),
+      rate: parseNumber(row.rate),
+      connectionName: row.connectionName || '',
     };
   }
   return row;

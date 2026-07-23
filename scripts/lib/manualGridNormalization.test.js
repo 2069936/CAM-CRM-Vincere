@@ -59,8 +59,9 @@ describe('manual NinjaTrader grid normalization', () => {
     });
     expect(files[2].rows[0]).toMatchObject({
       executionId: 'execution-1', orderId: 'order-1', accountName: 'SIM-01',
-      price: 20120.25, commission: 1.24, fee: 0.35,
+      price: 20120.25, commission: 1.24, rate: 0.35,
     });
+    expect(files[2].rows[0]).not.toHaveProperty('fee');
   });
 
   it('rejects a header set that matches more than one grid type', () => {
@@ -76,6 +77,32 @@ describe('manual NinjaTrader grid normalization', () => {
     expect(result.errors).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'ambiguous_grid_type' }),
     ]));
+  });
+
+  it('preserves the additional columns present in the real four-grid exports', () => {
+    const account = normalizeManualGridFile([
+      'ConnectionStatus,Connection,Display name,Cash value,Weekly PnL,Unrealized PnL,Realized PnL,Gross realized PnL,Total PnL',
+      'Connected,Live,SIM-01,$1000,$25,$3,$10,$12,$13',
+    ].join('\n')).rows[0];
+    const strategy = normalizeManualGridFile([
+      'Strategy,Account display name,Instrument,Data series,Parameters,Sync,Enabled',
+      'RBO-1.8,SIM-01,NQ 09-26,NQ 1 Minute,params,True,True',
+    ].join('\n')).rows[0];
+    const order = normalizeManualGridFile([
+      'Instrument,Action,Type,Quantity,State,Filled,Remaining,Name,Strategy,OCO,TIF,Account display name,ID',
+      'NQ 09-26,Buy,Market,1,Filled,1,0,Entry,RBO-1.8,oco-1,Day,SIM-01,order-1',
+    ].join('\n')).rows[0];
+    const execution = normalizeManualGridFile([
+      'Instrument,Action,Quantity,Price,Time,ID,E/X,Position,Order ID,Name,Commission,Rate,Account display name,Connection',
+      'NQ 09-26,Buy,1,100,7/23/2026 4:44:46 PM,execution-1,Entry,Long,order-1,Entry,$1.24,1,SIM-01,Live',
+    ].join('\n')).rows[0];
+
+    expect(account).toMatchObject({
+      status: 'Connected', weeklyPnl: 25, unrealizedPnl: 3, totalPnl: 13,
+    });
+    expect(strategy).toMatchObject({ dataSeries: 'NQ 1 Minute', sync: true });
+    expect(order).toMatchObject({ name: 'Entry', oco: 'oco-1', tif: 'Day' });
+    expect(execution).toMatchObject({ name: 'Entry', connectionName: 'Live', rate: 1 });
   });
 
   it('builds stable section keys with documented identifier fallbacks', () => {
