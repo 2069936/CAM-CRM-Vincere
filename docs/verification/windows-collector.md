@@ -1,9 +1,26 @@
 # Windows collector verification
 
-Status: **prepared, not executed**. The portable code, WPF markup, WiX XML, and
-release workflow have been checked from macOS. No claim is made here that the
-collector has passed NinjaTrader, LocalSystem, DPAPI, named-pipe ACL, installer,
-or Authenticode validation on Windows.
+Status: **portable Windows gate passed; controlled VPS gate pending**. The
+hosted Windows Server 2025 workflow compiled and tested the portable service,
+setup UI, DPAPI and named-pipe logic, built the unsigned machine MSI, ran the
+installer authoring tests, and uploaded the MSI artifact. This does not claim
+that the collector has passed NinjaTrader parity, an installed LocalSystem
+service, live ACL checks, the signed bundle, or Authenticode validation.
+
+## Hosted Windows evidence
+
+| Field | Result |
+|---|---|
+| Workflow | [Collector Windows run 30048206306](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30048206306) |
+| Commit | `ad6270809a816d446c3dcb551cef5ed12931ef3c` |
+| Runner | GitHub-hosted `windows-2025` |
+| .NET tests | 117 passed |
+| Installer tests | 14 passed |
+| Artifact | `collector-machine-msi-9/Vincere.AutoExport.Machine.msi` |
+| Artifact SHA-256 | `4f0cebb6be9c9c3c0705d366ed2b62966fe32b0e01677760c73dbbcfe7082f26` |
+
+The artifact is unsigned and retained for seven days. It is portable-gate
+evidence only and must not be distributed as the production installer.
 
 ## Controlled environment
 
