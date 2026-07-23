@@ -1,7 +1,27 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Vincere.AutoExport.Agent.Queue;
 
 namespace Vincere.AutoExport.Agent.Crm;
+
+public interface ICollectorCrmClient
+{
+    Task<PairingResult> PairAsync(
+        string enrollmentCode,
+        string agentVersion,
+        string addonVersion,
+        CancellationToken cancellationToken = default);
+
+    Task<UploadAcknowledgement> UploadAsync(
+        QueueItem item,
+        CancellationToken cancellationToken = default);
+
+    Task<HeartbeatResult> SendHeartbeatAsync(
+        HeartbeatPayload payload,
+        CancellationToken cancellationToken = default);
+}
 
 public enum CrmFailureDisposition
 {

@@ -18,7 +18,7 @@ using Vincere.AutoExport.Agent.Diagnostics;
 
 namespace Vincere.AutoExport.Agent.Crm;
 
-public sealed class CrmClient : IDisposable
+public sealed class CrmClient : ICollectorCrmClient, IDisposable
 {
     private static readonly Regex EnrollmentCodePattern = new(
         "^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{10}$",

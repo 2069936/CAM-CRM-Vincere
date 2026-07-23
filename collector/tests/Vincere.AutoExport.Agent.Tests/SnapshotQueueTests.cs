@@ -97,6 +97,23 @@ public sealed class SnapshotQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task RejectedUploadIsQuarantinedWithItsStableReasonAndPayloadIntact()
+    {
+        SnapshotQueue queue = CreateQueue();
+        await queue.EnqueueAsync(Snapshot());
+        QueueItem claimed = await queue.ClaimNextAsync();
+
+        QueueItem quarantined = await queue.QuarantineAsync(claimed, "unsupported_schema_version");
+
+        Assert.Equal(QueueState.Quarantine, quarantined.State);
+        Assert.True(File.Exists(quarantined.PayloadPath));
+        Assert.False(File.Exists(claimed.PayloadPath));
+        Assert.Equal(
+            "unsupported_schema_version",
+            queue.ReadQuarantineReason(quarantined.PayloadPath + ".reason").Code);
+    }
+
+    [Fact]
     public async Task RecoveryReturnsUnacknowledgedUploadToPending()
     {
         SnapshotQueue queue = CreateQueue();

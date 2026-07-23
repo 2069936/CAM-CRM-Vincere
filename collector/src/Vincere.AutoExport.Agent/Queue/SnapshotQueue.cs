@@ -20,7 +20,28 @@ public interface ISnapshotQueueWriter
         CancellationToken cancellationToken = default);
 }
 
-public sealed class SnapshotQueue : ISnapshotQueueWriter
+public interface ICollectorQueue : ISnapshotQueueWriter
+{
+    Task<QueueRecoveryResult> RecoverAsync(CancellationToken cancellationToken = default);
+    Task<QueueItem> ClaimNextAsync(CancellationToken cancellationToken = default);
+    Task<QueueItem> RetryAsync(QueueItem item, CancellationToken cancellationToken = default);
+    Task<QueueItem> CompleteAsync(
+        QueueItem item,
+        string batchId,
+        string acknowledgedContentSha256,
+        DateTimeOffset acknowledgedAt,
+        CancellationToken cancellationToken = default);
+    Task<QueueItem> QuarantineAsync(
+        QueueItem item,
+        string code,
+        CancellationToken cancellationToken = default);
+    Task<QueueStatus> GetStatusAsync(CancellationToken cancellationToken = default);
+    Task<QueueCleanupResult> CleanupAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class SnapshotQueue : ICollectorQueue
 {
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
     private readonly IAgentDirectorySecurity directorySecurity;
@@ -139,7 +160,7 @@ public sealed class SnapshotQueue : ISnapshotQueueWriter
                 catch (SnapshotQueueException exception)
                     when (exception.Code is "queue_payload_corrupt" or "queue_payload_mismatch")
                 {
-                    await QuarantineAsync(pendingPath, exception.Code, cancellationToken).ConfigureAwait(false);
+                    await QuarantinePathAsync(pendingPath, exception.Code, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
                 string uploadingPath = Path.Combine(UploadingDirectory, Path.GetFileName(pendingPath));
@@ -240,6 +261,33 @@ public sealed class SnapshotQueue : ISnapshotQueueWriter
         }
     }
 
+    public async Task<QueueItem> QuarantineAsync(
+        QueueItem item,
+        string code,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (string.IsNullOrWhiteSpace(code))
+            throw new SnapshotQueueException("quarantine_reason_invalid", "A quarantine reason is required.");
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureDirectories();
+            RequireStatePath(item, QueueState.Uploading, UploadingDirectory);
+            QueueItem current = ReadQueueItem(item.PayloadPath, QueueState.Uploading);
+            await QuarantinePathAsync(item.PayloadPath, code, cancellationToken).ConfigureAwait(false);
+            return current with
+            {
+                PayloadPath = Path.Combine(QuarantineDirectory, Path.GetFileName(item.PayloadPath)),
+                State = QueueState.Quarantine,
+            };
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     public QueueReceipt ReadReceipt(string path)
     {
         QueueReceipt receipt;
@@ -317,7 +365,7 @@ public sealed class SnapshotQueue : ISnapshotQueueWriter
                 catch (SnapshotQueueException exception)
                     when (exception.Code is "queue_payload_corrupt" or "queue_payload_mismatch" or "capture_id_conflict")
                 {
-                    await QuarantineAsync(temporaryPath, exception.Code, cancellationToken).ConfigureAwait(false);
+                    await QuarantinePathAsync(temporaryPath, exception.Code, cancellationToken).ConfigureAwait(false);
                     quarantinedItems++;
                 }
             }
@@ -350,7 +398,7 @@ public sealed class SnapshotQueue : ISnapshotQueueWriter
                         or "receipt_invalid"
                         or "receipt_hash_mismatch")
                 {
-                    await QuarantineAsync(uploadingPath, exception.Code, cancellationToken).ConfigureAwait(false);
+                    await QuarantinePathAsync(uploadingPath, exception.Code, cancellationToken).ConfigureAwait(false);
                     string receiptPath = uploadingPath + ".receipt";
                     if (File.Exists(receiptPath))
                     {
@@ -444,7 +492,7 @@ public sealed class SnapshotQueue : ISnapshotQueueWriter
         Directory.CreateDirectory(QuarantineDirectory);
     }
 
-    private async Task QuarantineAsync(string payloadPath, string code, CancellationToken cancellationToken)
+    private async Task QuarantinePathAsync(string payloadPath, string code, CancellationToken cancellationToken)
     {
         string quarantinedPath = Path.Combine(QuarantineDirectory, Path.GetFileName(payloadPath));
         string reasonPath = quarantinedPath + ".reason";

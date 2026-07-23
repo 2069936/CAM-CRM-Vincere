@@ -25,6 +25,17 @@ public interface ICaptureWorkflow
         CancellationToken cancellationToken = default);
 }
 
+public interface ICaptureScheduler
+{
+    Task<CaptureRunResult> RunScheduledAsync(
+        Instant now,
+        CancellationToken cancellationToken = default);
+
+    Task<CaptureRunResult> RunManualAsync(
+        Instant now,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed class CaptureAttemptException : Exception
 {
     public CaptureAttemptException(string code, string message) : base(message)
@@ -37,7 +48,7 @@ public sealed class CaptureAttemptException : Exception
     public string Code { get; }
 }
 
-public sealed class CaptureScheduler
+public sealed class CaptureScheduler : ICaptureScheduler
 {
     private static readonly Duration RetryDelay = Duration.FromMinutes(2);
     private readonly IAgentOptionsStore optionsStore;
