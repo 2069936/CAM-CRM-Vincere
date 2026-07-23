@@ -8,9 +8,8 @@
     <util:DirectorySearch Id="FindInteractiveNinjaTraderProfile"
                           Path="[NinjaTraderDocuments]NinjaTrader 8"
                           Variable="NinjaTraderProfileFound" Result="exists" />
-    <bal:Condition Message="NinjaTrader 8 was not found for the intended Windows user. Sign in to the Windows profile that runs NinjaTrader and start setup again.">
-      WixBundleInstalled OR NinjaTraderProfileFound
-    </bal:Condition>
+    <bal:Condition Condition="WixBundleInstalled OR NinjaTraderProfileFound"
+                   Message="NinjaTrader 8 was not found for the intended Windows user. Sign in to the Windows profile that runs NinjaTrader and start setup again." />
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" ShowVersion="yes"
                                                LaunchTarget="[ProgramFiles64Folder]Vincere\Auto Export\Setup\Vincere.AutoExport.Agent.UI.exe" />

@@ -10,7 +10,7 @@ describe('guided NinjaTrader profile installer authoring', () => {
   it('captures and persists the interactive user Documents path before elevation', () => {
     expect(bundle).toMatch(/<Variable\s+Name="NinjaTraderDocuments"[^>]*Type="formatted"[^>]*Value="\[PersonalFolder\]"[^>]*Persisted="yes"/s);
     expect(bundle).toMatch(/<util:DirectorySearch[^>]*Path="\[NinjaTraderDocuments\]NinjaTrader 8"[^>]*Variable="NinjaTraderProfileFound"[^>]*Result="exists"/s);
-    expect(bundle).toMatch(/<bal:Condition[^>]*Message="[^"]*intended Windows user[^"]*"[^>]*>\s*WixBundleInstalled OR NinjaTraderProfileFound\s*<\/bal:Condition>/s);
+    expect(bundle).toMatch(/<bal:Condition[^>]*Condition="WixBundleInstalled OR NinjaTraderProfileFound"[^>]*Message="[^"]*intended Windows user[^"]*"[^>]*\/>/s);
   });
 
   it('passes one explicit profile root to the AddOn MSI and never uses MSI PersonalFolder', () => {
