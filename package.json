@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
+    "collector:verify-env": "node scripts/verify-auto-collection-env.mjs",
     "probe:compare": "node scripts/compare-ninjatrader-probe.mjs",
     "probe:evidence": "node scripts/create-ninjatrader-parity-evidence.mjs"
   },

@@ -94,6 +94,8 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
   return Object.freeze({
     url: approvedUrl(setup.url, { production, origin: manifestUrl.origin }).toString(),
     version: manifest.version,
+    minimumAgentVersion: manifest.minimumAgentVersion,
+    minimumSchemaVersion: manifest.minimumSchemaVersion,
     sha256: setup.sha256,
     publishedAt: canonicalTimestamp(manifest.publishedAt),
     size: setup.size,

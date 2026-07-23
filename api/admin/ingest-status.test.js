@@ -145,6 +145,8 @@ describe('installer release manifest validation', () => {
     await expect(resolveInstallerRelease(releaseEnv, { production: true, fetchImpl: fetchRelease })).resolves.toEqual({
       url: 'https://downloads.example.test/Vincere-AutoExport-Setup.exe',
       version: '1.4.2',
+      minimumAgentVersion: '1.4.2',
+      minimumSchemaVersion: 1,
       sha256: 'a'.repeat(64),
       publishedAt: '2026-07-23T14:00:00.000Z',
       size: 300,
