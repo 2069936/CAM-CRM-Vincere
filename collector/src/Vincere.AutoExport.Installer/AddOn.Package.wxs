@@ -7,7 +7,7 @@
     <MediaTemplate EmbedCab="yes" />
     <Launch Condition="NINJATRADERDOCUMENTS"
             Message="A validated NinjaTrader Documents folder is required. Run the signed Vincere setup bundle from the intended Windows user profile." />
-    <Directory Id="TARGETDIR" Name="SourceDir">
+    <StandardDirectory Id="TARGETDIR">
       <Directory Id="NINJATRADERDOCUMENTS" Name="Documents">
         <Directory Id="NinjaTraderDocumentsFolder" Name="NinjaTrader 8">
         <Directory Id="NinjaTraderBinFolder" Name="bin">
@@ -17,7 +17,7 @@
         </Directory>
       </Directory>
       </Directory>
-    </Directory>
+    </StandardDirectory>
     <ComponentGroup Id="AddOnComponents">
       <Component Id="ProductionAddOnComponent" Directory="NinjaTraderAddOnsFolder" Guid="132D0BFC-E319-409D-9C89-1C12235B70EF">
         <File Id="ProductionAddOnDll" Source="$(AddOnSource)" Name="Vincere.AutoExport.NinjaTrader.dll" />
