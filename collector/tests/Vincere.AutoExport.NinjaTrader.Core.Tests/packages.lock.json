@@ -105,6 +105,7 @@
       "vincere.autoexport.ninjatrader.core": {
         "type": "Project",
         "dependencies": {
+          "Newtonsoft.Json": "[13.0.3, )",
           "Vincere.AutoExport.Contracts": "[1.0.0, )"
         }
       },

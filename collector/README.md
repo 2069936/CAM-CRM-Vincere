@@ -9,6 +9,10 @@ CRM credentials to identify a client.
 
 - `Vincere.AutoExport.Contracts` targets `netstandard2.0` so NinjaTrader and the
   service share one wire contract.
+- `Vincere.AutoExport.NinjaTrader.Core` targets `netstandard2.0` and owns the
+  testable four-section mapper, safe strategy-parameter reader, capture request
+  concurrency/timeout rules, and bounded wire framing. It has no NinjaTrader UI
+  or proprietary assembly dependency.
 - Pure agent tests target `net8.0` and run on every developer/CI platform.
 - The service and UI target self-contained `net8.0-windows` / `win-x64`.
 - The AddOn targets `net48`. Set `NINJATRADER_HOME` to a legitimate local
@@ -20,6 +24,7 @@ reviewed `packages.lock.json` files, then CI uses locked mode.
 ```powershell
 dotnet restore collector\Vincere.AutoExport.sln --locked-mode
 dotnet test collector\tests\Vincere.AutoExport.Contracts.Tests -c Release --no-restore
+dotnet test collector\tests\Vincere.AutoExport.NinjaTrader.Core.Tests -c Release --no-restore
 dotnet test collector\tests\Vincere.AutoExport.Agent.Tests -c Release --no-restore
 ```
 
