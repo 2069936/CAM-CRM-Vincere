@@ -90,10 +90,17 @@ function rpcValue(data) {
 }
 
 function batchFromRow(row = {}) {
+  const safeErrorCodes = new Set([
+    'storage_failed', 'normalization_failed', 'registry_load_failed',
+    'reconciliation_failed', 'persistence_failed', 'ingest_failed',
+    'immutable_object_conflict', 'unsupported_schema_version',
+    'invalid_auto_import_snapshot',
+  ]);
   return {
     id: row.id,
     dailyImportId: row.daily_import_id || null,
     status: row.status,
+    errorCode: safeErrorCodes.has(row.error_code) ? row.error_code : null,
   };
 }
 
@@ -105,15 +112,34 @@ function leaseError(error) {
   return conflict;
 }
 
+function deviceRevokedError(error) {
+  const details = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  if (!details.includes('invalid_ingest_device')) return null;
+  const unauthorized = new ApiError(401, 'invalid_device_credential');
+  unauthorized.code = 'invalid_device_credential';
+  return unauthorized;
+}
+
 function storageNotFound(error) {
   const status = Number(error?.statusCode || error?.status);
   const message = String(error?.message || '').toLowerCase();
   return status === 404 || message.includes('not found') || message.includes('not_found');
 }
 
-async function blobBuffer(value) {
+async function blobBuffer(value, { expectedCompressedBytes, maxCompressedBytes }) {
+  const declaredSize = Buffer.isBuffer(value) ? value.length : Number(value?.size);
+  if (!Number.isSafeInteger(declaredSize)
+    || declaredSize < 0
+    || declaredSize !== expectedCompressedBytes
+    || declaredSize > maxCompressedBytes) {
+    throw new ApiError(409, 'immutable_object_conflict');
+  }
   if (Buffer.isBuffer(value)) return value;
-  if (value && typeof value.arrayBuffer === 'function') return Buffer.from(await value.arrayBuffer());
+  if (value && typeof value.arrayBuffer === 'function') {
+    const buffered = Buffer.from(await value.arrayBuffer());
+    if (buffered.length !== declaredSize) throw new ApiError(409, 'immutable_object_conflict');
+    return buffered;
+  }
   throw new Error('Storage download returned no object bytes.');
 }
 
@@ -178,7 +204,7 @@ export function createAutoImportStore(admin) {
           conflict.code = 'capture_metadata_conflict';
           throw conflict;
         }
-        throw error;
+        throw deviceRevokedError(error) || error;
       }
       const result = rpcValue(data);
       if (!result || !['owned', 'busy', 'terminal', 'failed'].includes(result.outcome) || !result.batch?.id) {
@@ -193,9 +219,13 @@ export function createAutoImportStore(admin) {
 
     async ensureRaw(path, gzip, evidence) {
       const bucket = admin.storage.from(AUTO_IMPORT_BUCKET);
+      const compressedEvidence = {
+        expectedCompressedBytes: evidence.compressedByteCount ?? gzip.length,
+        maxCompressedBytes: evidence.maxCompressedBytes ?? DEFAULT_MAX_COMPRESSED_BYTES,
+      };
       const existing = await bucket.download(path);
       if (!existing.error) {
-        verifyRawEvidence(await blobBuffer(existing.data), evidence);
+        verifyRawEvidence(await blobBuffer(existing.data, compressedEvidence), evidence);
         return { existed: true };
       }
       if (!storageNotFound(existing.error)) throw existing.error;
@@ -211,7 +241,7 @@ export function createAutoImportStore(admin) {
       // overwrite: re-read and require the exact canonical evidence.
       const raced = await bucket.download(path);
       if (raced.error) throw uploaded.error;
-      verifyRawEvidence(await blobBuffer(raced.data), evidence);
+      verifyRawEvidence(await blobBuffer(raced.data, compressedEvidence), evidence);
       return { existed: true };
     },
 
@@ -221,7 +251,7 @@ export function createAutoImportStore(admin) {
         p_device_id: deviceId,
         p_processing_token: processingToken,
       });
-      if (error) throw leaseError(error) || error;
+      if (error) throw deviceRevokedError(error) || leaseError(error) || error;
     },
 
     async loadRegistry(clientUuid) {
@@ -250,7 +280,7 @@ export function createAutoImportStore(admin) {
               closed.dailyImportId = error.details || null;
               throw closed;
             }
-            throw leaseError(error) || error;
+            throw deviceRevokedError(error) || leaseError(error) || error;
           }
           const result = rpcValue(data);
           if (!['persisted', 'superseded'].includes(result?.disposition) || !result.daily_import?.id) {
@@ -276,7 +306,7 @@ export function createAutoImportStore(admin) {
         p_row_counts: payload.rowCounts || {},
         p_event_type: payload.eventType,
       });
-      if (error) throw leaseError(error) || error;
+      if (error) throw deviceRevokedError(error) || leaseError(error) || error;
       const row = rpcValue(data);
       if (!row?.id) throw new Error('Batch finalization RPC returned no result.');
       return batchFromRow(row);

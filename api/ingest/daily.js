@@ -77,6 +77,17 @@ function failureCode(stage) {
   return ({ storage: 'storage_failed', normalize: 'normalization_failed', registry: 'registry_load_failed', reconcile: 'reconciliation_failed', persist: 'persistence_failed' })[stage] || 'ingest_failed';
 }
 
+function isDeviceCredentialError(error) {
+  return error?.code === 'invalid_device_credential'
+    || (error instanceof ApiError && error.message === 'invalid_device_credential');
+}
+
+function sendDeviceCredentialError(res) {
+  return handleApiError(res, new ApiError(401, 'invalid_device_credential'), {
+    fallbackMessage: 'snapshot_ingest_unavailable',
+  });
+}
+
 async function completeBatch(store, payload) {
   if (typeof store.completeBatch === 'function') return store.completeBatch(payload);
   await store.finalizeBatch(payload);
@@ -148,7 +159,8 @@ export function createHandler({
       }
       if (claim.outcome === 'failed') {
         return sendJson(res, 409, {
-          error: 'capture_requires_replay', batchId: batch.id, status: batch.status,
+          error: 'capture_requires_replay', errorCode: batch.errorCode,
+          batchId: batch.id, status: batch.status,
         });
       }
       if (claim.outcome !== 'owned') throw new ApiError(500, 'snapshot_ingest_unavailable');
@@ -157,6 +169,8 @@ export function createHandler({
       await store.ensureRaw(storagePath, decoded.gzip, {
         sha256: decoded.sha256,
         byteCount: decoded.utf8.length,
+        compressedByteCount: decoded.gzip.length,
+        maxCompressedBytes,
       });
       stage = 'normalize';
       const normalized = normalizeSnapshot(decoded.snapshot);
@@ -229,6 +243,7 @@ export function createHandler({
         dailyImportId: dailyImport.id, status,
       });
     } catch (error) {
+      if (isDeviceCredentialError(error)) return sendDeviceCredentialError(res);
       if (batch && store) {
         if (stage === 'finalize') {
           const finalizationError = error instanceof ApiError && error.status === 409
@@ -253,7 +268,8 @@ export function createHandler({
               deviceId: device.id,
               processingToken,
             });
-          } catch {
+          } catch (releaseError) {
+            if (isDeviceCredentialError(releaseError)) return sendDeviceCredentialError(res);
             // The bounded lease remains recoverable if an explicit release fails.
           }
           return handleApiError(res, publicFailure(stage), { fallbackMessage: 'snapshot_ingest_unavailable' });
@@ -267,7 +283,8 @@ export function createHandler({
             success: false, status: 'failed', errorCode,
             completeness: {}, rowCounts: info?.rowCounts || {},
           });
-        } catch {
+        } catch (completionError) {
+          if (isDeviceCredentialError(completionError)) return sendDeviceCredentialError(res);
           // Preserve the original stable public failure if cleanup also fails.
         }
         const failure = preciseValidationCode

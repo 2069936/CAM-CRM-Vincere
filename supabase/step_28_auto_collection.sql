@@ -1603,6 +1603,7 @@ declare
   v_client public.clients;
   v_batch public.ingest_batches;
   v_daily public.daily_imports;
+  v_prior_batch public.ingest_batches;
   v_date date;
   v_item jsonb;
   v_account_name text;
@@ -1658,6 +1659,11 @@ begin
   if found
     and v_daily.source_batch_id is not null
     and v_daily.source_batch_id is distinct from p_source_batch_id then
+    select prior.* into v_prior_batch
+    from public.ingest_batches as prior
+    where prior.id = v_daily.source_batch_id
+      and prior.client_id = p_client_id
+    for update;
     update public.ingest_batches
     set status = 'replaced',
         daily_import_id = v_daily.id,
@@ -1667,6 +1673,26 @@ begin
     where id = v_daily.source_batch_id
       and client_id = p_client_id
       and status in ('processed', 'incomplete', 'processing');
+    if found and v_prior_batch.status = 'processing' then
+      insert into public.audit_logs (
+        user_id, entity_type, entity_id, action, after_data
+      ) values (
+        null,
+        'ingest_batch',
+        v_prior_batch.id,
+        'ingest_batch_superseded',
+        jsonb_build_object(
+          'clientId', p_client_id,
+          'deviceId', v_prior_batch.device_id,
+          'batchId', v_prior_batch.id,
+          'replacementBatchId', p_source_batch_id,
+          'dailyImportId', v_daily.id,
+          'status', 'replaced',
+          'rowCounts', v_prior_batch.row_counts,
+          'errorCode', null
+        )
+      );
+    end if;
     update public.ingest_batches
     set replaces_batch_id = v_daily.source_batch_id
     where id = p_source_batch_id;
@@ -2025,6 +2051,8 @@ security definer
 set search_path = pg_catalog, public
 as $function$
 declare
+  v_client_id uuid;
+  v_client public.clients;
   v_device public.ingest_devices;
   v_batch public.ingest_batches;
   v_now timestamptz := clock_timestamp();
@@ -2043,18 +2071,35 @@ begin
       using errcode = '22023';
   end if;
 
-  perform pg_advisory_xact_lock(hashtextextended(p_device_id::text || ':' || p_capture_id::text, 0));
+  -- Resolve the parent without a row lock, then use the same client -> device
+  -- -> batch order as enrollment/revocation before trusting the relationship.
+  select device.client_id into v_client_id
+  from public.ingest_devices as device
+  where device.id = p_device_id;
+  if not found then
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
+  end if;
+  select client.* into v_client
+  from public.clients as client
+  where client.id = v_client_id
+  for update;
+  if not found then
+    raise exception 'invalid_ingest_device' using errcode = 'P0001';
+  end if;
   select device.* into v_device
   from public.ingest_devices as device
   where device.id = p_device_id
   for update;
-  if not found or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
+  if not found or v_device.client_id is distinct from v_client_id
+    or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
     raise exception 'invalid_ingest_device' using errcode = 'P0001';
   end if;
   if p_storage_path is distinct from
     (v_device.client_id::text || '/' || p_trading_date::text || '/' || p_capture_id::text || '.json.gz') then
     raise exception 'invalid_batch_claim' using errcode = '22023';
   end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_device_id::text || ':' || p_capture_id::text, 0));
 
   select batch.* into v_batch
   from public.ingest_batches as batch
@@ -2132,12 +2177,25 @@ security definer
 set search_path = pg_catalog, public
 as $function$
 declare
+  v_client_id uuid;
+  v_client public.clients;
   v_device public.ingest_devices;
   v_batch public.ingest_batches;
 begin
+  select device.client_id into v_client_id from public.ingest_devices as device
+  where device.id = p_device_id;
+  if not found then
+    raise exception 'processing_lease_lost' using errcode = 'P0001';
+  end if;
+  select client.* into v_client from public.clients as client
+  where client.id = v_client_id for update;
+  if not found then
+    raise exception 'processing_lease_lost' using errcode = 'P0001';
+  end if;
   select device.* into v_device from public.ingest_devices as device
   where device.id = p_device_id for update;
-  if not found or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
+  if not found or v_device.client_id is distinct from v_client_id
+    or v_device.status is distinct from 'active' or v_device.revoked_at is not null then
     raise exception 'processing_lease_lost' using errcode = 'P0001';
   end if;
   select batch.* into v_batch from public.ingest_batches as batch
@@ -2213,8 +2271,6 @@ begin
     select batch.* into v_prior_batch from public.ingest_batches as batch
     where batch.id = v_daily.source_batch_id for update;
     if found and v_batch.captured_at <= v_prior_batch.captured_at then
-      update public.ingest_batches set replaces_batch_id = v_prior_batch.id
-      where id = p_source_batch_id;
       return jsonb_build_object('disposition', 'superseded', 'daily_import', to_jsonb(v_daily));
     end if;
   end if;

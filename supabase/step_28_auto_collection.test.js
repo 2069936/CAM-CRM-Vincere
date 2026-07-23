@@ -1,4 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import process from 'node:process';
 import { describe, expect, it } from 'vitest';
 
 const migrationUrl = new URL('./step_28_auto_collection.sql', import.meta.url);
@@ -7,6 +10,15 @@ const migrationExists = existsSync(migrationUrl);
 const sql = migrationExists ? readFileSync(migrationUrl, 'utf8') : '';
 const normalizedSql = sql.toLowerCase().replace(/\s+/g, ' ');
 const tracker = readFileSync(trackerUrl, 'utf8');
+const execFileAsync = promisify(execFile);
+const pgTestUrl = process.env.AUTO_COLLECTION_TEST_DATABASE_URL;
+
+async function psql(statement) {
+  const { stdout } = await execFileAsync('psql', [pgTestUrl, '-v', 'ON_ERROR_STOP=1', '-Atc', statement], {
+    timeout: 10_000,
+  });
+  return stdout.trim();
+}
 
 function functionDefinition(name) {
   const match = sql.match(new RegExp(
@@ -104,6 +116,9 @@ describe('step 28 auto-collection migration contract', () => {
     expect(claiming).toContain("'outcome', 'failed'");
     expect(claiming).toMatch(/processing_lease_expires_at[^;]+v_now/);
     expect(claiming).toMatch(/processing_token = p_processing_token/);
+    expect(claiming.indexOf('select client.*')).toBeLessThan(claiming.indexOf('select device.*'));
+    expect(claiming.indexOf('select device.*')).toBeLessThan(claiming.indexOf('select batch.*'));
+    expect(claiming).toMatch(/v_device\.client_id is distinct from v_client_id/);
     expect(normalizedSql).toMatch(/add column if not exists processing_token uuid/);
     expect(normalizedSql).toContain('ingest_batches_processing_lease_check');
     expect(normalizedSql).toMatch(/status = 'processing'[^;]+processing_token is not null[^;]+processing_lease_expires_at is not null/);
@@ -126,10 +141,14 @@ describe('step 28 auto-collection migration contract', () => {
     expect(persistence).toMatch(/processing_lease_expires_at <= clock_timestamp\(\)/);
     expect(persistence).toMatch(/v_batch\.captured_at <= v_prior_batch\.captured_at/);
     expect(persistence).toContain("'disposition', 'superseded'");
+    expect(persistence).not.toMatch(/set replaces_batch_id = v_prior_batch\.id/);
     expect(persistence).toContain('public.persist_auto_daily_import');
     expect(internalPersistence).toMatch(/status = 'replaced'/);
     expect(internalPersistence).toMatch(/status in \('processed', 'incomplete', 'processing'\)/);
     expect(internalPersistence).toMatch(/replaces_batch_id = v_daily\.source_batch_id/);
+    expect(internalPersistence).toContain('ingest_batch_superseded');
+    expect(internalPersistence).toContain("'replacementbatchid', p_source_batch_id");
+    expect(internalPersistence).toMatch(/v_prior_batch\.status = 'processing'/);
     expect(internalPersistence).toMatch(/jsonb_array_length[^;]+> 0/);
     for (const table of ['trading_accounts', 'daily_imports', 'account_snapshots', 'strategy_snapshots', 'orders', 'executions', 'operational_flags']) {
       expect(`${persistence} ${internalPersistence}`).toContain(`public.${table}`);
@@ -166,6 +185,8 @@ describe('step 28 auto-collection migration contract', () => {
     expect(release).toContain('for update');
     expect(release).toMatch(/processing_token is distinct from p_processing_token/);
     expect(release).toMatch(/status = 'received'/);
+    expect(release.indexOf('select client.*')).toBeLessThan(release.indexOf('select device.*'));
+    expect(release.indexOf('select device.*')).toBeLessThan(release.indexOf('select batch.*'));
     expect(normalizedSql).toMatch(/grant execute on function public\.release_ingest_batch_lease\([^;]+to service_role/);
   });
 
@@ -435,4 +456,131 @@ describe('step 28 auto-collection migration contract', () => {
     expect(pairing).toMatch(/v_device_created := true/);
     expect(pairing).toMatch(/if v_device_created then[\s\S]*insert into public\.audit_logs/);
   });
+});
+
+describe('step 28 PostgreSQL concurrency regression', () => {
+  const databaseIt = pgTestUrl ? it : it.skip;
+
+  databaseIt('serializes claim against device revocation without deadlock', async () => {
+    const clientId = '17171717-1717-4717-8717-171717171717';
+    const deviceId = '27272727-2727-4727-8727-272727272727';
+    const actorId = '37373737-3737-4737-8737-373737373737';
+    const captureId = '47474747-4747-4747-8747-474747474747';
+    const token = '57575757-5757-4757-8757-575757575757';
+    await psql(`
+      insert into public.app_users(id, username, display_name, role)
+      values ('${actorId}', 'task7-concurrency', 'Task 7 Concurrency', 'Manager')
+      on conflict (id) do nothing;
+      insert into public.clients(id, name) values ('${clientId}', 'Task 7 Concurrency')
+      on conflict (id) do nothing;
+      delete from public.ingest_batches where device_id = '${deviceId}';
+      delete from public.ingest_devices where id = '${deviceId}';
+      insert into public.ingest_devices(
+        id, client_id, machine_id_hash, credential_hash, credential_prefix, status
+      ) values ('${deviceId}', '${clientId}', repeat('7', 64), repeat('8', 64), 'task7con', 'active');
+    `);
+
+    const claim = psql(`
+      begin;
+      set local deadlock_timeout = '100ms';
+      set local statement_timeout = '5s';
+      select id from public.clients where id = '${clientId}' for update;
+      select pg_sleep(1);
+      select public.claim_ingest_batch_v3(
+        '${deviceId}', '${captureId}', '2026-07-23', '2026-07-23T16:45:00-04:00', 1,
+        '${clientId}/2026-07-23/${captureId}.json.gz', repeat('a', 64), 10,
+        '{"accounts":0,"strategies":0,"orders":0,"executions":0}'::jsonb,
+        '${token}', 120
+      )->>'outcome';
+      commit;
+    `);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const revoke = psql(`
+      begin;
+      set local deadlock_timeout = '100ms';
+      set local statement_timeout = '5s';
+      select revoked_kind from public.revoke_ingest_access(
+        '${clientId}', null, '${deviceId}', 'support_reset', '${actorId}'
+      );
+      commit;
+    `);
+    const [claimOutput, revokeOutput] = await Promise.all([claim, revoke]);
+    expect(claimOutput).toContain('owned');
+    expect(revokeOutput).toContain('device');
+    await expect(psql(`select status from public.ingest_devices where id = '${deviceId}'`))
+      .resolves.toBe('revoked');
+    await expect(psql(`select count(*) from public.ingest_batches where capture_id = '${captureId}'`))
+      .resolves.toBe('1');
+  }, 15_000);
+
+  databaseIt('keeps replacement history directed and audits crash recovery exactly once', async () => {
+    const clientId = '18181818-1818-4818-8818-181818181818';
+    const deviceId = '28282828-2828-4828-8828-282828282828';
+    const oldCapture = '48484848-4848-4848-8848-484848484848';
+    const newerCapture = '49494949-4949-4949-8949-494949494949';
+    const lateOlderCapture = '50505050-5050-4050-8050-505050505050';
+    const oldToken = '58585858-5858-4858-8858-585858585858';
+    const newerToken = '59595959-5959-4959-8959-595959595959';
+    const lateOlderToken = '60606060-6060-4060-8060-606060606060';
+    const counts = '{"accounts":0,"strategies":0,"orders":0,"executions":0}';
+    const importResult = '{"id":"task7-history","date":"2026-07-25","accounts":{},"snapshots":[],"strategies":[],"orders":[],"executions":[],"flags":[]}';
+    await psql(`
+      insert into public.clients(id, name) values ('${clientId}', 'Task 7 History')
+      on conflict (id) do nothing;
+      delete from public.ingest_batches where device_id = '${deviceId}';
+      delete from public.ingest_devices where id = '${deviceId}';
+      insert into public.ingest_devices(
+        id, client_id, machine_id_hash, credential_hash, credential_prefix, status
+      ) values ('${deviceId}', '${clientId}', repeat('9', 64), repeat('a', 64), 'task7his', 'active');
+    `);
+    const claim = (captureId, capturedAt, token, hash) => psql(`
+      select public.claim_ingest_batch_v3(
+        '${deviceId}', '${captureId}', '2026-07-25', '${capturedAt}', 1,
+        '${clientId}/2026-07-25/${captureId}.json.gz', repeat('${hash}', 64), 10,
+        '${counts}'::jsonb, '${token}', 120
+      )->'batch'->>'id'
+    `);
+    const persist = (batchId, token) => psql(`
+      select public.persist_auto_daily_import_v2(
+        '${clientId}', '${batchId}', '${token}', '${importResult}'::jsonb
+      )->>'disposition'
+    `);
+
+    const oldBatch = await claim(oldCapture, '2026-07-25T16:40:00-04:00', oldToken, 'b');
+    await expect(persist(oldBatch, oldToken)).resolves.toBe('persisted');
+    const newerBatch = await claim(newerCapture, '2026-07-25T16:45:00-04:00', newerToken, 'c');
+    await expect(persist(newerBatch, newerToken)).resolves.toBe('persisted');
+    await expect(psql(`
+      select status || '|' || (replaces_batch_id is null)::text || '|' || (daily_import_id is not null)::text
+      from public.ingest_batches where id = '${oldBatch}'
+    `)).resolves.toBe('replaced|true|true');
+    await expect(psql(`
+      select count(*) || '|' || min(after_data->>'replacementBatchId')
+      from public.audit_logs
+      where entity_id = '${oldBatch}' and action = 'ingest_batch_superseded'
+    `)).resolves.toBe(`1|${newerBatch}`);
+    await expect(persist(newerBatch, newerToken)).resolves.toBe('persisted');
+    await expect(psql(`
+      select count(*) from public.audit_logs
+      where entity_id = '${oldBatch}' and action = 'ingest_batch_superseded'
+    `)).resolves.toBe('1');
+
+    const lateOlderBatch = await claim(lateOlderCapture, '2026-07-25T16:35:00-04:00', lateOlderToken, 'd');
+    await expect(persist(lateOlderBatch, lateOlderToken)).resolves.toBe('superseded');
+    const dailyId = await psql(`
+      select id from public.daily_imports
+      where client_id = '${clientId}' and trading_date = '2026-07-25'
+    `);
+    await psql(`
+      select status from public.finalize_ingest_batch_v2(
+        '${lateOlderBatch}', '${deviceId}', '${clientId}', '${lateOlderToken}',
+        'replaced', '${dailyId}', '2026-07-25T16:35:00-04:00', true, null,
+        '{}'::jsonb, '${counts}'::jsonb, 'ingest_batch_superseded'
+      )
+    `);
+    await expect(psql(`
+      select status || '|' || (replaces_batch_id is null)::text || '|' || (daily_import_id = '${dailyId}')::text
+      from public.ingest_batches where id = '${lateOlderBatch}'
+    `)).resolves.toBe('replaced|true|true');
+  }, 15_000);
 });

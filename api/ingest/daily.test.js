@@ -27,13 +27,13 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete } = {}) {
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release } = {}) {
   const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
     async claimBatch(value) { calls.order.push('claim'); calls.claim.push(value); return claim ? claim(value) : { outcome: 'owned', batch: { ...batch, status: 'processing' } }; },
     async ensureRaw(...args) { calls.order.push('storage'); calls.storeRaw.push(args); if (storeRaw) return storeRaw(...args); return { existed: false }; },
-    async releaseLease(value) { calls.release.push(value); },
+    async releaseLease(value) { calls.release.push(value); if (release) return release(value); },
     async loadRegistry() { calls.order.push('registry'); return registry || {}; },
     createPersistenceAdapter(processingToken) { return { persistDailyImportAtomic: async (value) => persist(value), supportsDailyImportSourceColumns: true, processingToken }; },
     async finalizeBatch(value) { calls.terminal.push(value); if (complete) return complete(value); return { ...batch, ...value }; },
@@ -97,6 +97,27 @@ describe('daily snapshot ingest', () => {
     expect(calls.storeRaw).toHaveLength(0);
   });
 
+  it('returns the stored safe error code for a failed retry', async () => {
+    const { handler } = setup({ claim: () => ({
+      outcome: 'failed',
+      batch: { id: 'batch-old', dailyImportId: null, status: 'failed', errorCode: 'normalization_failed' },
+    }) });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({
+      statusCode: 409,
+      body: { error: 'capture_requires_replay', errorCode: 'normalization_failed' },
+    });
+  });
+
+  it('maps an in-flight revocation to the generic credential re-pair response', async () => {
+    const { handler, calls } = setup({ claim: () => {
+      throw new ApiError(401, 'invalid_device_credential');
+    } });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({ statusCode: 401, body: { error: 'invalid_device_credential' } });
+    expect(calls.storeRaw).toHaveLength(0);
+  });
+
   it.each(['received', 'processing', 'failed'])('never acknowledges terminal outcome carrying %s', async (status) => {
     const { handler } = setup({ claim: () => ({ outcome: 'terminal', batch: { id: 'batch-old', dailyImportId: null, status } }) });
     const res = await ingest(handler);
@@ -118,6 +139,30 @@ describe('daily snapshot ingest', () => {
     expect(JSON.stringify(res.body)).not.toContain('bucket secret');
     expect(calls.terminal).toHaveLength(0);
     expect(calls.release).toEqual([expect.objectContaining({ batchId: 'batch-1', processingToken: '99999999-9999-4999-8999-999999999999' })]);
+  });
+
+  it('returns the generic credential response when revocation wins during lease release', async () => {
+    const revoked = new ApiError(401, 'invalid_device_credential');
+    revoked.code = 'invalid_device_credential';
+    const { handler } = setup({
+      storeRaw: () => { throw new Error('bucket transport'); },
+      release: () => { throw revoked; },
+    });
+    expect(await ingest(handler)).toMatchObject({
+      statusCode: 401, body: { error: 'invalid_device_credential' },
+    });
+  });
+
+  it('returns the generic credential response when revocation wins during failure finalization', async () => {
+    const revoked = new ApiError(401, 'invalid_device_credential');
+    revoked.code = 'invalid_device_credential';
+    const { handler } = setup({
+      normalize: () => { throw new Error('normalize failure'); },
+      complete: () => { throw revoked; },
+    });
+    expect(await ingest(handler)).toMatchObject({
+      statusCode: 401, body: { error: 'invalid_device_credential' },
+    });
   });
 
   it('fails a batch with a stable conflict when deterministic raw evidence mismatches', async () => {
@@ -201,6 +246,7 @@ describe('daily snapshot ingest', () => {
     expect(calls.terminal[0]).toMatchObject({
       status: 'replaced', eventType: 'ingest_batch_superseded', dailyImportId: 'daily-newer',
     });
+    expect(calls.terminal[0]).not.toHaveProperty('replacesBatchId');
   });
 
   it('keeps a persisted batch recoverable when terminal finalization fails', async () => {

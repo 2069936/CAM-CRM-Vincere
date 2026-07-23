@@ -75,10 +75,10 @@ describe('immutable auto-import payloads', () => {
 
 describe('auto import Supabase store', () => {
   it('uses the lease claim RPC and preserves its explicit outcome', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: { outcome: 'busy', retry_after_seconds: 17, batch: { id: 'batch-1', daily_import_id: null, status: 'processing' } }, error: null });
+    const rpc = vi.fn().mockResolvedValue({ data: { outcome: 'busy', retry_after_seconds: 17, batch: { id: 'batch-1', daily_import_id: null, status: 'processing', error_code: null } }, error: null });
     const store = createAutoImportStore({ rpc });
     await expect(store.claimBatch({ deviceId: 'device-1', captureId: fixture.captureId, clientId: 'client-1', tradingDate: fixture.tradingDate, capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path', sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {}, processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120 }))
-      .resolves.toEqual({ outcome: 'busy', retryAfterSeconds: 17, batch: { id: 'batch-1', dailyImportId: null, status: 'processing' } });
+      .resolves.toEqual({ outcome: 'busy', retryAfterSeconds: 17, batch: { id: 'batch-1', dailyImportId: null, status: 'processing', errorCode: null } });
     expect(rpc).toHaveBeenCalledWith('claim_ingest_batch_v3', expect.objectContaining({ p_capture_id: fixture.captureId, p_processing_token: '99999999-9999-4999-8999-999999999999', p_lease_seconds: 120 }));
   });
 
@@ -90,6 +90,32 @@ describe('auto import Supabase store', () => {
       sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {},
       processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120,
     })).rejects.toMatchObject({ status: 409, message: 'capture_metadata_conflict' });
+  });
+
+  it('preserves the stored safe failure code for an explicit failed retry', async () => {
+    const store = createAutoImportStore({ rpc: async () => ({
+      data: { outcome: 'failed', retry_after_seconds: 0, batch: {
+        id: 'batch-1', daily_import_id: null, status: 'failed', error_code: 'normalization_failed',
+      } }, error: null,
+    }) });
+    await expect(store.claimBatch({
+      deviceId: 'device-1', captureId: fixture.captureId, tradingDate: fixture.tradingDate,
+      capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path',
+      sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {},
+      processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120,
+    })).resolves.toMatchObject({ batch: { status: 'failed', errorCode: 'normalization_failed' } });
+  });
+
+  it('maps an in-flight device revocation to the generic credential error', async () => {
+    const store = createAutoImportStore({ rpc: async () => ({
+      data: null, error: { code: 'P0001', message: 'invalid_ingest_device', details: 'private device state' },
+    }) });
+    await expect(store.claimBatch({
+      deviceId: 'device-1', captureId: fixture.captureId, tradingDate: fixture.tradingDate,
+      capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path',
+      sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {},
+      processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120,
+    })).rejects.toMatchObject({ status: 401, message: 'invalid_device_credential' });
   });
 
   it('uploads immutable gzip without overwrite', async () => {
@@ -124,6 +150,21 @@ describe('auto import Supabase store', () => {
     })).rejects.toMatchObject({ status: 409, message: 'immutable_object_conflict' });
   });
 
+  it('rejects oversized downloaded evidence before buffering it', async () => {
+    const canonical = canonicalSnapshotPayload(fixture);
+    const arrayBuffer = vi.fn();
+    const store = createAutoImportStore({ storage: { from: () => ({
+      download: async () => ({ data: { size: canonical.gzip.length + 1, arrayBuffer }, error: null }),
+    }) } });
+    await expect(store.ensureRaw('path', canonical.gzip, {
+      sha256: canonical.sha256,
+      byteCount: canonical.utf8.length,
+      compressedByteCount: canonical.gzip.length,
+      maxCompressedBytes: canonical.gzip.length,
+    })).rejects.toMatchObject({ status: 409, message: 'immutable_object_conflict' });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
   it('uses one RPC to finalize batch, device result, audit and late alert', async () => {
     const rpc = vi.fn().mockResolvedValue({ data: { id: 'batch-1', status: 'late_closed_day', daily_import_id: 'daily-1' }, error: null });
     const store = createAutoImportStore({ rpc });
@@ -132,7 +173,7 @@ describe('auto import Supabase store', () => {
       dailyImportId: 'daily-1', capturedAt: fixture.capturedAt, success: true,
       completeness: { isComplete: true }, rowCounts: { accounts: 1 },
       eventType: 'ingest_batch_late_closed_day', processingToken: '99999999-9999-4999-8999-999999999999', clientId: 'client-1',
-    })).resolves.toEqual({ id: 'batch-1', dailyImportId: 'daily-1', status: 'late_closed_day' });
+    })).resolves.toEqual({ id: 'batch-1', dailyImportId: 'daily-1', status: 'late_closed_day', errorCode: null });
     expect(rpc).toHaveBeenCalledWith('finalize_ingest_batch_v2', expect.objectContaining({
       p_batch_id: 'batch-1', p_device_id: 'device-1', p_status: 'late_closed_day',
       p_success: true, p_event_type: 'ingest_batch_late_closed_day', p_processing_token: expect.any(String),
