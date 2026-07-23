@@ -210,7 +210,9 @@ describe('public ingest pairing', () => {
     ['code_consumed', 'ingest_pair.denied'],
     ['machine_conflict', 'ingest_pair.denied'],
     ['nonce_or_credential_conflict', 'ingest_pair.denied'],
+    ['credential_conflict', 'ingest_pair.denied'],
     ['device_revoked', 'ingest_pair.denied'],
+    ['client_ineligible', 'ingest_pair.denied'],
   ])('audits stable internal denial %s while preserving the generic public error', async (reasonCode, action) => {
     const { handler, calls } = setup({ pairImpl: async () => { throw new PairingDeniedError(reasonCode); } });
     expect(await pair(handler)).toMatchObject({ statusCode: 400, body: { error: 'invalid_or_expired_code' } });
@@ -228,6 +230,14 @@ describe('public ingest pairing', () => {
       afterData: { reasonCode: 'pairing_unavailable', agentVersion: '1.2.3', addonVersion: '4.5.6' },
     })]);
     expect(JSON.stringify(calls.audit)).not.toContain('connection detail');
+  });
+
+  it('returns no token for a legacy enrollment whose client is now ineligible', async () => {
+    const { handler, calls } = setup({ pairImpl: async () => { throw new PairingDeniedError('client_ineligible'); } });
+    const res = await pair(handler);
+    expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_or_expired_code' } });
+    expect(res.body).not.toHaveProperty('deviceToken');
+    expect(calls.audit).toEqual([expect.objectContaining({ afterData: expect.objectContaining({ reasonCode: 'client_ineligible' }) })]);
   });
 });
 
@@ -256,7 +266,9 @@ describe('pairing Supabase adapters', () => {
     ['CODE_CONSUMED', 'code_consumed'],
     ['MACHINE_CONFLICT', 'machine_conflict'],
     ['NONCE_OR_CREDENTIAL_CONFLICT', 'nonce_or_credential_conflict'],
+    ['CREDENTIAL_CONFLICT', 'credential_conflict'],
     ['DEVICE_REVOKED', 'device_revoked'],
+    ['CLIENT_INELIGIBLE', 'client_ineligible'],
   ])('maps known SQL denial %s to stable internal code %s', async (message, reasonCode) => {
     const admin = { rpc: vi.fn(async () => ({ data: null, error: { code: 'P0001', message } })), from: vi.fn() };
     await expect(createPairStore(admin).pairDevice({})).rejects.toMatchObject({ reasonCode });
@@ -267,5 +279,30 @@ describe('pairing Supabase adapters', () => {
     const sqlError = { code: '08006', message: 'connection_failure' };
     const admin = { rpc: vi.fn(async () => ({ data: null, error: sqlError })), from: vi.fn() };
     await expect(createPairStore(admin).pairDevice({})).rejects.toBe(sqlError);
+  });
+
+  it.each([
+    ['MACHINE_CONFLICT', 'machine_conflict'],
+    ['CREDENTIAL_CONFLICT', 'credential_conflict'],
+  ])('maps constraint-specific insert race result %s to generic public denial via %s', async (message, reasonCode) => {
+    const admin = { rpc: vi.fn(async () => ({ data: null, error: { code: 'P0001', message } })), from: vi.fn() };
+    const store = createPairStore(admin);
+    const { handler, calls } = setup({ pairImpl: (payload) => store.pairDevice(payload) });
+    expect(await pair(handler)).toMatchObject({ statusCode: 400, body: { error: 'invalid_or_expired_code' } });
+    expect(calls.audit).toEqual([expect.objectContaining({ afterData: expect.objectContaining({ reasonCode }) })]);
+  });
+
+  it('rejects a non-string or blank client name returned by the atomic RPC', async () => {
+    for (const clientName of [{ secret: 'value' }, '   ']) {
+      const admin = {
+        rpc: vi.fn(async () => ({
+          data: { device_id: DEVICE_ID, client_id: CLIENT_ID, client_name: clientName, schedule_time: '16:45:00', schedule_timezone: 'America/New_York' },
+          error: null,
+        })),
+        from: vi.fn(),
+      };
+      await expect(createPairStore(admin).pairDevice({})).rejects.toThrow('Pairing RPC returned no device.');
+      expect(admin.from).not.toHaveBeenCalled();
+    }
   });
 });

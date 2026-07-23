@@ -247,4 +247,41 @@ describe('step 28 auto-collection migration contract', () => {
     expect(definitions).toMatch(/vps_rebuilt/);
     expect(definitions).toMatch(/security_revoke/);
   });
+
+  it('rejects blank client names in both generation eligibility and pairing revalidation', () => {
+    const generating = functionDefinition('create_ingest_enrollment');
+    const pairing = functionDefinition('pair_ingest_device_v2');
+    expect(generating).toMatch(/nullif\(btrim\(v_client\.name\), ''\) is null/);
+    expect(pairing).toMatch(/nullif\(btrim\(v_client\.name\), ''\) is null/);
+    expect(pairing).toMatch(/client_ineligible/);
+  });
+
+  it('locks and prechecks a globally active machine before insert at the device lock stage', () => {
+    const pairing = functionDefinition('pair_ingest_device_v2');
+    expect(pairing).toMatch(/machine_id_hash = p_machine_hash/);
+    expect(pairing).toMatch(/from public\.ingest_devices as device[\s\S]*machine_id_hash = p_machine_hash[\s\S]*order by device\.id[\s\S]*for update/);
+    const globalCheck = pairing.lastIndexOf('machine_id_hash = p_machine_hash');
+    const deviceInsert = pairing.indexOf('insert into public.ingest_devices');
+    expect(globalCheck).toBeGreaterThan(-1);
+    expect(globalCheck).toBeLessThan(deviceInsert);
+    expect(pairing).toMatch(/raise exception 'machine_conflict'/);
+  });
+
+  it('maps only known insert unique constraints and rethrows unknown unique violations', () => {
+    const pairing = functionDefinition('pair_ingest_device_v2');
+    expect(pairing).toMatch(/exception when unique_violation/);
+    expect(pairing).toMatch(/get stacked diagnostics[^;]+constraint_name/);
+    expect(pairing).toContain('idx_ingest_devices_machine_id_hash_unique');
+    expect(pairing).toContain('idx_ingest_devices_credential_hash_unique');
+    expect(pairing).toMatch(/raise exception 'credential_conflict'/);
+    expect(pairing).toMatch(/else raise; end if/);
+  });
+
+  it('writes pair success audit only for a newly created device, not an exact retry', () => {
+    const pairing = functionDefinition('pair_ingest_device_v2');
+    expect(pairing.match(/insert into public\.audit_logs/g)).toHaveLength(1);
+    expect(pairing).toMatch(/v_device_created boolean := false/);
+    expect(pairing).toMatch(/v_device_created := true/);
+    expect(pairing).toMatch(/if v_device_created then[\s\S]*insert into public\.audit_logs/);
+  });
 });

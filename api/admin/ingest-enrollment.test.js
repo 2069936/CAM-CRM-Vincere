@@ -118,6 +118,15 @@ describe('admin ingest enrollment', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/product|database detail/i);
   });
 
+  it('returns no enrollment code when SQL rejects an empty client name before mutation', async () => {
+    const { handler, calls } = setup({ createError: { code: 'CLIENT_NOT_ELIGIBLE' } });
+    const res = response();
+    await handler(request('POST', { clientUuid: CLIENT_ID }), res);
+    expect(res).toEqual(expect.objectContaining({ statusCode: 409, body: { error: 'client_not_eligible' } }));
+    expect(res.body).not.toHaveProperty('enrollment');
+    expect(calls.audit).toHaveLength(0);
+  });
+
   it('atomically revokes a client-scoped enrollment or device with a sanitized reason', async () => {
     const { handler, calls } = setup();
     const enrollmentRes = response();

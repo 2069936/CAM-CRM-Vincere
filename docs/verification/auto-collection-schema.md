@@ -31,14 +31,18 @@ npm test
 
 Evidence recorded on 2026-07-23:
 
-- Focused contract: 1 file passed, 14 tests passed.
+- Focused contract: 1 file passed, 18 tests passed.
 - Targeted ESLint: exited 0 with no findings.
-- Full Vitest suite: 43 files passed, 531 tests passed.
+- Full Vitest suite: 43 files passed, 544 tests passed.
 - `git diff --check`: exited 0 with no findings.
 - PostgreSQL 18.3 disposable local cluster: baseline schema plus Step 22 applied,
   revised Step 28 applied twice successfully, and the three new RPCs were
   confirmed `SECURITY DEFINER`. This is local syntax/rerun evidence only; live
   Supabase catalog and concurrency evidence remain pending.
+- Local sequential RPC cases confirmed empty-name generation/pairing rollback,
+  existing global-machine denial, credential unique-constraint classification,
+  and exact-retry audit idempotence. These do not constitute concurrency-race
+  evidence.
 
 ## Pending disposable/staging verification
 

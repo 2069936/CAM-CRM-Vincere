@@ -20,7 +20,9 @@ const SQL_DENIAL_CODES = Object.freeze({
   CODE_CONSUMED: 'code_consumed',
   MACHINE_CONFLICT: 'machine_conflict',
   NONCE_OR_CREDENTIAL_CONFLICT: 'nonce_or_credential_conflict',
+  CREDENTIAL_CONFLICT: 'credential_conflict',
   DEVICE_REVOKED: 'device_revoked',
+  CLIENT_INELIGIBLE: 'client_ineligible',
 });
 
 export class PairingDeniedError extends Error {
@@ -74,7 +76,12 @@ export function createPairStore(admin) {
       });
       if (error) throw pairingDenial(error) || error;
       const device = unwrapRpcRow(data);
-      if (!device?.device_id || !device?.client_id || !device?.client_name) throw new Error('Pairing RPC returned no device.');
+      if (!device?.device_id
+        || !device?.client_id
+        || typeof device?.client_name !== 'string'
+        || !device.client_name.trim()) {
+        throw new Error('Pairing RPC returned no device.');
+      }
       return {
         deviceId: device.device_id,
         clientId: device.client_id,

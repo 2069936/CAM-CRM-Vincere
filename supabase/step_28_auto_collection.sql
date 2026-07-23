@@ -411,6 +411,7 @@ begin
   if not found
     or v_client.status is distinct from 'Active'
     or v_client.deleted_at is not null
+    or nullif(btrim(v_client.name), '') is null
     or nullif(btrim(v_client.product_key), '') is null then
     raise exception 'CLIENT_NOT_ELIGIBLE'
       using errcode = 'P0001';
@@ -865,6 +866,8 @@ declare
   v_client public.clients;
   v_enrollment public.ingest_enrollments;
   v_device public.ingest_devices;
+  v_constraint_name text;
+  v_device_created boolean := false;
 begin
   if nullif(btrim(p_code_hash), '') is null
     or nullif(btrim(p_machine_hash), '') is null
@@ -894,8 +897,9 @@ begin
   for update;
   if not found
     or v_client.status is distinct from 'Active'
-    or v_client.deleted_at is not null then
-    raise exception 'CODE_REVOKED'
+    or v_client.deleted_at is not null
+    or nullif(btrim(v_client.name), '') is null then
+    raise exception 'CLIENT_INELIGIBLE'
       using errcode = 'P0001';
   end if;
 
@@ -915,9 +919,12 @@ begin
   -- set between these steps.
   perform 1
   from public.ingest_devices as device
-  where device.client_id = v_client_id
-    and device.status = 'active'
+  where device.status = 'active'
     and device.revoked_at is null
+    and (
+      device.client_id = v_client_id
+      or device.machine_id_hash = p_machine_hash
+    )
   order by device.id
   for update;
 
@@ -951,20 +958,6 @@ begin
         using errcode = 'P0001';
     end if;
 
-    insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
-    values (
-      null,
-      'ingest_device',
-      v_device.id,
-      'ingest_pair.succeeded',
-      jsonb_build_object(
-        'clientId', v_client_id,
-        'deviceId', v_device.id,
-        'agentVersion', p_agent_version,
-        'addonVersion', p_addon_version
-      )
-    );
-
     return query
     select v_device.id, v_client_id, v_client.name,
            v_device.schedule_time, v_device.schedule_timezone;
@@ -982,6 +975,16 @@ begin
   if exists (
     select 1
     from public.ingest_devices as device
+    where device.machine_id_hash = p_machine_hash
+      and device.status = 'active'
+      and device.revoked_at is null
+  ) then
+    raise exception 'MACHINE_CONFLICT'
+      using errcode = 'P0001';
+  end if;
+  if exists (
+    select 1
+    from public.ingest_devices as device
     where device.client_id = v_client_id
       and device.status = 'active'
       and device.revoked_at is null
@@ -990,46 +993,63 @@ begin
       using errcode = 'P0001';
   end if;
 
-  insert into public.ingest_devices (
-    client_id,
-    machine_id_hash,
-    credential_hash,
-    credential_prefix,
-    status,
-    agent_version,
-    addon_version,
-    last_seen_at
-  )
-  values (
-    v_client_id,
-    p_machine_hash,
-    p_credential_hash,
-    p_credential_prefix,
-    'active',
-    p_agent_version,
-    p_addon_version,
-    clock_timestamp()
-  )
-  returning * into v_device;
+  begin
+    insert into public.ingest_devices (
+      client_id,
+      machine_id_hash,
+      credential_hash,
+      credential_prefix,
+      status,
+      agent_version,
+      addon_version,
+      last_seen_at
+    )
+    values (
+      v_client_id,
+      p_machine_hash,
+      p_credential_hash,
+      p_credential_prefix,
+      'active',
+      p_agent_version,
+      p_addon_version,
+      clock_timestamp()
+    )
+    returning * into v_device;
+    v_device_created := true;
+  exception
+    when unique_violation then
+      get stacked diagnostics v_constraint_name = constraint_name;
+      if v_constraint_name = 'idx_ingest_devices_machine_id_hash_unique' then
+        raise exception 'MACHINE_CONFLICT'
+          using errcode = 'P0001';
+      elsif v_constraint_name = 'idx_ingest_devices_credential_hash_unique' then
+        raise exception 'CREDENTIAL_CONFLICT'
+          using errcode = 'P0001';
+      else
+        raise;
+      end if;
+  end;
 
   update public.ingest_enrollments
   set consumed_at = clock_timestamp(),
       consumed_by_device_id = v_device.id
   where id = v_enrollment.id;
 
-  insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
-  values (
-    null,
-    'ingest_device',
-    v_device.id,
-    'ingest_pair.succeeded',
-    jsonb_build_object(
-      'clientId', v_client_id,
-      'deviceId', v_device.id,
-      'agentVersion', p_agent_version,
-      'addonVersion', p_addon_version
-    )
-  );
+  if v_device_created then
+    insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+    values (
+      null,
+      'ingest_device',
+      v_device.id,
+      'ingest_pair.succeeded',
+      jsonb_build_object(
+        'clientId', v_client_id,
+        'deviceId', v_device.id,
+        'agentVersion', p_agent_version,
+        'addonVersion', p_addon_version
+      )
+    );
+  end if;
 
   return query
   select v_device.id, v_client_id, v_client.name,
