@@ -11,13 +11,15 @@ service, live ACL checks, the signed bundle, or Authenticode validation.
 
 | Field | Result |
 |---|---|
-| Workflow | [Collector Windows run 30050221691](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30050221691) |
-| Commit | `8ec95098545226359b9685ddb9f6906aae393609` |
+| Workflow | [Collector Windows run 30050555668](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30050555668) |
+| Commit | `37a465bfb4bd66879006ae337233b3724fa94a9c` |
 | Runner | GitHub-hosted `windows-2025` |
 | .NET tests | 135 passed, including 18 pure AddOn mapping/protocol tests |
 | Installer tests | 17 passed, including strong parity-evidence enforcement |
-| Artifact | `collector-machine-msi-13/Vincere.AutoExport.Machine.msi` |
-| Artifact SHA-256 | `405d36c763f8ebecf5d6d0eeb230b0ffd52d97ce3c19092cf321851e811d058f` |
+| MSI artifact | `collector-machine-msi-14/Vincere.AutoExport.Machine.msi` |
+| MSI SHA-256 | `6e181f3352f83477d5f5f68e7e7981cf5a0e72cdfaec114480f1f32f8585ca65` |
+| Probe artifact | `ninjatrader-parity-probe-14/Vincere-NinjaTrader-Parity-Probe.zip` |
+| Probe ZIP SHA-256 | `06c6a0f7e2a881bf0802fbc1f378d4835d657597ad65b324f4d7e9b589ece3b9` |
 
 The artifact is unsigned and retained for seven days. It is portable-gate
 evidence only and must not be distributed as the production installer.
