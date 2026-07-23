@@ -61,6 +61,22 @@ jobs:
           dotnet publish collector\src\Vincere.AutoExport.Agent.UI\Vincere.AutoExport.Agent.UI.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts\ui
       - name: Build unsigned machine MSI
         run: dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.Installer.wixproj -c Release -p:ProductVersion=0.0.${{ github.run_number }} -p:AgentPublishDir=${{ github.workspace }}\artifacts\agent -p:UiPublishDir=${{ github.workspace }}\artifacts\ui -p:OutputPath=${{ github.workspace }}\artifacts\installer
+      - name: Compile disposable AddOn MSI and bundle authoring
+        shell: pwsh
+        run: |
+          $authoring = Join-Path $env:RUNNER_TEMP 'vincere-installer-authoring'
+          $dummyAddOn = Join-Path $env:RUNNER_TEMP 'Vincere.AutoExport.NinjaTrader.dll'
+          New-Item -ItemType Directory -Path $authoring -Force | Out-Null
+          New-Item -ItemType File -Path $dummyAddOn -Force | Out-Null
+          dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.AddOn.Installer.wixproj `
+            -c Release -p:ProductVersion=0.0.${{ github.run_number }} -p:AddOnSource=$dummyAddOn -p:OutputPath=$authoring
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable AddOn MSI authoring failed.' }
+          dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.Bundle.wixproj `
+            -c Release -p:ProductVersion=0.0.${{ github.run_number }} `
+            -p:MachineMsi=${{ github.workspace }}\artifacts\installer\Vincere.AutoExport.Machine.msi `
+            -p:AddOnMsi=$authoring\Vincere.AutoExport.AddOn.msi -p:OutputPath=$authoring
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable bundle authoring failed.' }
+          Remove-Item -LiteralPath (Join-Path $authoring 'Vincere-AutoExport-Setup.exe') -Force
       - name: Install pinned Pester
         shell: pwsh
         run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force

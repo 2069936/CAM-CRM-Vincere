@@ -1,23 +1,27 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="Vincere Auto Export NinjaTrader AddOn" Manufacturer="Vincere Capital" Version="$(ProductVersion)"
-           UpgradeCode="9BCE4229-6E75-4927-8138-7B91856DA9E0" Scope="perUser" InstallerVersion="500">
+           UpgradeCode="9BCE4229-6E75-4927-8138-7B91856DA9E0" Scope="perMachine" InstallerVersion="500">
     <MajorUpgrade DowngradeErrorMessage="A newer Vincere NinjaTrader AddOn is already installed."
                   Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" />
-    <StandardDirectory Id="PersonalFolder">
-      <Directory Id="NinjaTraderDocumentsFolder" Name="NinjaTrader 8">
+    <Launch Condition="NINJATRADERDOCUMENTS"
+            Message="A validated NinjaTrader Documents folder is required. Run the signed Vincere setup bundle from the intended Windows user profile." />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="NINJATRADERDOCUMENTS" Name="Documents">
+        <Directory Id="NinjaTraderDocumentsFolder" Name="NinjaTrader 8">
         <Directory Id="NinjaTraderBinFolder" Name="bin">
           <Directory Id="NinjaTraderCustomFolder" Name="Custom">
             <Directory Id="NinjaTraderAddOnsFolder" Name="AddOns" />
           </Directory>
         </Directory>
       </Directory>
-    </StandardDirectory>
+      </Directory>
+    </Directory>
     <ComponentGroup Id="AddOnComponents">
       <Component Id="ProductionAddOnComponent" Directory="NinjaTraderAddOnsFolder" Guid="132D0BFC-E319-409D-9C89-1C12235B70EF">
         <File Id="ProductionAddOnDll" Source="$(AddOnSource)" Name="Vincere.AutoExport.NinjaTrader.dll" />
-        <RegistryValue Root="HKCU" Key="Software\Vincere\AutoExport" Name="AddOnVersion"
+        <RegistryValue Root="HKLM" Key="Software\Vincere\AutoExport" Name="AddOnVersion"
                        Value="$(ProductVersion)" Type="string" KeyPath="yes" />
       </Component>
     </ComponentGroup>

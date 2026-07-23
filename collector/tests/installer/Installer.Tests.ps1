@@ -81,6 +81,15 @@ Describe 'Installer safety authoring' {
         $bundle | Should -Match 'MsiPackage Id="AddOnPackage"[^>]*Vital="yes"'
     }
 
+    It 'passes one detected interactive-user profile into the per-machine AddOn MSI' {
+        $bundle | Should -Match 'Variable Name="NinjaTraderDocuments"[^>]*Value="\[PersonalFolder\]"[^>]*Persisted="yes"'
+        $bundle | Should -Match 'DirectorySearch[^>]*Path="\[NinjaTraderDocuments\]NinjaTrader 8"[^>]*Variable="NinjaTraderProfileFound"'
+        $bundle | Should -Match 'MsiProperty Name="NINJATRADERDOCUMENTS" Value="\[NinjaTraderDocuments\]"'
+        $addon | Should -Match 'Scope="perMachine"'
+        $addon | Should -Match 'Directory Id="NINJATRADERDOCUMENTS" Name="Documents"'
+        $addon | Should -Not -Match 'StandardDirectory Id="PersonalFolder"'
+    }
+
     It 'retains runtime data by default during uninstall' {
         $machine | Should -Match 'ProgramDataAclComponent[^>]*Permanent="yes"'
         $machine | Should -Not -Match 'RemoveFolderEx'

@@ -51,9 +51,19 @@ runner before release.
 
 The operator receives one setup executable, but it chains two ownership
 domains: a per-machine MSI for the LocalSystem service and guided setup UI, and
-a per-user MSI for the AddOn under the selected user's NinjaTrader Documents
-tree. Runtime data under `%ProgramData%\Vincere\AutoExport` is retained by
-default during uninstall so unsent captures are not destroyed.
+a per-machine MSI that owns the AddOn under one selected user's NinjaTrader
+Documents tree. Runtime data under `%ProgramData%\Vincere\AutoExport` is
+retained by default during uninstall so unsent captures are not destroyed.
+
+Burn resolves `PersonalFolder` in the interactive Windows session before UAC
+elevation, verifies that the selected Documents folder contains
+`NinjaTrader 8`, persists that single path for repair/upgrade, and passes it
+explicitly into the AddOn MSI. It never writes the AddOn into every Windows
+profile. If setup is launched from the wrong profile, it stops before either
+MSI runs and asks the operator to sign in to the Windows profile that runs
+NinjaTrader. An administrator may override the persisted
+`NinjaTraderDocuments` Burn variable only for controlled multi-profile
+recovery; the same directory-existence gate still applies.
 
 Production packaging fails unless the AddOn DLL has a matching verification
 receipt proving all four `SnapshotV1` sections passed the supported-API parity

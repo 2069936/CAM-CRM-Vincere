@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="Bundle.wxs" />
     <PackageReference Include="WixToolset.BootstrapperApplications.wixext" />
+    <PackageReference Include="WixToolset.Util.wixext" />
   </ItemGroup>
   <Target Name="ValidateInputs" BeforeTargets="Build">
     <Error Condition="'$(ProductVersion)' == ''" Text="ProductVersion is required." />
