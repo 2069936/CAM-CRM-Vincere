@@ -41,3 +41,31 @@ Cross-platform tests verify atomic recovery, secret-store sequencing, machine
 ID normalization/hash behavior, and redaction. Real DPAPI, registry, owner/ACL,
 and elevated/non-elevated access checks remain required on the Windows system
 runner before release.
+
+## Windows packaging boundary
+
+The operator receives one setup executable, but it chains two ownership
+domains: a per-machine MSI for the LocalSystem service and guided setup UI, and
+a per-user MSI for the AddOn under the selected user's NinjaTrader Documents
+tree. Runtime data under `%ProgramData%\Vincere\AutoExport` is retained by
+default during uninstall so unsent captures are not destroyed.
+
+Production packaging fails unless the AddOn DLL has a matching verification
+receipt proving all four `SnapshotV1` sections passed the supported-API parity
+gate. The probe and UI-automation experiments are never accepted as installer
+inputs.
+
+On a controlled Windows runner:
+
+```powershell
+collector\scripts\build-installer.ps1 `
+  -Version 1.0.0 `
+  -AddOnSource C:\verified\Vincere.AutoExport.NinjaTrader.dll `
+  -AddOnVerificationPath C:\verified\addon-verification.json `
+  -ProductionSign
+```
+
+The release workflow verifies every Authenticode signature, creates SHA-256
+release metadata, and emits a detached CMS signature for the manifest. WiX and
+the WPF application still require the Windows system gate before any release is
+offered in the CRM.
