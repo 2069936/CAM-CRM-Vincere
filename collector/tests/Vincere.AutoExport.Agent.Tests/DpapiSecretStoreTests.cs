@@ -97,7 +97,7 @@ public sealed class DpapiSecretStoreTests : IDisposable
         public byte[] Protect(byte[] plaintext)
         {
             calls.Add("protect");
-            return plaintext.Reverse().Select(value => (byte)(value ^ 0x5A)).ToArray();
+            return Enumerable.Reverse(plaintext).Select(value => (byte)(value ^ 0x5A)).ToArray();
         }
 
         public byte[] Unprotect(byte[] ciphertext)
@@ -105,7 +105,7 @@ public sealed class DpapiSecretStoreTests : IDisposable
             calls.Add("unprotect");
             if (Encoding.UTF8.GetString(ciphertext).Contains("wrong-machine"))
                 throw new InvalidOperationException("wrong context");
-            return ciphertext.Select(value => (byte)(value ^ 0x5A)).Reverse().ToArray();
+            return Enumerable.Reverse(ciphertext.Select(value => (byte)(value ^ 0x5A))).ToArray();
         }
     }
 
