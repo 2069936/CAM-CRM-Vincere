@@ -1,5 +1,9 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
-import { persistDailyImportWithClient } from './dailyImportPersistence';
+import {
+  DailyImportClosedError,
+  persistDailyImportWithClient,
+  withLegacyDailyImportId,
+} from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
 
 function pickId(row) {
@@ -1181,15 +1185,20 @@ export async function replaceSupabaseOperationalFlags(clientId, importId, flags 
 }
 
 export function createSupabaseDailyImportAdapter(client) {
+  const deleteTables = new Set(['strategy_snapshots', 'orders', 'executions', 'operational_flags']);
+  const insertTables = new Set(['strategy_snapshots', 'orders', 'executions', 'operational_flags']);
   const adapter = {
     // PostgREST cannot wrap these separate requests in one transaction. This
-    // browser compatibility adapter therefore runs work directly: failures are
-    // propagated, but earlier successful requests cannot be rolled back.
+    // manual-upload-only browser compatibility adapter therefore runs work
+    // directly. Its writability guard is a non-locking check: failures propagate,
+    // but earlier requests cannot roll back and concurrent writes are not atomic.
+    isAtomic: false,
+    manualOnly: true,
     supportsDailyImportSourceColumns: false,
     transaction(work) {
       return work(adapter);
     },
-    async findDailyImportByClientAndDate(clientUuid, tradingDate) {
+    async guardDailyImportWritable(clientUuid, tradingDate) {
       const { data, error } = await client
         .from('daily_imports')
         .select('id, status')
@@ -1197,6 +1206,7 @@ export function createSupabaseDailyImportAdapter(client) {
         .eq('trading_date', tradingDate)
         .maybeSingle();
       if (error) throw new Error(error.message);
+      if (data?.status === 'Closed') throw new DailyImportClosedError(tradingDate);
       return data;
     },
     async upsertTradingAccounts(rows) {
@@ -1223,6 +1233,9 @@ export function createSupabaseDailyImportAdapter(client) {
       return data;
     },
     async deleteDailyImportRows(table, dailyImportId) {
+      if (!deleteTables.has(table)) {
+        throw new Error(`Unsupported daily import delete table: ${table}`);
+      }
       const { error } = await client
         .from(table)
         .delete()
@@ -1238,6 +1251,9 @@ export function createSupabaseDailyImportAdapter(client) {
       return data || [];
     },
     async insertRows(table, rows) {
+      if (!insertTables.has(table)) {
+        throw new Error(`Unsupported daily import insert table: ${table}`);
+      }
       const { error } = await client.from(table).insert(rows);
       if (error) throw new Error(error.message);
     },
@@ -1253,7 +1269,7 @@ export async function upsertSupabaseDailyImport(clientId, importResult) {
   return persistDailyImportWithClient({
     db: createSupabaseDailyImportAdapter(supabase),
     clientUuid,
-    importResult,
+    importResult: withLegacyDailyImportId(clientId, importResult),
   });
 }
 

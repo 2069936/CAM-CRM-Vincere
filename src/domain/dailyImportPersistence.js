@@ -8,10 +8,13 @@ export const DAILY_IMPORT_CLOSED_CODE = 'daily_import_closed';
 
 /**
  * Transaction-scoped persistence operations required by persistDailyImportWithClient.
- * A server adapter should make these operations atomic.
+ * A server adapter must make these operations atomic. Its writable guard must
+ * lock the existing daily_import row (or use an equivalent serializable or
+ * conditional-write guard), throw DailyImportClosedError when the row is Closed,
+ * and remain effective through the subsequent writes and transaction commit.
  *
  * @typedef {Object} DailyImportPersistenceTransaction
- * @property {(clientUuid: string, tradingDate: string) => Promise<Object|null>} findDailyImportByClientAndDate
+ * @property {(clientUuid: string, tradingDate: string) => Promise<Object|null>} guardDailyImportWritable
  * @property {(rows: Object[]) => Promise<void>} upsertTradingAccounts
  * @property {(clientUuid: string) => Promise<Object[]>} listTradingAccounts
  * @property {(row: Object) => Promise<Object>} upsertDailyImport
@@ -37,8 +40,8 @@ function numberOrNull(value) {
 }
 
 function numberOrLegacyZero(value) {
-  if (value === null) return null;
-  return numberOrNull(value) ?? 0;
+  if (value === undefined) return 0;
+  return numberOrNull(value);
 }
 
 function emptyToNull(value) {
@@ -69,8 +72,11 @@ function mapTradingAccount(meta, clientUuid) {
     start_balance: numberOrNull(meta.startBalance),
     target_profit: numberOrNull(meta.targetProfit),
     max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
+    risk_level: meta.riskLevel || '',
     bullet_bot_pass_type: meta.bulletBotPassType || '',
     bullet_bot_direction: meta.bulletBotDirection || '',
+    algo_stack: meta.algoStack || '',
+    daily_loss_limit: meta.dailyLossLimit || '',
     notes: meta.notes || '',
     date_added: emptyToNull(meta.dateAdded),
     date_funded: emptyToNull(meta.dateFunded),
@@ -166,6 +172,15 @@ function mapFlag(flag, dailyImportId, clientUuid, accountByName) {
     severity: flag.severity || 'Warning',
     message: flag.message || '',
     status: flag.status || 'Open',
+    resolved_at: flag.resolvedAt || null,
+    resolved_by_user_id: flag.resolvedByUserId || null,
+  };
+}
+
+export function withLegacyDailyImportId(clientId, importResult) {
+  return {
+    ...importResult,
+    id: importResult?.id || `${clientId}-${importResult?.date}`,
   };
 }
 
@@ -215,10 +230,7 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
   if (!String(clientUuid || '').trim()) throw new Error('Client UUID is required.');
 
   return db.transaction(async (tx) => {
-    const existingImport = await tx.findDailyImportByClientAndDate(clientUuid, importResult.date);
-    if (existingImport?.status === 'Closed') {
-      throw new DailyImportClosedError(importResult.date);
-    }
+    await tx.guardDailyImportWritable(clientUuid, importResult.date);
 
     const accountRows = Object.values(importResult.accounts || {})
       .map((meta) => mapTradingAccount(meta, clientUuid));

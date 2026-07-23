@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DAILY_IMPORT_CLOSED_CODE,
+  DailyImportClosedError,
   persistDailyImportWithClient,
+  withLegacyDailyImportId,
 } from './dailyImportPersistence.js';
 
 function makeDb({ existingImport = null, supportsSourceColumns = false } = {}) {
   const db = {
     supportsDailyImportSourceColumns: supportsSourceColumns,
     transaction: vi.fn(async (work) => work(db)),
-    findDailyImportByClientAndDate: vi.fn(async () => existingImport),
+    guardDailyImportWritable: vi.fn(async (_clientUuid, tradingDate) => {
+      if (existingImport?.status === 'Closed') throw new DailyImportClosedError(tradingDate);
+      return existingImport;
+    }),
     upsertTradingAccounts: vi.fn(async () => undefined),
     listTradingAccounts: vi.fn(async () => [
       { id: 'account-1', account_name: 'ACC-One' },
@@ -85,8 +90,21 @@ describe('persistDailyImportWithClient', () => {
       importResult: importResult(),
     })).rejects.toMatchObject({ code: DAILY_IMPORT_CLOSED_CODE });
 
-    expect(db.findDailyImportByClientAndDate).toHaveBeenCalledWith('client-uuid', '2026-07-23');
+    expect(db.guardDailyImportWritable).toHaveBeenCalledWith('client-uuid', '2026-07-23');
     expect(mutationCalls(db)).toBe(0);
+  });
+
+  it('runs the writable guard before the first mutation', async () => {
+    const db = makeDb();
+
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: importResult({ accounts: { account: { accountName: 'acc-one' } } }),
+    });
+
+    expect(db.guardDailyImportWritable.mock.invocationCallOrder[0])
+      .toBeLessThan(db.upsertTradingAccounts.mock.invocationCallOrder[0]);
   });
 
   it.each([
@@ -119,8 +137,11 @@ describe('persistDailyImportWithClient', () => {
           startBalance: '50000',
           targetProfit: 3000,
           maxDrawdownLimit: 2000,
+          riskLevel: 'Balanced',
           bulletBotPassType: 'Evaluation',
           bulletBotDirection: 'Long',
+          algoStack: 'RBO + URGO',
+          dailyLossLimit: '750',
           notes: 'note',
           dateAdded: '2026-01-01',
           dateFunded: '2026-02-01',
@@ -164,7 +185,10 @@ describe('persistDailyImportWithClient', () => {
         connection: 'Lucid',
       }],
       flags: [{
-        accountName: 'ACC-ONE', type: 'Review', severity: 'Critical', message: 'Check it', status: 'Open',
+        accountName: 'ACC-ONE', type: 'Review', severity: 'Critical', message: 'Check it',
+        status: 'Acknowledged', resolvedAt: '2026-07-23T22:15:00.000Z', resolvedByUserId: 'user-1',
+      }, {
+        accountName: 'acc-one', type: 'Open review', message: 'Still open', status: 'Open',
       }],
     });
 
@@ -175,6 +199,7 @@ describe('persistDailyImportWithClient', () => {
         client_id: 'client-uuid', legacy_key: 'acc-one', account_name: 'acc-one', alias: 'Primary',
         connection: 'Lucid', account_type: 'Funded', status: 'Active', payout_state: 'Requested',
         start_balance: 50000, target_profit: 3000, max_drawdown_limit: 2000,
+        risk_level: 'Balanced', algo_stack: 'RBO + URGO', daily_loss_limit: '750',
         bullet_bot_pass_type: 'Evaluation', bullet_bot_direction: 'Long', notes: 'note',
         date_added: '2026-01-01', date_funded: '2026-02-01', date_failed: null,
         date_last_payout: '2026-07-01', payout_count: 2, updated_at: expect.any(String),
@@ -183,7 +208,7 @@ describe('persistDailyImportWithClient', () => {
     expect(db.upsertDailyImport).toHaveBeenCalledWith(expect.objectContaining({
       client_id: 'client-uuid', legacy_key: 'legacy-import-1', trading_date: '2026-07-23',
       imported_at: '2026-07-23T22:00:00.000Z', status: 'Needs review',
-      source_summary: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 1 },
+      source_summary: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
       updated_at: expect.any(String),
     }));
     expect(db.deleteDailyImportRows.mock.calls).toEqual([
@@ -217,7 +242,12 @@ describe('persistDailyImportWithClient', () => {
     }]);
     expect(db.insertRows).toHaveBeenNthCalledWith(4, 'operational_flags', [{
       daily_import_id: 'import-1', client_id: 'client-uuid', trading_account_id: 'account-1',
-      type: 'Review', severity: 'Critical', message: 'Check it', status: 'Open',
+      type: 'Review', severity: 'Critical', message: 'Check it', status: 'Acknowledged',
+      resolved_at: '2026-07-23T22:15:00.000Z', resolved_by_user_id: 'user-1',
+    }, {
+      daily_import_id: 'import-1', client_id: 'client-uuid', trading_account_id: 'account-1',
+      type: 'Open review', severity: 'Warning', message: 'Still open', status: 'Open',
+      resolved_at: null, resolved_by_user_id: null,
     }]);
   });
 
@@ -273,6 +303,46 @@ describe('persistDailyImportWithClient', () => {
     expect(db.insertRows.mock.calls[2][1][0]).toMatchObject({
       quantity: null, price: null, commission: null, rate: null,
     });
+  });
+
+  it('defaults only undefined legacy numeric values and maps all other invalid values to null', async () => {
+    const db = makeDb();
+    const values = [null, '', 'not-a-number', Number.NaN, Number.POSITIVE_INFINITY, undefined];
+
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: importResult({
+        accounts: Object.fromEntries(values.map((payoutCount, index) => [
+          `account-${index}`,
+          { accountName: `account-${index}`, payoutCount },
+        ])),
+        snapshots: values.map((value, index) => ({
+          accountName: `account-${index}`,
+          grossRealizedPnl: value,
+          trailingMaxDrawdown: value,
+          accountBalance: value,
+          weeklyPnl: value,
+          unrealizedPnl: value,
+        })),
+        strategies: values.map((value, index) => ({
+          accountName: `account-${index}`,
+          realized: value,
+          unrealized: value,
+        })),
+      }),
+    });
+
+    const expected = [null, null, null, null, null, 0];
+    expect(db.upsertTradingAccounts.mock.calls[0][0].map((row) => row.payout_count)).toEqual(expected);
+    for (const field of [
+      'gross_realized_pnl', 'trailing_max_drawdown', 'account_balance', 'weekly_pnl', 'unrealized_pnl',
+    ]) {
+      expect(db.upsertAccountSnapshots.mock.calls[0][0].map((row) => row[field])).toEqual(expected);
+    }
+    for (const field of ['realized', 'unrealized']) {
+      expect(db.insertRows.mock.calls[0][1].map((row) => row[field])).toEqual(expected);
+    }
   });
 
   it('adds supported source columns and retains batch linkage in source summary metadata', async () => {
@@ -331,7 +401,7 @@ describe('persistDailyImportWithClient', () => {
       async transaction(work) {
         const staged = [];
         const tx = {
-          findDailyImportByClientAndDate: async () => null,
+          guardDailyImportWritable: async () => null,
           upsertTradingAccounts: async () => staged.push('accounts'),
           listTradingAccounts: async () => [{ id: 'account-1', account_name: 'acc-one' }],
           upsertDailyImport: async (row) => {
@@ -364,5 +434,84 @@ describe('persistDailyImportWithClient', () => {
     })).rejects.toThrow('order insert failed');
 
     expect(committed).toEqual([]);
+  });
+
+  it('keeps an atomic writable guard held through all transaction work', async () => {
+    const events = [];
+    let guardHeld = false;
+    const assertGuarded = (event) => {
+      expect(guardHeld).toBe(true);
+      events.push(event);
+    };
+    const db = {
+      supportsDailyImportSourceColumns: false,
+      async transaction(work) {
+        events.push('transaction:start');
+        const tx = {
+          async guardDailyImportWritable() {
+            guardHeld = true;
+            events.push('guard:acquired');
+          },
+          upsertTradingAccounts: async () => assertGuarded('accounts:upsert'),
+          listTradingAccounts: async () => {
+            assertGuarded('accounts:list');
+            return [];
+          },
+          upsertDailyImport: async (row) => {
+            assertGuarded('daily-import:upsert');
+            return { id: 'import-1', ...row };
+          },
+          deleteDailyImportRows: async (table) => assertGuarded(`${table}:delete`),
+          upsertAccountSnapshots: async () => [],
+          insertRows: async () => undefined,
+        };
+        try {
+          const result = await work(tx);
+          assertGuarded('transaction:commit');
+          return result;
+        } finally {
+          guardHeld = false;
+          events.push('guard:released');
+        }
+      },
+    };
+
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: importResult({ accounts: { account: { accountName: 'acc-one' } } }),
+    });
+
+    expect(events).toEqual([
+      'transaction:start',
+      'guard:acquired',
+      'accounts:upsert',
+      'accounts:list',
+      'daily-import:upsert',
+      'operational_flags:delete',
+      'transaction:commit',
+      'guard:released',
+    ]);
+  });
+});
+
+describe('withLegacyDailyImportId', () => {
+  it('fills the legacy manual key from the original client id without mutating input', () => {
+    const input = { date: '2026-07-23', status: 'Ready to close' };
+
+    const result = withLegacyDailyImportId('legacy-client', input);
+
+    expect(result).toEqual({ ...input, id: 'legacy-client-2026-07-23' });
+    expect(result).not.toBe(input);
+    expect(input).not.toHaveProperty('id');
+  });
+
+  it('preserves an existing import id while still returning a shallow copy', () => {
+    const input = { id: 'existing-id', date: '2026-07-23' };
+
+    const result = withLegacyDailyImportId('legacy-client', input);
+
+    expect(result).toEqual(input);
+    expect(result).not.toBe(input);
   });
 });
