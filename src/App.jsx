@@ -54,6 +54,7 @@ import ProfilePanel from "./components/ProfilePanel";
 import StackPlaybook from "./components/StackPlaybook";
 import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
+import AutoCollectionCard from "./components/AutoCollectionCard";
 import {
   Dialog,
   DialogContent,
@@ -10169,6 +10170,7 @@ function CredentialsTab({
   onUpdateClient,
   onDeleteClient,
   canDeleteClient = true,
+  canManageAutoCollection = false,
 }) {
   const credentials = client.credentials || {};
   const profile = client.profile || {};
@@ -10452,6 +10454,14 @@ function CredentialsTab({
           </label>
         </div>
       </section>
+
+      {canManageAutoCollection && client.uuid ? (
+        <AutoCollectionCard
+          key={client.uuid}
+          clientUuid={client.uuid}
+          clientName={client.name}
+        />
+      ) : null}
 
       <section className="panel">
         <div className="panel-heading">
@@ -13384,6 +13394,10 @@ export default function App() {
                         onUpdateClient={handleUpdateClient}
                         onDeleteClient={handleDeleteClient}
                         canDeleteClient={canCreateDeleteClients}
+                        canManageAutoCollection={
+                          session?.role === USER_ROLES.MANAGER
+                          || session?.role === USER_ROLES.CAM
+                        }
                       />
                     ) : null}
                     {effectiveActiveTab === "Price Checks" ? (

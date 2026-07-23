@@ -55,6 +55,13 @@ async function requireAssignment(admin, camProfileId, clientUuid) {
   if (!data?.length) throw new ApiError(403, 'Client assignment required.');
 }
 
+export async function requireClientAssignment(admin, appUser, clientUuid) {
+  if (!appUser || !clientUuid) throw new ApiError(403, 'Client assignment required.');
+  if (appUser.role !== 'Manager') {
+    await requireAssignment(admin, appUser.cam_profile_id, clientUuid);
+  }
+}
+
 export async function requireAppUser(req, {
   roles,
   clientUuid,
@@ -78,7 +85,7 @@ export async function requireAppUser(req, {
       : 'App user permission required.');
   }
   if (clientUuid && appUser.role !== 'Manager') {
-    await requireAssignment(clients.admin, appUser.cam_profile_id, clientUuid);
+    await requireClientAssignment(clients.admin, appUser, clientUuid);
   }
   return appUser;
 }

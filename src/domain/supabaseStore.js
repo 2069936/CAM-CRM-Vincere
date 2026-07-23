@@ -399,6 +399,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
 
     return {
       id: pickId(client),
+      uuid: client.id,
       name: client.name,
       status: client.status || 'Active',
       pinned: Boolean(client.pinned),
@@ -755,6 +756,7 @@ export async function createSupabaseClient(name, camProfileId = null, stage = 'A
 
   return {
     id: pickId(client),
+    uuid: client.id,
     name: client.name,
     status: client.status || 'Active',
     pinned: Boolean(client.pinned),

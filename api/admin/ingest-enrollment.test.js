@@ -101,6 +101,15 @@ describe('admin ingest enrollment', () => {
     expect(calls.create).toHaveLength(0);
   });
 
+  it('does not reflect arbitrary plain 4xx dependency errors', async () => {
+    const { handler, calls } = setup({ createError: { status: 418 } });
+    const res = response();
+    await handler(request('POST', { clientUuid: CLIENT_ID }), res);
+    expect(res).toMatchObject({ statusCode: 500, body: { error: 'enrollment_request_failed' } });
+    expect(JSON.stringify(res.body)).not.toContain('database detail');
+    expect(calls.audit).toHaveLength(0);
+  });
+
   it('uses an atomic rebind operation that revokes active devices and old codes', async () => {
     const { handler, calls } = setup();
     const res = response();

@@ -72,7 +72,9 @@ export function createIngestEnrollmentStore(admin) {
 }
 
 function publicAdminError(error) {
-  if (error instanceof ApiError || (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500)) return error;
+  if (error instanceof ApiError) return error;
+  if (error?.status === 401) return new ApiError(401, 'Invalid session token.');
+  if (error?.status === 403) return new ApiError(403, 'Client assignment required.');
   if (error?.code === 'CLIENT_NOT_ELIGIBLE') return new ApiError(409, 'client_not_eligible');
   if (error?.code === 'ACTIVE_DEVICE_EXISTS') return new ApiError(409, 'active_device_exists');
   if (error?.code === 'INGEST_ACCESS_NOT_FOUND') return new ApiError(404, 'ingest_access_not_found');
@@ -90,6 +92,7 @@ export function createHandler({
   return async function handler(req, res) {
     try {
       requireMethod(req, ['POST', 'DELETE']);
+      res.setHeader('Cache-Control', 'private, no-store');
       const body = await readJsonBody(req, { maxBytes: 8 * 1024 });
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'invalid_request');
       if ('productKey' in body || 'product_key' in body) throw new ApiError(400, 'invalid_request');
@@ -108,7 +111,8 @@ export function createHandler({
         if (!['generate', 'rebind'].includes(action)) throw new ApiError(400, 'invalid_action');
         if (action === 'generate' && body.reason != null) throw new ApiError(400, 'invalid_reason');
         const reasonCode = action === 'rebind' ? requireAllowedReason(body.reason, REBIND_REASONS) : null;
-        const issued = issueCode({ pepper, now: now() });
+        const requestNow = now();
+        const issued = issueCode({ pepper, now: requestNow });
         const created = await store.createEnrollment({
           clientId,
           codeHash: issued.record.credentialHash,
@@ -119,6 +123,7 @@ export function createHandler({
           reasonCode,
         });
         return sendJson(res, 201, {
+          serverTime: requestNow.toISOString(),
           enrollment: {
             id: created.enrollmentId,
             clientUuid: created.clientId,
