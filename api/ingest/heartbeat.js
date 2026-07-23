@@ -29,11 +29,13 @@ const ERROR_CODES = new Set([
 const HEALTH_STATUSES = new Set(['online', 'error', 'update_required']);
 const ISO_TIMESTAMP_WITH_OFFSET = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
+export const config = { api: { bodyParser: false } };
+
 function invalidHeartbeat(status = 400) {
   return new ApiError(status, 'invalid_heartbeat');
 }
 
-function nullableTimestamp(value) {
+function nullableTimestamp(value, latestAllowedMs) {
   if (value === null || value === undefined) return null;
   const match = typeof value === 'string' ? ISO_TIMESTAMP_WITH_OFFSET.exec(value) : null;
   const [year, month, day, hour, minute, second, offsetHour, offsetMinute] =
@@ -52,7 +54,8 @@ function nullableTimestamp(value) {
     || minute > 59
     || second > 59
     || !validOffset
-    || Number.isNaN(Date.parse(value))) {
+    || Number.isNaN(Date.parse(value))
+    || Date.parse(value) > latestAllowedMs) {
     throw invalidHeartbeat();
   }
   return value;
@@ -79,7 +82,10 @@ function safeErrorMessage(value) {
   return sanitized || null;
 }
 
-export function normalizeHeartbeatBody(value) {
+export function normalizeHeartbeatBody(value, {
+  now = new Date(),
+  maxFutureSkewMs = 5 * 60 * 1000,
+} = {}) {
   if (value === null
     || typeof value !== 'object'
     || Array.isArray(value)
@@ -89,14 +95,23 @@ export function normalizeHeartbeatBody(value) {
   }
 
   try {
+    const referenceNow = now instanceof Date ? now : new Date(now);
+    const latestAllowedMs = referenceNow.getTime() + maxFutureSkewMs;
+    if (Number.isNaN(latestAllowedMs)) throw invalidHeartbeat();
     const addonAvailable = value.addonAvailable;
     if (addonAvailable !== null && typeof addonAvailable !== 'boolean') throw invalidHeartbeat();
+    const lastCaptureAt = nullableTimestamp(value.lastCaptureAt, latestAllowedMs);
+    const lastSuccessAt = nullableTimestamp(value.lastSuccessAt, latestAllowedMs);
+    if (lastCaptureAt && lastSuccessAt
+      && Date.parse(lastSuccessAt) > Date.parse(lastCaptureAt)) {
+      throw invalidHeartbeat();
+    }
     return {
       agentVersion: normalizeCollectorVersion(value.agentVersion),
       addonVersion: normalizeCollectorVersion(value.addonVersion),
       ninjaTraderVersion: normalizeCollectorVersion(value.ninjaTraderVersion),
-      lastCaptureAt: nullableTimestamp(value.lastCaptureAt),
-      lastSuccessAt: nullableTimestamp(value.lastSuccessAt),
+      lastCaptureAt,
+      lastSuccessAt,
       lastErrorCode: stableErrorCode(value.lastErrorCode),
       lastErrorMessage: safeErrorMessage(value.lastErrorMessage),
       queueDepth: queueMetric(value.queueDepth),
@@ -121,6 +136,13 @@ function unwrapRpcRow(data) {
   return Array.isArray(data) ? data[0] : data;
 }
 
+function heartbeatValidationError(error) {
+  const source = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toUpperCase();
+  return source.includes('INVALID_HEARTBEAT_REQUEST')
+    ? invalidHeartbeat()
+    : null;
+}
+
 export function createHeartbeatStore(admin) {
   return {
     async recordHeartbeat(payload) {
@@ -139,7 +161,7 @@ export function createHeartbeatStore(admin) {
         p_health_status: payload.healthStatus,
         p_min_interval_seconds: payload.minIntervalSeconds,
       });
-      if (error) throw error;
+      if (error) throw heartbeatValidationError(error) || error;
       const row = unwrapRpcRow(data);
       if (!row?.device_id
         || !HEALTH_STATUSES.has(row.health_status)
@@ -169,6 +191,7 @@ export function createHandler({
   minIntervalSeconds = parseHeartbeatIntervalSeconds(
     process.env.AUTO_COLLECTION_HEARTBEAT_MIN_INTERVAL_SECONDS,
   ),
+  now = () => new Date(),
 } = {}) {
   return async function handler(req, res) {
     try {
@@ -181,14 +204,17 @@ export function createHandler({
 
       let requestBody;
       try {
-        requestBody = await readJsonBody(req, { maxBytes: 8 * 1024 });
+        requestBody = await readJsonBody(req, {
+          maxBytes: 8 * 1024,
+          requireRawBody: true,
+        });
       } catch (error) {
         if (error instanceof ApiError && [400, 413].includes(error.status)) {
           throw invalidHeartbeat(error.status);
         }
         throw error;
       }
-      const heartbeat = normalizeHeartbeatBody(requestBody);
+      const heartbeat = normalizeHeartbeatBody(requestBody, { now: now() });
       const updateRequired = requiresCollectorUpdate(
         heartbeat.agentVersion,
         minimumAgentVersion,

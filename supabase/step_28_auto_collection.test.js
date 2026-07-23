@@ -159,8 +159,25 @@ describe('step 28 auto-collection migration contract', () => {
     }
     expect(heartbeat).toMatch(/p_queue_depth[^;]+>= 0/);
     expect(heartbeat).toMatch(/p_queue_bytes[^;]+>= 0/);
+    expect(heartbeat).toContain('9007199254740991');
     expect(heartbeat).toMatch(/char_length\(p_last_error_message\)[^;]+256/);
     expect(heartbeat).toMatch(/p_health_status[^;]+'online'[^;]+'error'[^;]+'update_required'/);
+  });
+
+  it('enforces future/order policy and persists monotonic effective timestamps under lock', () => {
+    const heartbeat = functionDefinition('record_ingest_heartbeat');
+    expect(heartbeat).toMatch(/p_last_capture_at[^;]+v_now \+ interval '5 minutes'/);
+    expect(heartbeat).toMatch(/p_last_success_at[^;]+v_now \+ interval '5 minutes'/);
+    expect(heartbeat).toMatch(/p_last_success_at[^;]+p_last_capture_at[^;]+p_last_success_at > p_last_capture_at/);
+    expect(heartbeat).toMatch(/v_effective_capture_at/);
+    expect(heartbeat).toMatch(/v_effective_success_at/);
+    expect(heartbeat).toMatch(/greatest\(v_device\.last_capture_at, p_last_capture_at\)/);
+    expect(heartbeat).toMatch(/greatest\(v_device\.last_success_at, p_last_success_at\)/);
+    expect(heartbeat).toMatch(/v_effective_success_at[^;]+v_effective_capture_at/);
+    expect(heartbeat).toMatch(/v_device\.last_capture_at is not distinct from v_effective_capture_at/);
+    expect(heartbeat).toMatch(/v_device\.last_success_at is not distinct from v_effective_success_at/);
+    expect(heartbeat).toMatch(/last_capture_at = v_effective_capture_at/);
+    expect(heartbeat).toMatch(/last_success_at = v_effective_success_at/);
   });
 
   it('writes first-online and recovery audits atomically without noisy healthy-heartbeat audit', () => {

@@ -1,14 +1,21 @@
+import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../_lib/http.js';
 import {
   createHandler,
   createHeartbeatStore,
-  normalizeHeartbeatBody,
+  config,
+  normalizeHeartbeatBody as normalizeHeartbeatBodyImpl,
   parseHeartbeatIntervalSeconds,
 } from './heartbeat.js';
 
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
+const REFERENCE_NOW = new Date('2026-07-23T21:00:00Z');
+
+function normalizeHeartbeatBody(value, options = {}) {
+  return normalizeHeartbeatBodyImpl(value, { now: REFERENCE_NOW, ...options });
+}
 
 function response() {
   return {
@@ -24,7 +31,7 @@ function body(overrides = {}) {
     agentVersion: '1.2.3',
     addonVersion: '4.5.6',
     ninjaTraderVersion: '8.1.4.2',
-    lastCaptureAt: '2026-07-23T15:40:00-05:00',
+    lastCaptureAt: '2026-07-23T15:42:00-05:00',
     lastSuccessAt: '2026-07-23T20:41:00Z',
     lastErrorCode: null,
     lastErrorMessage: null,
@@ -40,6 +47,7 @@ function setup({
   authenticateImpl,
   recordImpl,
   minIntervalSeconds = 30,
+  now = () => REFERENCE_NOW,
 } = {}) {
   const calls = { authenticate: [], record: [], createClient: 0 };
   const admin = {};
@@ -76,6 +84,7 @@ function setup({
     pepper: 'test-pepper',
     minimumAgentVersion,
     minIntervalSeconds,
+    now,
   });
   return { handler, calls };
 }
@@ -84,7 +93,7 @@ async function heartbeat(handler, payload = body(), overrides = {}) {
   const req = {
     method: 'POST',
     headers: { authorization: 'Bearer redacted', 'x-machine-id': 'redacted' },
-    body: payload,
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
     ...overrides,
   };
   const res = response();
@@ -132,6 +141,30 @@ describe('heartbeat body validation', () => {
     ['lastSuccessAt', 123],
   ])('rejects invalid or offset-free %s value %j', (field, value) => {
     expect(() => normalizeHeartbeatBody(body({ [field]: value }))).toThrow('invalid_heartbeat');
+  });
+
+  it('accepts timestamps at the five-minute future-skew boundary', () => {
+    expect(normalizeHeartbeatBody(body({
+      lastCaptureAt: '2026-07-23T21:05:00Z',
+      lastSuccessAt: '2026-07-23T21:05:00Z',
+    }))).toMatchObject({
+      lastCaptureAt: '2026-07-23T21:05:00Z',
+      lastSuccessAt: '2026-07-23T21:05:00Z',
+    });
+  });
+
+  it('rejects a timestamp beyond the five-minute future-skew boundary', () => {
+    expect(() => normalizeHeartbeatBody(body({
+      lastCaptureAt: '2026-07-23T21:05:00.001Z',
+      lastSuccessAt: null,
+    }))).toThrow('invalid_heartbeat');
+  });
+
+  it('rejects supplied success later than supplied capture', () => {
+    expect(() => normalizeHeartbeatBody(body({
+      lastCaptureAt: '2026-07-23T20:40:00Z',
+      lastSuccessAt: '2026-07-23T20:40:00.001Z',
+    }))).toThrow('invalid_heartbeat');
   });
 
   it.each([
@@ -188,6 +221,10 @@ describe('heartbeat body validation', () => {
 });
 
 describe('public ingest heartbeat', () => {
+  it('disables Vercel body parsing so the route can enforce the wire-byte limit', () => {
+    expect(config).toEqual({ api: { bodyParser: false } });
+  });
+
   it.each([
     ['1.2.2', 'update_required', true],
     ['1.2.3', 'online', false],
@@ -267,10 +304,42 @@ describe('public ingest heartbeat', () => {
     expect(JSON.stringify(res.body)).not.toContain('unexpected');
   });
 
+  it.each([
+    ['future timestamp', { lastCaptureAt: '2026-07-23T21:05:00.001Z', lastSuccessAt: null }],
+    ['success after capture', { lastCaptureAt: '2026-07-23T20:40:00Z', lastSuccessAt: '2026-07-23T20:40:00.001Z' }],
+  ])('returns controlled validation for authenticated %s', async (_label, timestampOverrides) => {
+    const { handler, calls } = setup();
+    const res = await heartbeat(handler, body(timestampOverrides));
+    expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_heartbeat' } });
+    expect(calls.record).toHaveLength(0);
+  });
+
   it('rejects authenticated bodies over 8 KiB', async () => {
     const { handler, calls } = setup();
     const res = await heartbeat(handler, JSON.stringify({ value: 'x'.repeat(9 * 1024) }));
     expect(res).toMatchObject({ statusCode: 413, body: { error: 'invalid_heartbeat' } });
+    expect(calls.record).toHaveLength(0);
+  });
+
+  it('accepts an exact 8 KiB raw JSON body and rejects the next byte', async () => {
+    const empty = JSON.stringify(body({ lastErrorMessage: '' }));
+    const padding = 'x'.repeat((8 * 1024) - Buffer.byteLength(empty, 'utf8'));
+    const exact = JSON.stringify(body({ lastErrorMessage: padding }));
+    expect(Buffer.byteLength(exact, 'utf8')).toBe(8 * 1024);
+
+    const { handler } = setup();
+    expect(await heartbeat(handler, exact)).toMatchObject({ statusCode: 200 });
+    expect(await heartbeat(handler, `${exact} `)).toMatchObject({
+      statusCode: 413,
+      body: { error: 'invalid_heartbeat' },
+    });
+  });
+
+  it('rejects a pre-parsed object because its original wire length is unknowable', async () => {
+    const { handler, calls } = setup();
+    const res = await heartbeat(handler, body(), { body: body() });
+    expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_heartbeat' } });
+    expect(calls.authenticate).toHaveLength(1);
     expect(calls.record).toHaveLength(0);
   });
 
@@ -341,7 +410,7 @@ describe('heartbeat configuration and Supabase adapter', () => {
       p_agent_version: '1.2.3',
       p_addon_version: '4.5.6',
       p_ninjatrader_version: '8.1.4.2',
-      p_last_capture_at: '2026-07-23T15:40:00-05:00',
+      p_last_capture_at: '2026-07-23T15:42:00-05:00',
       p_last_success_at: '2026-07-23T20:41:00Z',
       p_last_error_code: null,
       p_last_error_message: null,
@@ -356,6 +425,19 @@ describe('heartbeat configuration and Supabase adapter', () => {
   it('rejects missing or unsafe RPC response shapes', async () => {
     const admin = { rpc: vi.fn(async () => ({ data: [], error: null })) };
     await expect(createHeartbeatStore(admin).recordHeartbeat({})).rejects.toThrow('Heartbeat RPC returned no device.');
+  });
+
+  it('maps SQL heartbeat validation denials to the controlled public 400', async () => {
+    const admin = {
+      rpc: vi.fn(async () => ({
+        data: null,
+        error: { code: '22023', message: 'INVALID_HEARTBEAT_REQUEST' },
+      })),
+    };
+    await expect(createHeartbeatStore(admin).recordHeartbeat({})).rejects.toMatchObject({
+      status: 400,
+      message: 'invalid_heartbeat',
+    });
   });
 
   it('propagates RPC failures', async () => {

@@ -49,6 +49,13 @@ describe('http helpers', () => {
     expect(result).toEqual(body);
   });
 
+  it('rejects an already-parsed body when strict raw-body measurement is required', async () => {
+    await expect(readJsonBody({ body: { note: 'small' } }, {
+      maxBytes: 1024,
+      requireRawBody: true,
+    })).rejects.toMatchObject({ status: 400, message: 'Raw JSON request body is required.' });
+  });
+
   it('sends JSON with the requested status', () => {
     const res = response();
     sendJson(res, 201, { created: true });

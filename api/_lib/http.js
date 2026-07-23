@@ -52,8 +52,12 @@ async function readStream(req, maxBytes) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-export async function readJsonBody(req, { maxBytes = 64 * 1024 } = {}) {
+export async function readJsonBody(req, {
+  maxBytes = 64 * 1024,
+  requireRawBody = false,
+} = {}) {
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    if (requireRawBody) throw new ApiError(400, 'Raw JSON request body is required.');
     requireBodyWithinLimit(req.body, maxBytes);
     return req.body;
   }

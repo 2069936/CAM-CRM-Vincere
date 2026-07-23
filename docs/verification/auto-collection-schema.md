@@ -31,9 +31,9 @@ npm test
 
 Evidence recorded on 2026-07-23:
 
-- Focused contract: 1 file passed, 22 tests passed.
+- Focused contract: 1 file passed, 23 tests passed.
 - Targeted ESLint: exited 0 with no findings.
-- Full Vitest suite: 46 files passed, 632 tests passed.
+- Full Vitest suite: 46 files passed, 643 tests passed.
 - `git diff --check`: exited 0 with no findings.
 - PostgreSQL 18.3 disposable local cluster: baseline schema plus Step 22 applied,
   revised Step 28 applied twice successfully. `record_ingest_heartbeat` was
@@ -44,8 +44,9 @@ Evidence recorded on 2026-07-23:
   existing global-machine denial, credential unique-constraint classification,
   exact-retry audit idempotence, first-online, unchanged-heartbeat throttling,
   version/error/recovery bypass, exactly-once recovery audit, safe audit keys,
-  strict-version rejection, and revoked-device rejection. These do not
-  constitute concurrency-race evidence.
+  strict-version rejection, future/order rejection, safe-integer queue bounds,
+  stale timestamp non-regression, cross-state timestamp rejection, and
+  revoked-device rejection. These do not constitute concurrency-race evidence.
 
 ## Pending disposable/staging verification
 

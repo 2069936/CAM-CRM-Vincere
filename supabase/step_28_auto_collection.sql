@@ -1109,6 +1109,8 @@ as $function$
 declare
   v_device public.ingest_devices;
   v_now timestamptz := clock_timestamp();
+  v_effective_capture_at timestamptz;
+  v_effective_success_at timestamptz;
   v_unchanged boolean;
   v_first_online boolean;
   v_recovered boolean;
@@ -1135,7 +1137,16 @@ begin
       or p_last_error_message ~ '[[:cntrl:]]'
     ))
     or p_queue_depth is null or not (p_queue_depth >= 0)
+    or p_queue_depth > 9007199254740991
     or p_queue_bytes is null or not (p_queue_bytes >= 0)
+    or p_queue_bytes > 9007199254740991
+    or (p_last_capture_at is not null
+        and p_last_capture_at > v_now + interval '5 minutes')
+    or (p_last_success_at is not null
+        and p_last_success_at > v_now + interval '5 minutes')
+    or (p_last_success_at is not null
+        and p_last_capture_at is not null
+        and p_last_success_at > p_last_capture_at)
     or p_health_status is null
     or p_health_status not in ('online', 'error', 'update_required')
     or (p_health_status = 'online' and p_last_error_code is not null)
@@ -1159,12 +1170,30 @@ begin
       using errcode = 'P0001';
   end if;
 
+  v_effective_capture_at := case
+    when v_device.last_capture_at is null then p_last_capture_at
+    when p_last_capture_at is null then v_device.last_capture_at
+    else greatest(v_device.last_capture_at, p_last_capture_at)
+  end;
+  v_effective_success_at := case
+    when v_device.last_success_at is null then p_last_success_at
+    when p_last_success_at is null then v_device.last_success_at
+    else greatest(v_device.last_success_at, p_last_success_at)
+  end;
+
+  if v_effective_success_at is not null
+    and (v_effective_capture_at is null
+         or v_effective_success_at > v_effective_capture_at) then
+    raise exception 'INVALID_HEARTBEAT_REQUEST'
+      using errcode = '22023';
+  end if;
+
   v_unchanged :=
     v_device.agent_version is not distinct from p_agent_version
     and v_device.addon_version is not distinct from p_addon_version
     and v_device.ninjatrader_version is not distinct from p_ninjatrader_version
-    and v_device.last_capture_at is not distinct from p_last_capture_at
-    and v_device.last_success_at is not distinct from p_last_success_at
+    and v_device.last_capture_at is not distinct from v_effective_capture_at
+    and v_device.last_success_at is not distinct from v_effective_success_at
     and v_device.last_error_code is not distinct from p_last_error_code
     and v_device.health_status is not distinct from p_health_status
     and (v_device.metadata ->> 'lastErrorMessage') is not distinct from p_last_error_message
@@ -1192,8 +1221,8 @@ begin
       addon_version = p_addon_version,
       ninjatrader_version = p_ninjatrader_version,
       last_seen_at = v_now,
-      last_capture_at = p_last_capture_at,
-      last_success_at = p_last_success_at,
+      last_capture_at = v_effective_capture_at,
+      last_success_at = v_effective_success_at,
       last_error_code = p_last_error_code,
       last_error_at = case
         when p_last_error_code is null then null
