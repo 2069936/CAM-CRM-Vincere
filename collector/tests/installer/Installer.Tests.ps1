@@ -63,6 +63,13 @@ Describe 'Installer safety authoring' {
         $addon | Should -Not -Match 'RemoveFile[^>]*Name="\*'
     }
 
+    It 'links every harvested payload group into the machine feature' {
+        $machine | Should -Match '<ComponentGroup Id="AgentPayloadComponents">\s*<Files'
+        $machine | Should -Match '<ComponentGroup Id="SetupPayloadComponents">\s*<Files'
+        $machine | Should -Match '<ComponentGroupRef Id="AgentPayloadComponents"'
+        $machine | Should -Match '<ComponentGroupRef Id="SetupPayloadComponents"'
+    }
+
     It 'closes NinjaTrader before AddOn replacement and chains rollback-capable MSIs' {
         $addon | Should -Match 'CloseApplication[^>]*Target="NinjaTrader.exe"'
         $bundle | Should -Match 'MsiPackage Id="MachinePackage"[^>]*Vital="yes"'

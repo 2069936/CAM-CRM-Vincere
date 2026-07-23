@@ -12,14 +12,18 @@
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="VincereDataCompanyFolder" Name="Vincere"><Directory Id="AUTODATAROOT" Name="AutoExport" /></Directory>
     </StandardDirectory>
-    <Files Include="$(AgentPublishDir)/**" Directory="INSTALLFOLDER" Subdirectory="Agent">
-      <Exclude Files="$(AgentPublishDir)/Vincere.AutoExport.Agent.exe" />
-      <Exclude Files="$(AgentPublishDir)/**/*.pdb" />
-    </Files>
-    <Files Include="$(UiPublishDir)/**" Directory="INSTALLFOLDER" Subdirectory="Setup">
-      <Exclude Files="$(UiPublishDir)/Vincere.AutoExport.Agent.UI.exe" />
-      <Exclude Files="$(UiPublishDir)/**/*.pdb" />
-    </Files>
+    <ComponentGroup Id="AgentPayloadComponents">
+      <Files Include="$(AgentPublishDir)/**" Directory="INSTALLFOLDER" Subdirectory="Agent">
+        <Exclude Files="$(AgentPublishDir)/Vincere.AutoExport.Agent.exe" />
+        <Exclude Files="$(AgentPublishDir)/**/*.pdb" />
+      </Files>
+    </ComponentGroup>
+    <ComponentGroup Id="SetupPayloadComponents">
+      <Files Include="$(UiPublishDir)/**" Directory="INSTALLFOLDER" Subdirectory="Setup">
+        <Exclude Files="$(UiPublishDir)/Vincere.AutoExport.Agent.UI.exe" />
+        <Exclude Files="$(UiPublishDir)/**/*.pdb" />
+      </Files>
+    </ComponentGroup>
     <ComponentGroup Id="MachineComponents">
       <Component Id="AgentServiceComponent" Directory="INSTALLFOLDER" Subdirectory="Agent" Guid="4F93FE36-6674-4F00-B0FB-27D27CB9167B">
         <File Id="AgentServiceExe" Source="$(AgentPublishDir)/Vincere.AutoExport.Agent.exe" KeyPath="yes" />
@@ -57,6 +61,8 @@
       </Component>
     </ComponentGroup>
     <Feature Id="MachineFeature" Title="Vincere Auto Export service" Level="1">
+      <ComponentGroupRef Id="AgentPayloadComponents" />
+      <ComponentGroupRef Id="SetupPayloadComponents" />
       <ComponentGroupRef Id="MachineComponents" />
     </Feature>
     <util:CloseApplication Id="CloseNinjaTraderForMachineUpgrade" Target="NinjaTrader.exe"
