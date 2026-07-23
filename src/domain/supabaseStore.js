@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
+import { persistDailyImportWithClient } from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
 
 function pickId(row) {
@@ -1179,217 +1180,81 @@ export async function replaceSupabaseOperationalFlags(clientId, importId, flags 
   }));
 }
 
+export function createSupabaseDailyImportAdapter(client) {
+  const adapter = {
+    // PostgREST cannot wrap these separate requests in one transaction. This
+    // browser compatibility adapter therefore runs work directly: failures are
+    // propagated, but earlier successful requests cannot be rolled back.
+    supportsDailyImportSourceColumns: false,
+    transaction(work) {
+      return work(adapter);
+    },
+    async findDailyImportByClientAndDate(clientUuid, tradingDate) {
+      const { data, error } = await client
+        .from('daily_imports')
+        .select('id, status')
+        .eq('client_id', clientUuid)
+        .eq('trading_date', tradingDate)
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      return data;
+    },
+    async upsertTradingAccounts(rows) {
+      const { error } = await client
+        .from('trading_accounts')
+        .upsert(rows, { onConflict: 'client_id,account_name' });
+      if (error) throw new Error(error.message);
+    },
+    async listTradingAccounts(clientUuid) {
+      const { data, error } = await client
+        .from('trading_accounts')
+        .select('id, account_name')
+        .eq('client_id', clientUuid);
+      if (error) throw new Error(error.message);
+      return data || [];
+    },
+    async upsertDailyImport(row) {
+      const { data, error } = await client
+        .from('daily_imports')
+        .upsert(row, { onConflict: 'client_id,trading_date' })
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return data;
+    },
+    async deleteDailyImportRows(table, dailyImportId) {
+      const { error } = await client
+        .from(table)
+        .delete()
+        .eq('daily_import_id', dailyImportId);
+      if (error) throw new Error(error.message);
+    },
+    async upsertAccountSnapshots(rows) {
+      const { data, error } = await client
+        .from('account_snapshots')
+        .upsert(rows, { onConflict: 'daily_import_id,account_name' })
+        .select();
+      if (error) throw new Error(error.message);
+      return data || [];
+    },
+    async insertRows(table, rows) {
+      const { error } = await client.from(table).insert(rows);
+      if (error) throw new Error(error.message);
+    },
+  };
+  return adapter;
+}
+
 export async function upsertSupabaseDailyImport(clientId, importResult) {
   if (!isSupabaseConfigured || !supabase) return null;
   if (!importResult?.date) throw new Error('Import date is required.');
 
   const clientUuid = await getClientUuid(clientId);
-  const accountRows = Object.values(importResult.accounts || {});
-  if (accountRows.length) {
-    const accountUpserts = accountRows.map((meta) => ({
-      client_id: clientUuid,
-      legacy_key: meta.accountName || meta.alias || `account-${Date.now()}`,
-      account_name: meta.accountName,
-      alias: meta.alias || meta.accountName,
-      connection: meta.connection || '',
-      account_type: meta.accountType || 'Unassigned',
-      status: meta.status || 'Active',
-      payout_state: meta.payoutState || 'Not requested',
-      start_balance: numberOrNull(meta.startBalance),
-      target_profit: numberOrNull(meta.targetProfit),
-      max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
-      bullet_bot_pass_type: meta.bulletBotPassType || '',
-      bullet_bot_direction: meta.bulletBotDirection || '',
-      notes: meta.notes || '',
-      date_added: emptyToNull(meta.dateAdded),
-      date_funded: emptyToNull(meta.dateFunded),
-      date_failed: emptyToNull(meta.dateFailed),
-      date_last_payout: emptyToNull(meta.dateLastPayout),
-      payout_count: numberOrNull(meta.payoutCount) || 0,
-      updated_at: new Date().toISOString(),
-    }));
-    const { error: accountError } = await supabase
-      .from('trading_accounts')
-      .upsert(accountUpserts, { onConflict: 'client_id,account_name' });
-    if (accountError) throw new Error(accountError.message);
-  }
-
-  const { data: accounts, error: accountsError } = await supabase
-    .from('trading_accounts')
-    .select('id, account_name')
-    .eq('client_id', clientUuid);
-  if (accountsError) throw new Error(accountsError.message);
-  const accountByName = Object.fromEntries((accounts || []).map((account) => [
-    String(account.account_name || '').toLowerCase(),
-    account,
-  ]));
-
-  const { data: dailyImport, error: importError } = await supabase
-    .from('daily_imports')
-    .upsert({
-      client_id: clientUuid,
-      legacy_key: importResult.id || `${clientId}-${importResult.date}`,
-      trading_date: importResult.date,
-      imported_at: importResult.importedAt || new Date().toISOString(),
-      status: importResult.status || 'Needs review',
-      source_summary: {
-        accounts: (importResult.snapshots || []).length,
-        strategies: (importResult.strategies || []).length,
-        orders: (importResult.orders || []).length,
-        executions: (importResult.executions || []).length,
-        flags: (importResult.flags || []).length,
-      },
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'client_id,trading_date' })
-    .select()
-    .single();
-  if (importError) throw new Error(importError.message);
-
-  // Re-uploading a close replaces its detail rows. Guard against a partial or
-  // mis-parsed file silently wiping a good prior close for this date: only clear a
-  // detail table when the new file actually carries rows for it — an empty section
-  // (e.g. the orders export missing) keeps the previous data instead of deleting
-  // it. account_snapshots is handled separately below via upsert (not delete), so
-  // a file with fewer accounts updates only those and never blanks the rest.
-  // Flags are derived, so they are always refreshed to reflect the latest close.
-  const childRowCounts = {
-    strategy_snapshots: (importResult.strategies || []).length,
-    orders: (importResult.orders || []).length,
-    executions: (importResult.executions || []).length,
-  };
-  const childTables = ['strategy_snapshots', 'orders', 'executions', 'operational_flags'];
-  for (const table of childTables) {
-    if (table !== 'operational_flags' && !childRowCounts[table]) continue;
-    const { error } = await supabase.from(table).delete().eq('daily_import_id', dailyImport.id);
-    if (error) throw new Error(error.message);
-  }
-
-  const snapshotRows = (importResult.snapshots || []).map((snapshot) => {
-    const account = accountByName[String(snapshot.accountName || '').toLowerCase()];
-    return {
-      daily_import_id: dailyImport.id,
-      trading_account_id: account?.id || null,
-      account_name: snapshot.accountName || '',
-      connection: snapshot.connection || '',
-      gross_realized_pnl: numberOrNull(snapshot.grossRealizedPnl) || 0,
-      trailing_max_drawdown: numberOrNull(snapshot.trailingMaxDrawdown) || 0,
-      account_balance: numberOrNull(snapshot.accountBalance) || 0,
-      weekly_pnl: numberOrNull(snapshot.weeklyPnl) || 0,
-      unrealized_pnl: numberOrNull(snapshot.unrealizedPnl) || 0,
-    };
+  return persistDailyImportWithClient({
+    db: createSupabaseDailyImportAdapter(supabase),
+    clientUuid,
+    importResult,
   });
-
-  let snapshotByName = {};
-  if (snapshotRows.length) {
-    // Upsert (not delete+insert) on the (daily_import_id, account_name) unique
-    // constraint so re-uploading a date with fewer accounts updates only those
-    // and leaves the other accounts' snapshots for the day intact — never zeros.
-    const { data, error } = await supabase
-      .from('account_snapshots')
-      .upsert(snapshotRows, { onConflict: 'daily_import_id,account_name' })
-      .select();
-    if (error) throw new Error(error.message);
-    snapshotByName = Object.fromEntries((data || []).map((snapshot) => [
-      String(snapshot.account_name || '').toLowerCase(),
-      snapshot,
-    ]));
-  }
-
-  const strategyRows = (importResult.strategies || []).map((strategy) => {
-    const account = accountByName[String(strategy.accountName || '').toLowerCase()];
-    const snapshot = snapshotByName[String(strategy.accountName || '').toLowerCase()];
-    return {
-      daily_import_id: dailyImport.id,
-      trading_account_id: account?.id || null,
-      account_snapshot_id: snapshot?.id || null,
-      strategy_name: strategy.strategyName || '',
-      strategy_family: strategy.strategyFamily || '',
-      strategy_version: strategy.strategyVersion || '',
-      instrument: strategy.instrument || '',
-      data_series: strategy.dataSeries || '',
-      parameters_raw: strategy.parametersRaw || '',
-      params_parsed: strategy.params || {},
-      direction: strategy.direction || '',
-      enabled: Boolean(strategy.enabled),
-      realized: numberOrNull(strategy.realized) || 0,
-      unrealized: numberOrNull(strategy.unrealized) || 0,
-    };
-  });
-  if (strategyRows.length) {
-    const { error } = await supabase.from('strategy_snapshots').insert(strategyRows);
-    if (error) throw new Error(error.message);
-  }
-
-  const orderRows = (importResult.orders || []).map((order) => {
-    const account = accountByName[String(order.accountName || '').toLowerCase()];
-    return {
-      daily_import_id: dailyImport.id,
-      trading_account_id: account?.id || null,
-      external_order_id: order.id || '',
-      strategy_name: order.strategyName || '',
-      instrument: order.instrument || '',
-      action: order.action || '',
-      order_type: order.orderType || '',
-      quantity: numberOrNull(order.quantity),
-      limit_price: numberOrNull(order.limit),
-      stop_price: numberOrNull(order.stop),
-      state: order.state || '',
-      filled: numberOrNull(order.filled),
-      avg_price: numberOrNull(order.avgPrice),
-      remaining: numberOrNull(order.remaining),
-      name: order.name || '',
-      time_text: order.time || '',
-    };
-  });
-  if (orderRows.length) {
-    const { error } = await supabase.from('orders').insert(orderRows);
-    if (error) throw new Error(error.message);
-  }
-
-  const executionRows = (importResult.executions || []).map((execution) => {
-    const account = accountByName[String(execution.accountName || '').toLowerCase()];
-    return {
-      daily_import_id: dailyImport.id,
-      trading_account_id: account?.id || null,
-      external_execution_id: execution.id || '',
-      external_order_id: execution.orderId || '',
-      strategy_name: execution.strategyName || '',
-      instrument: execution.instrument || '',
-      action: execution.action || '',
-      quantity: numberOrNull(execution.quantity),
-      price: numberOrNull(execution.price),
-      time_text: execution.time || '',
-      entry_exit: execution.entryExit || '',
-      position: execution.position || '',
-      name: execution.name || '',
-      commission: numberOrNull(execution.commission),
-      rate: numberOrNull(execution.rate),
-      connection: execution.connection || '',
-    };
-  });
-  if (executionRows.length) {
-    const { error } = await supabase.from('executions').insert(executionRows);
-    if (error) throw new Error(error.message);
-  }
-
-  const flagRows = (importResult.flags || []).map((flag) => {
-    const account = accountByName[String(flag.accountName || '').toLowerCase()];
-    return {
-      daily_import_id: dailyImport.id,
-      client_id: clientUuid,
-      trading_account_id: account?.id || null,
-      type: flag.type,
-      severity: flag.severity || 'Warning',
-      message: flag.message || '',
-      status: flag.status || 'Open',
-    };
-  });
-  if (flagRows.length) {
-    const { error } = await supabase.from('operational_flags').insert(flagRows);
-    if (error) throw new Error(error.message);
-  }
-
-  return dailyImport;
 }
 
 export async function updateSupabaseDailyImportStatus(importId, status) {
