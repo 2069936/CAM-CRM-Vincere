@@ -18,7 +18,14 @@ public interface IAgentDirectorySecurity
     void EnsureProtected(string path);
 }
 
-public sealed class DpapiSecretStore
+public interface IDeviceTokenStore
+{
+    Task SaveTokenAsync(string token, CancellationToken cancellationToken = default);
+    Task<string> LoadTokenAsync(CancellationToken cancellationToken = default);
+    Task DeleteTokenAsync(CancellationToken cancellationToken = default);
+}
+
+public sealed class DpapiSecretStore : IDeviceTokenStore
 {
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
     private readonly ISecretProtector protector;
