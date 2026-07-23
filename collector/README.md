@@ -26,3 +26,18 @@ dotnet test collector\tests\Vincere.AutoExport.Agent.Tests -c Release --no-resto
 The supported-API parity gate and its manual VPS instructions live in
 [`probe/README.md`](probe/README.md). Do not treat the production AddOn as ready
 until that comparison has been reviewed.
+
+## Machine configuration boundary
+
+All machine-owned state derives from `%ProgramData%\Vincere\AutoExport`. The
+nonsecret `config.json` is written with flush-and-rename semantics and retains
+one validated last-known-good backup. The device credential is stored only in
+`secret.bin`, protected with DPAPI `LocalMachine` scope and fixed application
+entropy; it has no plaintext backup and is never accepted by diagnostic state
+serializers. The root ACL is replaced with explicit Full Control entries for
+SYSTEM and the local Administrators group before either file is accessed.
+
+Cross-platform tests verify atomic recovery, secret-store sequencing, machine
+ID normalization/hash behavior, and redaction. Real DPAPI, registry, owner/ACL,
+and elevated/non-elevated access checks remain required on the Windows system
+runner before release.
