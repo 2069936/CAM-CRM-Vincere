@@ -161,6 +161,18 @@ export function createAutoCollectionApi({
       return download(`/api/admin/ingest-download?batchId=${validateUuid(batchId)}&format=${format}`, signal);
     },
 
+    async reprocessBatch({ batchId, reason, confirmation, confirmClosedDay = false, signal } = {}) {
+      const normalizedReason = String(reason || '').trim();
+      const normalizedConfirmation = String(confirmation || '').trim();
+      if (normalizedReason.length < 10 || normalizedReason.length > 500 || normalizedConfirmation.length > 300) {
+        throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      }
+      return request('/api/admin/ingest-reprocess', {
+        method: 'POST', signal,
+        payload: { batchId: validateUuid(batchId), reason: normalizedReason, confirmation: normalizedConfirmation, confirmClosedDay: confirmClosedDay === true },
+      });
+    },
+
     async loadStatus(clientUuid, { signal } = {}) {
       const clientId = validateUuid(clientUuid);
       const path = `/api/admin/ingest-status?clientUuid=${encodeURIComponent(clientId)}`;

@@ -15,6 +15,7 @@ const SAFE_SELECT = [
   'id', 'capture_id', 'device_id', 'client_id', 'trading_date', 'captured_at',
   'received_at', 'processed_at', 'status', 'schema_version', 'byte_count',
   'row_counts', 'completeness', 'daily_import_id', 'replaces_batch_id', 'error_code',
+  'reprocess_mode',
 ].join(',');
 
 function scalar(value, field) {
@@ -134,6 +135,7 @@ function publicBatch(row = {}) {
     dailyImportId: row.daily_import_id || null,
     replacesBatchId: row.replaces_batch_id || null,
     errorCode: SAFE_ERROR_CODES.has(row.error_code) ? row.error_code : null,
+    reprocessMode: ['normal', 'closed_day'].includes(row.reprocess_mode) ? row.reprocess_mode : null,
   };
 }
 

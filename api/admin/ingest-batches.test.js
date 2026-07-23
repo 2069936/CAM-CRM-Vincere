@@ -39,6 +39,7 @@ function row(overrides = {}) {
     daily_import_id: null,
     replaces_batch_id: null,
     error_code: null,
+    reprocess_mode: null,
     storage_path: 'must-not-leak',
     content_sha256: 'must-not-leak',
     error_detail: 'must-not-leak',
@@ -79,6 +80,7 @@ describe('admin collector batch history', () => {
       deviceId: DEVICE_ID,
       status: 'processed',
       rowCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1 },
+      reprocessMode: null,
     });
     const serialized = JSON.stringify(res.body);
     expect(serialized).not.toMatch(/storage_path|storagePath|content_sha|sha256|error_detail|must-not-leak|processing_token/i);

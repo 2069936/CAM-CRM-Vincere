@@ -30,4 +30,23 @@ it('renders immutable history and both safe download actions in the drawer', () 
   expect(html).toContain('normalization_failed');
   expect(html).toContain('Download JSON');
   expect(html).toContain('Download four-CSV ZIP');
+  expect(html).toContain('Reprocess batch');
+});
+
+it('requires a reason and exact client/date phrase before a closed-day replacement', () => {
+  const batch = { ...fleet.rows[0].todayBatch, tradingDate: '2026-07-23', receivedAt: '2026-07-23T21:00:00Z', status: 'late_closed_day' };
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialSelectedClient={fleet.rows[0].client} initialBatches={[batch]} initialReplayBatch={batch} disableAutoLoad />);
+  expect(html).toContain('Replace this closed day?');
+  expect(html).toContain('REPLACE Rome McMahon 2026-07-23');
+  expect(html).toContain('Operational reason');
+  expect(html).toMatch(/type="submit"[^>]*disabled/);
+  expect(html).toContain('original stored snapshot is never modified');
+});
+
+it('keeps failed closed-day attempts on the protected replacement path', () => {
+  const batch = { ...fleet.rows[0].todayBatch, tradingDate: '2026-07-23', status: 'failed', reprocessMode: 'closed_day' };
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialSelectedClient={fleet.rows[0].client} initialBatches={[batch]} initialReplayBatch={batch} disableAutoLoad />);
+  expect(html).toContain('Replace this closed day?');
+  expect(html).toContain('REPLACE Rome McMahon 2026-07-23');
+  expect(html).not.toContain('REPROCESS Rome McMahon 2026-07-23');
 });

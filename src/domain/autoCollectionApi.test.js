@@ -44,6 +44,13 @@ describe('auto collection browser API', () => {
     expect(fetchImpl).toHaveBeenCalledWith('/api/admin/ingest-download?batchId=33333333-3333-4333-8333-333333333333&format=zip', expect.objectContaining({ headers: { Authorization: 'Bearer manager-token' } }));
   });
 
+  it('submits an explicit bounded batch replay confirmation', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, status: 'processed' }));
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'manager-token' });
+    await api.reprocessBatch({ batchId: '33333333-3333-4333-8333-333333333333', reason: 'Reviewed capture failure', confirmation: 'REPROCESS Acme 2026-07-23', confirmClosedDay: false });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ batchId: '33333333-3333-4333-8333-333333333333', reason: 'Reviewed capture failure', confirmation: 'REPROCESS Acme 2026-07-23', confirmClosedDay: false });
+  });
+
   it('retries one transient status failure without retrying permission errors', async () => {
     const fetchImpl = vi.fn()
       .mockRejectedValueOnce(new TypeError('network detail'))
