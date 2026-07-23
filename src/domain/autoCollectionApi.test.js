@@ -18,6 +18,32 @@ describe('auto collection browser API', () => {
     }));
   });
 
+  it('loads bounded Manager fleet and client history pages', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ rows: [], batches: [] }));
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'manager-token' });
+    await api.loadFleet({ page: 2, pageSize: 25, search: 'Rome & Co' });
+    await api.loadBatchHistory({ clientUuid: CLIENT_ID, pageSize: 20, from: '2026-07-01', to: '2026-07-31' });
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/admin/ingest-fleet?page=2&pageSize=25&search=Rome+%26+Co');
+    expect(fetchImpl.mock.calls[1][0]).toBe(`/api/admin/ingest-batches?clientUuid=${CLIENT_ID}&pageSize=20&from=2026-07-01&to=2026-07-31`);
+    expect(fetchImpl.mock.calls.every(([, options]) => options.headers.Authorization === 'Bearer manager-token')).toBe(true);
+  });
+
+  it('rejects unbounded Manager list inputs before fetching', async () => {
+    const fetchImpl = vi.fn();
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'token' });
+    await expect(api.loadFleet({ pageSize: 101 })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(api.loadBatchHistory({ clientUuid: CLIENT_ID, from: 'not-a-date' })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('downloads immutable JSON and ZIP through authenticated requests', async () => {
+    const blob = new Blob(['snapshot']);
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, blob: async () => blob, headers: { get: () => 'attachment' } }));
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'manager-token' });
+    await expect(api.downloadBatch('33333333-3333-4333-8333-333333333333', 'zip')).resolves.toMatchObject({ blob });
+    expect(fetchImpl).toHaveBeenCalledWith('/api/admin/ingest-download?batchId=33333333-3333-4333-8333-333333333333&format=zip', expect.objectContaining({ headers: { Authorization: 'Bearer manager-token' } }));
+  });
+
   it('retries one transient status failure without retrying permission errors', async () => {
     const fetchImpl = vi.fn()
       .mockRejectedValueOnce(new TypeError('network detail'))

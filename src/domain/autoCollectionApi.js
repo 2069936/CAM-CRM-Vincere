@@ -3,6 +3,7 @@ import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REBIND_REASONS = new Set(['vps_rebuilt', 'device_replaced', 'support_reset']);
 const REVOKE_REASONS = new Set(['client_offboarded', 'security_revoke', 'support_reset']);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const SAFE_MESSAGES = Object.freeze({
   permission_denied: 'You do not have access to this client setup.',
@@ -26,6 +27,24 @@ function validateUuid(value) {
   const normalized = String(value || '').trim();
   if (!UUID.test(normalized)) throw new AutoCollectionApiError('invalid_request', { status: 400 });
   return normalized.toLowerCase();
+}
+
+function boundedInteger(value, fallback, maximum) {
+  const normalized = value == null ? fallback : Number(value);
+  if (!Number.isInteger(normalized) || normalized < 1 || normalized > maximum) {
+    throw new AutoCollectionApiError('invalid_request', { status: 400 });
+  }
+  return normalized;
+}
+
+function boundedDate(value) {
+  if (value == null || value === '') return null;
+  if (!ISO_DATE.test(String(value))) throw new AutoCollectionApiError('invalid_request', { status: 400 });
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new AutoCollectionApiError('invalid_request', { status: 400 });
+  }
+  return value;
 }
 
 async function defaultAccessToken() {
@@ -100,7 +119,48 @@ export function createAutoCollectionApi({
     return body;
   }
 
+  async function download(path, signal) {
+    const token = await getAccessToken().catch((error) => { throw new AutoCollectionApiError('permission_denied', { status: 401, cause: error }); });
+    let response;
+    try {
+      response = await fetchImpl(path, { method: 'GET', signal, headers: { Authorization: `Bearer ${token}` } });
+    } catch (error) {
+      if (error?.name === 'AbortError' || signal?.aborted) throw error;
+      throw new AutoCollectionApiError('unavailable', { cause: error });
+    }
+    if (!response.ok) throw new AutoCollectionApiError(errorCode(response.status, {}), { status: response.status });
+    return { blob: await response.blob(), disposition: response.headers?.get?.('content-disposition') || '' };
+  }
+
   return {
+    async loadFleet({ page = 1, pageSize = 25, search = '', signal } = {}) {
+      const normalizedPage = boundedInteger(page, 1, 10_000);
+      const normalizedPageSize = boundedInteger(pageSize, 25, 100);
+      const normalizedSearch = String(search || '').trim();
+      if (normalizedSearch.length > 100) throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      const query = new URLSearchParams({ page: String(normalizedPage), pageSize: String(normalizedPageSize) });
+      if (normalizedSearch) query.set('search', normalizedSearch);
+      return request(`/api/admin/ingest-fleet?${query}`, { signal });
+    },
+
+    async loadBatchHistory({ clientUuid, pageSize = 50, from, to, cursor, signal } = {}) {
+      const query = new URLSearchParams({
+        clientUuid: validateUuid(clientUuid),
+        pageSize: String(boundedInteger(pageSize, 50, 100)),
+      });
+      const normalizedFrom = boundedDate(from);
+      const normalizedTo = boundedDate(to);
+      if (normalizedFrom) query.set('from', normalizedFrom);
+      if (normalizedTo) query.set('to', normalizedTo);
+      if (cursor) query.set('cursor', String(cursor));
+      return request(`/api/admin/ingest-batches?${query}`, { signal });
+    },
+
+    async downloadBatch(batchId, format, { signal } = {}) {
+      if (!['json', 'zip'].includes(format)) throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      return download(`/api/admin/ingest-download?batchId=${validateUuid(batchId)}&format=${format}`, signal);
+    },
+
     async loadStatus(clientUuid, { signal } = {}) {
       const clientId = validateUuid(clientUuid);
       const path = `/api/admin/ingest-status?clientUuid=${encodeURIComponent(clientId)}`;

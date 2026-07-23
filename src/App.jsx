@@ -55,6 +55,7 @@ import StackPlaybook from "./components/StackPlaybook";
 import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
+import AutoCollectionManager from "./components/AutoCollectionManager";
 import {
   Dialog,
   DialogContent,
@@ -2295,7 +2296,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
   );
 }
 
-function AuditLogsPanel() {
+function AuditLogsPanel({ onOpenCollectorBatch }) {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
@@ -2372,6 +2373,11 @@ function AuditLogsPanel() {
                   <td>{log.entityType}</td>
                   <td>
                     <small>{describeLog(log)}</small>
+                    {log.entityType === "ingest_batch" && log.afterData?.clientId ? (
+                      <button className="link-button" type="button" onClick={() => onOpenCollectorBatch?.(log)}>
+                        Open batch history
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -3531,6 +3537,8 @@ function ManagerOverview({
   const [newCamName, setNewCamName] = useState("");
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
+  const [showAutoCollection, setShowAutoCollection] = useState(false);
+  const [autoCollectionTarget, setAutoCollectionTarget] = useState(null);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
@@ -3863,10 +3871,11 @@ function ManagerOverview({
         </div>
         <div className="manager-sidebar-main">
           <button
-            className={!showUserPanel && !showAuditPanel && !showProfilePanel ? "client-link active" : "client-link"}
+            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
+              setShowAutoCollection(false);
               setShowProfilePanel(false);
               closeMobileSidebar();
             }}
@@ -3946,6 +3955,7 @@ function ManagerOverview({
             onClick={() => {
               setShowUserPanel(true);
               setShowAuditPanel(false);
+              setShowAutoCollection(false);
               setShowProfilePanel(false);
               closeMobileSidebar();
             }}
@@ -3954,9 +3964,24 @@ function ManagerOverview({
             <span>Users & Access</span>
           </button>
           <button
+            className={showAutoCollection ? "client-link active" : "client-link"}
+            onClick={() => {
+              setAutoCollectionTarget(null);
+              setShowAutoCollection(true);
+              setShowAuditPanel(false);
+              setShowUserPanel(false);
+              setShowProfilePanel(false);
+              closeMobileSidebar();
+            }}
+          >
+            <Server size={16} />
+            <span>Auto Collection</span>
+          </button>
+          <button
             className={showAuditPanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowAuditPanel(true);
+              setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
               closeMobileSidebar();
@@ -3969,6 +3994,7 @@ function ManagerOverview({
             className={showProfilePanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowProfilePanel(true);
+              setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowAuditPanel(false);
               closeMobileSidebar();
@@ -3995,8 +4021,14 @@ function ManagerOverview({
             clients={clients}
             onRefreshState={onRefreshState}
           />
+        ) : showAutoCollection ? (
+          <AutoCollectionManager visible={showAutoCollection} initialSelectedClient={autoCollectionTarget} />
         ) : showAuditPanel ? (
-          <AuditLogsPanel />
+          <AuditLogsPanel onOpenCollectorBatch={(log) => {
+            setAutoCollectionTarget({ uuid: log.afterData.clientId, name: log.afterData.clientName || "Selected client" });
+            setShowAuditPanel(false);
+            setShowAutoCollection(true);
+          }} />
         ) : showProfilePanel ? (
           <div className="page-stack">
             <div className="page-header manager-subpage-header">
