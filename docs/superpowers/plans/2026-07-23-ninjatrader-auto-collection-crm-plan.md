@@ -269,7 +269,7 @@ git commit -m "feat: ingest immutable NinjaTrader snapshots"
 - [ ] Install `fflate` with `npm install fflate` and commit the lockfile change in this task.
 - [ ] Write authorization/pagination/filter tests for batch list and JSON/ZIP downloads.
 - [ ] Implement filters by client, device, trading-date range, status, and capture ID with bounded page size and stable `(received_at, id)` cursor pagination.
-- [ ] Download raw JSON by streaming/decompressing the private object only after authorization. Add `Cache-Control: private, no-store` and safe `Content-Disposition`.
+- [ ] Download raw JSON only after authorization using bounded in-memory buffering with shared compressed/uncompressed hard limits. Add `Cache-Control: private, no-store` and safe `Content-Disposition`. Verify deployed Vercel response limits before raising the production caps.
 - [ ] Reconstruct a ZIP with `Accounts.csv`, `Strategies.csv`, `Orders.csv`, and `Executions.csv`. Use stable contract column order, RFC-4180 escaping, UTF-8 BOM only if needed for Excel compatibility, and filenames independent of client-entered text.
 - [ ] Include `manifest.json` with schema version, capture metadata, row counts, hashes, P&L-source notes, and batch status.
 - [ ] Audit each download without recording signed URLs or payload content.
