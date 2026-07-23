@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { createServiceClient } from '../_lib/apiAuth.js';
+import { normalizeCollectorVersion } from '../_lib/collectorVersion.js';
 import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../_lib/http.js';
 import {
   deriveDeviceToken,
@@ -12,7 +13,6 @@ import {
 } from '../_lib/ingestTokens.js';
 
 const PUBLIC_PAIR_ERROR = 'invalid_or_expired_code';
-const VERSION_PATTERN = /^\d{1,5}(?:\.\d{1,5}){1,3}$/;
 const SQL_DENIAL_CODES = Object.freeze({
   CODE_NOT_FOUND: 'code_not_found',
   CODE_EXPIRED: 'code_expired',
@@ -33,24 +33,9 @@ export class PairingDeniedError extends Error {
   }
 }
 
-function hasControlCharacter(value) {
-  return Array.from(value).some((character) => {
-    const code = character.charCodeAt(0);
-    return code < 32 || code === 127;
-  });
-}
-
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value || ''), 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function normalizeVersion(value) {
-  const normalized = String(value || '').trim();
-  if (normalized.length > 23 || hasControlCharacter(normalized) || !VERSION_PATTERN.test(normalized)) {
-    throw new Error('Invalid version.');
-  }
-  return normalized;
 }
 
 function unwrapRpcRow(data) {
@@ -190,8 +175,8 @@ export function createHandler({
         code = normalizeEnrollmentCode(requestBody.enrollmentCode);
         machine = normalizeMachineId(requestBody.machineId);
         nonce = normalizePairingNonce(requestBody.pairingNonce);
-        agentVersion = normalizeVersion(requestBody.agentVersion);
-        addonVersion = normalizeVersion(requestBody.addonVersion);
+        agentVersion = normalizeCollectorVersion(requestBody.agentVersion);
+        addonVersion = normalizeCollectorVersion(requestBody.addonVersion);
       } catch {
         await safeAudit(store, denialAudit('invalid_request'));
         return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR });

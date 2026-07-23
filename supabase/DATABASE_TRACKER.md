@@ -19,6 +19,7 @@ Last updated: 2026-07-23
   - `INGEST_PAIR_RATE_LIMIT_WINDOW_SECONDS`
   - `INGEST_PAIR_RATE_LIMIT_BLOCK_SECONDS`
   - `AUTO_COLLECTION_MIN_AGENT_VERSION`
+  - `AUTO_COLLECTION_HEARTBEAT_MIN_INTERVAL_SECONDS`
 - App integration status: Supabase is required for authentication and operational data.
 - RLS status: not production-hardened yet. Manager/CAM restrictions exist in app flow and server API checks, but final hard enforcement should be completed with Supabase RLS policies before production use.
 

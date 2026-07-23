@@ -55,7 +55,7 @@ describe('step 28 auto-collection migration contract', () => {
 
   it('adds hashed device identity and collector-health fields without requiring legacy raw identifiers', () => {
     for (const column of [
-      'machine_id_hash', 'credential_hash', 'credential_prefix', 'status',
+      'machine_id_hash', 'credential_hash', 'credential_prefix', 'status', 'health_status',
       'schedule_time', 'schedule_timezone', 'agent_version', 'addon_version',
       'ninjatrader_version', 'last_seen_at', 'last_capture_at', 'last_success_at',
       'last_error_code', 'last_error_at', 'revoked_at', 'metadata',
@@ -70,6 +70,12 @@ describe('step 28 auto-collection migration contract', () => {
 
     const pairing = functionDefinition('pair_ingest_device');
     expect(pairing).not.toMatch(/insert into public\.ingest_devices\s*\([^)]*\b(?:product_key|machine_id)\b/);
+  });
+
+  it('keeps credential lifecycle separate from constrained heartbeat health', () => {
+    expect(normalizedSql).toMatch(/add column if not exists health_status text not null default 'pending'/);
+    expect(normalizedSql).toMatch(/health_status in\s*\([^)]*'pending'[^)]*'online'[^)]*'error'[^)]*'update_required'/);
+    expect(normalizedSql).toMatch(/status in\s*\([^)]*'active'[^)]*'revoked'/);
   });
 
   it('enforces uniqueness, immutable storage paths, valid states, timezone, and nonnegative counts', () => {
@@ -121,6 +127,57 @@ describe('step 28 auto-collection migration contract', () => {
     expect(normalizedSql).toMatch(/grant execute on function public\.pair_ingest_device_v2\([^;]+to service_role/);
     expect(normalizedSql).toMatch(/revoke all on function public\.claim_ingest_batch\([^;]+from public, anon, authenticated/);
     expect(normalizedSql).toMatch(/grant execute on function public\.claim_ingest_batch\([^;]+to service_role/);
+  });
+
+  it('defines a locked service-only heartbeat RPC with bounded unchanged-only throttling', () => {
+    const heartbeat = functionDefinition('record_ingest_heartbeat');
+    expect(heartbeat).toContain('security definer');
+    expect(heartbeat).toMatch(/set search_path\s*=\s*pg_catalog, public/);
+    expect(heartbeat).toContain('for update');
+    expect(heartbeat).toMatch(/v_device\.status is distinct from 'active'/);
+    expect(heartbeat).toMatch(/v_device\.revoked_at is not null/);
+    expect(heartbeat).toMatch(/p_min_interval_seconds[^;]+between 1 and 3600/);
+    expect(heartbeat).toMatch(/v_unchanged/);
+    expect(heartbeat).toMatch(/v_device\.last_seen_at[^;]+make_interval\(secs => p_min_interval_seconds\)/);
+    expect(heartbeat).toMatch(/if v_unchanged[^;]+then[\s\S]*return query[\s\S]*true/);
+    expect(heartbeat).toMatch(/update public\.ingest_devices[\s\S]*last_seen_at = v_now/);
+    expect(heartbeat).toMatch(/metadata = [^;]+lasterrormessage[^;]+queuedepth[^;]+queuebytes[^;]+addonavailable/);
+    expect(normalizedSql).toMatch(/revoke all on function public\.record_ingest_heartbeat\([^;]+from public, anon, authenticated/);
+    expect(normalizedSql).toMatch(/grant execute on function public\.record_ingest_heartbeat\([^;]+to service_role/);
+  });
+
+  it('validates direct heartbeat inputs to the same stable protocol boundary', () => {
+    const heartbeat = functionDefinition('record_ingest_heartbeat');
+    expect(heartbeat).toMatch(/p_agent_version[^;]+\^\[0-9\]/);
+    expect(heartbeat).toMatch(/p_addon_version[^;]+\^\[0-9\]/);
+    expect(heartbeat).toMatch(/p_ninjatrader_version is null/);
+    for (const code of [
+      'ninjatrader_not_running', 'addon_unavailable', 'capture_timeout', 'capture_failed',
+      'contract_mismatch', 'queue_capacity_warning', 'upload_failed', 'configuration_error',
+    ]) {
+      expect(heartbeat).toContain(`'${code}'`);
+    }
+    expect(heartbeat).toMatch(/p_queue_depth[^;]+>= 0/);
+    expect(heartbeat).toMatch(/p_queue_bytes[^;]+>= 0/);
+    expect(heartbeat).toMatch(/char_length\(p_last_error_message\)[^;]+256/);
+    expect(heartbeat).toMatch(/p_health_status[^;]+'online'[^;]+'error'[^;]+'update_required'/);
+  });
+
+  it('writes first-online and recovery audits atomically without noisy healthy-heartbeat audit', () => {
+    const heartbeat = functionDefinition('record_ingest_heartbeat');
+    expect(heartbeat).toMatch(/v_device\.health_status = 'pending'[\s\S]*ingest_device\.first_online/);
+    expect(heartbeat).toMatch(/v_device\.last_error_code is not null[\s\S]*p_last_error_code is null[\s\S]*ingest_device\.recovered/);
+    expect(heartbeat.match(/insert into public\.audit_logs/g)).toHaveLength(2);
+    const auditSection = heartbeat.slice(heartbeat.indexOf('if v_first_online'));
+    const auditPayloads = (auditSection.match(/jsonb_build_object\([\s\S]*?\)\s*\)/g) || []).join(' ');
+    expect(auditPayloads).toMatch(/clientid/);
+    expect(auditPayloads).toMatch(/deviceid/);
+    expect(auditPayloads).toMatch(/healthstatus/);
+    expect(auditPayloads).toMatch(/agentversion/);
+    expect(auditPayloads).toMatch(/addonversion/);
+    expect(auditPayloads).toMatch(/ninjatraderversion/);
+    expect(auditPayloads).toMatch(/lasterrorcode/);
+    expect(auditPayloads).not.toMatch(/lasterrormessage|machine|credential|token|ip|request/);
   });
 
   it('corrects the new-device schedule default to 16:45 without rewriting existing rows', () => {

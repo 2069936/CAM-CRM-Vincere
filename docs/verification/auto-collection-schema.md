@@ -9,9 +9,9 @@ this document does not claim live SQL execution evidence.
 
 Local verification checks the migration text for the required additive columns,
 constraints, indexes, private bucket, RLS boundary, atomic enrollment
-administration, durable rate limiting, pairing/batch locking/idempotency, and
-service-role-only execution grants. It cannot prove catalog state or runtime
-behavior in PostgreSQL.
+administration, durable rate limiting, pairing/batch locking/idempotency,
+heartbeat health/throttling/audit behavior, and service-role-only execution
+grants. It cannot prove catalog state or runtime behavior in PostgreSQL.
 
 ## Local static verification
 
@@ -31,18 +31,21 @@ npm test
 
 Evidence recorded on 2026-07-23:
 
-- Focused contract: 1 file passed, 18 tests passed.
+- Focused contract: 1 file passed, 22 tests passed.
 - Targeted ESLint: exited 0 with no findings.
-- Full Vitest suite: 43 files passed, 544 tests passed.
+- Full Vitest suite: 46 files passed, 632 tests passed.
 - `git diff --check`: exited 0 with no findings.
 - PostgreSQL 18.3 disposable local cluster: baseline schema plus Step 22 applied,
-  revised Step 28 applied twice successfully, and the three new RPCs were
-  confirmed `SECURITY DEFINER`. This is local syntax/rerun evidence only; live
-  Supabase catalog and concurrency evidence remain pending.
+  revised Step 28 applied twice successfully. `record_ingest_heartbeat` was
+  confirmed `SECURITY DEFINER` with fixed `search_path`, executable by
+  `service_role`, and not executable by `anon`. This is local syntax/rerun
+  evidence only; live Supabase catalog and concurrency evidence remain pending.
 - Local sequential RPC cases confirmed empty-name generation/pairing rollback,
   existing global-machine denial, credential unique-constraint classification,
-  and exact-retry audit idempotence. These do not constitute concurrency-race
-  evidence.
+  exact-retry audit idempotence, first-online, unchanged-heartbeat throttling,
+  version/error/recovery bypass, exactly-once recovery audit, safe audit keys,
+  strict-version rejection, and revoked-device rejection. These do not
+  constitute concurrency-race evidence.
 
 ## Pending disposable/staging verification
 
@@ -71,7 +74,11 @@ file.
    device and explicit rebind revokes its credential before issuing a new code.
 8. Exercise `check_ingest_pair_rate_limit` through its threshold, block, and
    window reset using only HMAC keys; confirm no raw IP or code is persisted.
-9. Run the catalog queries below and save sanitized result rows under a dated
+9. Exercise `record_ingest_heartbeat` for first contact, an unchanged throttled
+   retry, a version/status change inside the interval, an error, and recovery.
+   Confirm `last_seen_at` changes only for accepted writes, first-online and
+   recovery audit exactly once, and no audit for repeated healthy heartbeats.
+10. Run the catalog queries below and save sanitized result rows under a dated
    staging-evidence section in this document.
 
 The `ninjatrader-imports deny browser direct access` policy is restrictive.
@@ -150,7 +157,7 @@ join pg_catalog.pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public'
   and p.proname in ('create_ingest_enrollment', 'revoke_ingest_access',
                     'check_ingest_pair_rate_limit', 'pair_ingest_device',
-                    'pair_ingest_device_v2',
+                    'pair_ingest_device_v2', 'record_ingest_heartbeat',
                     'claim_ingest_batch')
 order by p.proname;
 
@@ -159,7 +166,7 @@ from information_schema.routine_privileges
 where specific_schema = 'public'
   and routine_name in ('create_ingest_enrollment', 'revoke_ingest_access',
                        'check_ingest_pair_rate_limit', 'pair_ingest_device',
-                       'pair_ingest_device_v2',
+                       'pair_ingest_device_v2', 'record_ingest_heartbeat',
                        'claim_ingest_batch')
 order by routine_name, grantee;
 ```
