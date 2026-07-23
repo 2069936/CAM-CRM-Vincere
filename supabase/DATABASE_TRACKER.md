@@ -1,6 +1,6 @@
 # CAM CRM Supabase Database Tracker
 
-Last updated: 2026-07-10
+Last updated: 2026-07-23
 
 ## Connection Status
 
@@ -39,7 +39,9 @@ Recommended run order for a fresh database:
 11. `supabase/step_17_real_daily_sop.sql`
 12. `supabase/step_20_cam_client_permissions.sql`
 13. `supabase/step_21_client_subscription_price.sql`
-14. `supabase/cam_crm_verification_queries.sql`
+14. `supabase/step_22_ingest_devices.sql`
+15. `supabase/step_28_auto_collection.sql`
+16. `supabase/cam_crm_verification_queries.sql`
 
 No SQL required:
 
@@ -78,6 +80,9 @@ Cleanup:
 | `sop_sections` | Daily SOP sections | Read/write through Manager SOP Builder |
 | `sop_items` | Daily SOP checklist items | Read/write through Manager SOP Builder |
 | `daily_sop_checklists` | Per-CAM daily checklist progress, including per-item checked state JSON | Read/write |
+| `ingest_enrollments` | One-time, expiring device-pairing enrollments | Server API/service role only |
+| `ingest_devices` | Legacy watcher bindings plus hashed collector credentials and health | Server API/service role only |
+| `ingest_batches` | Immutable raw auto-collection batch claims and processing state | Server API/service role only |
 
 ## Frontend Read Model
 
@@ -136,6 +141,7 @@ state
 - [x] Add name/email duplicate protection and preview for client intake imports.
 - [x] Add Google Sheet intake fetch/import audit logging.
 - [ ] Expand audit coverage to every low-level data mutation.
+- [ ] Apply and verify `step_28_auto_collection.sql` twice on disposable/staging Supabase; local static contract coverage is documented in `docs/verification/auto-collection-schema.md`.
 
 ## Permission Direction
 
