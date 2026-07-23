@@ -1,0 +1,14 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Vincere Auto Export Setup" Manufacturer="Vincere Capital" Version="$(ProductVersion)"
+          UpgradeCode="1C305CC4-B4E4-4B57-9ECE-CB1FCB3D990D" Compressed="yes">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" ShowVersion="yes"
+                                               LaunchTarget="[ProgramFiles64Folder]Vincere\Auto Export\Setup\Vincere.AutoExport.Agent.UI.exe" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage Id="MachinePackage" SourceFile="$(MachineMsi)" Vital="yes" Compressed="yes" />
+      <MsiPackage Id="AddOnPackage" SourceFile="$(AddOnMsi)" Vital="yes" Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

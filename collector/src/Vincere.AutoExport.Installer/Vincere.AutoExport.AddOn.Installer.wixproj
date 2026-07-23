@@ -1,0 +1,17 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputName>Vincere.AutoExport.AddOn</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <NuGetLockFilePath>packages.addon.lock.json</NuGetLockFilePath>
+    <DefineConstants>ProductVersion=$(ProductVersion);AddOnSource=$(AddOnSource)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AddOn.Package.wxs" />
+    <PackageReference Include="WixToolset.Util.wixext" />
+  </ItemGroup>
+  <Target Name="ValidateInputs" BeforeTargets="Build">
+    <Error Condition="'$(ProductVersion)' == ''" Text="ProductVersion is required." />
+    <Error Condition="!Exists('$(AddOnSource)')" Text="A verified production NinjaTrader AddOn DLL is required; probe or UI-automation artifacts are not accepted." />
+  </Target>
+</Project>

@@ -1,2 +1,15 @@
 bin/
 obj/
+artifacts/
+*.pfx
+*.cer
+*.snk
+*.wixpdb
+*.msi
+*.msix
+*.nupkg
+queue/
+logs/
+secret.bin
+config.json
+NinjaTraderReferences/

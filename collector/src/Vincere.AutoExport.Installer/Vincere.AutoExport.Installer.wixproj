@@ -1,0 +1,18 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputName>Vincere.AutoExport.Machine</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <NuGetLockFilePath>packages.machine.lock.json</NuGetLockFilePath>
+    <DefineConstants>ProductVersion=$(ProductVersion);AgentPublishDir=$(AgentPublishDir);UiPublishDir=$(UiPublishDir)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Package.wxs" />
+    <PackageReference Include="WixToolset.Util.wixext" />
+  </ItemGroup>
+  <Target Name="ValidateInputs" BeforeTargets="Build">
+    <Error Condition="'$(ProductVersion)' == ''" Text="ProductVersion is required." />
+    <Error Condition="!Exists('$(AgentPublishDir)/Vincere.AutoExport.Agent.exe')" Text="Published agent executable is missing." />
+    <Error Condition="!Exists('$(UiPublishDir)/Vincere.AutoExport.Agent.UI.exe')" Text="Published UI executable is missing." />
+  </Target>
+</Project>

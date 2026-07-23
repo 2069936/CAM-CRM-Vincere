@@ -1,0 +1,18 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputName>Vincere-AutoExport-Setup</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <NuGetLockFilePath>packages.bundle.lock.json</NuGetLockFilePath>
+    <DefineConstants>ProductVersion=$(ProductVersion);MachineMsi=$(MachineMsi);AddOnMsi=$(AddOnMsi)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Bundle.wxs" />
+    <PackageReference Include="WixToolset.BootstrapperApplications.wixext" />
+  </ItemGroup>
+  <Target Name="ValidateInputs" BeforeTargets="Build">
+    <Error Condition="'$(ProductVersion)' == ''" Text="ProductVersion is required." />
+    <Error Condition="!Exists('$(MachineMsi)')" Text="Machine MSI is missing." />
+    <Error Condition="!Exists('$(AddOnMsi)')" Text="AddOn MSI is missing." />
+  </Target>
+</Project>
