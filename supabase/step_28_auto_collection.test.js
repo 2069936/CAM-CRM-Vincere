@@ -79,10 +79,11 @@ describe('step 28 auto-collection migration contract', () => {
     expect(normalizedSql).toContain('ingest_row_counts_are_nonnegative(row_counts)');
   });
 
-  it('creates a private service-only storage bucket and denies direct browser table access', () => {
+  it('creates a private bucket and composes a restrictive browser denial with Storage policies', () => {
     expect(normalizedSql).toMatch(/insert into storage\.buckets\s*\(id, name, public\)[\s\S]*'ninjatrader-imports'[\s\S]*false/);
     expect(normalizedSql).toMatch(/on conflict\s*\(id\)\s*do update[\s\S]*public\s*=\s*false/);
-    expect(normalizedSql).not.toMatch(/create policy[^;]*ninjatrader-imports/);
+    expect(normalizedSql).toMatch(/from pg_catalog\.pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'ninjatrader-imports deny browser direct access'/);
+    expect(normalizedSql).toMatch(/create policy "ninjatrader-imports deny browser direct access" on storage\.objects as restrictive for all to anon, authenticated using \(bucket_id <> 'ninjatrader-imports'\) with check \(bucket_id <> 'ninjatrader-imports'\)/);
 
     for (const table of ['ingest_enrollments', 'ingest_devices', 'ingest_batches']) {
       expect(normalizedSql).toContain(`alter table public.${table} enable row level security`);

@@ -197,14 +197,35 @@ begin
 end
 $trigger$;
 
--- Private raw-object bucket. No storage.objects policy is created for this
--- bucket: service_role bypasses Storage RLS, and browser downloads must use an
--- authorized server API. The upsert also repairs an accidentally public bucket.
+-- Private raw-object bucket. The restrictive policy below is ANDed with any
+-- permissive policy applicable to anon/authenticated, so even a broad existing
+-- Storage policy cannot authorize this bucket. It remains true for other buckets
+-- and does not apply to service_role, which retains its normal RLS bypass.
 insert into storage.buckets (id, name, public)
 values ('ninjatrader-imports', 'ninjatrader-imports', false)
 on conflict (id) do update
 set name = excluded.name,
     public = false;
+
+do $storage_policy$
+begin
+  if not exists (
+    select 1
+    from pg_catalog.pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'ninjatrader-imports deny browser direct access'
+  ) then
+    create policy "ninjatrader-imports deny browser direct access"
+      on storage.objects
+      as restrictive
+      for all
+      to anon, authenticated
+      using (bucket_id <> 'ninjatrader-imports')
+      with check (bucket_id <> 'ninjatrader-imports');
+  end if;
+end
+$storage_policy$;
 
 alter table public.ingest_enrollments enable row level security;
 alter table public.ingest_devices enable row level security;

@@ -62,6 +62,13 @@ file.
 7. Run the catalog queries below and save sanitized result rows under a dated
    staging-evidence section in this document.
 
+The `ninjatrader-imports deny browser direct access` policy is restrictive.
+PostgreSQL ANDs restrictive policies with the result of applicable permissive
+policies, so its `bucket_id <> 'ninjatrader-imports'` condition denies this bucket
+even if another anon/authenticated policy permissively covers every object. The
+condition remains true for other buckets, and the policy does not target the
+service role; Supabase's service role retains its RLS bypass.
+
 ## Catalog queries for staging evidence
 
 ```sql
@@ -110,16 +117,17 @@ where schemaname = 'public'
   and tablename in ('ingest_enrollments', 'ingest_devices', 'ingest_batches')
 order by tablename, policyname;
 
--- Private bucket and absence of a browser Storage policy for this bucket.
+-- Private bucket and every Storage object policy. Review all broad policies and
+-- confirm the restrictive ninjatrader-imports exclusion applies to browser roles.
 select id, name, public
 from storage.buckets
 where id = 'ninjatrader-imports';
 
-select policyname, roles, cmd, qual, with_check
+select schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
 from pg_catalog.pg_policies
 where schemaname = 'storage'
   and tablename = 'objects'
-  and coalesce(qual, '') || coalesce(with_check, '') like '%ninjatrader-imports%';
+order by policyname;
 
 -- SECURITY DEFINER, fixed search_path, and RPC privileges.
 select n.nspname as schema_name, p.proname, p.prosecdef, p.proconfig,
