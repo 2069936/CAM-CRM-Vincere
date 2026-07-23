@@ -106,6 +106,28 @@ describe('csvImport', () => {
     });
   });
 
+  it('prefers non-zero Realized PnL over Gross realized PnL when both are exported', () => {
+    const csv = [
+      'Display name,Cash value,Gross realized PnL,Realized PnL',
+      'ACC123,50100,-357,-376.8',
+    ].join('\n');
+
+    const parsed = parseNinjaTraderCsvText(csv, 'accounts.csv');
+
+    expect(parsed.rows[0].grossRealizedPnl).toBe(-376.8);
+  });
+
+  it('falls back to Gross realized PnL when Realized PnL resets to zero', () => {
+    const csv = [
+      'Display name,Cash value,Gross realized PnL,Realized PnL',
+      'ACC123,50100,-497,0',
+    ].join('\n');
+
+    const parsed = parseNinjaTraderCsvText(csv, 'accounts.csv');
+
+    expect(parsed.rows[0].grossRealizedPnl).toBe(-497);
+  });
+
   it('detects strategies files and parses account strategy links by header', () => {
     const csv = [
       'Enabled,Parameters,Account display name,Strategy,Instrument,Realized,Unrealized,Data series,Connection',

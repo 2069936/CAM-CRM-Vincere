@@ -26,7 +26,7 @@ const HEADER_ALIASES = {
   quantity: 'quantity',
   rate: 'rate',
   realized: 'realized',
-  realizedpnl: 'grossRealizedPnl',
+  realizedpnl: 'realizedPnl',
   remaining: 'remaining',
   state: 'state',
   stop: 'stop',
@@ -70,7 +70,7 @@ function canonicalHeader(header) {
 
 export function detectNinjaTraderFileType(headers) {
   const keys = new Set(headers.map(canonicalHeader));
-  if (keys.has('displayName') && keys.has('cashValue') && keys.has('grossRealizedPnl')) return 'accounts';
+  if (keys.has('displayName') && keys.has('cashValue') && (keys.has('grossRealizedPnl') || keys.has('realizedPnl'))) return 'accounts';
   if (keys.has('strategy') && keys.has('accountDisplayName') && keys.has('parameters')) return 'strategies';
   if (keys.has('state') && keys.has('orderType') && keys.has('filled') && keys.has('remaining')) return 'orders';
   if (keys.has('entryExit') && keys.has('orderId') && keys.has('price')) return 'executions';
@@ -197,11 +197,13 @@ export function parseStrategyVersion(strategyName) {
 }
 
 function mapAccount(row) {
+  const realizedPnl = parseCurrency(row.realizedPnl);
+  const grossRealizedPnl = parseCurrency(row.grossRealizedPnl);
   return {
     connectionStatus: row.connectionStatus || '',
     connection: row.connection || '',
     accountName: row.displayName || '',
-    grossRealizedPnl: parseCurrency(row.grossRealizedPnl),
+    grossRealizedPnl: realizedPnl !== 0 ? realizedPnl : grossRealizedPnl,
     trailingMaxDrawdown: parseCurrency(row.trailingMaxDrawdown),
     accountBalance: parseCurrency(row.cashValue),
     weeklyPnl: parseCurrency(row.weeklyPnl),
