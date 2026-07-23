@@ -14,7 +14,7 @@
 // CHURN is deliberately manual: a client counts as churned only when someone
 // sets their stage to Inactive. Inferring churn from "no activity" would mark a
 // client dead just because their CAM stopped uploading closes.
-import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType, isPropAccountType } from './reconcile';
+import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType } from './reconcile';
 
 export const CLIENT_STAGE_INACTIVE = 'Inactive';
 

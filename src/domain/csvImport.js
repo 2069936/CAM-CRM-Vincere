@@ -1,12 +1,14 @@
 import Papa from 'papaparse';
 
 const HEADER_ALIASES = {
+  accountname: 'accountName',
   accountdisplayname: 'accountDisplayName',
   action: 'action',
   avgprice: 'avgPrice',
   cashvalue: 'cashValue',
   commission: 'commission',
   connection: 'connection',
+  connectionname: 'connectionName',
   connectionstatus: 'connectionStatus',
   dataseries: 'dataSeries',
   displayname: 'displayName',
@@ -20,6 +22,7 @@ const HEADER_ALIASES = {
   name: 'name',
   oco: 'oco',
   orderid: 'orderId',
+  ordertype: 'orderType',
   position: 'position',
   price: 'price',
   parameters: 'parameters',
@@ -31,6 +34,8 @@ const HEADER_ALIASES = {
   state: 'state',
   stop: 'stop',
   strategy: 'strategy',
+  strategyid: 'strategyId',
+  strategyname: 'strategyName',
   tif: 'tif',
   time: 'time',
   trailingmaxdrawdown: 'trailingMaxDrawdown',
@@ -38,6 +43,11 @@ const HEADER_ALIASES = {
   unrealized: 'unrealized',
   unrealizedpnl: 'unrealizedPnl',
   weeklypnl: 'weeklyPnl',
+  limitprice: 'limitPrice',
+  stopprice: 'stopPrice',
+  averagefillprice: 'averageFillPrice',
+  executionid: 'executionId',
+  marketposition: 'marketPosition',
 };
 
 const KNOWN_FAMILIES = [
@@ -71,9 +81,9 @@ function canonicalHeader(header) {
 export function detectNinjaTraderFileType(headers) {
   const keys = new Set(headers.map(canonicalHeader));
   if (keys.has('displayName') && keys.has('cashValue') && (keys.has('grossRealizedPnl') || keys.has('realizedPnl'))) return 'accounts';
-  if (keys.has('strategy') && keys.has('accountDisplayName') && keys.has('parameters')) return 'strategies';
+  if ((keys.has('strategy') || keys.has('strategyName')) && (keys.has('accountDisplayName') || keys.has('accountName')) && keys.has('parameters')) return 'strategies';
   if (keys.has('state') && keys.has('orderType') && keys.has('filled') && keys.has('remaining')) return 'orders';
-  if (keys.has('entryExit') && keys.has('orderId') && keys.has('price')) return 'executions';
+  if ((keys.has('entryExit') || keys.has('executionId')) && keys.has('orderId') && keys.has('price')) return 'executions';
   return 'unknown';
 }
 
@@ -133,6 +143,24 @@ function numberList(values) {
 
 export function parseStrategyParameters(parametersRaw) {
   const text = String(parametersRaw || '').trim();
+  if (text.startsWith('{')) {
+    try {
+      const valuesByName = JSON.parse(text);
+      if (valuesByName && typeof valuesByName === 'object' && !Array.isArray(valuesByName)) {
+        return {
+          parsed: true,
+          valuesByName,
+          direction: normalizeDirection(valuesByName.MyTradeDirection),
+          posSizes: numberList([valuesByName.PosSize1, valuesByName.PosSize2, valuesByName.PosSize3, valuesByName.PositionSize]),
+          profitTargets: numberList([valuesByName.ProfitTargetTicks1, valuesByName.ProfitTargetTicks2, valuesByName.ProfitTargetTicks3, valuesByName.ProfitTargetTicks]),
+          stopLossTicks: parseParamNumber(valuesByName.StopLossTicks),
+          tradeWindow: [valuesByName.TradeStartTime || valuesByName.TradeStart1 || '', valuesByName.TradeEndTime || valuesByName.TradeEnd1 || ''],
+        };
+      }
+    } catch {
+      // Fall through to NinjaTrader's slash-delimited parameter syntax.
+    }
+  }
   const match = text.match(/^(.*)\s+\(([^)]*)\)$/);
   if (!match) return { parsed: false };
 
@@ -201,8 +229,8 @@ function mapAccount(row) {
   const grossRealizedPnl = parseCurrency(row.grossRealizedPnl);
   return {
     connectionStatus: row.connectionStatus || '',
-    connection: row.connection || '',
-    accountName: row.displayName || '',
+    connection: row.connection || row.connectionName || '',
+    accountName: row.accountName || row.displayName || '',
     grossRealizedPnl: realizedPnl !== 0 ? realizedPnl : grossRealizedPnl,
     trailingMaxDrawdown: parseCurrency(row.trailingMaxDrawdown),
     accountBalance: parseCurrency(row.cashValue),
@@ -215,17 +243,17 @@ function mapStrategy(row) {
   const parametersRaw = row.parameters || '';
   const params = parseStrategyParameters(parametersRaw);
   return {
-    strategyName: row.strategy || '',
-    strategyFamily: normalizeStrategyFamily(row.strategy),
-    strategyVersion: parseStrategyVersion(row.strategy),
+    strategyName: row.strategy || row.strategyName || '',
+    strategyFamily: normalizeStrategyFamily(row.strategy || row.strategyName),
+    strategyVersion: parseStrategyVersion(row.strategy || row.strategyName),
     instrument: row.instrument || '',
-    accountName: row.accountDisplayName || '',
+    accountName: row.accountDisplayName || row.accountName || '',
     dataSeries: row.dataSeries || '',
     parametersRaw,
     params,
     direction: params.parsed && params.direction ? params.direction : inferDirection(parametersRaw),
-    unrealized: parseCurrency(row.unrealized),
-    realized: parseCurrency(row.realized),
+    unrealized: parseCurrency(row.unrealized ?? row.unrealizedPnl),
+    realized: parseCurrency(row.realized ?? row.realizedPnl),
     connection: row.connection || '',
     enabled: parseBool(row.enabled),
   };
@@ -237,17 +265,20 @@ function mapOrder(row) {
     action: row.action || '',
     orderType: row.orderType || '',
     quantity: parseCurrency(row.quantity),
-    limit: parseCurrency(row.limit),
-    stop: parseCurrency(row.stop),
+    limit: parseCurrency(row.limit ?? row.limitPrice),
+    stop: parseCurrency(row.stop ?? row.stopPrice),
     state: row.state || '',
     filled: parseCurrency(row.filled),
-    avgPrice: parseCurrency(row.avgPrice),
+    avgPrice: parseCurrency(row.avgPrice ?? row.averageFillPrice),
     remaining: parseCurrency(row.remaining),
     name: row.name || '',
-    strategyName: row.strategy || '',
-    accountName: row.accountDisplayName || '',
-    id: row.id || '',
+    strategyName: row.strategy || row.strategyName || '',
+    strategyId: row.strategyId || '',
+    accountName: row.accountDisplayName || row.accountName || '',
+    id: row.id || row.orderId || '',
     time: row.time || '',
+    tif: row.tif || '',
+    oco: row.oco || '',
   };
 }
 
@@ -258,14 +289,15 @@ function mapExecution(row) {
     quantity: parseCurrency(row.quantity),
     price: parseCurrency(row.price),
     time: row.time || '',
-    id: row.id || '',
+    id: row.id || row.executionId || '',
     entryExit: row.entryExit || '',
-    position: row.position || '',
+    position: row.position || row.marketPosition || '',
     orderId: row.orderId || '',
+    strategyName: row.strategyName || '',
     name: row.name || '',
     commission: parseCurrency(row.commission),
-    rate: parseCurrency(row.rate),
-    accountName: row.accountDisplayName || '',
+    rate: parseCurrency(row.rate ?? row.fee),
+    accountName: row.accountDisplayName || row.accountName || '',
     connection: row.connection || '',
   };
 }

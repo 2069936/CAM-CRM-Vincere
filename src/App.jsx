@@ -32,6 +32,7 @@ import {
   RefreshCw,
   MessageCircle,
   Search,
+  Server,
   Shield,
   Smartphone,
   Trash2,
@@ -2272,12 +2273,12 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
             <Switch
               id="new-user-cam-profile"
               type="button"
-              checked={Boolean(newUser.hasCamProfile)}
+              checked={newUser.hasCamProfile}
               onCheckedChange={(checked) => setNewUser((v) => ({ ...v, hasCamProfile: checked }))}
             />
             <span>CAM profile</span>
-            <strong className={Boolean(newUser.hasCamProfile) ? "positive" : "muted"}>
-              {Boolean(newUser.hasCamProfile) ? "On" : "Off"}
+            <strong className={newUser.hasCamProfile ? "positive" : "muted"}>
+              {newUser.hasCamProfile ? "On" : "Off"}
             </strong>
           </label>
           <button className="secondary-button" disabled={actionBusy}>
@@ -3621,6 +3622,7 @@ function ManagerOverview({
   const [managerSearch, setManagerSearch] = useState("");
   const [managerConfirmAction, setManagerConfirmAction] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [managerRenderedAt] = useState(() => Date.now());
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
   const teamHistory = useMemo(
     () => buildTeamHistory(clients).slice(-10),
@@ -3636,7 +3638,7 @@ function ManagerOverview({
         const summary = buildManagerSummary(clientsForCam(clients, profile), asOfDate);
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
-    [clients, activeCamProfiles],
+    [clients, activeCamProfiles, asOfDate],
   );
   const totals = useMemo(
     () =>
@@ -3712,7 +3714,7 @@ function ManagerOverview({
       }
     }
     return rows.sort((a, b) => b.weeklyPnl - a.weeklyPnl);
-  }, [clients, activeCamProfiles]);
+  }, [clients, activeCamProfiles, asOfDate]);
 
   const unassignedClients = useMemo(() => {
     const assignedClientIds = new Set(
@@ -5507,7 +5509,7 @@ function ManagerOverview({
                     const lastActiveLabel = (() => {
                       if (!lastActive) return "-";
                       const mins = Math.round(
-                        (Date.now() - new Date(lastActive)) / 60000,
+                        (managerRenderedAt - new Date(lastActive)) / 60000,
                       );
                       if (mins < 2) return "Just now";
                       if (mins < 60) return `${mins}m ago`;
@@ -5516,7 +5518,7 @@ function ManagerOverview({
                       return `${Math.round(hrs / 24)}d ago`;
                     })();
                     const isRecent =
-                      lastActive && Date.now() - new Date(lastActive) < 3600000;
+                      lastActive && managerRenderedAt - new Date(lastActive) < 3600000;
                     return (
                       <tr
                         key={cam.id}
@@ -8261,7 +8263,6 @@ function CamOverview({
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
-  onCompleteTask,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -10774,7 +10775,8 @@ const DEFAULT_PRICE_CHECK_ROWS = [
 ];
 
 function PriceChecksTab({ client, onUpdateClient }) {
-  const nextRowId = useRef(Date.now());
+  const [rowIdSeed] = useState(() => Date.now());
+  const nextRowId = useRef(rowIdSeed);
   const checks = client.priceChecks?.length
     ? client.priceChecks
     : DEFAULT_PRICE_CHECK_ROWS;
@@ -11075,7 +11077,9 @@ export default function App() {
     try {
       if (user) sessionStorage.setItem("cam_crm_session", JSON.stringify(user));
       else sessionStorage.removeItem("cam_crm_session");
-    } catch {}
+    } catch {
+      // Session storage can be unavailable in restricted browser contexts.
+    }
   }
   function handleLogout() {
     if (logoutBusy) return;
@@ -11149,7 +11153,9 @@ export default function App() {
       const next = new Set([...s, clientId]);
       try {
         sessionStorage.setItem("cam_viewed_clients", JSON.stringify([...next]));
-      } catch {}
+      } catch {
+        // Viewed-client persistence is a non-critical UI convenience.
+      }
       return next;
     });
   }
@@ -12820,7 +12826,7 @@ export default function App() {
                             </small>
                           ) : null}
                           {(() => {
-                            const latest = importAsOf(client, asOfDate);
+                            const latest = importAsOf(client, selectedDate);
                             if (!latest) return null;
                             const pnl = (latest.snapshots || []).reduce(
                               (s, snap) =>
