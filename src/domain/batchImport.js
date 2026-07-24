@@ -34,11 +34,8 @@ export function groupParsedFilesByDate(parsedFiles = [], fallbackDate) {
 export function buildBatchImportPlan({ parsedFiles = [], clients = [], fallbackDate }) {
   const byDate = groupParsedFilesByDate(parsedFiles, fallbackDate);
   const dates = Object.keys(byDate).sort();
-
-  const registryNamesLower = clients.map((client) => ({
-    client,
-    names: new Set(Object.keys(client.accountRegistry || {}).map((k) => k.toLowerCase())),
-  }));
+  const registeredNamesLower = new Set(clients.flatMap((client) =>
+    Object.keys(client.accountRegistry || {}).map((name) => name.toLowerCase())));
 
   const groups = dates.map((date) => {
     const grouped = byDate[date];
@@ -46,8 +43,8 @@ export function buildBatchImportPlan({ parsedFiles = [], clients = [], fallbackD
       (grouped.accounts || []).map((a) => String(a.accountName || '').toLowerCase()),
     );
 
-    const clientMatches = registryNamesLower
-      .map(({ client, names }) => {
+    const clientMatches = clients
+      .map((client) => {
         const myAccounts = Object.keys(client.accountRegistry || {}).filter((an) =>
           accountNamesLower.has(an.toLowerCase()),
         );
@@ -74,7 +71,7 @@ export function buildBatchImportPlan({ parsedFiles = [], clients = [], fallbackD
       .filter(Boolean);
 
     const unmatched = [...new Set((grouped.accounts || []).map((a) => a.accountName))].filter(
-      (an) => !registryNamesLower.some(({ names }) => names.has(String(an).toLowerCase())),
+      (an) => !registeredNamesLower.has(String(an).toLowerCase()),
     );
 
     return { date, clientMatches, unmatched, accountsInFile: accountNamesLower.size };

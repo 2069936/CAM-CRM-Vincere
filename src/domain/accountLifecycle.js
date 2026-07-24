@@ -4,6 +4,8 @@
 // (which combo gets accounts funded, lasts longer, survives) so a CAM/manager can
 // see which configuration makes accounts win.
 
+import { isCashType } from './reconcile';
+
 function toDate(value) {
   return value ? new Date(`${value}T00:00:00Z`) : null;
 }
@@ -62,7 +64,7 @@ export function buildLifecycleByAlgo(clients = [], { asOf = '' } = {}) {
   const byCombo = {};
   for (const client of clients || []) {
     for (const meta of Object.values(client.accountRegistry || {})) {
-      if (meta.accountType === 'Cash' || meta.accountType === 'Inactive / Ignore') continue;
+      if (isCashType(meta.accountType) || meta.accountType === 'Inactive / Ignore') continue;
       const combo = meta.algoStack || 'Unassigned';
       if (!byCombo[combo]) {
         byCombo[combo] = { combo, accounts: 0, funded: 0, failed: 0, active: 0, lifespans: [], daysToFund: [] };

@@ -1,0 +1,17 @@
+{
+  "reviewer": "",
+  "reviewedAt": "",
+  "environment": {
+    "windowsVersion": "",
+    "ninjaTraderVersion": "",
+    "connectionProvider": "",
+    "localTimeZone": ""
+  },
+  "checks": {
+    "sameMinuteCapture": false,
+    "postResetRealizedGrossVerified": false,
+    "twoStrategyAlgorithmsVerified": false,
+    "currentSessionExecutionsConfirmed": false
+  },
+  "decisions": []
+}

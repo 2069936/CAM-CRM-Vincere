@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "captureId": "0f5fa8a0-2e84-43d8-8788-24055979f6fe",
+  "capturedAt": "2026-07-23T16:45:00-04:00",
+  "tradingDate": "2026-07-23",
+  "timeZone": "America/New_York",
+  "source": {
+    "machineId": "probe-only",
+    "agentVersion": "0.1.0-probe",
+    "addonVersion": "0.1.0-probe",
+    "ninjaTraderVersion": "8.1.5.2"
+  },
+  "accounts": [
+    {
+      "accountName": "SIM-REDACTED-01",
+      "connectionName": "Simulated Data Feed",
+      "displayName": "Simulation 01",
+      "netLiquidation": 51245.75,
+      "cashValue": 51245.75,
+      "realizedPnl": 125.5,
+      "grossRealizedPnl": 140.25,
+      "unrealizedPnl": null,
+      "totalPnl": 125.5,
+      "weeklyPnl": null,
+      "trailingMaxDrawdown": null,
+      "buyingPower": 204983,
+      "excessIntradayMargin": null,
+      "initialMargin": 500,
+      "maintenanceMargin": 400,
+      "currency": "USD",
+      "status": "Connected"
+    }
+  ],
+  "strategies": [
+    {
+      "strategyId": "strategy-redacted-01",
+      "strategyName": "RBO-1.8",
+      "strategyDisplayName": "RBO 1.8",
+      "accountName": "SIM-REDACTED-01",
+      "instrument": "NQ 09-26",
+      "state": "Realtime",
+      "quantity": 1,
+      "position": "Long",
+      "averagePrice": 20125.25,
+      "realizedPnl": 125.5,
+      "unrealizedPnl": null,
+      "enabled": true,
+      "sync": null,
+      "dataSeries": null,
+      "connectionName": "Simulated Data Feed",
+      "startedAt": "2026-07-23T09:30:00-04:00",
+      "parameters": {
+        "MyTradeDirection": "Long",
+        "PositionSize": 1,
+        "ProfitTargetTicks": 40,
+        "UseTrailingStop": true,
+        "OptionalSignal": null
+      },
+      "parameterCaptureStatus": "captured"
+    }
+  ],
+  "orders": [
+    {
+      "orderId": "order-redacted-01",
+      "accountName": "SIM-REDACTED-01",
+      "strategyId": "strategy-redacted-01",
+      "strategyName": "RBO-1.8",
+      "instrument": "NQ 09-26",
+      "action": "Buy",
+      "orderType": "Limit",
+      "quantity": 2,
+      "filled": 1,
+      "remaining": 1,
+      "limitPrice": 20120.25,
+      "stopPrice": null,
+      "averageFillPrice": 20120.25,
+      "state": "Working",
+      "time": "2026-07-23T16:44:45-04:00",
+      "tif": "Day",
+      "oco": null,
+      "name": "RBO entry",
+      "nativeId": "native-order-redacted-01"
+    }
+  ],
+  "executions": [
+    {
+      "executionId": "execution-redacted-01",
+      "orderId": "order-redacted-01",
+      "accountName": "SIM-REDACTED-01",
+      "strategyId": "strategy-redacted-01",
+      "strategyName": "RBO-1.8",
+      "instrument": "NQ 09-26",
+      "action": "Buy",
+      "quantity": 1,
+      "price": 20120.25,
+      "time": "2026-07-23T16:44:46-04:00",
+      "marketPosition": "Long",
+      "entryExit": null,
+      "name": "RBO entry",
+      "commission": 1.24,
+      "fee": null,
+      "rate": 1,
+      "realizedPnl": 125.5,
+      "connectionName": "Simulated Data Feed",
+      "nativeId": "native-execution-redacted-01"
+    }
+  ]
+}

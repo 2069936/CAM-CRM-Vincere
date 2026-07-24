@@ -2,6 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { makeAccountAlias, recalculateDailyImport, reconcileDailyImport } from './reconcile';
 
 describe('reconcileDailyImport', () => {
+  it('preserves explicit null snapshot values but defaults missing legacy fields to zero', () => {
+    const nullResult = reconcileDailyImport({
+      clientId: 'nulls', date: '2026-07-23', registry: {}, parsed: {
+        accounts: [{ accountName: 'ACC1', grossRealizedPnl: null, trailingMaxDrawdown: null, accountBalance: null, weeklyPnl: null, unrealizedPnl: null }],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+    expect(nullResult.snapshots[0]).toMatchObject({
+      grossRealizedPnl: null, trailingMaxDrawdown: null, accountBalance: null, weeklyPnl: null, unrealizedPnl: null,
+    });
+
+    const legacyResult = reconcileDailyImport({
+      clientId: 'legacy', date: '2026-07-23', registry: {}, parsed: {
+        accounts: [{ accountName: 'ACC2', grossRealizedPnl: 0, accountBalance: -1 }],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+    expect(legacyResult.snapshots[0]).toMatchObject({
+      grossRealizedPnl: 0, trailingMaxDrawdown: 0, accountBalance: -1, weeklyPnl: 0, unrealizedPnl: 0,
+    });
+  });
+
   it('preserves existing manual classification and flags only new accounts', () => {
     const registry = {
       ACC1: {

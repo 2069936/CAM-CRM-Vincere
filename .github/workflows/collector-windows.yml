@@ -1,0 +1,226 @@
+name: Collector Windows
+
+on:
+  pull_request:
+    paths:
+      - 'collector/**'
+      - '.github/workflows/collector-windows.yml'
+  push:
+    branches: [dev/natanel]
+    tags: ['collector-v*']
+    paths:
+      - 'collector/**'
+      - '.github/workflows/collector-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  addon-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_source: ${{ steps.detect.outputs.has_source }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        name: Detect production AddOn source
+        shell: bash
+        run: |
+          if [ -n "$(find collector/src/Vincere.AutoExport.NinjaTrader -type f -name '*.cs' -print -quit)" ]; then
+            echo 'has_source=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'has_source=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  portable-tests:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.423
+          cache: true
+          cache-dependency-path: 'collector/**/packages.lock.json'
+      - name: Restore locked dependencies
+        run: dotnet restore collector\Vincere.AutoExport.sln --locked-mode
+      - name: Test contracts, service, and setup view model
+        run: dotnet test collector\Vincere.AutoExport.sln -c Release --no-restore -p:TreatWarningsAsErrors=true
+      - name: Verify formatting
+        run: dotnet format collector\Vincere.AutoExport.sln --verify-no-changes --no-restore --severity warn
+      - name: Publish Windows service and setup UI
+        shell: pwsh
+        run: |
+          dotnet publish collector\src\Vincere.AutoExport.Agent\Vincere.AutoExport.Agent.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts\agent
+          dotnet publish collector\src\Vincere.AutoExport.Agent.UI\Vincere.AutoExport.Agent.UI.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts\ui
+      - name: Build unsigned machine MSI
+        run: dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.Installer.wixproj -c Release -p:ProductVersion=0.0.${{ github.run_number }} -p:AgentPublishDir=${{ github.workspace }}\artifacts\agent -p:UiPublishDir=${{ github.workspace }}\artifacts\ui -p:OutputPath=${{ github.workspace }}\artifacts\installer
+      - name: Compile disposable AddOn MSI and bundle authoring
+        shell: pwsh
+        run: |
+          $authoring = Join-Path $env:RUNNER_TEMP 'vincere-installer-authoring'
+          $dummyAddOn = Join-Path $env:RUNNER_TEMP 'Vincere.AutoExport.NinjaTrader.dll'
+          New-Item -ItemType Directory -Path $authoring -Force | Out-Null
+          New-Item -ItemType File -Path $dummyAddOn -Force | Out-Null
+          dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.AddOn.Installer.wixproj `
+            -c Release -p:ProductVersion=0.0.${{ github.run_number }} -p:AddOnSource=$dummyAddOn -p:OutputPath=$authoring
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable AddOn MSI authoring failed.' }
+          dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.Bundle.wixproj `
+            -c Release -p:ProductVersion=0.0.${{ github.run_number }} `
+            -p:MachineMsi=${{ github.workspace }}\artifacts\installer\Vincere.AutoExport.Machine.msi `
+            -p:AddOnMsi=$authoring\Vincere.AutoExport.AddOn.msi -p:OutputPath=$authoring
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable bundle authoring failed.' }
+          Remove-Item -LiteralPath (Join-Path $authoring 'Vincere-AutoExport-Setup.exe') -Force
+      - name: Install pinned Pester
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Run installer unit tests
+        shell: pwsh
+        run: Invoke-Pester collector\tests\installer -CI
+      - name: Build supported-API parity probe ZIP
+        shell: pwsh
+        run: |
+          $probeStage = 'artifacts\parity-probe'
+          New-Item -ItemType Directory -Path $probeStage -Force | Out-Null
+          Copy-Item -LiteralPath @(
+            'collector\probe\Vincere.AutoExport.Probe.cs',
+            'collector\probe\install-probe.ps1',
+            'collector\probe\uninstall-probe.ps1',
+            'collector\probe\parity-review.template.json',
+            'collector\probe\README.md'
+          ) -Destination $probeStage
+          Compress-Archive -Path "$probeStage\*" `
+            -DestinationPath 'artifacts\Vincere-NinjaTrader-Parity-Probe.zip' -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collector-machine-msi-${{ github.run_number }}
+          path: artifacts/installer/*.msi
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ninjatrader-parity-probe-${{ github.run_number }}
+          path: artifacts/Vincere-NinjaTrader-Parity-Probe.zip
+          retention-days: 7
+          if-no-files-found: error
+
+  ninjatrader-addon:
+    needs: addon-source
+    if: ${{ needs.addon-source.outputs.has_source == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, Windows, ninjatrader8]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.423
+      - name: Verify proprietary references remain outside checkout
+        shell: pwsh
+        run: |
+          if (-not $env:NINJATRADER_HOME) { throw 'NINJATRADER_HOME is required.' }
+          $home = (Resolve-Path $env:NINJATRADER_HOME).Path
+          $checkout = (Resolve-Path $env:GITHUB_WORKSPACE).Path
+          if ($home.StartsWith($checkout, [StringComparison]::OrdinalIgnoreCase)) { throw 'NinjaTrader references must remain outside the checkout.' }
+      - name: Compile production AddOn
+        run: dotnet build collector\src\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj -c Release -p:TreatWarningsAsErrors=true
+      - name: Require supported-API parity evidence
+        shell: pwsh
+        run: |
+          if (-not $env:NINJATRADER_PARITY_EVIDENCE) { throw 'NINJATRADER_PARITY_EVIDENCE is required on the controlled runner.' }
+          collector\scripts\create-addon-verification.ps1 `
+            -AddOnPath collector\src\Vincere.AutoExport.NinjaTrader\bin\Release\net48\Vincere.AutoExport.NinjaTrader.dll `
+            -ParityEvidencePath $env:NINJATRADER_PARITY_EVIDENCE `
+            -Version 0.0.${{ github.run_number }} `
+            -OutputPath artifacts\addon-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-addon-${{ github.run_number }}
+          path: |
+            collector/src/Vincere.AutoExport.NinjaTrader/bin/Release/net48/Vincere.AutoExport.NinjaTrader.dll
+            artifacts/addon-verification.json
+          retention-days: 3
+          if-no-files-found: error
+
+  signed-release:
+    if: startsWith(github.ref, 'refs/tags/collector-v')
+    needs: [portable-tests, addon-source, ninjatrader-addon]
+    runs-on: [self-hosted, Windows, ninjatrader8]
+    environment: collector-production
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.423
+      - name: Require release secrets
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          COLLECTOR_RELEASE_BASE_URL: ${{ secrets.COLLECTOR_RELEASE_BASE_URL }}
+        run: |
+          foreach ($name in 'WINDOWS_SIGNING_CERT_BASE64','WINDOWS_SIGNING_CERT_PASSWORD','WINDOWS_SIGNING_TIMESTAMP_URL','COLLECTOR_RELEASE_BASE_URL') {
+            if (-not (Get-Item "env:$name").Value) { throw "$name is required." }
+          }
+      - name: Build and sign complete installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+        run: |
+          $version = '${{ github.ref_name }}'.Replace('collector-v','')
+          dotnet build collector\src\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj -c Release
+          collector\scripts\create-addon-verification.ps1 `
+            -AddOnPath collector\src\Vincere.AutoExport.NinjaTrader\bin\Release\net48\Vincere.AutoExport.NinjaTrader.dll `
+            -ParityEvidencePath $env:NINJATRADER_PARITY_EVIDENCE -Version $version -OutputPath artifacts\addon-verification.json
+          collector\scripts\build-installer.ps1 -Version $version `
+            -AddOnSource collector\src\Vincere.AutoExport.NinjaTrader\bin\Release\net48\Vincere.AutoExport.NinjaTrader.dll `
+            -AddOnVerificationPath artifacts\addon-verification.json -ArtifactsDirectory artifacts -ProductionSign
+      - name: Create and sign release manifest
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          COLLECTOR_RELEASE_BASE_URL: ${{ secrets.COLLECTOR_RELEASE_BASE_URL }}
+        run: |
+          $version = '${{ github.ref_name }}'.Replace('collector-v','')
+          $bundle = Get-Item artifacts\Vincere-AutoExport-Setup.exe
+          $thumbprint = (Get-AuthenticodeSignature $bundle).SignerCertificate.Thumbprint
+          $previousArguments = @{}
+          try {
+            Invoke-WebRequest ($env:COLLECTOR_RELEASE_BASE_URL.TrimEnd('/') + '/release-manifest.json') -OutFile artifacts\previous-release-manifest.json
+            $previousArguments.PreviousManifestPath = 'artifacts\previous-release-manifest.json'
+          } catch {
+            if ($_.Exception.Response.StatusCode.value__ -ne 404) { throw }
+          }
+          collector\scripts\create-release-manifest.ps1 -Version $version -MinimumAgentVersion $version -MinimumSchemaVersion 1 @previousArguments `
+            -ArtifactPaths artifacts\Vincere.AutoExport.Machine.msi,artifacts\Vincere.AutoExport.AddOn.msi,$bundle.FullName `
+            -BaseUrl $env:COLLECTOR_RELEASE_BASE_URL -SigningThumbprint $thumbprint -OutputPath artifacts\release-manifest.json
+          collector\scripts\sign-release-manifest.ps1 -ManifestPath artifacts\release-manifest.json `
+            -OutputSignaturePath artifacts\release-manifest.json.p7s
+      - name: Verify every production signature
+        shell: pwsh
+        run: |
+          $files = Get-Item artifacts\*.exe, artifacts\*.msi
+          $invalid = @($files | Get-AuthenticodeSignature | Where-Object Status -ne Valid)
+          if ($invalid.Count) { $invalid | Format-Table Path, Status; throw 'One or more production signatures are invalid.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collector-release-${{ github.ref_name }}
+          path: |
+            artifacts/*.exe
+            artifacts/*.msi
+            artifacts/release-manifest.json
+            artifacts/release-manifest.json.p7s
+          retention-days: 14
+          if-no-files-found: error

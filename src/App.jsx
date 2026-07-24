@@ -32,6 +32,7 @@ import {
   RefreshCw,
   MessageCircle,
   Search,
+  Server,
   Shield,
   Smartphone,
   Trash2,
@@ -54,6 +55,8 @@ import ProfilePanel from "./components/ProfilePanel";
 import StackPlaybook from "./components/StackPlaybook";
 import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
+import AutoCollectionCard from "./components/AutoCollectionCard";
+import AutoCollectionManager from "./components/AutoCollectionManager";
 import {
   Dialog,
   DialogContent,
@@ -90,6 +93,7 @@ import { buildCamOverview } from "./domain/camOverview";
 import {
   recalculateDailyImport,
   reconcileDailyImport,
+  isCashType,
 } from "./domain/reconcile";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import { buildBatchImportPlan } from "./domain/batchImport";
@@ -108,6 +112,10 @@ import {
   formatCurrency,
 } from "./domain/report";
 import { buildClientSegments } from "./domain/clientSegments";
+import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
+import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
+import CollapsiblePanel from "./components/CollapsiblePanel";
+import ClientKindBadge from "./components/ClientKindBadge";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -435,7 +443,7 @@ export function filteredAccountsForTab(client, dailyImport, tab) {
       if (tab === "Evaluations")
         return account.accountType?.startsWith("Evaluation");
       if (tab === "Funded") return account.accountType === "Funded";
-      if (tab === "Cash") return account.accountType === "Cash";
+      if (tab === "Cash") return isCashType(account.accountType);
       return true;
     }),
   );
@@ -477,7 +485,7 @@ export function buildVisibleTabs(client, dailyImport) {
     tabs.push("Evaluations");
   if (values.some((account) => account.accountType === "Funded"))
     tabs.push("Funded");
-  if (values.some((account) => account.accountType === "Cash"))
+  if (values.some((account) => isCashType(account.accountType)))
     tabs.push("Cash");
   return ["Overview", ...tabs, ...STATIC_TABS];
 }
@@ -488,15 +496,24 @@ function tabMode(tab) {
   return "standard";
 }
 
-function latestImports(clients = []) {
+// The close a client had on a given date, or their most recent one when no date
+// is pinned. Every date-sensitive read on the Operations page goes through this,
+// so moving the date re-scopes the whole view instead of one panel.
+export function importAsOf(client, asOfDate = "") {
+  const imports = client?.dailyImports || [];
+  if (!asOfDate) return imports.at(-1) || null;
+  return imports.find((di) => di.date === asOfDate) || null;
+}
+
+function latestImports(clients = [], asOfDate = "") {
   return clients.map((client) => ({
     client,
-    dailyImport: client.dailyImports?.at(-1) || null,
+    dailyImport: importAsOf(client, asOfDate),
   }));
 }
 
-export function buildManagerSummary(clients = []) {
-  const imports = latestImports(clients);
+export function buildManagerSummary(clients = [], asOfDate = "") {
+  const imports = latestImports(clients, asOfDate);
   const snapshots = imports.flatMap(
     ({ dailyImport }) => dailyImport?.snapshots || [],
   );
@@ -630,7 +647,7 @@ export function buildClientOverview(client, dailyImport) {
     .map((snapshot) => {
       const meta = ciMeta(registry, snapshot.accountName);
       if (
-        meta.accountType === "Cash" ||
+        isCashType(meta.accountType) ||
         meta.accountType === "Inactive / Ignore"
       )
         return null;
@@ -1226,7 +1243,7 @@ export function buildRiskDistribution(clients = [], camProfiles = []) {
       const meta = ciMeta(registry, snapshot.accountName);
       if (
         meta.accountType === "Inactive / Ignore" ||
-        meta.accountType === "Cash"
+        isCashType(meta.accountType)
       )
         continue;
       if (["Inactive", "Failed"].includes(meta.status)) continue;
@@ -1332,6 +1349,24 @@ export function buildPayoutPipeline(clients = [], camProfiles = []) {
   return rows.sort(
     (a, b) => order.indexOf(a.payoutState) - order.indexOf(b.payoutState),
   );
+}
+
+// Bucket flag rows by their type so a long roster of open flags reads as a few
+// named groups instead of one continuous table.
+function groupByFlagType(rows = []) {
+  const map = new Map();
+  for (const row of rows) {
+    const type = row.type || "Other";
+    if (!map.has(type)) map.set(type, []);
+    map.get(type).push(row);
+  }
+  return [...map.entries()]
+    .map(([type, items]) => ({
+      type,
+      items,
+      critical: items.filter((f) => f.severity === "Critical").length,
+    }))
+    .sort((a, b) => b.critical - a.critical || b.items.length - a.items.length);
 }
 
 function clientsForCam(clients = [], camProfile = null) {
@@ -2238,12 +2273,12 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
             <Switch
               id="new-user-cam-profile"
               type="button"
-              checked={Boolean(newUser.hasCamProfile)}
+              checked={newUser.hasCamProfile}
               onCheckedChange={(checked) => setNewUser((v) => ({ ...v, hasCamProfile: checked }))}
             />
             <span>CAM profile</span>
-            <strong className={Boolean(newUser.hasCamProfile) ? "positive" : "muted"}>
-              {Boolean(newUser.hasCamProfile) ? "On" : "Off"}
+            <strong className={newUser.hasCamProfile ? "positive" : "muted"}>
+              {newUser.hasCamProfile ? "On" : "Off"}
             </strong>
           </label>
           <button className="secondary-button" disabled={actionBusy}>
@@ -2262,7 +2297,7 @@ function UsersAccessPanel({ users = [], onUsersChange, camProfiles = [], clients
   );
 }
 
-function AuditLogsPanel() {
+function AuditLogsPanel({ onOpenCollectorBatch }) {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
@@ -2339,6 +2374,11 @@ function AuditLogsPanel() {
                   <td>{log.entityType}</td>
                   <td>
                     <small>{describeLog(log)}</small>
+                    {log.entityType === "ingest_batch" && log.afterData?.clientId ? (
+                      <button className="link-button" type="button" onClick={() => onOpenCollectorBatch?.(log)}>
+                        Open batch history
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -3498,6 +3538,8 @@ function ManagerOverview({
   const [newCamName, setNewCamName] = useState("");
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
+  const [showAutoCollection, setShowAutoCollection] = useState(false);
+  const [autoCollectionTarget, setAutoCollectionTarget] = useState(null);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
@@ -3564,7 +3606,8 @@ function ManagerOverview({
         : prev,
     );
   }
-  const [drillDate, setDrillDate] = useState("");
+  // Pins the whole Operations page to one trading day. Empty = latest close.
+  const [asOfDate, setAsOfDate] = useState("");
   const [teamCopyDone, setTeamCopyDone] = useState(false);
   const [weeklyCopyDone, setWeeklyCopyDone] = useState(false);
   const [newClientForm, setNewClientForm] = useState({
@@ -3579,6 +3622,7 @@ function ManagerOverview({
   const [managerSearch, setManagerSearch] = useState("");
   const [managerConfirmAction, setManagerConfirmAction] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [managerRenderedAt] = useState(() => Date.now());
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
   const teamHistory = useMemo(
     () => buildTeamHistory(clients).slice(-10),
@@ -3591,10 +3635,10 @@ function ManagerOverview({
   const cams = useMemo(
     () =>
       activeCamProfiles.map((profile) => {
-        const summary = buildManagerSummary(clientsForCam(clients, profile));
+        const summary = buildManagerSummary(clientsForCam(clients, profile), asOfDate);
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
-    [clients, activeCamProfiles],
+    [clients, activeCamProfiles, asOfDate],
   );
   const totals = useMemo(
     () =>
@@ -3640,7 +3684,7 @@ function ManagerOverview({
         (p.clientIds || []).includes(client.id),
       );
       const reg = client.accountRegistry || {};
-      const latestImport = (client.dailyImports || []).at(-1);
+      const latestImport = importAsOf(client, asOfDate);
       for (const [accountName, meta] of Object.entries(reg)) {
         if (!meta.accountType?.startsWith("Evaluation")) continue;
         if (meta.status === "Failed" || meta.status === "Inactive") continue;
@@ -3670,7 +3714,7 @@ function ManagerOverview({
       }
     }
     return rows.sort((a, b) => b.weeklyPnl - a.weeklyPnl);
-  }, [clients, activeCamProfiles]);
+  }, [clients, activeCamProfiles, asOfDate]);
 
   const unassignedClients = useMemo(() => {
     const assignedClientIds = new Set(
@@ -3748,7 +3792,7 @@ function ManagerOverview({
     const critFlags = clients.reduce(
       (n, c) =>
         n +
-        (c.dailyImports?.at(-1)?.flags || []).filter(
+        (importAsOf(c, asOfDate)?.flags || []).filter(
           (f) =>
             f.severity === "Critical" &&
             f.status !== "Resolved" &&
@@ -3829,10 +3873,11 @@ function ManagerOverview({
         </div>
         <div className="manager-sidebar-main">
           <button
-            className={!showUserPanel && !showAuditPanel && !showProfilePanel ? "client-link active" : "client-link"}
+            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
+              setShowAutoCollection(false);
               setShowProfilePanel(false);
               closeMobileSidebar();
             }}
@@ -3876,7 +3921,10 @@ function ManagerOverview({
                         closeMobileSidebar();
                       }}
                     >
-                      <span>{client.name}</span>
+                      <span>
+                        {client.name}
+                        <ClientKindBadge client={client} />
+                      </span>
                       <small className="muted">{cam?.name || "-"}</small>
                     </button>
                   ))
@@ -3909,6 +3957,7 @@ function ManagerOverview({
             onClick={() => {
               setShowUserPanel(true);
               setShowAuditPanel(false);
+              setShowAutoCollection(false);
               setShowProfilePanel(false);
               closeMobileSidebar();
             }}
@@ -3917,9 +3966,24 @@ function ManagerOverview({
             <span>Users & Access</span>
           </button>
           <button
+            className={showAutoCollection ? "client-link active" : "client-link"}
+            onClick={() => {
+              setAutoCollectionTarget(null);
+              setShowAutoCollection(true);
+              setShowAuditPanel(false);
+              setShowUserPanel(false);
+              setShowProfilePanel(false);
+              closeMobileSidebar();
+            }}
+          >
+            <Server size={16} />
+            <span>Auto Collection</span>
+          </button>
+          <button
             className={showAuditPanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowAuditPanel(true);
+              setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
               closeMobileSidebar();
@@ -3932,6 +3996,7 @@ function ManagerOverview({
             className={showProfilePanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowProfilePanel(true);
+              setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowAuditPanel(false);
               closeMobileSidebar();
@@ -3958,8 +4023,14 @@ function ManagerOverview({
             clients={clients}
             onRefreshState={onRefreshState}
           />
+        ) : showAutoCollection ? (
+          <AutoCollectionManager visible={showAutoCollection} initialSelectedClient={autoCollectionTarget} />
         ) : showAuditPanel ? (
-          <AuditLogsPanel />
+          <AuditLogsPanel onOpenCollectorBatch={(log) => {
+            setAutoCollectionTarget({ uuid: log.afterData.clientId, name: log.afterData.clientName || "Selected client" });
+            setShowAuditPanel(false);
+            setShowAutoCollection(true);
+          }} />
         ) : showProfilePanel ? (
           <div className="page-stack">
             <div className="page-header manager-subpage-header">
@@ -3980,12 +4051,15 @@ function ManagerOverview({
           <div>
             <span className="eyebrow">
               Vincere Trading ·{" "}
-              {new Date().toLocaleDateString("en-US", {
+              {new Date(
+                (asOfDate || todayIsoDate()) + "T12:00:00",
+              ).toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
               })}
+              {asOfDate ? " · as of" : ""}
             </span>
             <h1>Operations Command Center</h1>
             <div className="occ-status-row">
@@ -3997,6 +4071,57 @@ function ManagerOverview({
               {totals.flags > 0 && (
                 <span className="badge danger">
                   {totals.flags} open flag{totals.flags !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            {/* Pins the whole page to one trading day: metrics, flags, rosters
+                and every client's numbers come from that day's close. */}
+            <div className="date-nav occ-date-nav">
+              <button
+                className="ghost-button icon-only"
+                title="Previous day"
+                onClick={() => {
+                  const base = asOfDate || todayIsoDate();
+                  const d = new Date(base + "T12:00:00");
+                  d.setDate(d.getDate() - 1);
+                  setAsOfDate(d.toISOString().slice(0, 10));
+                }}
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <label className="date-control">
+                <CalendarDays size={16} />
+                <input
+                  type="date"
+                  value={asOfDate}
+                  onChange={(event) => setAsOfDate(event.target.value)}
+                  title="Show the whole page as of this day"
+                />
+              </label>
+              <button
+                className="ghost-button icon-only"
+                title="Next day"
+                onClick={() => {
+                  const base = asOfDate || todayIsoDate();
+                  const d = new Date(base + "T12:00:00");
+                  d.setDate(d.getDate() + 1);
+                  setAsOfDate(d.toISOString().slice(0, 10));
+                }}
+              >
+                <ChevronRight size={15} />
+              </button>
+              {asOfDate ? (
+                <button
+                  className="ghost-button"
+                  style={{ fontSize: 11 }}
+                  onClick={() => setAsOfDate("")}
+                  title="Back to each client's latest close"
+                >
+                  Latest
+                </button>
+              ) : (
+                <span className="muted" style={{ fontSize: 11 }}>
+                  Latest close
                 </span>
               )}
             </div>
@@ -4207,7 +4332,7 @@ function ManagerOverview({
               const cam = activeCamProfiles.find((p) =>
                 (p.clientIds || []).includes(client.id),
               );
-              const latest = client.dailyImports?.at(-1);
+              const latest = importAsOf(client, asOfDate);
               const pnl = (latest?.snapshots || []).reduce(
                 (s, sn) => s + Number(sn.grossRealizedPnl || 0),
                 0,
@@ -4562,7 +4687,10 @@ function ManagerOverview({
         {(() => {
           const allFlags = clients
             .flatMap((c) =>
-              (c.dailyImports || []).flatMap((di) =>
+              // Latest close only. Scanning every historical import counted the
+              // same still-open flag once per day it appeared, which inflated
+              // this table far past the open-flag chip in the header.
+              [importAsOf(c, asOfDate)].filter(Boolean).flatMap((di) =>
                 (di.flags || [])
                   .filter(
                     (f) =>
@@ -4595,15 +4723,32 @@ function ManagerOverview({
           const critCount = allFlags.filter(
             (f) => f.severity === "Critical",
           ).length;
+          const flagTypeGroups = groupByFlagType(allFlags);
           return (
-            <section className="panel open-flags-panel">
-              <div className="panel-heading">
-                <h3>Open flags - all clients</h3>
+            <CollapsiblePanel
+              title="Open flags - all clients"
+              count={allFlags.length}
+              tone="open-flags-panel"
+              badges={
                 <span className={`badge ${critCount ? "danger" : "warning"}`}>
                   {allFlags.length} open
                   {critCount ? ` · ${critCount} critical` : ""}
                 </span>
-              </div>
+              }
+            >
+              {flagTypeGroups.map((group) => (
+                <CollapsiblePanel
+                  key={group.type}
+                  title={group.type}
+                  count={group.items.length}
+                  badges={
+                    group.critical ? (
+                      <span className="badge danger">
+                        {group.critical} critical
+                      </span>
+                    ) : null
+                  }
+                >
               <div className="ops-table-wrap">
                 <table className="ops-table">
                   <thead>
@@ -4617,9 +4762,9 @@ function ManagerOverview({
                     </tr>
                   </thead>
                   <tbody>
-                    {allFlags.map((f, i) => (
+                    {group.items.map((f) => (
                       <tr
-                        key={i}
+                        key={f.id}
                         style={
                           f.severity === "Critical"
                             ? {
@@ -4668,7 +4813,9 @@ function ManagerOverview({
                   </tbody>
                 </table>
               </div>
-            </section>
+                </CollapsiblePanel>
+              ))}
+            </CollapsiblePanel>
           );
         })()}
 
@@ -4739,9 +4886,11 @@ function ManagerOverview({
         </section>
 
         {allFunded.length > 0 && (
-          <section className="panel">
-            <div className="panel-heading">
-              <h3>All funded accounts</h3>
+          <CollapsiblePanel
+            title="All funded accounts"
+            count={allFunded.length}
+            badges={
+              <>
               <span className="badge muted">{allFunded.length} accounts</span>
               <button
                 className="ghost-button"
@@ -4791,7 +4940,9 @@ function ManagerOverview({
               >
                 <Download size={14} /> Export CSV
               </button>
-            </div>
+              </>
+            }
+          >
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -5000,15 +5151,19 @@ function ManagerOverview({
                 </tbody>
               </table>
             </div>
-          </section>
+          </CollapsiblePanel>
         )}
 
         {allEvals.length > 0 && (
-          <section className="panel">
-            <div className="panel-heading">
-              <h3>All evaluation accounts</h3>
+          <CollapsiblePanel
+            title="All evaluation accounts"
+            count={allEvals.length}
+            badges={
+              <>
               <span className="badge muted">{allEvals.length} active</span>
-            </div>
+              </>
+            }
+          >
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
@@ -5083,7 +5238,7 @@ function ManagerOverview({
                 </tbody>
               </table>
             </div>
-          </section>
+          </CollapsiblePanel>
         )}
 
         <section className="panel">
@@ -5315,6 +5470,11 @@ function ManagerOverview({
           </section>
         ) : null}
 
+        <LifecycleRollupPanel
+          rollup={buildLifecycleRollup(clients || [])}
+          title="Team lifecycle & retention"
+        />
+
         {camPerf.length > 0 ? (
           <section className="panel">
             <div className="panel-heading">
@@ -5349,7 +5509,7 @@ function ManagerOverview({
                     const lastActiveLabel = (() => {
                       if (!lastActive) return "-";
                       const mins = Math.round(
-                        (Date.now() - new Date(lastActive)) / 60000,
+                        (managerRenderedAt - new Date(lastActive)) / 60000,
                       );
                       if (mins < 2) return "Just now";
                       if (mins < 60) return `${mins}m ago`;
@@ -5358,7 +5518,7 @@ function ManagerOverview({
                       return `${Math.round(hrs / 24)}d ago`;
                     })();
                     const isRecent =
-                      lastActive && Date.now() - new Date(lastActive) < 3600000;
+                      lastActive && managerRenderedAt - new Date(lastActive) < 3600000;
                     return (
                       <tr
                         key={cam.id}
@@ -5436,7 +5596,7 @@ function ManagerOverview({
                 const cam = activeCamProfiles.find((p) =>
                   (p.clientIds || []).includes(client.id),
                 );
-                const latest = client.dailyImports?.at(-1);
+                const latest = importAsOf(client, asOfDate);
                 const dailyPnl = (latest?.snapshots || []).reduce(
                   (s, sn) => s + Number(sn.grossRealizedPnl || 0),
                   0,
@@ -5452,13 +5612,17 @@ function ManagerOverview({
                 (a.cam?.name || "zzz").localeCompare(b.cam?.name || "zzz"),
               );
             return (
-              <section className="panel">
-                <div className="panel-heading">
-                  <h3>Client roster</h3>
+              <CollapsiblePanel
+                title="Client roster"
+                count={clients.length}
+                badges={
+                  <>
                   <span className="badge muted">
                     {clients.length} clients · drag or reassign CAM
                   </span>
-                </div>
+                  </>
+                }
+              >
                 <div className="table-wrap">
                   <table className="ops-table">
                     <thead>
@@ -5480,6 +5644,7 @@ function ManagerOverview({
                         >
                           <td>
                             <strong>{client.name}</strong>
+                            <ClientKindBadge client={client} />
                           </td>
                           <td>
                             <small>
@@ -5534,7 +5699,7 @@ function ManagerOverview({
                     </tbody>
                   </table>
                 </div>
-              </section>
+              </CollapsiblePanel>
             );
           })()}
 
@@ -5543,8 +5708,8 @@ function ManagerOverview({
             <h3>Historical date drill-down</h3>
             <input
               type="date"
-              value={drillDate}
-              onChange={(e) => setDrillDate(e.target.value)}
+              value={asOfDate}
+              onChange={(e) => setAsOfDate(e.target.value)}
               style={{
                 marginLeft: "auto",
                 fontSize: 12,
@@ -5555,28 +5720,28 @@ function ManagerOverview({
                 color: "var(--text)",
               }}
             />
-            {drillDate && (
+            {asOfDate && (
               <button
                 className="ghost-button"
                 style={{ fontSize: 11 }}
-                onClick={() => setDrillDate("")}
+                onClick={() => setAsOfDate("")}
               >
                 Clear
               </button>
             )}
           </div>
-          {!drillDate && (
+          {!asOfDate && (
             <p className="muted" style={{ fontSize: 12 }}>
               Pick a date to see every client's P&L, accounts, and flags for
               that day.
             </p>
           )}
-          {drillDate &&
+          {asOfDate &&
             (() => {
               const drillRows = clients
                 .map((client) => {
                   const imp = (client.dailyImports || []).find(
-                    (d) => d.date === drillDate,
+                    (d) => d.date === asOfDate,
                   );
                   if (!imp) return null;
                   const pnl = (imp.snapshots || []).reduce(
@@ -5600,7 +5765,7 @@ function ManagerOverview({
               if (!drillRows.length)
                 return (
                   <p className="muted" style={{ fontSize: 12 }}>
-                    No data uploaded for {drillDate}.
+                    No data uploaded for {asOfDate}.
                   </p>
                 );
               const total = drillRows.reduce((s, r) => s + r.pnl, 0);
@@ -6224,7 +6389,9 @@ function ReportPanel({ client, dailyImport, onClose }) {
   const GROUP_LABELS = {
     evaluations: "Evaluations",
     funded: "Funded Accounts",
-    cash: "Cash Accounts",
+    cashIra: "Cash Accounts - IRA",
+    cashStraight: "Cash Accounts - Straight",
+    cashLegacy: "Cash Accounts (unclassified)",
   };
 
   return (
@@ -6315,7 +6482,9 @@ function ReportPanel({ client, dailyImport, onClose }) {
           {[
             { key: "funded", label: "Funded" },
             { key: "evalStandard", label: "Evaluations" },
-            { key: "cash", label: "Cash" },
+            { key: "cashIra", label: "Cash - IRA" },
+            { key: "cashStraight", label: "Cash - Straight" },
+            { key: "cashLegacy", label: "Cash (unclassified)" },
           ]
             .filter(({ key }) => report.segments[key].count > 0)
             .map(({ key, label }) => (
@@ -6329,7 +6498,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
             ))}
         </section>
 
-        {["evaluations", "funded", "cash"].map((group) =>
+        {["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
               <h2>{GROUP_LABELS[group]}</h2>
@@ -6828,6 +6997,7 @@ function ClientOverview({
   client,
   dailyImport,
   allClients = [],
+  camName = "",
   onRequestMonthlyReport,
   onLogPayout,
 }) {
@@ -6863,6 +7033,9 @@ function ClientOverview({
 
   return (
     <div className="dashboard-stack">
+      <ClientLifecyclePanel
+        lifecycle={buildClientLifecycle(client, { camName })}
+      />
       {hasContact && (
         <section className="contact-card">
           {profile.fullName && (
@@ -6965,7 +7138,9 @@ function ClientOverview({
           return [
             { key: "funded", label: "Funded" },
             { key: "evalStandard", label: "Evaluations" },
-            { key: "cash", label: "Cash" },
+            { key: "cashIra", label: "Cash - IRA" },
+            { key: "cashStraight", label: "Cash - Straight" },
+            { key: "cashLegacy", label: "Cash (unclassified)" },
           ]
             .filter(({ key }) => seg[key].count > 0)
             .map(({ key, label }) => (
@@ -7881,6 +8056,10 @@ export function buildPortfolioInsights(clients) {
 }
 
 function InsightFeedPanel({ insights, onSelectClient }) {
+  // Collapsed by default. A portfolio can produce hundreds of signals and the
+  // same rule repeats across clients, so the feed shows one row per signal type
+  // and the CAM opens only the group they're actually working.
+  const [expandedTypes, setExpandedTypes] = useState(() => new Set());
   if (!insights.length) {
     return (
       <section className="panel">
@@ -7912,6 +8091,33 @@ function InsightFeedPanel({ insights, onSelectClient }) {
     info: { label: "Info", cls: "insight-info", dot: "var(--info)" },
   };
 
+  // One group per signal type, worst severity first, then biggest group.
+  const severityRank = { critical: 0, warning: 1, "info-green": 2, info: 3 };
+  const groupsByType = new Map();
+  for (const item of insights) {
+    const key = item.type || "Other";
+    if (!groupsByType.has(key)) groupsByType.set(key, []);
+    groupsByType.get(key).push(item);
+  }
+  const groups = [...groupsByType.entries()]
+    .map(([type, items]) => ({
+      type,
+      items,
+      critical: items.filter((i) => i.severity === "critical").length,
+      warning: items.filter((i) => i.severity === "warning").length,
+      rank: Math.min(...items.map((i) => severityRank[i.severity] ?? 3)),
+    }))
+    .sort((a, b) => a.rank - b.rank || b.items.length - a.items.length);
+
+  function toggleType(type) {
+    setExpandedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }
+
   return (
     <section className={`panel ${criticalCount ? "danger-panel" : ""}`}>
       <div className="panel-heading">
@@ -7927,35 +8133,74 @@ function InsightFeedPanel({ insights, onSelectClient }) {
         </div>
       </div>
       <div className="insight-feed">
-        {insights.map((item, i) => {
-          const cfg = severityConfig[item.severity] || severityConfig.info;
+        {groups.map((group) => {
+          const isOpen = expandedTypes.has(group.type);
           return (
-            <button
-              key={i}
-              className={`insight-item ${cfg.cls}`}
-              onClick={() => onSelectClient && onSelectClient(item.clientId)}
-              title={`Open ${item.clientName}`}
-            >
-              <span className="insight-dot" style={{ background: cfg.dot }} />
-              <div className="insight-body">
-                <div className="insight-head">
-                  <span className="insight-type">{item.type}</span>
-                  <span className="insight-client">{item.clientName}</span>
-                  {item.accountAlias ? (
-                    <span className="insight-account">
-                      · {item.accountAlias}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="insight-message">{item.message}</p>
-                <small className="insight-action">→ {item.action}</small>
-              </div>
-              <span
-                className={`insight-severity-badge insight-sev-${item.severity}`}
+            <div className="insight-group" key={group.type}>
+              <button
+                className="insight-group-head"
+                onClick={() => toggleType(group.type)}
+                aria-expanded={isOpen}
+                title={isOpen ? "Collapse" : "Expand"}
               >
-                {cfg.label}
-              </span>
-            </button>
+                <ChevronDown
+                  className={isOpen ? "chevron open" : "chevron"}
+                  size={14}
+                />
+                <span className="insight-type">{group.type}</span>
+                <span className="insight-group-count">
+                  {group.items.length}
+                </span>
+                {group.critical ? (
+                  <span className="badge danger">{group.critical} critical</span>
+                ) : null}
+                {group.warning ? (
+                  <span className="badge warning">{group.warning} warning</span>
+                ) : null}
+              </button>
+              {isOpen
+                ? group.items.map((item, i) => {
+                    const cfg =
+                      severityConfig[item.severity] || severityConfig.info;
+                    return (
+                      <button
+                        key={i}
+                        className={`insight-item ${cfg.cls}`}
+                        onClick={() =>
+                          onSelectClient && onSelectClient(item.clientId)
+                        }
+                        title={`Open ${item.clientName}`}
+                      >
+                        <span
+                          className="insight-dot"
+                          style={{ background: cfg.dot }}
+                        />
+                        <div className="insight-body">
+                          <div className="insight-head">
+                            <span className="insight-client">
+                              {item.clientName}
+                            </span>
+                            {item.accountAlias ? (
+                              <span className="insight-account">
+                                · {item.accountAlias}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="insight-message">{item.message}</p>
+                          <small className="insight-action">
+                            → {item.action}
+                          </small>
+                        </div>
+                        <span
+                          className={`insight-severity-badge insight-sev-${item.severity}`}
+                        >
+                          {cfg.label}
+                        </span>
+                      </button>
+                    );
+                  })
+                : null}
+            </div>
           );
         })}
       </div>
@@ -8018,7 +8263,6 @@ function CamOverview({
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
-  onCompleteTask,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -8811,6 +9055,11 @@ function CamOverview({
           <strong>{overview.totals.openDeviationFlags}</strong>
         </div>
       </div>
+
+      <LifecycleRollupPanel
+        rollup={buildLifecycleRollup(clients || [])}
+        title="My book - lifecycle & retention"
+      />
 
       <section className="panel">
         <div className="panel-heading">
@@ -9954,6 +10203,7 @@ function CredentialsTab({
   onUpdateClient,
   onDeleteClient,
   canDeleteClient = true,
+  canManageAutoCollection = false,
 }) {
   const credentials = client.credentials || {};
   const profile = client.profile || {};
@@ -10238,6 +10488,14 @@ function CredentialsTab({
         </div>
       </section>
 
+      {canManageAutoCollection && client.uuid ? (
+        <AutoCollectionCard
+          key={client.uuid}
+          clientUuid={client.uuid}
+          clientName={client.name}
+        />
+      ) : null}
+
       <section className="panel">
         <div className="panel-heading">
           <h3>VPS / Platform access</h3>
@@ -10517,7 +10775,8 @@ const DEFAULT_PRICE_CHECK_ROWS = [
 ];
 
 function PriceChecksTab({ client, onUpdateClient }) {
-  const nextRowId = useRef(Date.now());
+  const [rowIdSeed] = useState(() => Date.now());
+  const nextRowId = useRef(rowIdSeed);
   const checks = client.priceChecks?.length
     ? client.priceChecks
     : DEFAULT_PRICE_CHECK_ROWS;
@@ -10818,7 +11077,9 @@ export default function App() {
     try {
       if (user) sessionStorage.setItem("cam_crm_session", JSON.stringify(user));
       else sessionStorage.removeItem("cam_crm_session");
-    } catch {}
+    } catch {
+      // Session storage can be unavailable in restricted browser contexts.
+    }
   }
   function handleLogout() {
     if (logoutBusy) return;
@@ -10892,7 +11153,9 @@ export default function App() {
       const next = new Set([...s, clientId]);
       try {
         sessionStorage.setItem("cam_viewed_clients", JSON.stringify([...next]));
-      } catch {}
+      } catch {
+        // Viewed-client persistence is a non-critical UI convenience.
+      }
       return next;
     });
   }
@@ -12495,6 +12758,7 @@ export default function App() {
                             )}
                           <span>
                             {client.name}
+                            <ClientKindBadge client={client} />
                             {(() => {
                               const d = lastContactDaysAgo(client);
                               return d !== null && d > 3 ? (
@@ -12562,7 +12826,7 @@ export default function App() {
                             </small>
                           ) : null}
                           {(() => {
-                            const latest = client.dailyImports?.at(-1);
+                            const latest = importAsOf(client, selectedDate);
                             if (!latest) return null;
                             const pnl = (latest.snapshots || []).reduce(
                               (s, snap) =>
@@ -13140,6 +13404,7 @@ export default function App() {
                         client={selectedClient}
                         dailyImport={dailyImport}
                         allClients={state.clients || []}
+                        camName={currentCamProfile?.name || ""}
                         onRequestMonthlyReport={(month) =>
                           setMonthlyReportMonth(month)
                         }
@@ -13167,6 +13432,10 @@ export default function App() {
                         onUpdateClient={handleUpdateClient}
                         onDeleteClient={handleDeleteClient}
                         canDeleteClient={canCreateDeleteClients}
+                        canManageAutoCollection={
+                          session?.role === USER_ROLES.MANAGER
+                          || session?.role === USER_ROLES.CAM
+                        }
                       />
                     ) : null}
                     {effectiveActiveTab === "Price Checks" ? (

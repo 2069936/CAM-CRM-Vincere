@@ -1,6 +1,6 @@
 # CAM CRM Supabase Database Tracker
 
-Last updated: 2026-07-10
+Last updated: 2026-07-23
 
 ## Connection Status
 
@@ -13,6 +13,13 @@ Last updated: 2026-07-10
   - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - Server-only env key expected for user management:
   - `SUPABASE_SERVICE_ROLE_KEY`
+- Server-only env keys expected for collector enrollment:
+  - `INGEST_TOKEN_PEPPER`
+  - `INGEST_PAIR_RATE_LIMIT_MAX_ATTEMPTS`
+  - `INGEST_PAIR_RATE_LIMIT_WINDOW_SECONDS`
+  - `INGEST_PAIR_RATE_LIMIT_BLOCK_SECONDS`
+  - `AUTO_COLLECTION_MIN_AGENT_VERSION`
+  - `AUTO_COLLECTION_HEARTBEAT_MIN_INTERVAL_SECONDS`
 - App integration status: Supabase is required for authentication and operational data.
 - RLS status: not production-hardened yet. Manager/CAM restrictions exist in app flow and server API checks, but final hard enforcement should be completed with Supabase RLS policies before production use.
 
@@ -39,7 +46,10 @@ Recommended run order for a fresh database:
 11. `supabase/step_17_real_daily_sop.sql`
 12. `supabase/step_20_cam_client_permissions.sql`
 13. `supabase/step_21_client_subscription_price.sql`
-14. `supabase/cam_crm_verification_queries.sql`
+14. `supabase/step_22_ingest_devices.sql`
+15. `supabase/step_28_auto_collection.sql`
+16. `supabase/step_29_auto_collection_reprocess.sql`
+17. `supabase/cam_crm_verification_queries.sql`
 
 No SQL required:
 
@@ -78,6 +88,10 @@ Cleanup:
 | `sop_sections` | Daily SOP sections | Read/write through Manager SOP Builder |
 | `sop_items` | Daily SOP checklist items | Read/write through Manager SOP Builder |
 | `daily_sop_checklists` | Per-CAM daily checklist progress, including per-item checked state JSON | Read/write |
+| `ingest_enrollments` | One-time, expiring device-pairing enrollments | Server API/service role only |
+| `ingest_devices` | Legacy watcher bindings plus hashed collector credentials and health | Server API/service role only |
+| `ingest_batches` | Immutable raw auto-collection batch claims and processing state | Server API/service role only |
+| `ingest_pair_rate_limits` | Durable HMAC-keyed pairing attempt windows and blocks | Server API/service role only |
 
 ## Frontend Read Model
 
@@ -136,6 +150,9 @@ state
 - [x] Add name/email duplicate protection and preview for client intake imports.
 - [x] Add Google Sheet intake fetch/import audit logging.
 - [ ] Expand audit coverage to every low-level data mutation.
+- [ ] Apply and verify `step_28_auto_collection.sql` twice on disposable/staging Supabase; local static contract coverage is documented in `docs/verification/auto-collection-schema.md`.
+- [ ] Apply and verify `step_29_auto_collection_reprocess.sql` twice after step 28; exercise failed/incomplete replay and one approved closed-day replacement in staging.
+- [x] Add atomic enrollment generation/rebind/revoke RPCs and durable pairing rate-limit state to `step_28_auto_collection.sql`.
 
 ## Permission Direction
 

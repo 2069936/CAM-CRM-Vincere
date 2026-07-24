@@ -3,7 +3,7 @@ import { buildAllFundedAccounts, buildStrategyEffectiveness } from './App';
 
 // ── buildAllFundedAccounts ────────────────────────────────────────────────────
 
-function makeFundedClient({ id = 'c1', name = 'Pedro', camId, balance = 51500, ddLimit = 2000, rawDD = -500, target = 53000, start = 50000, strategies = [] } = {}) {
+function makeFundedClient({ id = 'c1', name = 'Pedro', balance = 51500, ddLimit = 2000, rawDD = -500, target = 53000, start = 50000, strategies = [] } = {}) {
   const accountName = 'APEX1';
   return {
     id, name,

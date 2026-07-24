@@ -9,7 +9,7 @@ function makeCam(id, name, clientIds = []) {
   return { id, name, clientIds };
 }
 
-function makeClient({ id, name, camId, registry = {}, snapshots = [], flags = [], extraImports = [] }) {
+function makeClient({ id, name, registry = {}, snapshots = [], flags = [], extraImports = [] }) {
   return {
     id,
     name,

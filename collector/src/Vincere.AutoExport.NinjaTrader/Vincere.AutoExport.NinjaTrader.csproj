@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <NinjaTraderHome Condition="'$(NinjaTraderHome)' == '' and '$(NINJATRADER_HOME)' != ''">$(NINJATRADER_HOME)</NinjaTraderHome>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
+    <ProjectReference Include="../Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" />
+    <Reference Include="NinjaTrader.Core">
+      <HintPath>$(NinjaTraderHome)\bin\NinjaTrader.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="NinjaTrader.Gui">
+      <HintPath>$(NinjaTraderHome)\bin\NinjaTrader.Gui.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="NinjaTrader.NinjaScript">
+      <HintPath>$(NinjaTraderHome)\bin\NinjaTrader.NinjaScript.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="RequireNinjaTraderHome" BeforeTargets="PrepareForBuild">
+    <Error
+      Condition="'$(NinjaTraderHome)' == '' or !Exists('$(NinjaTraderHome)\bin\NinjaTrader.Core.dll')"
+      Text="Set NINJATRADER_HOME to the NinjaTrader 8 installation directory; proprietary DLLs must remain outside the repository." />
+  </Target>
+</Project>

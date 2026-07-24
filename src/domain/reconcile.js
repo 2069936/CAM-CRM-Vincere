@@ -3,9 +3,38 @@ export const ACCOUNT_TYPES = {
   EVALUATION_BULLET: 'Evaluation - Bullet Bot',
   EVALUATION_STANDARD: 'Evaluation - Standard',
   FUNDED: 'Funded',
+  CASH_IRA: 'Cash - IRA',
+  CASH_STRAIGHT: 'Cash - Straight',
+  // LEGACY. Rows written before the IRA/Straight split still store 'Cash' in
+  // Supabase (trading_accounts.account_type is free text, no CHECK constraint),
+  // so this key must stay: removing it would make every pre-split row fall
+  // through to Unassigned behaviour.
   CASH: 'Cash',
   IGNORE: 'Inactive / Ignore',
 };
+
+// Every value that must behave like cash: no profit target, no drawdown limit,
+// balance-only reporting. Branch on isCashType(), never on a single string.
+export const CASH_ACCOUNT_TYPES = [
+  ACCOUNT_TYPES.CASH_IRA,
+  ACCOUNT_TYPES.CASH_STRAIGHT,
+  ACCOUNT_TYPES.CASH,
+];
+
+export function isCashType(accountType) {
+  return CASH_ACCOUNT_TYPES.includes(accountType);
+}
+
+export function isLegacyCashType(accountType) {
+  return accountType === ACCOUNT_TYPES.CASH;
+}
+
+// Prop-firm family: funded plus any evaluation. Unassigned and Inactive / Ignore
+// deliberately match neither this nor isCashType.
+export function isPropAccountType(accountType) {
+  const value = String(accountType || '').trim();
+  return value === ACCOUNT_TYPES.FUNDED || value.startsWith('Evaluation');
+}
 
 export const ACCOUNT_STATUSES = {
   ACTIVE: 'Active',
@@ -48,6 +77,8 @@ function createDefaultAccount(account, existing = {}) {
     targetProfit: existing.targetProfit ?? '',
     maxDrawdownLimit: existing.maxDrawdownLimit ?? '',
     riskLevel: existing.riskLevel || '',
+    algoStack: existing.algoStack || '',
+    dailyLossLimit: existing.dailyLossLimit || '',
     bulletBotPassType: existing.bulletBotPassType || '',
     bulletBotDirection: existing.bulletBotDirection || '',
     notes: existing.notes || '',
@@ -103,11 +134,11 @@ function createSnapshot(account, strategies) {
   return {
     accountName: account.accountName,
     connection: account.connection || '',
-    grossRealizedPnl: account.grossRealizedPnl || 0,
-    trailingMaxDrawdown: account.trailingMaxDrawdown || 0,
-    accountBalance: account.accountBalance || 0,
-    weeklyPnl: account.weeklyPnl || 0,
-    unrealizedPnl: account.unrealizedPnl || 0,
+    grossRealizedPnl: account.grossRealizedPnl === undefined ? 0 : account.grossRealizedPnl,
+    trailingMaxDrawdown: account.trailingMaxDrawdown === undefined ? 0 : account.trailingMaxDrawdown,
+    accountBalance: account.accountBalance === undefined ? 0 : account.accountBalance,
+    weeklyPnl: account.weeklyPnl === undefined ? 0 : account.weeklyPnl,
+    unrealizedPnl: account.unrealizedPnl === undefined ? 0 : account.unrealizedPnl,
     strategies,
   };
 }

@@ -60,6 +60,30 @@ npm run lint
 10. Open CAM Overview to compare algorithms across clients.
 11. Click `Build Daily Report`, then print or save as PDF.
 
+## Automatic NinjaTrader Collection
+
+The automatic collector is additive to the manual four-CSV workflow. A Windows
+agent pairs one VPS to one CRM client with a one-time code, receives a typed
+snapshot from the NinjaTrader AddOn, queues it locally, and uploads immutable
+gzip JSON to the private `ninjatrader-imports` bucket. The CRM uses the same
+normalization, reconciliation, and daily-import persistence as manual uploads.
+
+- Managers open **Auto Collection** beside **Audit Logs** to monitor the fleet,
+  inspect immutable batch history, download JSON or a four-CSV ZIP, and perform
+  controlled replay.
+- Managers and the assigned CAM configure a client from the profile card. Raw
+  product keys, MachineGuid values, device tokens, and credential hashes are not
+  shown there.
+- A late snapshot never silently replaces a closed day. Replacement requires a
+  Manager, a reason, and an exact client/date confirmation; the transaction
+  retains lineage and creates audit and critical operational records.
+- The initial schedule is 4:45 p.m. `America/New_York`. DST is evaluated from
+  the timezone, not a fixed UTC offset.
+
+Deployment, rollback, staging evidence, rate limits, retention, and replay
+procedures are documented in
+[`docs/verification/auto-collection-crm.md`](docs/verification/auto-collection-crm.md).
+
 ## Important Data Rules
 
 - Upload only one client's NinjaTrader files at a time.
