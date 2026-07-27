@@ -4,12 +4,16 @@ on:
   pull_request:
     paths:
       - 'collector/**'
+      # The .NET contract tests assert against this fixture, so a change to it
+      # has to run this workflow even though it lives outside collector/.
+      - 'test/fixtures/auto-export/**'
       - '.github/workflows/collector-windows.yml'
   push:
     branches: [dev/natanel]
     tags: ['collector-v*']
     paths:
       - 'collector/**'
+      - 'test/fixtures/auto-export/**'
       - '.github/workflows/collector-windows.yml'
   workflow_dispatch:
 
