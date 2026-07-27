@@ -144,4 +144,40 @@ Describe 'Installer safety authoring' {
             $fileNames | Should -Contain $required
         }
     }
+
+    It 'installs the compiled AddOn payload in the NinjaTrader Custom assembly discovery folder' -Skip:(-not $env:VINCERE_TEST_ADDON_MSI_PATH) {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installer.GetType().InvokeMember(
+            'OpenDatabase',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $installer,
+            @((Resolve-Path -LiteralPath $env:VINCERE_TEST_ADDON_MSI_PATH).Path, 0))
+        $view = $database.GetType().InvokeMember(
+            'OpenView',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $database,
+            @("SELECT `Directory_` FROM `Component` WHERE `Component` = 'ProductionAddOnComponent'"))
+        [void]$view.GetType().InvokeMember(
+            'Execute',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $view,
+            $null)
+        $record = $view.GetType().InvokeMember(
+            'Fetch',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $view,
+            $null)
+        $directory = $record.GetType().InvokeMember(
+            'StringData',
+            [Reflection.BindingFlags]::GetProperty,
+            $null,
+            $record,
+            @(1))
+
+        $directory | Should -Be 'NinjaTraderCustomFolder'
+    }
 }
