@@ -13,15 +13,16 @@ if (-not $IsWindows) { throw 'The WiX installer build requires Windows.' }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $root '..'))
 $addOn = (Resolve-Path -LiteralPath $AddOnSource -ErrorAction Stop).Path
-if ([IO.Path]::GetFileName($addOn) -ne 'Vincere.AutoExport.NinjaTrader.dll') {
-    throw 'AddOnSource must be the verified production Vincere.AutoExport.NinjaTrader.dll.'
-}
+. (Join-Path $PSScriptRoot 'addon-payload.ps1')
 $verification = Get-Content -LiteralPath $AddOnVerificationPath -Raw | ConvertFrom-Json
-$actualAddOnHash = (Get-FileHash -LiteralPath $addOn -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($verification.schemaVersion -ne 1 -or
     $verification.contract -ne 'SnapshotV1' -or
-    $verification.sha256 -ne $actualAddOnHash -or
     -not $verification.supportedApiParityPassed) {
+    throw 'The AddOn verification receipt is missing, stale, or does not prove supported-API parity.'
+}
+$addOnPayload = @(Assert-AddOnPayloadReceipt -AddOnPath $addOn -Verification $verification)
+$addOnPayloadDirectory = [IO.Path]::GetDirectoryName($addOn)
+if ($verification.sha256 -ne $addOnPayload[0].sha256) {
     throw 'The AddOn verification receipt is missing, stale, or does not prove supported-API parity.'
 }
 . (Join-Path $root 'src\Vincere.AutoExport.Installer\CustomActions\DetectNinjaTrader.ps1')
@@ -40,7 +41,7 @@ if ($LASTEXITCODE -ne 0) { throw 'UI publish failed.' }
 
 $owned = @(
     Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse
-    Get-Item -LiteralPath $addOn
+    $addOnPayload | ForEach-Object { Get-Item -LiteralPath (Join-Path $addOnPayloadDirectory $_.name) }
 ) | ForEach-Object {
     [ordered]@{
         name = $_.Name
@@ -57,7 +58,8 @@ if ($ProductionSign) {
         Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse |
             Where-Object { $_.Extension -in '.exe', '.dll' } |
             Select-Object -ExpandProperty FullName
-        $addOn
+        $addOnPayload | Where-Object name -ne 'Newtonsoft.Json.dll' |
+            ForEach-Object { Join-Path $addOnPayloadDirectory $_.name }
     )
 }
 
@@ -67,7 +69,7 @@ $addOnProject = Join-Path $installerRoot 'Vincere.AutoExport.AddOn.Installer.wix
 $bundleProject = Join-Path $installerRoot 'Vincere.AutoExport.Bundle.wixproj'
 dotnet build $machineProject -c Release -p:ProductVersion=$Version -p:AgentPublishDir=$agentPublish -p:UiPublishDir=$uiPublish -p:OutputPath=$artifacts
 if ($LASTEXITCODE -ne 0) { throw 'Machine MSI build failed.' }
-dotnet build $addOnProject -c Release -p:ProductVersion=$Version -p:AddOnSource=$addOn -p:OutputPath=$artifacts
+dotnet build $addOnProject -c Release -p:ProductVersion=$Version -p:AddOnPayloadDirectory=$addOnPayloadDirectory -p:OutputPath=$artifacts
 if ($LASTEXITCODE -ne 0) { throw 'AddOn MSI build failed.' }
 
 $machineMsi = Join-Path $artifacts 'Vincere.AutoExport.Machine.msi'

@@ -80,8 +80,8 @@ After the preflight passes:
    `COLLECTOR_PROPRIETARY_BUILD_ENABLED=true`.
 2. Trigger **Collector Windows** manually for the exact reviewed commit.
 3. Confirm `ninjatrader-addon` compiles the .NET Framework 4.8 production AddOn,
-   validates the complete parity report, and publishes both the DLL and
-   `addon-verification.json`.
+   validates the complete parity report, and publishes the four-file runtime
+   payload plus `addon-verification.json`.
 4. Confirm the receipt SHA-256 matches the reviewed AddOn and parity evidence.
 5. Remove or set the enable variable to `false` after the controlled build unless
    a release window is active.
@@ -103,4 +103,3 @@ NinjaTrader assemblies.
   Vincere-owned DLL and its value-free verification receipt may leave the host.
 - Remove the enable variable and take the runner offline when no controlled build
   is planned.
-

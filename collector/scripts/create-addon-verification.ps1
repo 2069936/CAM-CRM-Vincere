@@ -9,6 +9,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $addOn = (Resolve-Path -LiteralPath $AddOnPath -ErrorAction Stop).Path
+. (Join-Path $PSScriptRoot 'addon-payload.ps1')
+$payload = @(Get-AddOnPayloadManifest -AddOnPath $addOn)
 $evidencePath = (Resolve-Path -LiteralPath $ParityEvidencePath -ErrorAction Stop).Path
 $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
 if ($evidence.schemaVersion -ne 1 -or -not $evidence.allFourSectionsPassed -or $evidence.captureMethod -ne 'supported-api') {
@@ -74,7 +76,8 @@ $receipt = [ordered]@{
     schemaVersion = 1
     version = $Version
     contract = 'SnapshotV1'
-    sha256 = (Get-FileHash -LiteralPath $addOn -Algorithm SHA256).Hash.ToLowerInvariant()
+    sha256 = $payload[0].sha256
+    payload = $payload
     supportedApiParityPassed = $true
     parityComparisonSha256 = $evidence.comparisonSha256.ToLowerInvariant()
     parityEvidenceSha256 = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()

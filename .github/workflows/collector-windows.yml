@@ -76,11 +76,14 @@ jobs:
         shell: pwsh
         run: |
           $authoring = Join-Path $env:RUNNER_TEMP 'vincere-installer-authoring'
-          $dummyAddOn = Join-Path $env:RUNNER_TEMP 'Vincere.AutoExport.NinjaTrader.dll'
-          New-Item -ItemType Directory -Path $authoring -Force | Out-Null
-          New-Item -ItemType File -Path $dummyAddOn -Force | Out-Null
+          $dummyPayload = Join-Path $env:RUNNER_TEMP 'vincere-addon-payload'
+          New-Item -ItemType Directory -Path $authoring, $dummyPayload -Force | Out-Null
+          foreach ($name in 'Vincere.AutoExport.NinjaTrader.dll', `
+            'Vincere.AutoExport.NinjaTrader.Core.dll', 'Vincere.AutoExport.Contracts.dll', 'Newtonsoft.Json.dll') {
+            [IO.File]::WriteAllText((Join-Path $dummyPayload $name), "test-$name")
+          }
           dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.AddOn.Installer.wixproj `
-            -c Release -p:ProductVersion=0.0.${{ github.run_number }} -p:AddOnSource=$dummyAddOn -p:OutputPath=$authoring
+            -c Release -p:ProductVersion=0.0.${{ github.run_number }} -p:AddOnPayloadDirectory=$dummyPayload -p:OutputPath=$authoring
           if ($LASTEXITCODE -ne 0) { throw 'Disposable AddOn MSI authoring failed.' }
           dotnet build collector\src\Vincere.AutoExport.Installer\Vincere.AutoExport.Bundle.wixproj `
             -c Release -p:ProductVersion=0.0.${{ github.run_number }} `
@@ -156,6 +159,9 @@ jobs:
           name: verified-addon-${{ github.run_number }}
           path: |
             collector/src/Vincere.AutoExport.NinjaTrader/bin/Release/net48/Vincere.AutoExport.NinjaTrader.dll
+            collector/src/Vincere.AutoExport.NinjaTrader/bin/Release/net48/Vincere.AutoExport.NinjaTrader.Core.dll
+            collector/src/Vincere.AutoExport.NinjaTrader/bin/Release/net48/Vincere.AutoExport.Contracts.dll
+            collector/src/Vincere.AutoExport.NinjaTrader/bin/Release/net48/Newtonsoft.Json.dll
             artifacts/addon-verification.json
           retention-days: 3
           if-no-files-found: error

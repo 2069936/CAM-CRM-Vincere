@@ -73,10 +73,12 @@ NinjaTrader. An administrator may override the persisted
 `NinjaTraderDocuments` Burn variable only for controlled multi-profile
 recovery; the same directory-existence gate still applies.
 
-Production packaging fails unless the AddOn DLL has a matching verification
-receipt proving all four `SnapshotV1` sections passed the supported-API parity
-gate. The probe and UI-automation experiments are never accepted as installer
-inputs.
+Production packaging fails unless the AddOn DLL and its three runtime
+dependencies (`NinjaTrader.Core`, `Contracts`, and `Newtonsoft.Json`) have a
+matching verification receipt proving all four `SnapshotV1` sections passed
+the supported-API parity gate. The installer validates and ships that exact
+four-file payload. The probe and UI-automation experiments are never accepted
+as installer inputs.
 
 On a controlled Windows runner:
 
