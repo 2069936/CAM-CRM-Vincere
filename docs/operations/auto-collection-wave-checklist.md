@@ -3,12 +3,12 @@
 Use one copy per rollout wave. This template contains no live approval and does
 not authorize production installation by itself.
 
-Private wave record: `________________`  
-Wave number: `0 / 1 / 2 / _____`  
-Signed collector version: `________________`  
-Release-manifest SHA-256 reference: `________________`  
-Planned device count: `________________`  
-Support rollback capacity for one day: `________________`  
+Private wave record: `________________`
+Wave number: `0 / 1 / 2 / _____`
+Signed collector version: `________________`
+Release-manifest SHA-256 reference: `________________`
+Planned device count: `________________`
+Support rollback capacity for one day: `________________`
 
 ## Release freeze
 
@@ -36,7 +36,7 @@ For each opaque private VPS reference:
       and enrollment audit event.
 - [ ] Operator knows manual fallback, diagnostics, and private support contact.
 
-Installed / expected devices: `_____ / _____`  
+Installed / expected devices: `_____ / _____`
 Failed installations with owned disposition: `_____`
 
 ## Daily hold gate
@@ -83,6 +83,5 @@ Rollback order:
 - [ ] Operations confirms capacity to install and revert the next wave.
 - [ ] Engineering, CRM owner, and operations approve expansion privately.
 
-Decision: `EXPAND / HOLD / ROLLBACK`  
+Decision: `EXPAND / HOLD / ROLLBACK`
 Approval/incident references: `________________`
-

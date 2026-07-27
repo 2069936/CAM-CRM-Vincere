@@ -39,10 +39,10 @@ Copy this section for each completed wave.
 
 ### Wave `_____`
 
-Private record reference: `________________`  
-Version and release dates: `________________`  
-Planned / enrolled devices: `_____ / _____`  
-Successful trading-day hold: `_____ days`  
+Private record reference: `________________`
+Version and release dates: `________________`
+Planned / enrolled devices: `_____ / _____`
+Successful trading-day hold: `_____ days`
 
 | Gate | Aggregate result |
 |---|---:|
@@ -58,8 +58,8 @@ Successful trading-day hold: `_____ days`
 | High/critical security findings | `_____` |
 | Daily audit matched Manager | `yes / no` |
 
-Incidents by severity and disposition reference: `________________`  
-Decision: `EXPAND / HOLD / ROLLBACK`  
+Incidents by severity and disposition reference: `________________`
+Decision: `EXPAND / HOLD / ROLLBACK`
 Approval references: `________________`
 
 ## Final fleet acceptance
@@ -81,6 +81,5 @@ evidence.
 - [ ] Full CRM and Windows gates passed on the exact production artifact.
 - [ ] The observation period retaining manual upload is approved and recorded.
 
-Final decision: `NOT EVALUATED / ACCEPTED / REJECTED`  
+Final decision: `NOT EVALUATED / ACCEPTED / REJECTED`
 Private approval record: `________________`
-

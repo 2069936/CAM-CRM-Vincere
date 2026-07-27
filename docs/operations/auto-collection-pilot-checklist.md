@@ -4,11 +4,11 @@ This is a blank, redacted template. Store operational identities and approvals
 in the private system referenced below; never add client data or credentials to
 this repository.
 
-Private pilot record: `________________`  
-Collector version: `________________`  
-Release-manifest SHA-256 reference: `________________`  
-Pilot start/end dates: `________________`  
-Expected device count: `2 / 3`  
+Private pilot record: `________________`
+Collector version: `________________`
+Release-manifest SHA-256 reference: `________________`
+Pilot start/end dates: `________________`
+Expected device count: `2 / 3`
 
 ## Authorization and selection
 
@@ -78,11 +78,10 @@ Record only sanitized report/ticket references here.
 - [ ] High-severity security, signature, or data-loss findings: zero.
 - [ ] Every incident has an owner, disposition, and sanitized reference.
 
-Decision: `GO / NO-GO`  
-Engineering approval reference: `________________`  
-CRM-owner approval reference: `________________`  
-Operations approval reference: `________________`  
+Decision: `GO / NO-GO`
+Engineering approval reference: `________________`
+CRM-owner approval reference: `________________`
+Operations approval reference: `________________`
 
 Any unchecked required/security item makes the decision **NO-GO**. Continue
 manual export and return the finding to its owning implementation plan.
-

@@ -83,4 +83,3 @@ systematic P&L mismatch, or possible data loss. Pause new enrollment, revoke
 only affected devices, preserve queue/raw/audit evidence, restore the previous
 approved package or uninstall Vincere components, and use the manual four-CSV
 workflow. Failed required/security criteria cannot be waived.
-

@@ -84,7 +84,7 @@ approved disposable VM:
       retaining unsent data.
 - [ ] Switch to the manual four-CSV workflow and complete the normal CRM review.
 
-Training evidence reference: `________________`  
+Training evidence reference: `________________`
 Open gaps and owner: `________________`
 
 ## Acceptance boundary
@@ -94,4 +94,3 @@ is a separate change and cannot be inferred from fleet installation count.
 Handoff is complete only after the production artifact, pilot, waves, daily
 monitoring, incident exercises, and support competency checks have direct
 evidence linked from the master completion audit.
-
