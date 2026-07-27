@@ -131,13 +131,13 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.423
-      - name: Verify proprietary references remain outside checkout
+      - name: Verify controlled NinjaTrader runner readiness
         shell: pwsh
         run: |
-          if (-not $env:NINJATRADER_HOME) { throw 'NINJATRADER_HOME is required.' }
-          $home = (Resolve-Path $env:NINJATRADER_HOME).Path
-          $checkout = (Resolve-Path $env:GITHUB_WORKSPACE).Path
-          if ($home.StartsWith($checkout, [StringComparison]::OrdinalIgnoreCase)) { throw 'NinjaTrader references must remain outside the checkout.' }
+          collector\scripts\test-ninjatrader-runner-readiness.ps1 `
+            -NinjaTraderHome $env:NINJATRADER_HOME `
+            -ParityEvidencePath $env:NINJATRADER_PARITY_EVIDENCE `
+            -CheckoutPath $env:GITHUB_WORKSPACE | ConvertTo-Json -Depth 3
       - name: Compile production AddOn
         run: dotnet build collector\src\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj -c Release -p:TreatWarningsAsErrors=true
       - name: Require supported-API parity evidence
@@ -182,6 +182,13 @@ jobs:
           foreach ($name in 'WINDOWS_SIGNING_CERT_BASE64','WINDOWS_SIGNING_CERT_PASSWORD','WINDOWS_SIGNING_TIMESTAMP_URL','COLLECTOR_RELEASE_BASE_URL') {
             if (-not (Get-Item "env:$name").Value) { throw "$name is required." }
           }
+      - name: Verify controlled NinjaTrader runner readiness
+        shell: pwsh
+        run: |
+          collector\scripts\test-ninjatrader-runner-readiness.ps1 `
+            -NinjaTraderHome $env:NINJATRADER_HOME `
+            -ParityEvidencePath $env:NINJATRADER_PARITY_EVIDENCE `
+            -CheckoutPath $env:GITHUB_WORKSPACE | ConvertTo-Json -Depth 3
       - name: Build and sign complete installer
         shell: pwsh
         env:
