@@ -95,6 +95,16 @@ export function parseCurrency(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// For grid columns a user can switch off. parseCurrency reads an absent value as
+// 0, which for these two is a lie that hides itself: a CAM without the "Trailing
+// max drawdown" column enabled would export nothing for it, the close would
+// record a confident 0, and every drawdown flag would stay silent. Absent has to
+// stay absent so it can be reconstructed or reported as unknown.
+export function parseOptionalCurrency(value) {
+  if (value == null || String(value).trim() === '') return null;
+  return parseCurrency(value);
+}
+
 function parseBool(value) {
   return String(value || '').trim().toLowerCase() === 'true';
 }
@@ -232,9 +242,9 @@ function mapAccount(row) {
     connection: row.connection || row.connectionName || '',
     accountName: row.accountName || row.displayName || '',
     grossRealizedPnl: realizedPnl !== 0 ? realizedPnl : grossRealizedPnl,
-    trailingMaxDrawdown: parseCurrency(row.trailingMaxDrawdown),
+    trailingMaxDrawdown: parseOptionalCurrency(row.trailingMaxDrawdown),
     accountBalance: parseCurrency(row.cashValue),
-    weeklyPnl: parseCurrency(row.weeklyPnl),
+    weeklyPnl: parseOptionalCurrency(row.weeklyPnl),
     unrealizedPnl: parseCurrency(row.unrealizedPnl),
   };
 }

@@ -1,4 +1,5 @@
 import { summarizePnlSources } from './pnlSourceSummary.js';
+import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './derivedAccountMetrics.js';
 
 export const ACCOUNT_TYPES = {
   UNASSIGNED: 'Unassigned',
@@ -132,15 +133,43 @@ function isSimulatorAccount(accountName) {
   return String(accountName || '').trim().toLowerCase().startsWith('sim');
 }
 
-function createSnapshot(account, strategies) {
+// A source that says null means "I have no value for this" — preserved as null
+// rather than pretended to be zero. Only an absent legacy field defaults to 0.
+// Both are candidates for derivation; the distinction only matters when there is
+// no history to derive from.
+function isMissing(value) {
+  return value === undefined || value === null;
+}
+
+function withoutDerivation(value) {
+  return value === undefined ? 0 : value;
+}
+
+function createSnapshot(account, strategies, derived = {}) {
+  const reportedTrailing = account.trailingMaxDrawdown;
+  const reportedWeekly = account.weeklyPnl;
+  // A number the grid reported always wins; we only fill a genuine hole.
+  const useDerivedTrailing = isMissing(reportedTrailing) && derived.trailing != null;
+  const useDerivedWeekly = isMissing(reportedWeekly) && derived.weekly != null;
+
   return {
     accountName: account.accountName,
     connection: account.connection || '',
     grossRealizedPnl: account.grossRealizedPnl === undefined ? 0 : account.grossRealizedPnl,
     pnlSource: account.pnlSource || null,
-    trailingMaxDrawdown: account.trailingMaxDrawdown === undefined ? 0 : account.trailingMaxDrawdown,
+    trailingMaxDrawdown: useDerivedTrailing
+      ? derived.trailing.value
+      : withoutDerivation(reportedTrailing),
+    // 'derived' means we reconstructed it from stored closes and it is a lower
+    // bound — an intraday peak we never saw would only make it worse.
+    trailingSource: useDerivedTrailing ? 'derived' : (isMissing(reportedTrailing) ? null : 'reported'),
+    trailingPeak: useDerivedTrailing ? derived.trailing.peak : null,
+    trailingHasGaps: useDerivedTrailing ? derived.trailing.hasGaps : false,
     accountBalance: account.accountBalance === undefined ? 0 : account.accountBalance,
-    weeklyPnl: account.weeklyPnl === undefined ? 0 : account.weeklyPnl,
+    weeklyPnl: useDerivedWeekly
+      ? derived.weekly.value
+      : withoutDerivation(reportedWeekly),
+    weeklyPnlSource: useDerivedWeekly ? 'derived' : (isMissing(reportedWeekly) ? null : 'reported'),
     unrealizedPnl: account.unrealizedPnl === undefined ? 0 : account.unrealizedPnl,
     strategies,
   };
@@ -158,7 +187,11 @@ function snapshotToAccount(snapshot) {
   };
 }
 
-export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) {
+// `history` is the client's previously stored closes. NinjaTrader's API exposes
+// neither weekly PnL nor trailing drawdown — they exist only as Accounts grid
+// columns — so an automatic capture arrives without them. Given the history we
+// reconstruct both rather than losing the drawdown flags on automatic closes.
+export function reconcileDailyImport({ clientId, date, registry = {}, parsed, history = [] }) {
   const accountsByName = {};
   const snapshots = [];
   const flags = [];
@@ -183,7 +216,21 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
     const strategies = strategiesByAccount[account.accountName] || [];
 
     accountsByName[account.accountName] = meta;
-    snapshots.push(createSnapshot(account, strategies));
+
+    // Only computed when the grid did not report the value, and only from closes
+    // we already hold. `todayClose` appends the day being reconciled, which is
+    // not in `history` yet.
+    const todayClose = { date, snapshots: [{ accountName: account.accountName, accountBalance: account.accountBalance, grossRealizedPnl: account.grossRealizedPnl }] };
+    const closes = [...history, todayClose];
+    const derived = {
+      trailing: account.trailingMaxDrawdown === undefined || account.trailingMaxDrawdown === null
+        ? deriveTrailingDrawdown(closes, account.accountName, date, { startBalance: meta.startBalance })
+        : null,
+      weekly: account.weeklyPnl === undefined || account.weeklyPnl === null
+        ? deriveWeeklyPnl(closes, account.accountName, date)
+        : null,
+    };
+    snapshots.push(createSnapshot(account, strategies, derived));
     seen.add(account.accountName.toLowerCase());
 
     if (!existing) {
@@ -214,7 +261,15 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
     }
 
     const ddLimit = Number(meta.maxDrawdownLimit);
-    const rawDD = Number(account.trailingMaxDrawdown || 0);
+    // Use the snapshot's value, which may have been reconstructed above.
+    const snapshot = snapshots[snapshots.length - 1];
+    const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
+    // A reconstructed drawdown is a lower bound, so warn sooner on it: the real
+    // figure can be worse than this and never better.
+    const limits = drawdownThresholds(snapshot.trailingSource);
+    const derivedNote = snapshot.trailingSource === 'derived'
+      ? ' (estimated from stored closes - confirm with the prop firm)'
+      : '';
 
     if (Number.isFinite(ddLimit) && ddLimit > 0) {
       // Model 1: configured limit - trailingMaxDrawdown is cumulative loss (negative number)
@@ -226,21 +281,21 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
             type: 'Drawdown breached',
             severity: 'Critical',
             accountName: account.accountName,
-            message: `${meta.alias} has exceeded its $${ddLimit.toLocaleString()} max drawdown limit. Account may be terminated.`,
+            message: `${meta.alias} has exceeded its $${ddLimit.toLocaleString()} max drawdown limit. Account may be terminated.${derivedNote}`,
           }));
-        } else if (remaining <= 500) {
+        } else if (remaining <= limits.critical) {
           flags.push(makeFlag({
             type: 'Drawdown near limit',
             severity: 'Critical',
             accountName: account.accountName,
-            message: `${meta.alias} is $${Math.round(remaining)} from its $${ddLimit.toLocaleString()} max drawdown limit. Immediate action required.`,
+            message: `${meta.alias} is $${Math.round(remaining)} from its $${ddLimit.toLocaleString()} max drawdown limit. Immediate action required.${derivedNote}`,
           }));
-        } else if (remaining <= 1200) {
+        } else if (remaining <= limits.warning) {
           flags.push(makeFlag({
             type: 'Drawdown approaching limit',
             severity: 'Warning',
             accountName: account.accountName,
-            message: `${meta.alias} has $${Math.round(remaining)} remaining before its $${ddLimit.toLocaleString()} max drawdown limit.`,
+            message: `${meta.alias} has $${Math.round(remaining)} remaining before its $${ddLimit.toLocaleString()} max drawdown limit.${derivedNote}`,
           }));
         }
       }
@@ -254,14 +309,14 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
           accountName: account.accountName,
           message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} - account limit reached or exceeded. Verify with prop firm immediately.`,
         }));
-      } else if (rawDD <= 500) {
+      } else if (rawDD <= limits.critical) {
         flags.push(makeFlag({
           type: 'Drawdown near limit',
           severity: 'Critical',
           accountName: account.accountName,
           message: `${meta.alias} has only $${Math.round(rawDD)} of trailing drawdown buffer remaining. Immediate action required.`,
         }));
-      } else if (rawDD <= 1200) {
+      } else if (rawDD <= limits.warning) {
         flags.push(makeFlag({
           type: 'Drawdown approaching limit',
           severity: 'Warning',

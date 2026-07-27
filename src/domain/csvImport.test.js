@@ -285,3 +285,35 @@ describe('normalizeStrategyFamily', () => {
     expect(normalizeStrategyFamily(null)).toBe('Unknown');
   });
 });
+
+describe('optional grid columns must not read as zero', () => {
+  // A CAM who has not enabled "Trailing max drawdown" exports a file without it.
+  // Reading that as 0 would record a confident number nobody measured and leave
+  // every drawdown flag silent, which is how an account dies unnoticed.
+  it('reports an absent trailing column as unknown, not as zero', () => {
+    const withoutColumn = parseNinjaTraderCsvText(
+      'Display name,Cash value,Realized PnL\nROME-7045,49352.84,-1100\n',
+      'accounts.csv',
+    ).rows[0];
+    expect(withoutColumn.trailingMaxDrawdown).toBeNull();
+    expect(withoutColumn.weeklyPnl).toBeNull();
+  });
+
+  it('reports an empty cell as unknown too', () => {
+    const emptyCell = parseNinjaTraderCsvText(
+      'Display name,Cash value,Realized PnL,Trailing max drawdown,Weekly PnL\nROME-7045,49352.84,-1100,,\n',
+      'accounts.csv',
+    ).rows[0];
+    expect(emptyCell.trailingMaxDrawdown).toBeNull();
+    expect(emptyCell.weeklyPnl).toBeNull();
+  });
+
+  it('still reads a real value, including a genuine zero', () => {
+    const populated = parseNinjaTraderCsvText(
+      'Display name,Cash value,Realized PnL,Trailing max drawdown,Weekly PnL\nROME-7045,49352.84,-1100,888.48,0\n',
+      'accounts.csv',
+    ).rows[0];
+    expect(populated.trailingMaxDrawdown).toBe(888.48);
+    expect(populated.weeklyPnl).toBe(0);
+  });
+});
