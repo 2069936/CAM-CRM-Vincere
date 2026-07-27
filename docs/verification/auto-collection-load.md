@@ -7,9 +7,14 @@ clients. For each client it generates a one-time enrollment, pairs one synthetic
 device, sends a heartbeat, uploads one four-section snapshot, repeats the same
 capture to verify idempotency, verifies Manager history routing, downloads the
 stored JSON and reconstructed CSV ZIP, and revokes the exact device it created.
-The first device deliberately places a different synthetic machine ID inside
-the snapshot source metadata; history must still route it through the device
-credential rather than trusting payload metadata.
+After both downloads, it asks the Manager-only verification endpoint to confirm
+the exact batch-to-import link, automatic source, client/date routing, normalized
+row and flag counts, unique device/capture claim, terminal audit event, and both
+download audit events. A successful ingest response alone is not accepted.
+The first device deliberately attempts a snapshot containing a different
+synthetic machine ID in its source metadata. The server must reject it before
+claiming a batch or storing bytes. The harness then sends the valid snapshot
+and confirms that all accepted history routes through the enrolled credential.
 
 The committed harness never provisions or deletes clients and never performs a
 broad database or Storage cleanup. Use only synthetic clients created for this
@@ -81,6 +86,9 @@ Record only the aggregate JSON produced by the harness:
 - requested, paired, processed, duplicate, routed, downloaded, and revoked
   counts;
 - unique batch count;
+- verified persistence and private Storage object counts;
+- rejected enrollment replay and source-metadata spoof counts;
+- aggregate normalized Accounts, Strategies, Orders, Executions, and flag counts;
 - request count, failure count, and error rate;
 - p50, p95, p99, and maximum latency by stage; and
 - stable failure categories and counts.
@@ -88,14 +96,17 @@ Record only the aggregate JSON produced by the harness:
 Pass requires all requested devices to pair, process, return the original batch
 on duplicate upload, route to the expected client/device, download both formats,
 and revoke successfully. `uniqueBatchCount` must equal the device count and the
-failure list must be empty. The report intentionally contains no client UUIDs,
+failure list must be empty. `verifiedPersistence` and `verifiedStorageObjects`
+must also equal the device count. The verification endpoint compares exact
+database counts to the shared reconciliation summary and requires one terminal
+audit event plus at least two audited downloads for every batch. The JSON
+download verifies the existence, metadata, compressed bytes, and content hash
+of the exact private Storage object. The report intentionally contains no client UUIDs,
 device IDs, capture IDs, names, codes, tokens, row values, or project reference.
 
-Before accepting the live result, use exact private client and batch IDs to
-confirm that each successful unique batch has one private Storage object, one
-automatic `daily_import`, traceable normalized rows, and only the flags produced
-by the shared reconciliation path. Record counts only. Do not commit the private
-manifest, SQL output with IDs, raw snapshots, or downloaded ZIPs.
+Before accepting the live result, retain the private manifest only long enough
+to resolve an unexpected aggregate failure. Do not commit the private manifest,
+API responses with IDs, raw snapshots, or downloaded ZIPs.
 
 ## Pending live results
 

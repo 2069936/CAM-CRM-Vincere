@@ -15,7 +15,7 @@ function json(body, status = 200) {
   });
 }
 
-function createFakeStagingApi({ delayMs = 0, misrouteCapture = null } = {}) {
+function createFakeStagingApi({ delayMs = 0, misrouteCapture = null, persistenceMismatchBatch = null } = {}) {
   const enrollments = new Map();
   const devices = new Map();
   const batches = new Map();
@@ -62,6 +62,8 @@ function createFakeStagingApi({ delayMs = 0, misrouteCapture = null } = {}) {
 
       if (url.pathname === '/api/ingest/daily' && method === 'POST') {
         if (!device) return json({ error: 'invalid_device_credential' }, 401);
+        const headerMachine = new Headers(init.headers).get('x-machine-id');
+        if (body?.source?.machineId !== headerMachine) return json({ error: 'source_machine_mismatch' }, 400);
         const existing = batches.get(body.captureId);
         if (existing) return json({ ok: true, duplicate: true, batchId: existing.id, dailyImportId: existing.dailyImportId, status: 'processed' });
         const index = batches.size + 1;
@@ -101,6 +103,21 @@ function createFakeStagingApi({ delayMs = 0, misrouteCapture = null } = {}) {
         return new Response(new Uint8Array([80, 75, 3, 4]), { status: 200, headers: { 'content-type': 'application/zip' } });
       }
 
+      if (url.pathname === '/api/admin/ingest-verify' && method === 'GET') {
+        const batch = [...batches.values()].find((candidate) => candidate.id === url.searchParams.get('batchId'));
+        if (!batch) return json({ error: 'batch_not_found' }, 404);
+        const mismatch = batch.id === persistenceMismatchBatch;
+        return json({
+          ok: !mismatch,
+          failures: mismatch ? ['normalized_count_mismatch'] : [],
+          counts: { accounts: mismatch ? 0 : 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
+          expectedCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
+          duplicateClaimCount: 1,
+          terminalAuditCount: 1,
+          downloadAuditCount: 2,
+        });
+      }
+
       if (url.pathname === '/api/admin/ingest-enrollment' && method === 'DELETE') {
         const target = [...devices.entries()].find(([, candidate]) => candidate.deviceId === body.deviceId);
         if (!target || target[1].clientUuid !== body.clientUuid) return json({ error: 'ingest_access_not_found' }, 404);
@@ -136,9 +153,13 @@ describe('auto-collection staging load harness', () => {
       ok: true,
       requestedDevices: 20,
       pairedDevices: 20,
+      sourceMetadataSpoofRejected: 1,
       processedCaptures: 20,
       duplicateReceipts: 20,
       routedCaptures: 20,
+      verifiedPersistence: 20,
+      verifiedStorageObjects: 20,
+      normalizedRows: { accounts: 20, strategies: 20, orders: 20, executions: 20, flags: 40 },
       jsonDownloads: 20,
       zipDownloads: 20,
       revokedDevices: 20,
@@ -186,9 +207,35 @@ describe('auto-collection staging load harness', () => {
       concurrency: 20,
       fetchImpl: api.fetchImpl,
     });
-    expect(report).toMatchObject({ ok: true, requestedDevices: 200, processedCaptures: 200, duplicateReceipts: 200, routedCaptures: 200 });
+    expect(report).toMatchObject({
+      ok: true,
+      requestedDevices: 200,
+      processedCaptures: 200,
+      duplicateReceipts: 200,
+      routedCaptures: 200,
+      verifiedPersistence: 200,
+      verifiedStorageObjects: 200,
+      normalizedRows: { accounts: 200, strategies: 200, orders: 200, executions: 200, flags: 400 },
+    });
     expect(report.uniqueBatchCount).toBe(200);
     expect(api.maxActive).toBeLessThanOrEqual(20);
+  });
+
+  it('fails when exact normalized persistence or audit evidence does not match', async () => {
+    const captureIds = [uuid(710_001)];
+    const expectedBatchId = uuid(30_001);
+    const api = createFakeStagingApi({ persistenceMismatchBatch: expectedBatchId });
+    const report = await runAutoCollectionFleet({
+      baseUrl: 'https://staging.example.test',
+      managerToken: 'manager-token-not-for-output',
+      clientUuids: clients(1),
+      concurrency: 1,
+      fetchImpl: api.fetchImpl,
+      deterministicCaptureIds: captureIds,
+    });
+    expect(report.ok).toBe(false);
+    expect(report.verifiedPersistence).toBe(0);
+    expect(report.failures).toContainEqual({ stage: 'persistence', code: 'persistence_evidence_mismatch', count: 1 });
   });
 
   it('requires an HTTPS staging origin and one unique client per device', () => {

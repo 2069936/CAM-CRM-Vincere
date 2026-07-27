@@ -11,6 +11,7 @@ import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
 import { persistDailyImportWithClient } from '../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../src/domain/reconcile.js';
 import { resolveAutoCollectionLimits } from '../_lib/autoCollectionLimits.js';
+import { normalizeMachineId } from '../_lib/ingestTokens.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -63,6 +64,18 @@ function envelope(snapshot, { now, maxFutureSkewMs = 5 * 60 * 1000 }) {
     schemaVersion: snapshot.schemaVersion,
     rowCounts: Object.fromEntries(SECTIONS.map((name) => [name, Array.isArray(snapshot[name]) ? snapshot[name].length : 0])),
   };
+}
+
+function requireSourceMachine(snapshot, req) {
+  let sourceMachine;
+  let authenticatedMachine;
+  try {
+    sourceMachine = normalizeMachineId(snapshot?.source?.machineId);
+    authenticatedMachine = normalizeMachineId(req?.headers?.['x-machine-id']);
+  } catch {
+    throw new ApiError(400, 'source_machine_mismatch');
+  }
+  if (sourceMachine !== authenticatedMachine) throw new ApiError(400, 'source_machine_mismatch');
 }
 
 function publicFailure(stage) {
@@ -129,6 +142,7 @@ export function createHandler({
       const admin = createClient();
       device = await authenticate(req, { store: createAuthStore(admin), pepper });
       const decoded = await decodeRequest(req, { maxCompressedBytes, maxUncompressedBytes });
+      requireSourceMachine(decoded.snapshot, req);
       info = envelope(decoded.snapshot, { now: now() });
       const storagePath = `${device.clientId}/${info.tradingDate}/${info.captureId}.json.gz`;
       processingToken = createProcessingToken();

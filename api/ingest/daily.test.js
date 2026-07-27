@@ -55,7 +55,12 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authe
 }
 
 async function ingest(handler, value = snapshot(), reqOverrides = {}) {
-  const req = { method: 'POST', headers: { authorization: 'Bearer x', 'x-machine-id': 'x', 'content-encoding': 'gzip' }, body: gzipSync(Buffer.from(JSON.stringify(value))), ...reqOverrides };
+  const req = {
+    method: 'POST',
+    headers: { authorization: 'Bearer x', 'x-machine-id': value?.source?.machineId || 'redacted', 'content-encoding': 'gzip' },
+    body: gzipSync(Buffer.from(JSON.stringify(value))),
+    ...reqOverrides,
+  };
   const res = response(); await handler(req, res); return res;
 }
 
@@ -77,6 +82,21 @@ describe('daily snapshot ingest', () => {
     expect(calls.terminal[0]).toMatchObject({ batchId: 'batch-1', status: 'processed', dailyImportId: 'daily-1' });
     expect(calls.audit).toHaveLength(1);
     expect(calls.device).toEqual([expect.objectContaining({ deviceId: DEVICE_ID, success: true })]);
+  });
+
+  it('rejects source metadata from another machine after authentication and before claiming storage', async () => {
+    const { handler, calls } = setup();
+    const res = await ingest(handler, snapshot(), {
+      headers: {
+        authorization: 'Bearer x',
+        'x-machine-id': 'different-machine',
+        'content-encoding': 'gzip',
+      },
+    });
+    expect(res).toMatchObject({ statusCode: 400, body: { error: 'source_machine_mismatch' } });
+    expect(calls.order).toEqual(['auth']);
+    expect(calls.claim).toHaveLength(0);
+    expect(calls.storeRaw).toHaveLength(0);
   });
 
   it('returns the original identifiers only for a confirmed terminal duplicate', async () => {

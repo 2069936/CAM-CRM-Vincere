@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SUCCESS_STATUS = new Set(['processed', 'incomplete', 'late_closed_day', 'replaced']);
+const PERSISTED_COUNT_KEYS = ['accounts', 'strategies', 'orders', 'executions', 'flags'];
 
 class HarnessFailure extends Error {
   constructor(stage, code) {
@@ -179,7 +180,10 @@ export async function runAutoCollectionFleet({
     duplicate: false,
     routed: false,
     jsonDownloaded: false,
+    storageVerified: false,
     zipDownloaded: false,
+    persistenceVerified: false,
+    normalizedCounts: null,
     revoked: false,
   }));
 
@@ -315,9 +319,28 @@ export async function runAutoCollectionFleet({
     }
   });
 
-  await stage(paired, 'ingest', async (scenario, index) => {
-    const spoofedMachineId = index === 0 && paired.length > 1 ? paired[1].machineId : null;
-    scenario.snapshot = makeSnapshot(template, scenario, startedAt, spoofedMachineId);
+  let sourceMetadataSpoofRejected = 0;
+  const spoofTarget = paired[0];
+  if (spoofTarget) {
+    try {
+      const otherMachine = paired[1]?.machineId || `vincere-spoof-${uuidFactory()}`;
+      const spoofedSnapshot = makeSnapshot(template, spoofTarget, startedAt, otherMachine);
+      const { body } = await request('source_metadata_spoof', '/api/ingest/daily', {
+        method: 'POST',
+        token: spoofTarget.deviceToken,
+        machineId: spoofTarget.machineId,
+        body: spoofedSnapshot,
+        expectedStatuses: [400],
+      });
+      if (body?.error !== 'source_machine_mismatch') fail('source_metadata_spoof', 'spoof_rejection_mismatch');
+      sourceMetadataSpoofRejected = 1;
+    } catch (error) {
+      rawFailures.push(safeFailure(error, 'source_metadata_spoof'));
+    }
+  }
+
+  await stage(paired, 'ingest', async (scenario) => {
+    scenario.snapshot = makeSnapshot(template, scenario, startedAt, null);
     const { body } = await request('ingest', '/api/ingest/daily', {
       method: 'POST', token: scenario.deviceToken, machineId: scenario.machineId,
       body: scenario.snapshot, expectedStatuses: [201],
@@ -364,6 +387,7 @@ export async function runAutoCollectionFleet({
     const { body } = await request('download_json', `/api/admin/ingest-download?${query}`, { token: managerToken });
     if (body?.captureId?.toLowerCase() !== scenario.captureId.toLowerCase()) fail('download_json', 'snapshot_download_mismatch');
     scenario.jsonDownloaded = true;
+    scenario.storageVerified = true;
   });
 
   await stage(scenarios.filter((item) => item.routed), 'download_zip', async (scenario) => {
@@ -376,6 +400,22 @@ export async function runAutoCollectionFleet({
       fail('download_zip', 'zip_download_invalid');
     }
     scenario.zipDownloaded = true;
+  });
+
+  await stage(scenarios.filter((item) => item.jsonDownloaded && item.zipDownloaded), 'persistence', async (scenario) => {
+    const query = new URLSearchParams({ batchId: scenario.batchId });
+    const { body } = await request('persistence', `/api/admin/ingest-verify?${query}`, { token: managerToken });
+    const countsValid = PERSISTED_COUNT_KEYS.every((key) => Number.isSafeInteger(body?.counts?.[key]) && body.counts[key] >= 0);
+    const expectedValid = PERSISTED_COUNT_KEYS.every((key) => Number.isSafeInteger(body?.expectedCounts?.[key]) && body.expectedCounts[key] >= 0);
+    const countsMatch = countsValid && expectedValid
+      && PERSISTED_COUNT_KEYS.every((key) => body.counts[key] === body.expectedCounts[key]);
+    if (body?.ok !== true || !Array.isArray(body?.failures) || body.failures.length !== 0
+      || !countsMatch || body?.duplicateClaimCount !== 1
+      || body?.terminalAuditCount !== 1 || body?.downloadAuditCount < 2) {
+      fail('persistence', 'persistence_evidence_mismatch');
+    }
+    scenario.persistenceVerified = true;
+    scenario.normalizedCounts = Object.fromEntries(PERSISTED_COUNT_KEYS.map((key) => [key, body.counts[key]]));
   });
 
   await stage(paired, 'revoke', async (scenario) => {
@@ -396,6 +436,10 @@ export async function runAutoCollectionFleet({
   const requestCount = [...samples.values()].reduce((total, values) => total + values.length, 0);
   const failedOperations = rawFailures.length;
   const completedAt = now();
+  const normalizedRows = Object.fromEntries(PERSISTED_COUNT_KEYS.map((key) => [
+    key,
+    scenarios.reduce((total, scenario) => total + (scenario.normalizedCounts?.[key] || 0), 0),
+  ]));
   const report = {
     schemaVersion: 1,
     ok: failures.length === 0,
@@ -407,10 +451,14 @@ export async function runAutoCollectionFleet({
     requestedDevices: scenarios.length,
     pairedDevices: scenarios.filter((item) => item.paired).length,
     enrollmentReplayRejected,
+    sourceMetadataSpoofRejected,
     processedCaptures: scenarios.filter((item) => item.processed).length,
     duplicateReceipts: scenarios.filter((item) => item.duplicate).length,
     routedCaptures: scenarios.filter((item) => item.routed).length,
     uniqueBatchCount: new Set(batchIds).size,
+    verifiedPersistence: scenarios.filter((item) => item.persistenceVerified).length,
+    verifiedStorageObjects: scenarios.filter((item) => item.storageVerified).length,
+    normalizedRows,
     jsonDownloads: scenarios.filter((item) => item.jsonDownloaded).length,
     zipDownloads: scenarios.filter((item) => item.zipDownloaded).length,
     revokedDevices: scenarios.filter((item) => item.revoked).length,
@@ -426,10 +474,14 @@ export function formatFleetLoadReport(report) {
     `Requested devices: ${report.requestedDevices}`,
     `Requests: ${report.requestCount} failures=${report.failedOperations} errorRate=${report.errorRate}`,
     `Paired devices: ${report.pairedDevices}`,
+    `Rejected source metadata spoof: ${report.sourceMetadataSpoofRejected}`,
     `Processed captures: ${report.processedCaptures}`,
     `Duplicate receipts: ${report.duplicateReceipts}`,
     `Routed captures: ${report.routedCaptures}`,
     `Unique batches: ${report.uniqueBatchCount}`,
+    `Verified persistence: ${report.verifiedPersistence}`,
+    `Verified Storage objects: ${report.verifiedStorageObjects}`,
+    `Normalized rows: accounts=${report.normalizedRows?.accounts || 0} strategies=${report.normalizedRows?.strategies || 0} orders=${report.normalizedRows?.orders || 0} executions=${report.normalizedRows?.executions || 0} flags=${report.normalizedRows?.flags || 0}`,
     `JSON downloads: ${report.jsonDownloads}`,
     `ZIP downloads: ${report.zipDownloads}`,
     `Revoked devices: ${report.revokedDevices}`,
