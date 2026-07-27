@@ -43,8 +43,8 @@ function New-PassedCheck {
 }
 
 $checkout = Resolve-ControlledPath -Path $CheckoutPath -MissingCode 'runner_missing_checkout'
-$home = Resolve-ControlledPath -Path $NinjaTraderHome -MissingCode 'runner_missing_ninjatrader_home'
-if (Test-PathWithin -Candidate $home -Parent $checkout) {
+$ninjaTraderRoot = Resolve-ControlledPath -Path $NinjaTraderHome -MissingCode 'runner_missing_ninjatrader_home'
+if (Test-PathWithin -Candidate $ninjaTraderRoot -Parent $checkout) {
     throw 'runner_ninjatrader_inside_checkout'
 }
 
@@ -56,7 +56,7 @@ $requiredAssemblies = [ordered]@{
     'NinjaTrader.NinjaScript.dll' = 'ninjascript'
 }
 foreach ($assembly in $requiredAssemblies.GetEnumerator()) {
-    $path = Join-Path $home "bin\$($assembly.Key)"
+    $path = Join-Path $ninjaTraderRoot "bin\$($assembly.Key)"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "runner_missing_ninjatrader_$($assembly.Value)"
     }
