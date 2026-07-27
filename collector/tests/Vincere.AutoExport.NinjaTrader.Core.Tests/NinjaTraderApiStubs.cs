@@ -90,7 +90,7 @@ namespace NinjaTrader.NinjaScript
 {
     using NinjaTrader.Cbi;
 
-    public class StrategyBase
+    public partial class StrategyBase
     {
         public string Name { get; set; }
         public string DisplayName { get; set; }
