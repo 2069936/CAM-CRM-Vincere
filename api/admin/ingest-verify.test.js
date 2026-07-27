@@ -39,7 +39,12 @@ function evidence(overrides = {}) {
       tradingDate: '2026-07-23',
       sourceType: 'automatic',
       sourceBatchId: BATCH_ID,
-      sourceSummary: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
+      sourceSummary: {
+        accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2,
+        pnl_sources: {
+          realized: 0, gross_fallback: 1, gross_missing_realized: 0, unavailable: 0, unknown: 0,
+        },
+      },
     },
     normalizedCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
     duplicateClaimCount: 1,
@@ -56,6 +61,9 @@ describe('collector persistence verification evidence', () => {
       failures: [],
       counts: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
       expectedCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
+      pnlSources: {
+        realized: 0, gross_fallback: 1, gross_missing_realized: 0, unavailable: 0, unknown: 0,
+      },
       duplicateClaimCount: 1,
       terminalAuditCount: 1,
       downloadAuditCount: 2,
@@ -70,7 +78,12 @@ describe('collector persistence verification evidence', () => {
         tradingDate: '2026-07-22',
         sourceType: 'manual',
         sourceBatchId: '88888888-8888-4888-8888-888888888888',
-        sourceSummary: { accounts: 9, strategies: 1, orders: 1, executions: 1, flags: 2 },
+        sourceSummary: {
+          accounts: 9, strategies: 1, orders: 1, executions: 1, flags: 2,
+          pnl_sources: {
+            realized: 9, gross_fallback: 0, gross_missing_realized: 0, unavailable: 0, unknown: 0,
+          },
+        },
         secretRowValue: 'must-not-leak',
       },
       normalizedCounts: { accounts: 0, strategies: 1, orders: 1, executions: 1, flags: 2 },
@@ -99,6 +112,7 @@ describe('collector persistence verification evidence', () => {
       ok: false,
       failures: ['daily_import_missing'],
       expectedCounts: null,
+      pnlSources: null,
     });
   });
 });
@@ -192,7 +206,12 @@ describe('collector persistence verification Supabase adapter', () => {
       daily_imports: {
         id: DAILY_ID, client_id: CLIENT_ID, trading_date: '2026-07-23',
         source_type: 'automatic', source_batch_id: BATCH_ID,
-        source_summary: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
+        source_summary: {
+          accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2,
+          pnl_sources: {
+            realized: 0, gross_fallback: 1, gross_missing_realized: 0, unavailable: 0, unknown: 0,
+          },
+        },
       },
     };
     const counts = {

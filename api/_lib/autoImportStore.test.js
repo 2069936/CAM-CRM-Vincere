@@ -91,6 +91,23 @@ describe('immutable auto-import payloads', () => {
 });
 
 describe('auto import Supabase store', () => {
+  it('persists automatic imports through the PnL-audited token-bound RPC', async () => {
+    const rpc = vi.fn(async () => ({
+      data: { disposition: 'persisted', daily_import: { id: 'daily-1' } }, error: null,
+    }));
+    const store = createAutoImportStore({ rpc });
+    const adapter = store.createPersistenceAdapter('99999999-9999-4999-8999-999999999999');
+    await adapter.persistDailyImportAtomic({
+      clientUuid: 'client-1',
+      sourceBatchId: 'batch-1',
+      importResult: { date: '2026-07-23', pnlSourceSummary: { gross_fallback: 1 } },
+    });
+    expect(rpc).toHaveBeenCalledWith('persist_auto_daily_import_v3', expect.objectContaining({
+      p_source_batch_id: 'batch-1',
+      p_import_result: expect.objectContaining({ pnlSourceSummary: { gross_fallback: 1 } }),
+    }));
+  });
+
   it('uses the lease claim RPC and preserves its explicit outcome', async () => {
     const rpc = vi.fn().mockResolvedValue({ data: { outcome: 'busy', retry_after_seconds: 17, batch: { id: 'batch-1', daily_import_id: null, status: 'processing', error_code: null } }, error: null });
     const store = createAutoImportStore({ rpc });

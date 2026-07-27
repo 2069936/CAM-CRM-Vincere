@@ -272,7 +272,7 @@ export function createAutoImportStore(admin) {
         isAtomic: true,
         supportsDailyImportSourceColumns: true,
         async persistDailyImportAtomic({ clientUuid, importResult, sourceBatchId }) {
-          const { data, error } = await admin.rpc('persist_auto_daily_import_v2', {
+          const { data, error } = await admin.rpc('persist_auto_daily_import_v3', {
             p_client_id: clientUuid,
             p_source_batch_id: sourceBatchId,
             p_processing_token: processingToken,

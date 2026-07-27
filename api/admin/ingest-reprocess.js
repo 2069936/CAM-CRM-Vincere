@@ -58,7 +58,7 @@ export function createReplayStore(admin) {
         isAtomic: true,
         supportsDailyImportSourceColumns: true,
         async persistDailyImportAtomic({ clientUuid, importResult, sourceBatchId }) {
-          const { data, error } = await admin.rpc('persist_closed_auto_daily_import_replacement', {
+          const { data, error } = await admin.rpc('persist_closed_auto_daily_import_replacement_v2', {
             p_client_id: clientUuid, p_source_batch_id: sourceBatchId,
             p_processing_token: processingToken, p_actor_id: actorId,
             p_reason: reason, p_import_result: importResult,

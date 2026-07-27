@@ -49,7 +49,8 @@ Recommended run order for a fresh database:
 14. `supabase/step_22_ingest_devices.sql`
 15. `supabase/step_28_auto_collection.sql`
 16. `supabase/step_29_auto_collection_reprocess.sql`
-17. `supabase/cam_crm_verification_queries.sql`
+17. `supabase/step_30_auto_collection_pnl_audit.sql`
+18. `supabase/cam_crm_verification_queries.sql`
 
 No SQL required:
 
@@ -152,6 +153,7 @@ state
 - [ ] Expand audit coverage to every low-level data mutation.
 - [ ] Apply and verify `step_28_auto_collection.sql` twice on disposable/staging Supabase; local static contract coverage is documented in `docs/verification/auto-collection-schema.md`.
 - [ ] Apply and verify `step_29_auto_collection_reprocess.sql` twice after step 28; exercise failed/incomplete replay and one approved closed-day replacement in staging.
+- [ ] Apply and verify `step_30_auto_collection_pnl_audit.sql` twice after step 29; confirm aggregate `pnl_sources` and one redacted audit event for normal and closed replacement paths.
 - [x] Add atomic enrollment generation/rebind/revoke RPCs and durable pairing rate-limit state to `step_28_auto_collection.sql`.
 
 ## Permission Direction

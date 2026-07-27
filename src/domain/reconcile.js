@@ -1,3 +1,5 @@
+import { summarizePnlSources } from './pnlSourceSummary.js';
+
 export const ACCOUNT_TYPES = {
   UNASSIGNED: 'Unassigned',
   EVALUATION_BULLET: 'Evaluation - Bullet Bot',
@@ -135,6 +137,7 @@ function createSnapshot(account, strategies) {
     accountName: account.accountName,
     connection: account.connection || '',
     grossRealizedPnl: account.grossRealizedPnl === undefined ? 0 : account.grossRealizedPnl,
+    pnlSource: account.pnlSource || null,
     trailingMaxDrawdown: account.trailingMaxDrawdown === undefined ? 0 : account.trailingMaxDrawdown,
     accountBalance: account.accountBalance === undefined ? 0 : account.accountBalance,
     weeklyPnl: account.weeklyPnl === undefined ? 0 : account.weeklyPnl,
@@ -352,6 +355,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed }) 
     orders,
     executions,
     flags,
+    pnlSourceSummary: summarizePnlSources(snapshots),
   };
 }
 

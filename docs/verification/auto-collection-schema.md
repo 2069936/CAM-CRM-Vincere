@@ -60,17 +60,21 @@ file.
    drift. `CREATE OR REPLACE FUNCTION` replaces the RPC bodies and the migration
    reapplies their explicit revokes/grants; a future signature or return-type
    change requires a reviewed drop migration.
-3. Exercise two concurrent `pair_ingest_device_v2` calls with identical hashes. Confirm both
+3. Apply `supabase/step_29_auto_collection_reprocess.sql` and
+   `supabase/step_30_auto_collection_pnl_audit.sql` twice each. Confirm the
+   service role can execute only the newest PnL-audited persistence wrappers
+   and that `pnl_sources` contains aggregate counts only.
+4. Exercise two concurrent `pair_ingest_device_v2` calls with identical hashes. Confirm both
    return the same device ID. Repeat with a different machine or credential hash
    and confirm the consumed enrollment is rejected.
-4. Exercise two concurrent batch claims with identical metadata. Confirm both
+5. Exercise two concurrent batch claims with identical metadata. Confirm both
    return the same batch ID. Repeat with changed immutable metadata and confirm
    the retry is rejected.
-5. Attempt to update an existing batch's `storage_path` and confirm the immutable
+6. Attempt to update an existing batch's `storage_path` and confirm the immutable
    path trigger rejects it.
-6. Using anon and authenticated clients, confirm direct reads and writes to the
+7. Using anon and authenticated clients, confirm direct reads and writes to the
    four ingest tables fail and that no raw Storage object can be listed or read.
-7. Exercise `create_ingest_enrollment` concurrently for one client and confirm
+8. Exercise `create_ingest_enrollment` concurrently for one client and confirm
    only one open enrollment remains. Confirm normal generation rejects an active
    device and explicit rebind revokes its credential before issuing a new code.
 8. Exercise `check_ingest_pair_rate_limit` through its threshold, block, and

@@ -114,8 +114,17 @@ describe('normalizeAutoImportSnapshot', () => {
       clientId: 'client-1', date: normalized.date, registry: {}, parsed: normalized.parsed,
     });
     expect(dailyImport.snapshots).toEqual([
-      expect.objectContaining({ accountName: 'LIVE-REDACTED-01', grossRealizedPnl: 125.5 }),
+      expect.objectContaining({
+        accountName: 'LIVE-REDACTED-01', grossRealizedPnl: 125.5, pnlSource: 'realized',
+      }),
     ]);
+    expect(dailyImport.pnlSourceSummary).toEqual({
+      realized: 1,
+      gross_fallback: 0,
+      gross_missing_realized: 0,
+      unavailable: 0,
+      unknown: 0,
+    });
   });
 
   it('preserves the additional NinjaTrader grid fields used by manual imports', () => {

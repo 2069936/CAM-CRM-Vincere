@@ -112,6 +112,7 @@ function createFakeStagingApi({ delayMs = 0, misrouteCapture = null, persistence
           failures: mismatch ? ['normalized_count_mismatch'] : [],
           counts: { accounts: mismatch ? 0 : 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
           expectedCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1, flags: 2 },
+          pnlSources: { realized: 1, gross_fallback: 0, gross_missing_realized: 0, unavailable: 0, unknown: 0 },
           duplicateClaimCount: 1,
           terminalAuditCount: 1,
           downloadAuditCount: 2,
@@ -160,6 +161,7 @@ describe('auto-collection staging load harness', () => {
       verifiedPersistence: 20,
       verifiedStorageObjects: 20,
       normalizedRows: { accounts: 20, strategies: 20, orders: 20, executions: 20, flags: 40 },
+      pnlSources: { realized: 20, gross_fallback: 0, gross_missing_realized: 0, unavailable: 0, unknown: 0 },
       jsonDownloads: 20,
       zipDownloads: 20,
       revokedDevices: 20,
@@ -216,6 +218,7 @@ describe('auto-collection staging load harness', () => {
       verifiedPersistence: 200,
       verifiedStorageObjects: 200,
       normalizedRows: { accounts: 200, strategies: 200, orders: 200, executions: 200, flags: 400 },
+      pnlSources: { realized: 200, gross_fallback: 0, gross_missing_realized: 0, unavailable: 0, unknown: 0 },
     });
     expect(report.uniqueBatchCount).toBe(200);
     expect(api.maxActive).toBeLessThanOrEqual(20);

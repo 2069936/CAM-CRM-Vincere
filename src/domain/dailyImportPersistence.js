@@ -1,3 +1,5 @@
+import { summarizePnlSources } from './pnlSourceSummary.js';
+
 export const DAILY_IMPORT_CLOSED_CODE = 'daily_import_closed';
 
 /**
@@ -195,6 +197,7 @@ function makeDailyImportRow({ clientUuid, importResult, sourceBatchId, supportsS
   if (sourceBatchId) {
     sourceSummary.source_type = 'automatic';
     sourceSummary.source_batch_id = sourceBatchId;
+    sourceSummary.pnl_sources = summarizePnlSources(importResult.snapshots || []);
   }
 
   const row = {

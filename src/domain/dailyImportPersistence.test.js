@@ -365,14 +365,32 @@ describe('persistDailyImportWithClient', () => {
     await persistDailyImportWithClient({
       db,
       clientUuid: 'client-uuid',
-      importResult: importResult(),
+      importResult: importResult({
+        snapshots: [
+          { accountName: 'a', pnlSource: 'realized' },
+          { accountName: 'b', pnlSource: 'gross_fallback' },
+          { accountName: 'c', pnlSource: 'gross_missing_realized' },
+          { accountName: 'd', pnlSource: 'unavailable' },
+          { accountName: 'e', pnlSource: 'unexpected' },
+        ],
+      }),
       sourceBatchId: 'batch-1',
     });
 
     expect(db.upsertDailyImport).toHaveBeenCalledWith(expect.objectContaining({
       source_type: 'automatic',
       source_batch_id: 'batch-1',
-      source_summary: expect.objectContaining({ source_type: 'automatic', source_batch_id: 'batch-1' }),
+      source_summary: expect.objectContaining({
+        source_type: 'automatic',
+        source_batch_id: 'batch-1',
+        pnl_sources: {
+          realized: 1,
+          gross_fallback: 1,
+          gross_missing_realized: 1,
+          unavailable: 1,
+          unknown: 1,
+        },
+      }),
     }));
   });
 

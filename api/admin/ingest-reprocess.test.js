@@ -152,6 +152,6 @@ describe('replay Supabase adapter', () => {
     const adapter = store.createClosedReplacementAdapter({ processingToken: 'token-1', actorId: 'manager-1', reason: 'Approved closed replacement' });
     await adapter.persistDailyImportAtomic({ clientUuid: CLIENT_ID, sourceBatchId: BATCH_ID, importResult: { date: '2026-07-23' } });
     expect(rpc).toHaveBeenNthCalledWith(1, 'claim_ingest_batch_reprocess', expect.objectContaining({ p_batch_id: BATCH_ID, p_actor_id: 'manager-1', p_confirm_closed_day: true }));
-    expect(rpc).toHaveBeenNthCalledWith(2, 'persist_closed_auto_daily_import_replacement', expect.objectContaining({ p_source_batch_id: BATCH_ID, p_processing_token: 'token-1', p_reason: 'Approved closed replacement' }));
+    expect(rpc).toHaveBeenNthCalledWith(2, 'persist_closed_auto_daily_import_replacement_v2', expect.objectContaining({ p_source_batch_id: BATCH_ID, p_processing_token: 'token-1', p_reason: 'Approved closed replacement' }));
   });
 });

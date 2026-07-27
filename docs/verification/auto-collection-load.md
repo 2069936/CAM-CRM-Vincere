@@ -94,6 +94,7 @@ Record only the aggregate JSON produced by the harness:
 - verified persistence and private Storage object counts;
 - rejected enrollment replay and source-metadata spoof counts;
 - aggregate normalized Accounts, Strategies, Orders, Executions, and flag counts;
+- aggregate Realized/Gross selection-source counts, with no account names or P&L values;
 - request count, failure count, and error rate;
 - configured upload/retry jitter window;
 - p50, p95, p99, and maximum latency by stage; and
@@ -125,6 +126,7 @@ API responses with IDs, raw snapshots, or downloaded ZIPs.
 | Routing mismatches | pending | pending |
 | Duplicate normalized rows | pending | pending |
 | Storage objects | pending | pending |
+| Gross fallback selections | pending | pending |
 | Error rate | pending | pending |
 | p95 ingest latency | pending | pending |
 | Result | pending | pending |

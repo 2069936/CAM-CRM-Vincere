@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SUCCESS_STATUS = new Set(['processed', 'incomplete', 'late_closed_day', 'replaced']);
 const PERSISTED_COUNT_KEYS = ['accounts', 'strategies', 'orders', 'executions', 'flags'];
+const PNL_SOURCE_KEYS = ['realized', 'gross_fallback', 'gross_missing_realized', 'unavailable', 'unknown'];
 
 class HarnessFailure extends Error {
   constructor(stage, code) {
@@ -194,6 +195,7 @@ export async function runAutoCollectionFleet({
     zipDownloaded: false,
     persistenceVerified: false,
     normalizedCounts: null,
+    pnlSources: null,
     revoked: false,
   }));
 
@@ -429,13 +431,16 @@ export async function runAutoCollectionFleet({
     const expectedValid = PERSISTED_COUNT_KEYS.every((key) => Number.isSafeInteger(body?.expectedCounts?.[key]) && body.expectedCounts[key] >= 0);
     const countsMatch = countsValid && expectedValid
       && PERSISTED_COUNT_KEYS.every((key) => body.counts[key] === body.expectedCounts[key]);
+    const pnlSourcesValid = PNL_SOURCE_KEYS.every((key) => Number.isSafeInteger(body?.pnlSources?.[key]) && body.pnlSources[key] >= 0)
+      && PNL_SOURCE_KEYS.reduce((total, key) => total + body.pnlSources[key], 0) === body?.counts?.accounts;
     if (body?.ok !== true || !Array.isArray(body?.failures) || body.failures.length !== 0
-      || !countsMatch || body?.duplicateClaimCount !== 1
+      || !countsMatch || !pnlSourcesValid || body?.duplicateClaimCount !== 1
       || body?.terminalAuditCount !== 1 || body?.downloadAuditCount < 2) {
       fail('persistence', 'persistence_evidence_mismatch');
     }
     scenario.persistenceVerified = true;
     scenario.normalizedCounts = Object.fromEntries(PERSISTED_COUNT_KEYS.map((key) => [key, body.counts[key]]));
+    scenario.pnlSources = Object.fromEntries(PNL_SOURCE_KEYS.map((key) => [key, body.pnlSources[key]]));
   });
 
   await stage(paired, 'revoke', async (scenario) => {
@@ -460,6 +465,10 @@ export async function runAutoCollectionFleet({
     key,
     scenarios.reduce((total, scenario) => total + (scenario.normalizedCounts?.[key] || 0), 0),
   ]));
+  const pnlSources = Object.fromEntries(PNL_SOURCE_KEYS.map((key) => [
+    key,
+    scenarios.reduce((total, scenario) => total + (scenario.pnlSources?.[key] || 0), 0),
+  ]));
   const report = {
     schemaVersion: 1,
     ok: failures.length === 0,
@@ -480,6 +489,7 @@ export async function runAutoCollectionFleet({
     verifiedPersistence: scenarios.filter((item) => item.persistenceVerified).length,
     verifiedStorageObjects: scenarios.filter((item) => item.storageVerified).length,
     normalizedRows,
+    pnlSources,
     jsonDownloads: scenarios.filter((item) => item.jsonDownloaded).length,
     zipDownloads: scenarios.filter((item) => item.zipDownloaded).length,
     revokedDevices: scenarios.filter((item) => item.revoked).length,
@@ -504,6 +514,7 @@ export function formatFleetLoadReport(report) {
     `Verified persistence: ${report.verifiedPersistence}`,
     `Verified Storage objects: ${report.verifiedStorageObjects}`,
     `Normalized rows: accounts=${report.normalizedRows?.accounts || 0} strategies=${report.normalizedRows?.strategies || 0} orders=${report.normalizedRows?.orders || 0} executions=${report.normalizedRows?.executions || 0} flags=${report.normalizedRows?.flags || 0}`,
+    `PnL sources: realized=${report.pnlSources?.realized || 0} gross_fallback=${report.pnlSources?.gross_fallback || 0} gross_missing_realized=${report.pnlSources?.gross_missing_realized || 0} unavailable=${report.pnlSources?.unavailable || 0} unknown=${report.pnlSources?.unknown || 0}`,
     `JSON downloads: ${report.jsonDownloads}`,
     `ZIP downloads: ${report.zipDownloads}`,
     `Revoked devices: ${report.revokedDevices}`,

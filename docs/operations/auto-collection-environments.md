@@ -52,9 +52,10 @@ temporary files after recording the value-free result.
 1. Apply `supabase/step_22_ingest_devices.sql`.
 2. Apply `supabase/step_28_auto_collection.sql`.
 3. Apply `supabase/step_29_auto_collection_reprocess.sql`.
-4. Re-run steps 28 and 29 on disposable staging to prove idempotence.
-5. Run the catalog checks in `docs/verification/auto-collection-schema.md`.
-6. Confirm `ninjatrader-imports` is private before accepting any snapshot.
+4. Apply `supabase/step_30_auto_collection_pnl_audit.sql`.
+5. Re-run steps 28, 29, and 30 on disposable staging to prove idempotence.
+6. Run the catalog checks in `docs/verification/auto-collection-schema.md`.
+7. Confirm `ninjatrader-imports` is private before accepting any snapshot.
 
 Application rollback is non-destructive: remove the two release-manifest
 settings to stop new installations, revoke affected devices if necessary, and

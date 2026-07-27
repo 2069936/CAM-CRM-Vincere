@@ -3,6 +3,7 @@ import { ApiError, handleApiError, requireMethod, sendJson } from '../_lib/http.
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COUNT_KEYS = ['accounts', 'strategies', 'orders', 'executions', 'flags'];
+const PNL_SOURCE_KEYS = ['realized', 'gross_fallback', 'gross_missing_realized', 'unavailable', 'unknown'];
 const COUNT_TABLES = {
   accounts: 'account_snapshots',
   strategies: 'strategy_snapshots',
@@ -38,12 +39,26 @@ function expectedCounts(summary) {
   return result;
 }
 
+function pnlSourceCounts(summary, accountCount) {
+  const value = summary?.pnl_sources;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== [...PNL_SOURCE_KEYS].sort().join(',')) return null;
+  const result = {};
+  for (const key of PNL_SOURCE_KEYS) {
+    const count = Number(value[key]);
+    if (!Number.isSafeInteger(count) || count < 0) return null;
+    result[key] = count;
+  }
+  return Object.values(result).reduce((total, count) => total + count, 0) === accountCount ? result : null;
+}
+
 export function assessIngestPersistence(evidence = {}) {
   const { batch, dailyImport } = evidence;
   const counts = Object.fromEntries(COUNT_KEYS.map((key) => [key, Number(evidence.normalizedCounts?.[key] || 0)]));
   const common = {
     counts,
     expectedCounts: null,
+    pnlSources: null,
     duplicateClaimCount: Number(evidence.duplicateClaimCount || 0),
     terminalAuditCount: Number(evidence.terminalAuditCount || 0),
     downloadAuditCount: Number(evidence.downloadAuditCount || 0),
@@ -51,6 +66,7 @@ export function assessIngestPersistence(evidence = {}) {
   if (!dailyImport) return { ok: false, failures: ['daily_import_missing'], ...common };
 
   const expected = expectedCounts(dailyImport.sourceSummary);
+  const pnlSources = expected ? pnlSourceCounts(dailyImport.sourceSummary, expected.accounts) : null;
   const failures = [];
   if (batch?.dailyImportId !== dailyImport.id) failures.push('batch_daily_link_mismatch');
   if (batch?.clientId !== dailyImport.clientId) failures.push('client_routing_mismatch');
@@ -58,12 +74,13 @@ export function assessIngestPersistence(evidence = {}) {
   if (common.duplicateClaimCount !== 1) failures.push('duplicate_capture_claim');
   if (!expected) failures.push('source_summary_invalid');
   else if (COUNT_KEYS.some((key) => counts[key] !== expected[key])) failures.push('normalized_count_mismatch');
+  if (!pnlSources) failures.push('pnl_source_summary_invalid');
   if (dailyImport.sourceBatchId !== batch?.id) failures.push('source_batch_mismatch');
   if (dailyImport.sourceType !== 'automatic') failures.push('source_type_mismatch');
   if (common.terminalAuditCount !== 1) failures.push('terminal_audit_mismatch');
   if (batch?.tradingDate !== dailyImport.tradingDate) failures.push('trading_date_mismatch');
   failures.sort();
-  return { ok: failures.length === 0, failures, ...common, expectedCounts: expected };
+  return { ok: failures.length === 0, failures, ...common, expectedCounts: expected, pnlSources };
 }
 
 function mapBatch(row) {

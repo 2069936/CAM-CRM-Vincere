@@ -74,8 +74,9 @@ Apply in this order after the baseline CRM migrations:
 1. `supabase/step_22_ingest_devices.sql`
 2. `supabase/step_28_auto_collection.sql`
 3. `supabase/step_29_auto_collection_reprocess.sql`
+4. `supabase/step_30_auto_collection_pnl_audit.sql`
 
-Apply steps 28 and 29 twice on disposable/staging first; both must be rerunnable.
+Apply steps 28, 29, and 30 twice on disposable/staging first; all must be rerunnable.
 Then run their static tests and the catalog checks in
 `auto-collection-schema.md`.
 
