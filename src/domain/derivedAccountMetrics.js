@@ -1,10 +1,11 @@
 // Weekly PnL and trailing drawdown, derived from the closes we already store.
 //
-// NinjaTrader's public API exposes neither: its documented AccountItem enum has
-// 25 values and neither is among them. They exist only as columns in the
-// Accounts grid, which is why a manual CSV upload carries them and an
-// API-based capture cannot. Rather than lose them on automatic closes, we
-// reconstruct them from our own history.
+// A fallback, not the primary source. NinjaTrader's *documented* AccountItem
+// list has 25 members and mentions neither, but a real 8.1.7.2 install reports
+// 31 — including WeeklyProfitLoss and TrailingMaxDrawdown. The collector reads
+// them from there when present, so this runs only when a value is genuinely
+// absent: an install whose enum lacks the member, a connection that does not
+// answer for it, or a manual CSV exported without the column enabled.
 //
 // The two are NOT equally trustworthy, and the difference matters:
 //

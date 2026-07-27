@@ -69,6 +69,7 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
         private static AccountCaptureSource MapAccount(Account account)
         {
             Currency denomination = account.Denomination;
+            IDictionary<string, decimal?> accountValues = AllAccountValues(account, denomination);
             decimal? realized = AccountValue(account, AccountItem.RealizedProfitLoss, denomination);
             decimal? grossRealized = AccountValue(account, AccountItem.GrossRealizedProfitLoss, denomination);
             decimal? unrealized = AccountValue(account, AccountItem.UnrealizedProfitLoss, denomination);
@@ -83,19 +84,22 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 GrossRealizedPnl = grossRealized,
                 UnrealizedPnl = unrealized,
                 TotalPnl = realized.HasValue && unrealized.HasValue ? realized + unrealized : null,
-                // Not exposed by the public API. NinjaTrader only surfaces these
-                // two through the Accounts grid, which is why a screen-scraping
-                // export can read them and this cannot. Left null deliberately
-                // rather than guessed at.
-                WeeklyPnl = null,
-                TrailingMaxDrawdown = null,
+                // Read out of the enumerated account values rather than named
+                // here. NinjaTrader's published AccountItem list does not mention
+                // either, but a real install reports both — enumerating the enum
+                // found WeeklyProfitLoss and TrailingMaxDrawdown alongside 29
+                // others. Looking them up by name keeps this compiling against
+                // versions whose enum lacks the members, and yields null there
+                // instead of failing to build.
+                WeeklyPnl = accountValues.TryGetValue("WeeklyProfitLoss", out decimal? weekly) ? weekly : null,
+                TrailingMaxDrawdown = accountValues.TryGetValue("TrailingMaxDrawdown", out decimal? trailing) ? trailing : null,
                 BuyingPower = AccountValue(account, AccountItem.BuyingPower, denomination),
                 ExcessIntradayMargin = AccountValue(account, AccountItem.ExcessIntradayMargin, denomination),
                 InitialMargin = AccountValue(account, AccountItem.InitialMargin, denomination),
                 MaintenanceMargin = AccountValue(account, AccountItem.MaintenanceMargin, denomination),
                 Currency = denomination.ToString(),
                 Status = PublicString(account, "ConnectionStatus"),
-                AccountValues = AllAccountValues(account, denomination),
+                AccountValues = accountValues,
             };
         }
 
