@@ -7,6 +7,9 @@ clients. For each client it generates a one-time enrollment, pairs one synthetic
 device, sends a heartbeat, uploads one four-section snapshot, repeats the same
 capture to verify idempotency, verifies Manager history routing, downloads the
 stored JSON and reconstructed CSV ZIP, and revokes the exact device it created.
+Initial uploads and duplicate retries are independently dispersed inside a
+bounded random window so the fleet test does not create an unrealistic single
+instant burst.
 After both downloads, it asks the Manager-only verification endpoint to confirm
 the exact batch-to-import link, automatic source, client/date routing, normalized
 row and flag counts, unique device/capture claim, terminal audit event, and both
@@ -63,12 +66,14 @@ npm run collector:load-test -- \
   --manifest /secure/staging-load-clients-20.json \
   --confirm-staging cam-staging-01 \
   --concurrency 20 \
+  --jitter-ms 2000 \
   --out /secure/evidence/auto-collection-load-20.json
 
 npm run collector:load-test -- \
   --manifest /secure/staging-load-clients-200.json \
   --confirm-staging cam-staging-01 \
   --concurrency 20 \
+  --jitter-ms 2000 \
   --out /secure/evidence/auto-collection-load-200.json
 
 unset AUTO_COLLECTION_LOAD_MANAGER_TOKEN AUTO_COLLECTION_LOAD_ALLOW_ORIGIN
@@ -90,6 +95,7 @@ Record only the aggregate JSON produced by the harness:
 - rejected enrollment replay and source-metadata spoof counts;
 - aggregate normalized Accounts, Strategies, Orders, Executions, and flag counts;
 - request count, failure count, and error rate;
+- configured upload/retry jitter window;
 - p50, p95, p99, and maximum latency by stage; and
 - stable failure categories and counts.
 

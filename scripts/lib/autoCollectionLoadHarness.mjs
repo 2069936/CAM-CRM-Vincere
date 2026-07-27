@@ -40,6 +40,7 @@ export function validateLoadConfiguration({
   managerToken,
   clientUuids,
   concurrency = 20,
+  uploadJitterMaxMs = 0,
   allowLocalhost = false,
 } = {}) {
   const origin = canonicalOrigin(baseUrl, { allowLocalhost });
@@ -53,7 +54,10 @@ export function validateLoadConfiguration({
   if (normalizedClients.some((value) => !UUID.test(value))) throw new Error('client_uuid_invalid');
   if (new Set(normalizedClients).size !== normalizedClients.length) throw new Error('client_uuid_must_be_unique');
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 50) throw new Error('concurrency_invalid');
-  return { origin, clientUuids: normalizedClients, concurrency };
+  if (!Number.isInteger(uploadJitterMaxMs) || uploadJitterMaxMs < 0 || uploadJitterMaxMs > 10_000) {
+    throw new Error('upload_jitter_invalid');
+  }
+  return { origin, clientUuids: normalizedClients, concurrency, uploadJitterMaxMs };
 }
 
 async function defaultSnapshotTemplate() {
@@ -139,6 +143,7 @@ export async function runAutoCollectionFleet({
   managerToken,
   clientUuids,
   concurrency = 20,
+  uploadJitterMaxMs = 0,
   allowLocalhost = false,
   fetchImpl = globalThis.fetch,
   snapshotTemplate,
@@ -146,10 +151,15 @@ export async function runAutoCollectionFleet({
   now = () => new Date(),
   uuidFactory = randomUUID,
   nonceFactory = () => randomBytes(32).toString('base64url'),
+  random = Math.random,
+  delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   requestTimeoutMs = 30_000,
 } = {}) {
-  const config = validateLoadConfiguration({ baseUrl, managerToken, clientUuids, concurrency, allowLocalhost });
+  const config = validateLoadConfiguration({
+    baseUrl, managerToken, clientUuids, concurrency, uploadJitterMaxMs, allowLocalhost,
+  });
   if (typeof fetchImpl !== 'function') throw new Error('fetch_implementation_required');
+  if (typeof random !== 'function' || typeof delay !== 'function') throw new Error('jitter_dependency_invalid');
   if (deterministicCaptureIds != null
     && (!Array.isArray(deterministicCaptureIds)
       || deterministicCaptureIds.length !== config.clientUuids.length
@@ -186,6 +196,14 @@ export async function runAutoCollectionFleet({
     normalizedCounts: null,
     revoked: false,
   }));
+
+  async function waitForUploadWindow() {
+    if (config.uploadJitterMaxMs === 0) return;
+    const sample = random();
+    if (!Number.isFinite(sample) || sample < 0 || sample >= 1) throw new Error('random_sample_invalid');
+    const milliseconds = Math.floor(sample * config.uploadJitterMaxMs);
+    if (milliseconds > 0) await delay(milliseconds);
+  }
 
   async function request(stage, path, {
     method = 'GET',
@@ -340,6 +358,7 @@ export async function runAutoCollectionFleet({
   }
 
   await stage(paired, 'ingest', async (scenario) => {
+    await waitForUploadWindow();
     scenario.snapshot = makeSnapshot(template, scenario, startedAt, null);
     const { body } = await request('ingest', '/api/ingest/daily', {
       method: 'POST', token: scenario.deviceToken, machineId: scenario.machineId,
@@ -355,6 +374,7 @@ export async function runAutoCollectionFleet({
   });
 
   await stage(scenarios.filter((item) => item.processed), 'duplicate', async (scenario) => {
+    await waitForUploadWindow();
     const { body } = await request('duplicate', '/api/ingest/daily', {
       method: 'POST', token: scenario.deviceToken, machineId: scenario.machineId, body: scenario.snapshot,
     });
@@ -449,6 +469,7 @@ export async function runAutoCollectionFleet({
     failedOperations,
     errorRate: requestCount ? Number((failedOperations / requestCount).toFixed(6)) : 0,
     requestedDevices: scenarios.length,
+    uploadJitterMaxMs: config.uploadJitterMaxMs,
     pairedDevices: scenarios.filter((item) => item.paired).length,
     enrollmentReplayRejected,
     sourceMetadataSpoofRejected,
@@ -472,6 +493,7 @@ export function formatFleetLoadReport(report) {
   const lines = [
     `Auto-collection staging load: ${report.ok ? 'PASS' : 'FAIL'}`,
     `Requested devices: ${report.requestedDevices}`,
+    `Upload jitter window: ${report.uploadJitterMaxMs}ms`,
     `Requests: ${report.requestCount} failures=${report.failedOperations} errorRate=${report.errorRate}`,
     `Paired devices: ${report.pairedDevices}`,
     `Rejected source metadata spoof: ${report.sourceMetadataSpoofRejected}`,

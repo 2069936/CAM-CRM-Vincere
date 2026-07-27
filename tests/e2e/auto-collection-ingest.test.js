@@ -23,7 +23,9 @@ describe.skipIf(!enabled)('auto-collection staging end to end', () => {
   }
 
   it('enrolls, ingests, verifies, downloads, and revokes 20 concurrent devices', async () => {
-    const report = await runAutoCollectionFleet({ ...await configuration(20), concurrency: 20 });
+    const report = await runAutoCollectionFleet({
+      ...await configuration(20), concurrency: 20, uploadJitterMaxMs: 2_000,
+    });
     expect(report).toMatchObject({
       ok: true,
       requestedDevices: 20,
@@ -43,7 +45,9 @@ describe.skipIf(!enabled)('auto-collection staging end to end', () => {
   }, 10 * 60 * 1000);
 
   it('processes the 200-device daily fleet scenario without routing or duplicate errors', async () => {
-    const report = await runAutoCollectionFleet({ ...await configuration(200), concurrency: 20 });
+    const report = await runAutoCollectionFleet({
+      ...await configuration(200), concurrency: 20, uploadJitterMaxMs: 2_000,
+    });
     expect(report).toMatchObject({
       ok: true,
       requestedDevices: 200,

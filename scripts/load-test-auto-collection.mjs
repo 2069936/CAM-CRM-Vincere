@@ -12,6 +12,7 @@ const ARGUMENTS = Object.freeze({
   '--confirm-staging': 'confirmStaging',
   '--out': 'outputPath',
   '--concurrency': 'concurrency',
+  '--jitter-ms': 'uploadJitterMaxMs',
 });
 const REQUIRED = Object.freeze(['--manifest', '--confirm-staging', '--out']);
 const MANIFEST_KEYS = new Set(['schemaVersion', 'purpose', 'environment', 'stagingProjectRef', 'baseUrl', 'clients']);
@@ -25,12 +26,13 @@ export function parseArguments(argv) {
     const value = argv[index + 1];
     if (!key) throw new Error(`Unknown argument: ${flag || '(empty)'}`);
     if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value.`);
-    options[key] = key === 'concurrency' ? Number(value) : value;
+    options[key] = ['concurrency', 'uploadJitterMaxMs'].includes(key) ? Number(value) : value;
   }
   for (const flag of REQUIRED) {
     if (!options[ARGUMENTS[flag]]) throw new Error(`Missing required argument ${flag}.`);
   }
   if (options.concurrency == null) options.concurrency = 20;
+  if (options.uploadJitterMaxMs == null) options.uploadJitterMaxMs = 2_000;
   return options;
 }
 
@@ -71,6 +73,7 @@ export async function runLoadTest({
   outputPath,
   confirmStaging,
   concurrency = 20,
+  uploadJitterMaxMs = 2_000,
   env = process.env,
   runFleet = runAutoCollectionFleet,
 } = {}) {
@@ -86,12 +89,13 @@ export async function runLoadTest({
   if (typeof managerToken !== 'string' || managerToken.length < 1) throw new Error('manager_token_required');
   const allowedOrigin = String(env.AUTO_COLLECTION_LOAD_ALLOW_ORIGIN || '').trim();
   if (!allowedOrigin || allowedOrigin !== validated.baseUrl) throw new Error('load_origin_confirmation_required');
-  validateLoadConfiguration({ ...validated, managerToken, concurrency });
+  validateLoadConfiguration({ ...validated, managerToken, concurrency, uploadJitterMaxMs });
 
   const report = await runFleet({
     ...validated,
     managerToken,
     concurrency,
+    uploadJitterMaxMs,
   });
   await mkdir(dirname(outputPath), { recursive: true });
   const temporaryPath = `${outputPath}.tmp`;

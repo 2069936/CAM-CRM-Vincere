@@ -29,6 +29,9 @@ describe('auto-collection load CLI', () => {
     expect(() => parseArguments([
       '--manifest', 'clients.json', '--confirm-staging', 'cam-staging-01', '--out', 'report.json', '--manager-token', 'secret',
     ])).toThrow('Unknown argument: --manager-token');
+    expect(parseArguments([
+      '--manifest', 'clients.json', '--confirm-staging', 'cam-staging-01', '--out', 'report.json', '--jitter-ms', '750',
+    ])).toMatchObject({ concurrency: 20, uploadJitterMaxMs: 750 });
   });
 
   it('rejects production, mismatched confirmation, unknown fields, and secret-bearing manifests', () => {
@@ -50,6 +53,7 @@ describe('auto-collection load CLI', () => {
         managerToken: 'ephemeral-manager-token',
         clientUuids: [CLIENT_ID],
         concurrency: 7,
+        uploadJitterMaxMs: 2_000,
       });
       return {
         schemaVersion: 1,

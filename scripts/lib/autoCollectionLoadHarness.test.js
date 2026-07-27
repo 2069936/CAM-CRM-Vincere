@@ -245,5 +245,26 @@ describe('auto-collection staging load harness', () => {
     expect(() => validateLoadConfiguration({
       baseUrl: 'https://staging.example.test', managerToken: 'x', clientUuids: [uuid(1), uuid(1)], concurrency: 2,
     })).toThrow('client_uuid_must_be_unique');
+    expect(() => validateLoadConfiguration({
+      baseUrl: 'https://staging.example.test', managerToken: 'x', clientUuids: clients(1), concurrency: 1,
+      uploadJitterMaxMs: 10_001,
+    })).toThrow('upload_jitter_invalid');
+  });
+
+  it('spreads the initial upload and duplicate retry within the configured window', async () => {
+    const delays = [];
+    const randomValues = [0.25, 0.75];
+    const report = await runAutoCollectionFleet({
+      baseUrl: 'https://staging.example.test',
+      managerToken: 'manager-token-not-for-output',
+      clientUuids: clients(1),
+      concurrency: 1,
+      fetchImpl: createFakeStagingApi().fetchImpl,
+      uploadJitterMaxMs: 100,
+      random: () => randomValues.shift(),
+      delay: async (milliseconds) => { delays.push(milliseconds); },
+    });
+    expect(report).toMatchObject({ ok: true, uploadJitterMaxMs: 100, processedCaptures: 1, duplicateReceipts: 1 });
+    expect(delays).toEqual([25, 75]);
   });
 });
