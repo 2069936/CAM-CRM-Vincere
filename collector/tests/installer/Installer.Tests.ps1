@@ -99,4 +99,49 @@ Describe 'Installer safety authoring' {
         $plan = Get-Content -LiteralPath (Join-Path $collectorRoot '..\docs\superpowers\plans\2026-07-23-ninjatrader-windows-collector-plan.md') -Raw
         $plan | Should -Match 'WIXFAILWHENDEFERRED=1|forced rollback|Force a custom-action failure'
     }
+
+    It 'places the complete verified AddOn runtime payload in the compiled MSI' -Skip:(-not $env:VINCERE_TEST_ADDON_MSI_PATH) {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installer.GetType().InvokeMember(
+            'OpenDatabase',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $installer,
+            @((Resolve-Path -LiteralPath $env:VINCERE_TEST_ADDON_MSI_PATH).Path, 0))
+        $view = $database.GetType().InvokeMember(
+            'OpenView',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $database,
+            @('SELECT `FileName` FROM `File`'))
+        [void]$view.GetType().InvokeMember(
+            'Execute',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $view,
+            $null)
+        $fileNames = @()
+        while ($record = $view.GetType().InvokeMember(
+            'Fetch',
+            [Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $view,
+            $null)) {
+            $storedName = $record.GetType().InvokeMember(
+                'StringData',
+                [Reflection.BindingFlags]::GetProperty,
+                $null,
+                $record,
+                @(1))
+            $fileNames += ($storedName -split '\|')[-1]
+        }
+
+        foreach ($required in
+            'Vincere.AutoExport.NinjaTrader.dll',
+            'Vincere.AutoExport.NinjaTrader.Core.dll',
+            'Vincere.AutoExport.Contracts.dll',
+            'Newtonsoft.Json.dll') {
+            $fileNames | Should -Contain $required
+        }
+    }
 }

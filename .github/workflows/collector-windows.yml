@@ -93,6 +93,8 @@ jobs:
         run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
       - name: Run installer unit tests
         shell: pwsh
+        env:
+          VINCERE_TEST_ADDON_MSI_PATH: ${{ runner.temp }}\vincere-installer-authoring\Vincere.AutoExport.AddOn.msi
         run: Invoke-Pester collector\tests\installer -CI
       - name: Build supported-API parity probe ZIP
         shell: pwsh

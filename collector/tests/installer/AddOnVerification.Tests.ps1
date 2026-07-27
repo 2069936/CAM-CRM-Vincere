@@ -2,7 +2,15 @@ BeforeAll {
     $collectorRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
     $scriptPath = Join-Path $collectorRoot 'scripts\create-addon-verification.ps1'
     $addOnPath = Join-Path $TestDrive 'Vincere.AutoExport.NinjaTrader.dll'
-    [IO.File]::WriteAllText($addOnPath, 'test-addon-binary')
+    $requiredPayload = [ordered]@{
+        'Vincere.AutoExport.NinjaTrader.dll' = 'test-addon-binary'
+        'Vincere.AutoExport.NinjaTrader.Core.dll' = 'test-core-binary'
+        'Vincere.AutoExport.Contracts.dll' = 'test-contracts-binary'
+        'Newtonsoft.Json.dll' = 'test-json-binary'
+    }
+    foreach ($entry in $requiredPayload.GetEnumerator()) {
+        [IO.File]::WriteAllText((Join-Path $TestDrive $entry.Key), $entry.Value)
+    }
 
     function New-ValidParityEvidence {
         $newSection = { [ordered]@{ passed = $true; apiRowCount = 1; gridRowCount = 1; statusCounts = @{} } }
@@ -48,6 +56,31 @@ Describe 'AddOn supported-API verification receipt' {
         $receipt = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json
         $receipt.supportedApiParityPassed | Should -BeTrue
         $receipt.parityComparisonSha256 | Should -Be ('a' * 64)
+        @($receipt.payload).Count | Should -Be 4
+        @($receipt.payload.name) | Should -Be @(
+            'Vincere.AutoExport.NinjaTrader.dll',
+            'Vincere.AutoExport.NinjaTrader.Core.dll',
+            'Vincere.AutoExport.Contracts.dll',
+            'Newtonsoft.Json.dll'
+        )
+        ($receipt.payload | Where-Object name -eq 'Vincere.AutoExport.NinjaTrader.Core.dll').sha256 |
+            Should -Be 'fb0a82bd3359b3469f7d1b95f9d7d01e2a6bcde184391ef1fef8f37f49673356'
+    }
+
+    It 'rejects an incomplete AddOn runtime payload' {
+        $evidencePath = Join-Path $TestDrive 'missing-dependency-evidence.json'
+        [IO.File]::WriteAllText($evidencePath, (New-ValidParityEvidence | ConvertTo-Json -Depth 8))
+        $corePath = Join-Path $TestDrive 'Vincere.AutoExport.NinjaTrader.Core.dll'
+        Remove-Item -LiteralPath $corePath
+
+        try {
+            { & $scriptPath -AddOnPath $addOnPath -ParityEvidencePath $evidencePath `
+                -Version '1.2.3' -OutputPath (Join-Path $TestDrive 'missing-receipt.json') } |
+                Should -Throw 'addon_payload_missing_ninjatrader_core'
+        }
+        finally {
+            [IO.File]::WriteAllText($corePath, 'test-core-binary')
+        }
     }
 
     It 'rejects the old boolean-only evidence shape' {
