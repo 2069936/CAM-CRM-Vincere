@@ -6516,12 +6516,14 @@ function ReportPanel({ client, dailyImport, onClose }) {
                 </thead>
                 <tbody>
                   {report.grouped[group].map((row) => {
+                    // Only the strategies actually running. NinjaTrader keeps the
+                    // previous strategy in the grid (disabled) after you switch,
+                    // so showing every row put stale algos on the report even
+                    // though the screen already filtered them out.
                     const stratNames =
                       (row.strategies || [])
-                        .map(
-                          (s) =>
-                            `${s.strategyName || s.strategyFamily || "Strategy"}${s.enabled ? "" : " (off)"}`,
-                        )
+                        .filter((s) => s.enabled)
+                        .map((s) => s.strategyName || s.strategyFamily || "Strategy")
                         .join(", ") || "-";
                     return (
                       <tr key={row.accountName}>
