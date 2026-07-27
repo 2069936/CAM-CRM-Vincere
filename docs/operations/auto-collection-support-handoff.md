@@ -84,8 +84,10 @@ approved disposable VM:
       retaining unsent data.
 - [ ] Switch to the manual four-CSV workflow and complete the normal CRM review.
 
-Training evidence reference: `________________`
-Open gaps and owner: `________________`
+| Handoff evidence | Private reference |
+|---|---|
+| Training evidence | `________________` |
+| Open gaps and owner | `________________` |
 
 ## Acceptance boundary
 
