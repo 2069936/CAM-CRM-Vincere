@@ -257,6 +257,13 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
                   placeholder="Internal note"
                   onChange={(event) => onUpdateAccount(account.accountName, { notes: event.target.value })}
                 />
+                <input
+                  value={account.tradovateAccountId || ''}
+                  placeholder="Tradovate ID"
+                  title="Tradovate / NinjaTrader-web numeric account id, to match its CSV export"
+                  style={{ marginTop: 4, fontSize: 11 }}
+                  onChange={(event) => onUpdateAccount(account.accountName, { tradovateAccountId: event.target.value.trim() })}
+                />
               </td>
               {onRemoveAccount ? (
                 <td>

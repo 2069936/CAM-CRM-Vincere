@@ -2461,6 +2461,52 @@ function DataToolsPanel({
     return map;
   }, [clients]);
 
+  // Which CRM account a Tradovate numeric id belongs to, set in the account
+  // registry. Lets a Tradovate export resolve to the right client account.
+  const tradovateOwnerMap = useMemo(() => {
+    const map = new Map();
+    for (const client of clients || []) {
+      for (const [accountName, meta] of Object.entries(client.accountRegistry || {})) {
+        const id = String(meta?.tradovateAccountId || "").trim();
+        if (id && !map.has(id)) map.set(id, { client, accountName });
+      }
+    }
+    return map;
+  }, [clients]);
+
+  async function persistTradovateHistory() {
+    const summary = tradovateImportResult?.best?.summary;
+    const owner = summary?.account ? tradovateOwnerMap.get(String(summary.account)) : null;
+    if (!summary || !owner) return;
+    setIsParsingTradovate(true);
+    try {
+      for (const day of summary.byDay) {
+        await onAppendActivity?.(owner.client.id, {
+          id: `tradovate-${summary.account}-${day.date}`.replace(/[^a-zA-Z0-9_-]/g, "-"),
+          type: "Import",
+          accountName: owner.accountName,
+          logDate: day.date,
+          logPnl: day.realizedPnl,
+          createdAt: new Date().toISOString(),
+          text: `Tradovate ${summary.account}: ${day.trades} trades, realized ${formatCurrency(day.realizedPnl)} (${Math.round(day.winRate * 100)}% win) on ${day.date}.`,
+        });
+      }
+      setMessage(`Saved ${summary.byDay.length} day(s) of Tradovate history to ${owner.client.name}.`);
+      setStatus("ready");
+      auditSilently({
+        entityType: "data_import",
+        action: "data_import.tradovate.persist",
+        afterData: { account: summary.account, clientId: owner.client.id, days: summary.byDay.length },
+      });
+    } catch (error) {
+      console.error("[CRM] Failed to save Tradovate history:", error);
+      setTradovateImportResult((current) => ({ ...(current || {}), error: error.message || "Could not save." }));
+      setStatus("error");
+    } finally {
+      setIsParsingTradovate(false);
+    }
+  }
+
   async function readTextFile(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -3102,11 +3148,41 @@ function DataToolsPanel({
                       </tbody>
                     </table>
                   </div>
-                  <p className="muted" style={{ fontSize: 12 }}>
-                    Preview only. Linking this account to a CRM account and feeding
-                    the equity curve comes with the cash-account mapping (see
-                    docs/tradovate-api-plan.md).
-                  </p>
+                  {(() => {
+                    const owner = s.account ? tradovateOwnerMap.get(String(s.account)) : null;
+                    if (!s.account) {
+                      return (
+                        <p className="muted" style={{ fontSize: 12 }}>
+                          This file has no account id (Performance export). Upload
+                          the <b>Position History</b> export to link it, or set the
+                          Tradovate ID on the account in the registry.
+                        </p>
+                      );
+                    }
+                    if (owner) {
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <span className="badge success">
+                            {owner.client.name} · {owner.accountName}
+                          </span>
+                          <button
+                            className="primary-button"
+                            disabled={isParsingTradovate}
+                            onClick={persistTradovateHistory}
+                          >
+                            <Upload size={14} /> Save {s.tradingDays} day(s) to history
+                          </button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <p className="muted" style={{ fontSize: 12 }}>
+                        Account <code>{s.account}</code> is not linked yet. Open the
+                        client's Account Registry and set this id in the{" "}
+                        <b>Tradovate ID</b> field, then re-import to save its history.
+                      </p>
+                    );
+                  })()}
                 </div>
               );
             })()

@@ -41,6 +41,7 @@ function accountMetaFromRow(row) {
     dateFailed: row.date_failed || '',
     dateLastPayout: row.date_last_payout || '',
     payoutCount: row.payout_count || 0,
+    tradovateAccountId: row.tradovate_account_id || '',
     payoutHistory: [],
   };
 }
@@ -537,6 +538,7 @@ function accountPatchToDb(patch = {}) {
     algoStack: 'algo_stack',
     dailyLossLimit: 'daily_loss_limit',
     notes: 'notes',
+    tradovateAccountId: 'tradovate_account_id',
   };
 
   for (const [appField, dbField] of Object.entries(fieldMap)) {
@@ -976,6 +978,7 @@ export async function upsertSupabaseTradingAccount(clientId, accountName, meta =
     alias: meta.alias || accountName,
     connection: meta.connection || '',
     account_type: meta.accountType || 'Unassigned',
+    tradovate_account_id: meta.tradovateAccountId || null,
     status: meta.status || 'Active',
     payout_state: meta.payoutState || 'Not requested',
     start_balance: numberOrNull(meta.startBalance),
