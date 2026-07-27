@@ -9061,23 +9061,18 @@ function CamOverview({
         title="My book - lifecycle & retention"
       />
 
-      <section className="panel">
-        <div className="panel-heading">
-          <h3>Lifecycle by algo</h3>
-          <span className="badge muted">Which combo funds / survives</span>
-        </div>
-        <LifecycleByAlgo clients={clients} />
-      </section>
-
-      <section
-        className={
-          overview.deviationFlags.length ? "panel danger-panel" : "panel"
-        }
+      <CollapsiblePanel
+        title="Lifecycle by algo"
+        badges={<span className="badge muted">Which combo funds / survives</span>}
       >
-        <div className="panel-heading">
-          <h3>Deviation alerts</h3>
-          <span className="count">{overview.deviationFlags.length}</span>
-        </div>
+        <LifecycleByAlgo clients={clients} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel
+        title="Deviation alerts"
+        count={overview.deviationFlags.length}
+        tone={overview.deviationFlags.length ? "danger-panel" : ""}
+      >
         {overview.deviationFlags.length ? (
           <div className="flag-list">
             {overview.deviationFlags.map((flag) => (
@@ -9101,7 +9096,7 @@ function CamOverview({
             <CheckCircle2 size={16} /> No cross-account deviation alerts.
           </div>
         )}
-      </section>
+      </CollapsiblePanel>
 
       {(() => {
         const fundedRows = clients.flatMap((client) => {
@@ -9262,11 +9257,10 @@ function CamOverview({
         );
       })()}
 
-      <section className="panel">
-        <div className="panel-heading">
-          <h3>Algorithm rollup</h3>
-          <span className="count">{overview.algorithms.length}</span>
-        </div>
+      <CollapsiblePanel
+        title="Algorithm rollup"
+        count={overview.algorithms.length}
+      >
         {overview.algorithms.length ? (
           <div className="table-wrap">
             <table className="ops-table cam-overview-table">
@@ -9389,7 +9383,7 @@ function CamOverview({
             </p>
           </div>
         )}
-      </section>
+      </CollapsiblePanel>
 
       {(() => {
         const allEntries = clients
