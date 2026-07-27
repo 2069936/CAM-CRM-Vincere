@@ -23,7 +23,12 @@ public sealed class NinjaTraderFacadeTests : IDisposable
             DisplayName = "Opening Range NQ",
             StrategyId = "strategy-1",
             State = "Realtime",
-            Position = new TestPosition { Quantity = 2, MarketPosition = "Long", AveragePrice = 23100.25 },
+            Position = new TestPosition
+            {
+                Quantity = 2,
+                MarketPosition = "Long",
+                AveragePrice = 23100.25,
+            },
             IsInSync = true,
             BarsPeriod = "1 Minute",
             Risk = 125.50m,
@@ -32,19 +37,32 @@ public sealed class NinjaTraderFacadeTests : IDisposable
         account.Strategies[0].Instruments.Add(new Instrument { FullName = "NQ SEP26" });
         var order = new Order
         {
-            OrderId = "order-1", Instrument = new Instrument { FullName = "NQ SEP26" },
-            OrderAction = OrderAction.Buy, OrderType = OrderType.Limit, Quantity = 2,
-            Filled = 1, LimitPrice = 23100.25, OrderState = OrderState.Working,
+            OrderId = "order-1",
+            Instrument = new Instrument { FullName = "NQ SEP26" },
+            OrderAction = OrderAction.Buy,
+            OrderType = OrderType.Limit,
+            Quantity = 2,
+            Filled = 1,
+            LimitPrice = 23100.25,
+            OrderState = OrderState.Working,
             Time = new DateTime(2026, 7, 23, 16, 44, 0, DateTimeKind.Local),
-            TimeInForce = TimeInForce.Day, Name = "Entry",
+            TimeInForce = TimeInForce.Day,
+            Name = "Entry",
         };
         account.Orders.Add(order);
         account.Executions.Add(new Execution
         {
-            ExecutionId = "execution-1", OrderId = order.OrderId, Order = order,
-            Instrument = order.Instrument, Quantity = 1, Price = 23100.25,
-            Time = order.Time, MarketPosition = MarketPosition.Long, Name = "Entry",
-            Commission = 2.05, Rate = 1,
+            ExecutionId = "execution-1",
+            OrderId = order.OrderId,
+            Order = order,
+            Instrument = order.Instrument,
+            Quantity = 1,
+            Price = 23100.25,
+            Time = order.Time,
+            MarketPosition = MarketPosition.Long,
+            Name = "Entry",
+            Commission = 2.05,
+            Rate = 1,
         });
         Account.All.Add(account);
 
