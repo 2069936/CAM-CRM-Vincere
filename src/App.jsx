@@ -85,6 +85,7 @@ import {
   selectClient,
   todayIsoDate,
   updateClientDetails,
+  updateCamProfile,
   updateImportStatus,
   updateTask,
   upsertAccountMeta,
@@ -116,6 +117,7 @@ import { buildClientSegments } from "./domain/clientSegments";
 import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import ClientKindBadge from "./components/ClientKindBadge";
 import {
   USER_ROLES,
@@ -6292,8 +6294,110 @@ function MonthlyReportPanel({ client, month, onClose }) {
   );
 }
 
-function ReportPanel({ client, dailyImport, onClose }) {
+function ReportDesignDrawer({
+  draft,
+  setField,
+  scope,
+  setScope,
+  camName,
+  clientName,
+  onApplyPreset,
+  onSave,
+}) {
+  return (
+    <div className="report-design-drawer no-print">
+      <div className="report-design-head">
+        <div>
+          <strong>Design this report</strong>
+          <p className="muted">
+            Pick what the PDF shows. Saving to{" "}
+            <b>{scope === "client" ? clientName : `${camName || "CAM"} (all clients)`}</b>.
+          </p>
+        </div>
+        <div className="report-design-scope">
+          <label className={scope === "cam" ? "active" : ""}>
+            <input
+              type="radio"
+              name="report-scope"
+              checked={scope === "cam"}
+              onChange={() => setScope("cam")}
+            />
+            CAM default
+          </label>
+          <label className={scope === "client" ? "active" : ""}>
+            <input
+              type="radio"
+              name="report-scope"
+              checked={scope === "client"}
+              onChange={() => setScope("client")}
+            />
+            Just this client
+          </label>
+        </div>
+      </div>
+
+      <div className="report-design-fields">
+        {REPORT_FIELDS.map((field) => (
+          <label key={field.key} className="report-design-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(draft[field.key])}
+              onChange={(e) => setField(field.key, e.target.checked)}
+            />
+            <span>{field.label}</span>
+          </label>
+        ))}
+      </div>
+
+      <label className="report-design-note">
+        <span>Extra note on the report (optional)</span>
+        <input
+          type="text"
+          value={draft.headerNote || ""}
+          placeholder="e.g. Weekly review call every Friday"
+          onChange={(e) => setField("headerNote", e.target.value)}
+        />
+      </label>
+
+      <div className="report-design-actions">
+        <button className="ghost-button" onClick={() => onApplyPreset(SIMPLIFIED_REPORT_CONFIG)}>
+          Simplified preset
+        </button>
+        <button className="ghost-button" onClick={() => onApplyPreset(DEFAULT_REPORT_CONFIG)}>
+          Full preset
+        </button>
+        <button className="primary-button" onClick={onSave}>
+          Save layout
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReportPanel({
+  client,
+  dailyImport,
+  camConfig,
+  clientConfig,
+  camName = "",
+  onSaveConfig,
+  onClose,
+}) {
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
+  // The report layout the CAM sees. While the design drawer is open, `draft`
+  // drives the sheet so edits preview live; otherwise the saved config applies.
+  const savedConfig = useMemo(
+    () => resolveReportConfig(camConfig, clientConfig),
+    [camConfig, clientConfig],
+  );
+  const [designOpen, setDesignOpen] = useState(false);
+  const [draftScope, setDraftScope] = useState(
+    hasClientOverride(clientConfig) ? "client" : "cam",
+  );
+  const [draft, setDraft] = useState(savedConfig);
+  const cfg = designOpen ? draft : savedConfig;
+  const setField = (key, value) =>
+    setDraft((prev) => ({ ...prev, [key]: value }));
   const [saveStatus, setSaveStatus] = useState("idle");
   const [saveError, setSaveError] = useState("");
   const [reportHistory, setReportHistory] = useState([]);
@@ -6410,6 +6514,16 @@ function ReportPanel({ client, dailyImport, onClose }) {
                   : "Report history"}
           </span>
           <button
+            className={designOpen ? "secondary-button" : "ghost-button"}
+            onClick={() => {
+              setDraft(savedConfig);
+              setDesignOpen((v) => !v);
+            }}
+            title="Choose what this report shows"
+          >
+            <Settings2 size={14} /> {designOpen ? "Done designing" : "Design"}
+          </button>
+          <button
             className="secondary-button"
             onClick={() => printWithTitle(`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`)}
           >
@@ -6419,6 +6533,22 @@ function ReportPanel({ client, dailyImport, onClose }) {
             Close
           </button>
         </div>
+
+        {designOpen ? (
+          <ReportDesignDrawer
+            draft={draft}
+            setField={setField}
+            scope={draftScope}
+            setScope={setDraftScope}
+            camName={camName}
+            clientName={report.clientName}
+            onApplyPreset={(preset) => setDraft(preset)}
+            onSave={() => {
+              onSaveConfig?.(draftScope, draft);
+              setDesignOpen(false);
+            }}
+          />
+        ) : null}
         {saveStatus === "error" ? (
           <div className="notice warning no-print" style={{ marginBottom: 12 }}>
             {saveError}
@@ -6430,12 +6560,16 @@ function ReportPanel({ client, dailyImport, onClose }) {
             <p className="report-firm">Vincere Trading</p>
             <h1>{report.clientName}</h1>
             <span>Daily close report · {report.date}</span>
+            {cfg.headerNote ? (
+              <p className="report-note">{cfg.headerNote}</p>
+            ) : null}
           </div>
           <div className="report-header-right">
             <strong>{report.status}</strong>
           </div>
         </header>
 
+        {cfg.showDailyMetrics ? (
         <section className="report-metrics">
           <div>
             <span>Accounts</span>
@@ -6465,7 +6599,7 @@ function ReportPanel({ client, dailyImport, onClose }) {
               {formatCurrency(report.totals.weeklyPnl)}
             </strong>
           </div>
-          {dailyDelta !== null ? (
+          {cfg.showPriorDelta && dailyDelta !== null ? (
             <div>
               <span>vs prior close</span>
               <strong
@@ -6479,7 +6613,9 @@ function ReportPanel({ client, dailyImport, onClose }) {
             </div>
           ) : null}
         </section>
+        ) : null}
 
+        {cfg.showSegmentTiles ? (
         <section className="report-metrics report-segments">
           {[
             { key: "funded", label: "Funded" },
@@ -6499,8 +6635,50 @@ function ReportPanel({ client, dailyImport, onClose }) {
               </div>
             ))}
         </section>
+        ) : null}
 
-        {["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy"].map((group) =>
+        {cfg.showProgressToTarget ? (
+          <section className="report-section">
+            <h2>Progress to target</h2>
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Balance</th>
+                  <th>Target</th>
+                  <th>Progress</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...report.grouped.funded, ...report.grouped.evaluations]
+                  .filter((row) => Number(row.meta?.targetProfit) > 0)
+                  .map((row) => {
+                    const start = Number(row.meta?.startBalance || 0);
+                    const target = Number(row.meta?.targetProfit || 0);
+                    const bal = Number(row.accountBalance || 0);
+                    const gained = bal - start;
+                    const need = target - start;
+                    const pct = need > 0 ? Math.max(0, Math.min(100, Math.round((gained / need) * 100))) : 0;
+                    return (
+                      <tr key={row.accountName}>
+                        <td>{row.meta?.alias || row.accountName}</td>
+                        <td>{formatCurrency(bal)}</td>
+                        <td>{formatCurrency(target)}</td>
+                        <td>
+                          <div className="report-progress">
+                            <span className="report-progress-bar" style={{ width: `${pct}%` }} />
+                            <span className="report-progress-label">{pct}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
+
+        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
               <h2>{GROUP_LABELS[group]}</h2>
@@ -6509,10 +6687,10 @@ function ReportPanel({ client, dailyImport, onClose }) {
                   <tr>
                     <th>Account</th>
                     <th>Status</th>
-                    <th>Strategies</th>
+                    {cfg.showStrategies ? <th>Strategies</th> : null}
                     <th>Daily PnL</th>
-                    <th>Weekly PnL</th>
-                    {group !== "cash" ? <th>Drawdown</th> : null}
+                    {cfg.showWeeklyColumn ? <th>Weekly PnL</th> : null}
+                    {cfg.showTrailing && group !== "cash" ? <th>Drawdown</th> : null}
                     <th>Balance</th>
                   </tr>
                 </thead>
@@ -6537,9 +6715,11 @@ function ReportPanel({ client, dailyImport, onClose }) {
                           </small>
                         </td>
                         <td>{row.meta?.status || "Active"}</td>
-                        <td>
-                          <small>{stratNames}</small>
-                        </td>
+                        {cfg.showStrategies ? (
+                          <td>
+                            <small>{stratNames}</small>
+                          </td>
+                        ) : null}
                         <td
                           className={
                             row.grossRealizedPnl >= 0
@@ -6549,16 +6729,18 @@ function ReportPanel({ client, dailyImport, onClose }) {
                         >
                           {formatCurrency(row.grossRealizedPnl)}
                         </td>
-                        <td
-                          className={
-                            row.weeklyPnl >= 0
-                              ? "report-positive"
-                              : "report-negative"
-                          }
-                        >
-                          {formatCurrency(row.weeklyPnl)}
-                        </td>
-                        {group !== "cash" ? (
+                        {cfg.showWeeklyColumn ? (
+                          <td
+                            className={
+                              row.weeklyPnl >= 0
+                                ? "report-positive"
+                                : "report-negative"
+                            }
+                          >
+                            {formatCurrency(row.weeklyPnl)}
+                          </td>
+                        ) : null}
+                        {cfg.showTrailing && group !== "cash" ? (
                           <td className={drawdownTone(row)}>
                             {drawdownLabel(row)}
                           </td>
@@ -6571,7 +6753,20 @@ function ReportPanel({ client, dailyImport, onClose }) {
               </table>
             </section>
           ) : null,
-        )}
+        ) : null}
+
+        {cfg.showFlags && report.openFlags.length ? (
+          <section className="report-section">
+            <h2>Open items ({report.openFlags.length})</h2>
+            <ul className="report-flag-list">
+              {report.openFlags.map((flag) => (
+                <li key={flag.id} className={flag.severity === "Critical" ? "report-flag critical" : "report-flag"}>
+                  <strong>{flag.type}</strong> — {flag.message}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <footer className="report-footer">
           <span>
@@ -11537,6 +11732,22 @@ export default function App() {
       });
   }
 
+  function handleSaveReportConfig(scope, config) {
+    if (scope === "client") {
+      // Reuses the client-details path so the override persists on the client.
+      handleUpdateClient({ reportConfig: config });
+      return;
+    }
+    const camId = currentCamProfile?.id;
+    if (!camId) return;
+    setState((current) => updateCamProfile(current, camId, { reportConfig: config }));
+    if (!isSupabaseConfigured) return;
+    updateSupabaseCamProfile(camId, { reportConfig: config }).catch((error) => {
+      console.error("[CRM] Failed to save report layout:", error);
+      window.alert(`Could not save the report layout: ${error.message}`);
+    });
+  }
+
   function handleAccountUpdate(accountName, patch) {
     if (!selectedClient) return;
     let finalPatch = patch;
@@ -13591,6 +13802,10 @@ export default function App() {
           <ReportPanel
             client={selectedClient}
             dailyImport={reportImport}
+            camConfig={currentCamProfile?.reportConfig}
+            clientConfig={selectedClient?.reportConfig}
+            camName={currentCamProfile?.name || ""}
+            onSaveConfig={handleSaveReportConfig}
             onClose={() => setReportImport(null)}
           />
         ) : null}
