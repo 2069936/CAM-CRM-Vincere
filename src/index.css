@@ -7040,3 +7040,8 @@ tr:nth-child(2) .rank-badge {
   background: var(--surface);
   color: var(--text);
 }
+.client-kind-covering {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 38%, transparent);
+}

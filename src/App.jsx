@@ -119,13 +119,8 @@ import { buildClientSegments } from "./domain/clientSegments";
 import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
 import {
   TIME_OFF_KINDS,
-  TIME_OFF_STATUSES,
-  activeCoverageFor,
   buildCamRecord,
-  buildCamWorkload,
-  conflictingTimeOff,
   coverageForClient,
-  distributeClientsEvenly,
   effectiveClientIds,
 } from "./domain/camCoverage";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
@@ -3892,7 +3887,7 @@ function ManagerOverview({
         const summary = buildManagerSummary(clientsForCam(clients, profile, coverage, asOfDate), asOfDate);
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
-    [clients, activeCamProfiles, asOfDate],
+    [clients, activeCamProfiles, asOfDate, coverage],
   );
   const totals = useMemo(
     () =>
@@ -13360,6 +13355,27 @@ export default function App() {
                           <span>
                             {client.name}
                             <ClientKindBadge client={client} />
+                            {(() => {
+                              // Borrowed while their own CAM is away. Marked so
+                              // it never reads as part of this CAM's own book.
+                              const cover = coverageForClient(
+                                state.coverage || [],
+                                client.id,
+                                todayIsoDate(),
+                              );
+                              if (!cover || cover.coveringCamId !== currentCamProfile?.id) return null;
+                              const absent = (state.camProfiles || []).find(
+                                (profile) => profile.id === cover.absentCamId,
+                              );
+                              return (
+                                <span
+                                  className="client-kind client-kind-covering"
+                                  title={`Covering for ${absent?.name || "another CAM"} until ${cover.endDate || cover.startDate}`}
+                                >
+                                  Covering
+                                </span>
+                              );
+                            })()}
                             {(() => {
                               const d = lastContactDaysAgo(client);
                               return d !== null && d > 3 ? (
