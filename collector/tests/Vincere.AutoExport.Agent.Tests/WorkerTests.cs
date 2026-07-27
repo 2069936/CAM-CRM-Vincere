@@ -20,7 +20,9 @@ public sealed class WorkerTests
         Worker worker = new(new ICollectorLoop[] { recovering, sibling }, delay, reporter);
 
         await worker.StartAsync(lifetime.Token);
-        await sibling.Completed.Task.WaitAsync(lifetime.Token);
+        await Task.WhenAll(
+            recovering.Completed.Task.WaitAsync(lifetime.Token),
+            sibling.Completed.Task.WaitAsync(lifetime.Token));
         await worker.StopAsync(CancellationToken.None);
 
         Assert.True(recovering.Runs >= 2);
@@ -48,16 +50,28 @@ public sealed class WorkerTests
 
     private sealed class ThrowOnceLoop : ICollectorLoop
     {
-        public ThrowOnceLoop(string name) => Name = name;
+        private readonly int expectedRuns;
+
+        public ThrowOnceLoop(string name, int expectedRuns = 2)
+        {
+            Name = name;
+            this.expectedRuns = expectedRuns;
+        }
 
         public string Name { get; }
         public TimeSpan Interval => TimeSpan.FromMilliseconds(1);
         public int Runs { get; private set; }
 
+        // Signals when this loop has recovered and run again. Without it the test
+        // could only wait on the sibling and hope this one had kept pace, which
+        // raced and failed intermittently in CI.
+        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public Task RunOnceAsync(CancellationToken cancellationToken)
         {
             Runs++;
             if (Runs == 1) throw new InvalidOperationException("sensitive implementation detail");
+            if (Runs >= expectedRuns) Completed.TrySetResult();
             return Task.CompletedTask;
         }
     }
