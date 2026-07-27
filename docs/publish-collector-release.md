@@ -87,6 +87,14 @@ is rejected. What is absent is the Authenticode signature, so Windows warns when
 a script downloaded from the internet is run — `collector/docs/installing.md`
 covers `Unblock-File` for that.
 
+## Known gap to close on staging
+
+Automatic imports persist through a Postgres function that no test currently
+executes — the database tests exist but are skipped unless
+`AUTO_COLLECTION_TEST_DATABASE_URL` points at a real database. Once a staging
+Supabase is available, set that variable and run the suite; the tests are
+already written. Details in `docs/verification/auto-collection-crm.md`.
+
 ## What runs where
 
 | Piece | Where it runs |

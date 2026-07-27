@@ -12,9 +12,18 @@ Local evidence recorded on 2026-07-23:
 - 61 Vitest files passed; 837 tests passed and 3 were skipped, including the
   canonical four-CSV round-trip regression test.
 - The canonical Accounts, Strategies, Orders, and Executions CSVs reconstructed
-  from snapshot v1 are recognized by the normal manual importer and produce the
-  same snapshots, strategies, orders, executions, and stable flags as direct
-  automatic normalization.
+  from snapshot v1 are recognized by the normal manual importer and reconcile to
+  the same snapshots, strategies, orders, executions and stable flags as direct
+  automatic normalization — compared over the fields both paths produce. The
+  automatic path is a superset: it also carries native ids, capture state,
+  per-strategy timestamps and the PnL-source audit trail, which four CSV grids
+  cannot express, and it keeps `null` where the CSV parser coerces to `0`/`""`.
+
+  Until 2026-07-27 this claim was overstated: the round-trip test's only fixture
+  account is `SIM-REDACTED-01`, and reconciliation drops simulator accounts, so
+  both sides reconciled to nothing and the comparison was vacuous. The test now
+  renames the account for its own use and asserts the rows survived before
+  comparing.
 - `npm run lint` exits zero. The deliberate Fast Refresh exclusions are limited
   to legacy modules that export tested helpers or initialize local view state;
   hook dependency and purity rules remain enabled.
@@ -22,6 +31,34 @@ Local evidence recorded on 2026-07-23:
   performance warning, not a build failure.
 - Desktop and narrow-viewport browser checks passed for enrollment, fleet
   history, authenticated downloads, replay, and closed-day confirmation.
+
+## Known gap: the persistence RPC is not executed by any test
+
+Automatic imports persist through the Postgres function
+`persist_auto_daily_import` (`supabase/step_28_auto_collection.sql`), not through
+the JavaScript mappers the manual path uses. Nothing in CI runs it:
+
+- `supabase/step_28_auto_collection.test.js` only greps the function body for
+  table names — it never calls it.
+- The real database tests are `describe.skipIf(!enabled)` on
+  `AUTO_COLLECTION_TEST_DATABASE_URL` (`tests/e2e/auto-collection-ingest.test.js`),
+  and no CI job sets that variable.
+
+So the equivalence between the SQL RPC and the JS mappers — same tables, same
+conflict keys, same delete-before-insert semantics — is established by code
+inspection only. Every automatic import in production flows through a path no
+test exercises.
+
+**To close this, once a staging Supabase exists:** point
+`AUTO_COLLECTION_TEST_DATABASE_URL` at it and run the suite. The tests are
+already written; they only need a database. A row-level diff of a manual and an
+automatic import of the same day would then verify the RPC directly rather than
+by inspection.
+
+One known value-level difference to expect when that runs: the RPC writes `NULL`
+where the JS mappers write `0` for `orders` and `executions` numerics (`nullif`
+vs `coalesce(...,0)`). The UI reads both as `0`, but raw SQL or BI queries would
+see the difference.
 
 Run the current local gate before recording or deploying evidence:
 
