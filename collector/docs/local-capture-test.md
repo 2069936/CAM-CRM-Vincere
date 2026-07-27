@@ -13,21 +13,36 @@ The AddOn compiles against NinjaTrader's own assemblies, so it can only be built
 where NinjaTrader is installed. That is why CI cannot produce it and why the
 agent package ships without it.
 
-## Steps
+## The short way — one command
+
+On the VPS, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/pedro-cmyks/CAM-CRM-Vincere/dev/natanel/collector/scripts/bootstrap-local-test.ps1 | iex
+```
+
+That installs the .NET SDK if the machine lacks it, downloads this repository,
+builds the AddOn against the local NinjaTrader install, and installs it. Close
+NinjaTrader before running it.
+
+It fetches from the public repository, so anyone can read exactly what it runs at
+the URL above before running it.
+
+Then continue from step 3 below.
+
+## The long way — step by step
 
 1. **Close NinjaTrader.**
 
-2. **Build and install the AddOn** from an elevated PowerShell:
+2. **Build and install the AddOn** from PowerShell, in a checkout of this repo:
 
    ```powershell
    cd <repo>\collector\scripts
    .\build-addon-local.ps1
    ```
 
-   It compiles against the local NinjaTrader install and copies the four DLLs
-   into `Documents\NinjaTrader 8\bin\Custom\AddOns`. If NinjaTrader is not in
-   the default location, pass `-NinjaTraderHome "<path>"` — the folder holding
-   `bin\NinjaTrader.Core.dll`.
+   If NinjaTrader is not in the default location, pass `-NinjaTraderHome "<path>"`
+   — the folder holding `bin\NinjaTrader.Core.dll`.
 
 3. **Open NinjaTrader** and wait for the accounts to connect and populate — the
    capture reads what NinjaTrader has loaded at that moment.
