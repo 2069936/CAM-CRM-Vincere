@@ -77,8 +77,10 @@ Production packaging fails unless the AddOn DLL and its three runtime
 dependencies (`NinjaTrader.Core`, `Contracts`, and `Newtonsoft.Json`) have a
 matching verification receipt proving all four `SnapshotV1` sections passed
 the supported-API parity gate. The installer validates and ships that exact
-four-file payload. The probe and UI-automation experiments are never accepted
-as installer inputs.
+four-file payload into NinjaTrader's supported compiled-assembly discovery
+folder, `Documents\NinjaTrader 8\bin\Custom`. The source-only probe remains in
+`bin\Custom\AddOns`; probe and UI-automation experiments are never accepted as
+installer inputs.
 
 On a controlled Windows runner:
 

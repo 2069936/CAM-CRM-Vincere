@@ -59,7 +59,7 @@ Describe 'Installer safety authoring' {
         $machine | Should -Match '<MajorUpgrade'
         $addon | Should -Match '<MajorUpgrade'
         $machine | Should -Match 'ProgramFiles64Folder'
-        $addon | Should -Match 'NinjaTraderAddOnsFolder'
+        $addon | Should -Match 'NinjaTraderCustomFolder'
         $addon | Should -Not -Match 'RemoveFile[^>]*Name="\*'
     }
 

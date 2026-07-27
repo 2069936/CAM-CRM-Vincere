@@ -60,7 +60,7 @@ function Resolve-NinjaTraderDocuments {
 function Get-InstalledVincereAddOnVersion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$DocumentsPath)
-    $path = Join-Path $DocumentsPath 'NinjaTrader 8\bin\Custom\AddOns\Vincere.AutoExport.NinjaTrader.dll'
+    $path = Join-Path $DocumentsPath 'NinjaTrader 8\bin\Custom\Vincere.AutoExport.NinjaTrader.dll'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     return [Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
 }

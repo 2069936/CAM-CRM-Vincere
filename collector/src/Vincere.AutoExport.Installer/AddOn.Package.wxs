@@ -11,15 +11,13 @@
       <Directory Id="NINJATRADERDOCUMENTS" Name="Documents">
         <Directory Id="NinjaTraderDocumentsFolder" Name="NinjaTrader 8">
         <Directory Id="NinjaTraderBinFolder" Name="bin">
-          <Directory Id="NinjaTraderCustomFolder" Name="Custom">
-            <Directory Id="NinjaTraderAddOnsFolder" Name="AddOns" />
-          </Directory>
+          <Directory Id="NinjaTraderCustomFolder" Name="Custom" />
         </Directory>
       </Directory>
       </Directory>
     </StandardDirectory>
     <ComponentGroup Id="AddOnComponents">
-      <Component Id="ProductionAddOnComponent" Directory="NinjaTraderAddOnsFolder" Guid="132D0BFC-E319-409D-9C89-1C12235B70EF">
+      <Component Id="ProductionAddOnComponent" Directory="NinjaTraderCustomFolder" Guid="132D0BFC-E319-409D-9C89-1C12235B70EF">
         <File Id="ProductionAddOnDll" Source="$(AddOnPayloadDirectory)\Vincere.AutoExport.NinjaTrader.dll" Name="Vincere.AutoExport.NinjaTrader.dll" />
         <File Id="ProductionAddOnCoreDll" Source="$(AddOnPayloadDirectory)\Vincere.AutoExport.NinjaTrader.Core.dll" Name="Vincere.AutoExport.NinjaTrader.Core.dll" />
         <File Id="ProductionContractsDll" Source="$(AddOnPayloadDirectory)\Vincere.AutoExport.Contracts.dll" Name="Vincere.AutoExport.Contracts.dll" />
