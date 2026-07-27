@@ -11,6 +11,7 @@ const STATUS_COPY = Object.freeze({
   offline: ['Offline', 'The VPS has stopped reporting heartbeats.'],
   failed: ['Failed', 'The collector reported an operational error.'],
   revoked: ['Revoked', 'Automatic collection access was revoked.'],
+  paused: ['Paused', 'Automatic collection is intentionally paused for this VPS.'],
   update_required: ['Update required', 'The Windows collector must be updated.'],
   not_installed: ['Not installed', 'No VPS is paired with this client.'],
   not_expected: ['Weekend', 'No regular weekday capture is expected.'],
@@ -80,6 +81,7 @@ export function classifyFleetRow({
 
   if (!device) return result('not_installed');
   if (device.status === 'revoked' || device.revokedAt) return result('revoked');
+  if (device.status !== 'active') return result('paused');
   if (device.healthStatus === 'update_required'
     || (releaseVersion && device.agentVersion && compareVersions(device.agentVersion, releaseVersion) < 0)) {
     return result('update_required');

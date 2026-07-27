@@ -13,6 +13,7 @@
     "test": "vitest run",
     "collector:verify-env": "node scripts/verify-auto-collection-env.mjs",
     "collector:load-test": "node scripts/load-test-auto-collection.mjs",
+    "collector:audit-day": "node scripts/audit-auto-collection-day.mjs",
     "collector:compare-shadow": "node scripts/compare-auto-and-manual-imports.mjs",
     "probe:compare": "node scripts/compare-ninjatrader-probe.mjs",
     "probe:evidence": "node scripts/create-ninjatrader-parity-evidence.mjs"

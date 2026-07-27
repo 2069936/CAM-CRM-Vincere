@@ -50,6 +50,12 @@ describe('collector fleet state priority', () => {
     expect(classify('2026-07-23T21:01:00.000Z', { device: { ...onlineDevice, lastSeenAt: '2026-07-23T20:40:00.000Z' } }).state).toBe('offline');
   });
 
+  it('treats an explicitly non-active device as operationally paused', () => {
+    expect(classify('2026-07-23T21:01:00.000Z', {
+      device: { ...onlineDevice, status: 'paused' },
+    }).state).toBe('paused');
+  });
+
   it('marks a processed current-date batch received', () => {
     expect(classify('2026-07-23T21:01:00.000Z', { todayBatch: { status: 'processed' } }).state).toBe('received');
   });
