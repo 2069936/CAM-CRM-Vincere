@@ -105,8 +105,14 @@ describe('auto-export download evidence verification', () => {
 
 describe('auto-export CSV and ZIP reconstruction', () => {
   it('locks every CSV header to the frozen snapshot-v1 field order', () => {
+    // accountValues and extraValues are maps of everything else NinjaTrader
+    // reported. They are deliberately not CSV columns — a nested map has no
+    // meaningful single cell — so the header lock covers the scalar fields.
+    const NON_COLUMN_FIELDS = new Set(['accountValues', 'extraValues']);
     for (const section of ['accounts', 'strategies', 'orders', 'executions']) {
-      expect(CSV_COLUMNS[section]).toEqual(Object.keys(snapshot[section][0]));
+      const scalarFields = Object.keys(snapshot[section][0])
+        .filter((field) => !NON_COLUMN_FIELDS.has(field));
+      expect(CSV_COLUMNS[section]).toEqual(scalarFields);
     }
   });
 

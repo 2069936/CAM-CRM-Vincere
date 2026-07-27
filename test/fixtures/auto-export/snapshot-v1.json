@@ -28,7 +28,19 @@
       "initialMargin": 500,
       "maintenanceMargin": 400,
       "currency": "USD",
-      "status": "Connected"
+      "status": "Connected",
+      "accountValues": {
+        "CashValue": 51245.75,
+        "NetLiquidation": 51245.75,
+        "RealizedProfitLoss": 125.5,
+        "GrossRealizedProfitLoss": 140.25,
+        "BuyingPower": 204983,
+        "InitialMargin": 500,
+        "MaintenanceMargin": 400,
+        "Commission": 14.75,
+        "TotalCashBalance": 51245.75,
+        "SodCashValue": 51120.25
+      }
     }
   ],
   "strategies": [
@@ -56,7 +68,11 @@
         "UseTrailingStop": true,
         "OptionalSignal": null
       },
-      "parameterCaptureStatus": "captured"
+      "parameterCaptureStatus": "captured",
+      "extraValues": {
+        "BarsInProgress": 0,
+        "IsInStrategyAnalyzer": false
+      }
     }
   ],
   "orders": [
@@ -79,7 +95,11 @@
       "tif": "Day",
       "oco": null,
       "name": "RBO entry",
-      "nativeId": "native-order-redacted-01"
+      "nativeId": "native-order-redacted-01",
+      "extraValues": {
+        "IsLiveUntilCancelled": true,
+        "OrderState": "Filled"
+      }
     }
   ],
   "executions": [
@@ -102,7 +122,11 @@
       "rate": 1,
       "realizedPnl": 125.5,
       "connectionName": "Simulated Data Feed",
-      "nativeId": "native-execution-redacted-01"
+      "nativeId": "native-execution-redacted-01",
+      "extraValues": {
+        "IsSimulated": true,
+        "Slippage": 0
+      }
     }
   ]
 }
