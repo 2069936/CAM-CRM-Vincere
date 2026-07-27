@@ -117,7 +117,20 @@ import {
 } from "./domain/report";
 import { buildClientSegments } from "./domain/clientSegments";
 import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
+import {
+  TIME_OFF_KINDS,
+  TIME_OFF_STATUSES,
+  activeCoverageFor,
+  buildCamRecord,
+  buildCamWorkload,
+  conflictingTimeOff,
+  coverageForClient,
+  distributeClientsEvenly,
+  effectiveClientIds,
+} from "./domain/camCoverage";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
+import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
+import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
@@ -178,6 +191,10 @@ import {
   updateSupabaseTradingAccount,
   upsertSupabaseDailyImport,
   deleteSupabaseDailyImport,
+  requestSupabaseTimeOff,
+  decideSupabaseTimeOff,
+  replaceSupabaseCoverage,
+  deleteSupabaseCoverage,
   upsertSupabaseTradingAccount,
 } from "./domain/supabaseStore";
 
@@ -1376,10 +1393,12 @@ function groupByFlagType(rows = []) {
     .sort((a, b) => b.critical - a.critical || b.items.length - a.items.length);
 }
 
-function clientsForCam(clients = [], camProfile = null) {
-  const clientIds = camProfile?.clientIds || [];
-  if (!clientIds.length) return [];
-  const allowed = new Set(clientIds);
+// The clients a CAM works on: the ones they own, plus any they are covering for
+// someone who is away today. Coverage only ever adds — the CAM who is out keeps
+// their own book — and it lapses on its own end date.
+function clientsForCam(clients = [], camProfile = null, coverage = [], date = null) {
+  const allowed = effectiveClientIds(camProfile, coverage, date || todayIsoDate());
+  if (!allowed.size) return [];
   return clients.filter((client) => allowed.has(client.id));
 }
 
@@ -1622,7 +1641,7 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
   return rows;
 }
 
-function buildTeamMessageReport(clients, camProfiles, totals, cams) {
+function buildTeamMessageReport(clients, camProfiles, totals, cams, coverage = []) {
   const today = todayIsoDate();
   const sign = (n) => (n >= 0 ? "+" : "");
   const fmt = (n) =>
@@ -1649,7 +1668,7 @@ function buildTeamMessageReport(clients, camProfiles, totals, cams) {
     lines.push(
       `  Daily: ${sign(cam.dailyPnl)}${fmt(cam.dailyPnl)} · Weekly: ${sign(cam.weeklyPnl)}${fmt(cam.weeklyPnl)}${cam.flags ? ` · ⚠️ ${cam.flags} flags` : ""}`,
     );
-    const camClients = clientsForCam(clients, cam);
+    const camClients = clientsForCam(clients, cam, coverage);
     for (const c of camClients) {
       const latest = c.dailyImports?.at(-1);
       if (!latest) continue;
@@ -3749,6 +3768,11 @@ function SopBuilderPanel() {
 function ManagerOverview({
   clients,
   camProfiles = [],
+  coverage = [],
+  timeOff = [],
+  onApproveTimeOff,
+  onDenyTimeOff,
+  onEndCoverage,
   onOpenCam,
   onCreateCam,
   onUpdateCamProfile,
@@ -3865,7 +3889,7 @@ function ManagerOverview({
   const cams = useMemo(
     () =>
       activeCamProfiles.map((profile) => {
-        const summary = buildManagerSummary(clientsForCam(clients, profile), asOfDate);
+        const summary = buildManagerSummary(clientsForCam(clients, profile, coverage, asOfDate), asOfDate);
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
     [clients, activeCamProfiles, asOfDate],
@@ -4417,6 +4441,7 @@ function ManagerOverview({
                 activeCamProfiles,
                 totals,
                 cams,
+                coverage,
               );
               navigator.clipboard.writeText(report).then(() => {
                 setTeamCopyDone(true);
@@ -5699,6 +5724,17 @@ function ManagerOverview({
             </div>
           </section>
         ) : null}
+
+        <TimeOffPanel
+          camProfiles={camProfiles}
+          clients={clients}
+          timeOff={timeOff}
+          coverage={coverage}
+          today={asOfDate || todayIsoDate()}
+          onApprove={onApproveTimeOff}
+          onDeny={onDenyTimeOff}
+          onEndCoverage={onEndCoverage}
+        />
 
         <LifecycleRollupPanel
           rollup={buildLifecycleRollup(clients || [])}
@@ -11768,7 +11804,7 @@ export default function App() {
     visibleCamProfiles[0] ||
     state.camProfiles?.[0] ||
     null;
-  const currentCamClients = clientsForCam(state.clients, currentCamProfile);
+  const currentCamClients = clientsForCam(state.clients, currentCamProfile, state.coverage || []);
   // Sidebar order: the CAM's manual drag order when they've set one, otherwise
   // the default pinned + urgency sort. Clients missing from a saved order (newly
   // added) fall to the bottom.
@@ -11991,6 +12027,70 @@ export default function App() {
         console.error("[CRM] Failed to delete daily import:", error);
         window.alert(`Could not undo the upload: ${error.message}`);
         reloadSupabaseState(state.accountManager?.id, clientId);
+      });
+  }
+
+  function handleRequestTimeOff(request) {
+    const camId = currentCamProfile?.id;
+    if (!camId || !isSupabaseConfigured) return;
+    requestSupabaseTimeOff(camId, request)
+      .then(() => {
+        auditSilently({
+          entityType: "cam_time_off",
+          action: "cam_time_off.request",
+          afterData: { camId, ...request },
+        });
+        return reloadSupabaseState(camId, state.selectedClientId);
+      })
+      .catch((error) => {
+        console.error("[CRM] Failed to request time off:", error);
+        window.alert(`Could not send the request: ${error.message}`);
+      });
+  }
+
+  // Approving and arranging cover are one action, so a request is never approved
+  // leaving clients unwatched.
+  function handleApproveTimeOff(request, assignments = []) {
+    if (!isSupabaseConfigured) return;
+    decideSupabaseTimeOff(request.id, "Approved", { decidedBy: currentCamProfile?.id })
+      .then(() => replaceSupabaseCoverage(assignments, {
+        timeOffId: request.id,
+        absentCamId: request.camProfileId,
+        startDate: request.startDate,
+        endDate: request.endDate,
+      }))
+      .then(() => {
+        auditSilently({
+          entityType: "cam_time_off",
+          entityId: request.id,
+          action: "cam_time_off.approve",
+          afterData: { camId: request.camProfileId, covered: assignments.length },
+        });
+        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
+      })
+      .catch((error) => {
+        console.error("[CRM] Failed to approve time off:", error);
+        window.alert(`Could not approve: ${error.message}`);
+      });
+  }
+
+  function handleDenyTimeOff(request) {
+    if (!isSupabaseConfigured) return;
+    decideSupabaseTimeOff(request.id, "Denied", { decidedBy: currentCamProfile?.id })
+      .then(() => reloadSupabaseState(state.accountManager?.id, state.selectedClientId))
+      .catch((error) => {
+        console.error("[CRM] Failed to deny time off:", error);
+        window.alert(`Could not deny: ${error.message}`);
+      });
+  }
+
+  function handleEndCoverage(entry) {
+    if (!isSupabaseConfigured) return;
+    deleteSupabaseCoverage(entry.id)
+      .then(() => reloadSupabaseState(state.accountManager?.id, state.selectedClientId))
+      .catch((error) => {
+        console.error("[CRM] Failed to end coverage:", error);
+        window.alert(`Could not end the cover: ${error.message}`);
       });
   }
 
@@ -12705,6 +12805,11 @@ export default function App() {
           <ManagerOverview
             clients={state.clients}
             camProfiles={state.camProfiles}
+            coverage={state.coverage || []}
+            timeOff={state.timeOff || []}
+            onApproveTimeOff={handleApproveTimeOff}
+            onDenyTimeOff={handleDenyTimeOff}
+            onEndCoverage={handleEndCoverage}
             onOpenCam={openCamWorkspace}
             onCreateCam={(name) => {
               createSupabaseCamProfile(name)
@@ -13385,6 +13490,27 @@ export default function App() {
                 </div>
               </div>
               <ProfilePanel session={session} />
+
+              {currentCamProfile ? (
+                <>
+                  <CamRecordPanel
+                    record={buildCamRecord(currentCamProfile, state.clients || [], {
+                      coverage: state.coverage || [],
+                      timeOff: state.timeOff || [],
+                      date: todayIsoDate(),
+                    })}
+                  />
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <h3>Request time off</h3>
+                      <span className="muted">
+                        Your manager approves it and arranges who covers your clients.
+                      </span>
+                    </div>
+                    <TimeOffRequestForm kinds={TIME_OFF_KINDS} onSubmit={handleRequestTimeOff} />
+                  </section>
+                </>
+              ) : null}
             </main>
           ) : showSOP ? (
             <main className="content">

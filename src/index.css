@@ -6994,3 +6994,49 @@ tr:nth-child(2) .rank-badge {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* Time off requests and coverage. */
+.timeoff-list { display: grid; gap: 10px; }
+.timeoff-request {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.timeoff-request-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.timeoff-request-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.timeoff-note { margin: 4px 0 0; font-size: 12px; }
+.timeoff-conflict { margin-top: 8px; font-size: 12px; }
+.timeoff-cover { margin-top: 10px; }
+.timeoff-cover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.timeoff-cover-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.timeoff-subhead { margin: 16px 0 6px; font-size: 13px; }
+.timeoff-form {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.timeoff-form label { display: grid; gap: 3px; font-size: 12px; }
+.timeoff-form label span { color: var(--text-muted); }
+.timeoff-form-note { flex: 1; min-width: 200px; }
+.timeoff-form input,
+.timeoff-form select {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}

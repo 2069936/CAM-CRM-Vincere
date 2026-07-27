@@ -181,6 +181,35 @@ function priceCheckFromRow(row) {
   };
 }
 
+function timeOffFromRow(row, camIdByUuid) {
+  return {
+    id: row.id,
+    camProfileId: camIdByUuid[row.cam_profile_id] || row.cam_profile_id,
+    camUuid: row.cam_profile_id,
+    startDate: row.start_date || '',
+    endDate: row.end_date || '',
+    kind: row.kind || 'Vacation',
+    note: row.note || '',
+    status: row.status || 'Pending',
+    requestedAt: row.requested_at || '',
+    decidedAt: row.decided_at || '',
+    decisionNote: row.decision_note || '',
+  };
+}
+
+function coverageFromRow(row, camIdByUuid, clientIdByUuid) {
+  return {
+    id: row.id,
+    clientId: clientIdByUuid[row.client_id] || row.client_id,
+    coveringCamId: camIdByUuid[row.covering_cam_profile_id] || row.covering_cam_profile_id,
+    absentCamId: camIdByUuid[row.absent_cam_profile_id] || row.absent_cam_profile_id || '',
+    timeOffId: row.time_off_id || '',
+    startDate: row.start_date || '',
+    endDate: row.end_date || '',
+    note: row.note || '',
+  };
+}
+
 function propFirmFromRow(row) {
   const firmName = row.firm_name || '';
   return {
@@ -242,6 +271,8 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     taskRows,
     activityRows,
     priceCheckRows,
+    timeOffRows,
+    coverageRows,
   ] = await Promise.all([
     loadTable('cam_profiles'),
     loadTable('clients'),
@@ -259,6 +290,8 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     loadTable('tasks'),
     loadTable('activity_logs'),
     loadTable('price_checks'),
+    loadTable('cam_time_off'),
+    loadTable('client_coverage'),
   ]);
 
   const visibleClientRows = (clientRows || []).filter((client) => (
@@ -364,6 +397,11 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     monthlyGoal: Number(cam.monthly_goal || 0),
     canManageClients: Boolean(cam.can_manage_clients),
     reportConfig: cam.report_config && typeof cam.report_config === 'object' ? cam.report_config : {},
+    startDate: cam.start_date || '',
+    email: cam.email || '',
+    phone: cam.phone || '',
+    timezone: cam.timezone || '',
+    notes: cam.notes || '',
     clientOrder: Array.isArray(cam.client_order) ? cam.client_order : [],
     clientIds: assignmentRows
       .filter((assignment) => assignment.cam_profile_id === cam.id && clientByUuid[assignment.client_id])
@@ -449,6 +487,11 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
 
   const selectedClientId = preferredCam?.clientIds?.[0] || clients[0]?.id || null;
 
+  // Map DB uuids to the app-level ids the rest of the state uses, so time off
+  // and coverage reference CAMs and clients the same way everything else does.
+  const camIdByUuid = Object.fromEntries((camRows || []).map((row) => [row.id, pickId(row)]));
+  const clientIdByUuid = Object.fromEntries((clientRows || []).map((row) => [row.id, pickId(row)]));
+
   return {
     dataSource: 'supabase',
     accountManager: {
@@ -457,6 +500,8 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     },
     camProfiles,
     clients,
+    timeOff: (timeOffRows || []).map((row) => timeOffFromRow(row, camIdByUuid)),
+    coverage: (coverageRows || []).map((row) => coverageFromRow(row, camIdByUuid, clientIdByUuid)),
     selectedClientId,
   };
 }
@@ -600,6 +645,11 @@ function clientPatchToDb(patch = {}) {
   if ('notes' in patch) mapped.notes = patch.notes || '';
   if ('reportConfig' in patch) mapped.report_config = patch.reportConfig && typeof patch.reportConfig === 'object' ? patch.reportConfig : {};
   if ('clientOrder' in patch) mapped.client_order = Array.isArray(patch.clientOrder) ? patch.clientOrder : [];
+  if ('startDate' in patch) mapped.start_date = emptyToNull(patch.startDate);
+  if ('email' in patch) mapped.email = patch.email || '';
+  if ('phone' in patch) mapped.phone = patch.phone || '';
+  if ('timezone' in patch) mapped.timezone = patch.timezone || '';
+  if ('notes' in patch) mapped.notes = patch.notes || '';
   if ('profile' in patch) {
     const profile = patch.profile || {};
     if ('stage' in profile) mapped.stage = profile.stage || 'Active';
@@ -833,6 +883,82 @@ export async function createSupabaseCamProfile(name, roleTitle = 'CAM') {
     reportConfig: data.report_config && typeof data.report_config === 'object' ? data.report_config : {},
     clientIds: [],
   };
+}
+
+export async function requestSupabaseTimeOff(camProfileId, request = {}) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const camUuid = await getCamProfileUuid(camProfileId);
+  const { data, error } = await supabase
+    .from('cam_time_off')
+    .insert({
+      cam_profile_id: camUuid,
+      start_date: request.startDate,
+      end_date: request.endDate || request.startDate,
+      kind: request.kind || 'Vacation',
+      note: request.note || '',
+      status: 'Pending',
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function decideSupabaseTimeOff(timeOffId, status, { decidedBy = null, note = '' } = {}) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const decidedByUuid = decidedBy ? await getCamProfileUuid(decidedBy).catch(() => null) : null;
+  const { data, error } = await supabase
+    .from('cam_time_off')
+    .update({
+      status,
+      decided_at: new Date().toISOString(),
+      decided_by: decidedByUuid,
+      decision_note: note || '',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', timeOffId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+// Hand a set of clients to covering CAMs for one window. Replaces whatever was
+// already arranged for that request, so re-distributing is not additive.
+export async function replaceSupabaseCoverage(assignments = [], { timeOffId = null, absentCamId = null, startDate, endDate } = {}) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  if (timeOffId) {
+    const { error } = await supabase.from('client_coverage').delete().eq('time_off_id', timeOffId);
+    if (error) throw new Error(error.message);
+  }
+  if (!assignments.length) return [];
+
+  const absentUuid = absentCamId ? await getCamProfileUuid(absentCamId).catch(() => null) : null;
+  const rows = [];
+  for (const assignment of assignments) {
+    rows.push({
+      client_id: await getClientUuid(assignment.clientId),
+      covering_cam_profile_id: await getCamProfileUuid(assignment.coveringCamId),
+      absent_cam_profile_id: absentUuid,
+      time_off_id: timeOffId,
+      start_date: startDate,
+      end_date: endDate || startDate,
+      note: assignment.note || '',
+    });
+  }
+  const { data, error } = await supabase
+    .from('client_coverage')
+    .upsert(rows, { onConflict: 'client_id,covering_cam_profile_id,start_date,end_date' })
+    .select();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function deleteSupabaseCoverage(coverageId) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const { error } = await supabase.from('client_coverage').delete().eq('id', coverageId);
+  if (error) throw new Error(error.message);
+  return true;
 }
 
 export async function updateSupabaseCamProfile(camProfileId, patch = {}) {
