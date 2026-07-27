@@ -158,6 +158,11 @@ function countWeekdays(fromDate, toDateValue) {
  * reported one would warn too late on an account that is actually closer to its
  * limit than we can see. Doubling the margins costs a few early warnings and
  * buys not missing a real one.
+ *
+ * The widening exists because we do not know whether a firm trails from the
+ * intraday high or from the daily close. Recording that per firm would make the
+ * derivation exact where the basis is end-of-day, and honest about being
+ * impossible where it is not — see docs/prop-firm-rules-catalog.md.
  */
 export function drawdownThresholds(source) {
   return source === 'derived'

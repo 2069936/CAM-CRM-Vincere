@@ -172,6 +172,13 @@ mappers write `0` for `orders` and `executions` numerics. The UI reads both as
 `0`, but raw SQL or BI queries would see it. Details in
 [`docs/verification/auto-collection-crm.md`](verification/auto-collection-crm.md).
 
+**Trailing drawdown on automatic closes is an estimate.** NinjaTrader's API does
+not expose it, so it is reconstructed from stored closes as a lower bound and
+marked as derived, with widened alert thresholds. Making it exact needs each prop
+firm's trailing rule recorded — see
+[`docs/prop-firm-rules-catalog.md`](prop-firm-rules-catalog.md), which is a design
+note, not built.
+
 **The NinjaTrader AddOn is not in the published package.** CI only ever builds it
 against a disposable payload, so the real one has to be deployed from a machine
 with licensed NinjaTrader. `install-agent.ps1` warns and continues when it is
