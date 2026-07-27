@@ -53,3 +53,6 @@ public/strategy-set-index.json
 # Local CRM backups
 cam-backup-*.json
 .vercel
+
+# Build output staged for a collector release upload (large binaries).
+release-upload/
