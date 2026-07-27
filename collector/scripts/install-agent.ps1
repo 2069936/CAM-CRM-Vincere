@@ -160,7 +160,9 @@ if (-not $SkipAddOn) {
     }
     $addOnSource = Join-Path $PackagePath 'AddOn'
     if (Test-Path -LiteralPath $addOnSource) {
-        $addOnTarget = Join-Path $customPath 'AddOns'
+        # bin\Custom, not bin\Custom\AddOns: that subfolder is for NinjaScript
+        # source NinjaTrader compiles, and a compiled DLL there is never loaded.
+        $addOnTarget = $customPath
         New-Item -ItemType Directory -Path $addOnTarget -Force | Out-Null
         Copy-Item -Path (Join-Path $addOnSource '*') -Destination $addOnTarget -Recurse -Force
         Write-Ok "AddOn deployed to $addOnTarget"

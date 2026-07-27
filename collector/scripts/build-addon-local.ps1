@@ -8,7 +8,8 @@
     built on a machine where NinjaTrader 8 is installed — which is why CI cannot
     produce it and the agent package ships without it.
 
-    This builds it here and drops the four DLLs into NinjaTrader's AddOns folder.
+    This builds it here and drops the four DLLs into NinjaTrader's bin\Custom
+    folder, where it loads external assemblies from.
     Nothing is uploaded and no CRM connection is involved; afterwards the Control
     Center gains "Vincere: Export Snapshot to File (local test)".
 
@@ -98,10 +99,27 @@ if ($NoInstall) {
 
 # --- install ---------------------------------------------------------------
 
-$addOnTarget = Join-Path $NinjaTraderDocumentsPath 'bin\Custom\AddOns'
-if (-not (Test-Path -LiteralPath (Join-Path $NinjaTraderDocumentsPath 'bin\Custom'))) {
+# Compiled assemblies go in bin\Custom, which is where NinjaTrader loads
+# external DLLs from. bin\Custom\AddOns is for NinjaScript .cs source that
+# NinjaTrader compiles itself — a DLL placed there is silently never loaded.
+$addOnTarget = Join-Path $NinjaTraderDocumentsPath 'bin\Custom'
+if (-not (Test-Path -LiteralPath $addOnTarget)) {
     throw "NinjaTrader's Documents folder was not found at: $NinjaTraderDocumentsPath`n" +
           'Open NinjaTrader 8 once so it creates the folder, or pass -NinjaTraderDocumentsPath.'
+}
+
+# An earlier version of this script copied into bin\Custom\AddOns, where the
+# DLLs were never loaded. Clear them out so NinjaScript does not trip over
+# assemblies sitting in its source folder.
+$staleFolder = Join-Path $NinjaTraderDocumentsPath 'bin\Custom\AddOns'
+if (Test-Path -LiteralPath $staleFolder) {
+    $stale = Get-ChildItem -LiteralPath $staleFolder -Filter 'Vincere.AutoExport*.dll' -ErrorAction SilentlyContinue
+    $stale += Get-ChildItem -LiteralPath $staleFolder -Filter 'Newtonsoft.Json.dll' -ErrorAction SilentlyContinue
+    if ($stale) {
+        Write-Step "Removing an earlier install from $staleFolder"
+        $stale | Remove-Item -Force
+        Write-Ok "Removed $($stale.Count) file(s)."
+    }
 }
 
 Write-Step "Installing the AddOn into $addOnTarget"
