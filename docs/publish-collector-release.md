@@ -1,80 +1,107 @@
-# Publishing the collector so the install button turns on
+# Publishing the collector (for whoever owns the infrastructure)
 
-Until a release is published, the Auto Collection card shows **"Installer
-unavailable"**. Publishing is two uploads and two environment variables.
+The auto-collector is an agent that runs on each client's Windows VPS and uploads
+the daily close by itself. The code ships in this repo; turning it on is four
+steps, all done by whoever has access to the hosting and the CRM's environment
+variables. Nothing here needs access to anyone else's repository.
 
-## Why the files aren't in the repo
+Until a release is published the Auto Collection card shows **"Installer
+unavailable"** — that is the expected state, not a bug.
 
-The agent package is a ~100 MB build artifact rebuilt on every CI run, so it
-lives in the build, not in git. `scripts/prepare-release.sh` pulls the newest one
-that passed and writes both files into a folder ready to upload — so the folder
-always matches a green build rather than a stale copy someone committed.
+## Step 1 — build the agent package
 
-## Step 1 — produce the two files
+The package is a ~100 MB build artifact, so it is not committed. Produce it from
+this repo's own CI:
+
+**Actions → "Collector Windows" → Run workflow.** It has a manual trigger, so it
+can be run on any branch. When it finishes, the run has an artifact named
+`collector-agent-package-<number>`.
+
+## Step 2 — stage the two files
+
+Decide first where the files will be **served from** — any HTTPS folder works
+(Supabase Storage public bucket, S3, a static host). That URL is baked into the
+manifest, so it has to be known up front.
 
 ```bash
 ./scripts/prepare-release.sh https://<project>.supabase.co/storage/v1/object/public/collector
 ```
 
-The URL is the folder the files will be **served from** — pass it up front,
-because it is baked into the manifest.
-
-This writes `release-upload/`:
+It pulls the newest successful build from this repository's Actions, and writes
+`release-upload/`:
 
 | File | What it is |
 |---|---|
-| `Vincere-AutoExport-Agent.zip` | the agent, setup window and install scripts |
-| `release-manifest.json` | version + SHA-256 of the package |
+| `Vincere-AutoExport-Agent.zip` | the agent, the pairing window, and the install scripts |
+| `release-manifest.json` | version and SHA-256 of the package |
 
-and prints the two environment values.
+and prints the two environment values from step 4.
 
-## Step 2 — upload both files
+Requires the GitHub CLI (`gh`) and Node. To pull from a different repository:
+`COLLECTOR_REPO=<owner/repo> ./scripts/prepare-release.sh <base-url>`.
 
-Upload the **two files together** to that exact URL. In Supabase: Storage → a
-public bucket (e.g. `collector`) → upload both.
+## Step 3 — upload both files
 
-They must share one folder: the CRM rejects a manifest whose artifacts sit on a
-different origin.
+Upload **both** files to that exact folder. They must share one origin — the CRM
+rejects a manifest whose artifacts are served from somewhere else. The folder has
+to be publicly readable: the VPS machines download from it directly.
 
-## Step 3 — set the environment variables
+## Step 4 — set the environment variables
 
-In the CRM's Vercel project, Settings → Environment Variables:
+In the CRM project (Vercel → Settings → Environment Variables):
 
 | Variable | Value |
 |---|---|
 | `AUTO_COLLECTION_RELEASE_MANIFEST_URL` | URL of `release-manifest.json` |
-| `AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` | the hash the script printed |
+| `AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` | the hash printed in step 2 |
+| `AUTO_COLLECTION_MIN_AGENT_VERSION` | the version printed in step 2, e.g. `0.0.5830` |
+| `INGEST_TOKEN_PEPPER` | a secret: `openssl rand -hex 32`. Generate it here and keep it here — it should never be sent over chat or committed. |
 
-Two more are required for auto-collection generally, if they aren't set yet:
-
-| Variable | Value |
-|---|---|
-| `INGEST_TOKEN_PEPPER` | a secret, e.g. `openssl rand -hex 32`. Generate it directly in Vercel — it should not travel through chat or the repo. |
-| `AUTO_COLLECTION_MIN_AGENT_VERSION` | the version the script printed, e.g. `0.0.1234` |
-
-Redeploy so they take effect, then check everything is present:
+Redeploy, then confirm nothing is missing:
 
 ```bash
 node scripts/verify-auto-collection-env.mjs
 ```
 
-## Step 4 — confirm
+## Step 5 — confirm it worked
 
 Open **Auto Collection** for any client. The card should stop saying "Installer
-unavailable" and show the PowerShell command with a copy button.
+unavailable" and show a PowerShell command with a copy button.
 
-## Re-publishing a new build
+To onboard a machine: on the client's VPS, open PowerShell **as administrator**
+with NinjaTrader closed, paste that command, then paste the pairing code the card
+generates.
 
-Run step 1 again and re-upload both files. The manifest is pinned by hash, so
-`AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` **must** be updated to the new value —
-otherwise the CRM correctly rejects the changed manifest.
+## Re-publishing a newer build
 
-## About signing
+Repeat steps 1–3, then update `AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` to the
+new value. The manifest is hash-pinned, so a changed manifest with a stale hash
+is rejected — that is deliberate, and it is why the variable must move with it.
 
-The published package is unsigned, which is why no certificate is needed. The
-manifest and every artifact are still pinned by SHA-256, so a tampered download
-is rejected. Windows will warn when a script from the internet is run; the
-install doc covers `Unblock-File`. If a code-signing certificate is bought later,
-publish `Vincere-AutoExport-Setup.exe` with a `signingThumbprint` in the manifest
-and the CRM will prefer nothing — it takes the package first — so drop the zip
-from the manifest to switch over.
+## Why the package is unsigned
+
+Distribution deliberately does not depend on a code-signing certificate, so
+onboarding is not blocked on buying one. Integrity is still enforced: the
+manifest is pinned by SHA-256 through the environment variable, and the package
+carries its own SHA-256 inside the manifest, so a tampered download is rejected.
+What is absent is the Authenticode signature, so Windows will warn when the
+script is run from the internet — `collector/docs/install-without-msi.md` covers
+`Unblock-File` for that.
+
+If a certificate is bought later, publish `Vincere-AutoExport-Setup.exe` with a
+`signingThumbprint` in the manifest and drop the `.zip` artifact from it; the CRM
+prefers the package when both are listed.
+
+## What runs where
+
+| Piece | Where it runs |
+|---|---|
+| CRM | Vercel + Supabase (already deployed) |
+| Ingest API (`api/ingest/*`) | same Vercel project, no extra setup |
+| Agent + pairing window | each client's Windows VPS |
+| NinjaTrader AddOn | each client's VPS, inside NinjaTrader |
+
+The AddOn is intentionally not in the package: CI only ever authors it against a
+disposable payload, so the real one is deployed from a NinjaTrader-licensed
+machine. `install-agent.ps1` warns and continues when it is absent, so the
+service can be installed and paired before the AddOn is in place.

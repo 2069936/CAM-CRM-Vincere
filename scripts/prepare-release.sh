@@ -11,7 +11,10 @@ set -euo pipefail
 
 BASE_URL="${1:-}"
 RUN_ID="${2:-}"
-REPO="pedro-cmyks/CAM-CRM-Vincere-collector-build"
+# Whichever repository ran the collector workflow. Defaults to the one holding
+# this checkout, so after the PR is merged this pulls from your own Actions runs
+# and needs no access to anyone else's repository.
+REPO="${COLLECTOR_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo '')}"
 OUT_DIR="release-upload"
 
 if [ -z "$BASE_URL" ]; then
@@ -21,9 +24,17 @@ Usage: ./scripts/prepare-release.sh <base-url> [run-id]
   base-url  the HTTPS folder the two files will be served from, e.g.
             https://abcdefgh.supabase.co/storage/v1/object/public/collector
   run-id    optional; defaults to the newest successful collector build
+
+  COLLECTOR_REPO=<owner/repo> overrides which repository's build to pull from.
+
+If no successful run exists yet, run the "Collector Windows" workflow once from
+the Actions tab (it has a manual trigger), then run this again.
 USAGE
   exit 1
 fi
+
+[ -n "$REPO" ] || { echo "Could not determine the repository. Set COLLECTOR_REPO=<owner/repo>." >&2; exit 1; }
+echo "==> Repository: $REPO"
 
 command -v gh >/dev/null || { echo "The GitHub CLI (gh) is required." >&2; exit 1; }
 
