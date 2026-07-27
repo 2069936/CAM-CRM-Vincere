@@ -92,6 +92,9 @@ public sealed class NinjaTraderFacadeTests : IDisposable
         var account = new Account
         {
             Name = "Sparse",
+            // Connected, so the relevance filter keeps it: this test is about how
+            // unset provider values map, not about which accounts are captured.
+            ConnectionStatus = "Connected",
             Denomination = Currency.UsDollar,
             Connection = new Connection { Options = new ConnectionOptions { Name = "Provider" } },
         };
@@ -103,8 +106,39 @@ public sealed class NinjaTraderFacadeTests : IDisposable
         Assert.Null(row.RealizedPnl);
         Assert.Null(row.GrossRealizedPnl);
         Assert.Null(row.TotalPnl);
+        // Null only because this provider reports neither. A real install does
+        // report them, under AccountItem members the published list omits.
         Assert.Null(row.WeeklyPnl);
         Assert.Null(row.TrailingMaxDrawdown);
+    }
+
+    [Fact]
+    public void Skips_accounts_that_are_disconnected_and_hold_nothing()
+    {
+        // A real machine carried 44 accounts where the grid showed 3; the rest
+        // were leftovers from connections that no longer exist.
+        Account.All.Add(new Account
+        {
+            Name = "DEMO5289161",
+            Denomination = Currency.UsDollar,
+            Connection = new Connection { Options = new ConnectionOptions { Name = "Provider" } },
+        });
+
+        Assert.Empty(new NinjaTraderFacade().ReadAccounts());
+    }
+
+    [Fact]
+    public void Reports_weekly_and_trailing_when_the_provider_exposes_them()
+    {
+        var account = AccountFixture();
+        account.Set(AccountItem.WeeklyProfitLoss, 171.54);
+        account.Set(AccountItem.TrailingMaxDrawdown, 888.48);
+        Account.All.Add(account);
+
+        var row = Assert.Single(new NinjaTraderFacade().ReadAccounts());
+
+        Assert.Equal(171.54m, row.WeeklyPnl);
+        Assert.Equal(888.48m, row.TrailingMaxDrawdown);
     }
 
     private static Account AccountFixture()

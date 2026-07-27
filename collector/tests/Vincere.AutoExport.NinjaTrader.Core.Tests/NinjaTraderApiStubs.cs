@@ -6,6 +6,10 @@ namespace NinjaTrader.Cbi
 {
     public enum Currency { UsDollar }
 
+    // Mirrors the members the capture depends on. WeeklyProfitLoss and
+    // TrailingMaxDrawdown are absent from NinjaTrader's published AccountItem
+    // list but present on a real 8.1.7.2 install, which is why the facade reads
+    // values by enumerating this enum rather than naming members.
     public enum AccountItem
     {
         BuyingPower,
@@ -17,6 +21,8 @@ namespace NinjaTrader.Cbi
         NetLiquidation,
         RealizedProfitLoss,
         UnrealizedProfitLoss,
+        WeeklyProfitLoss,
+        TrailingMaxDrawdown,
     }
 
     public sealed class ConnectionOptions { public string Name { get; set; } }
