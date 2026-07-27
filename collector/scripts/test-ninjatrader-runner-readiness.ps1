@@ -50,11 +50,12 @@ if (Test-PathWithin -Candidate $home -Parent $checkout) {
 
 $checks = [Collections.Generic.List[object]]::new()
 $checks.Add((New-PassedCheck 'ninjatrader_outside_checkout'))
-foreach ($assembly in [ordered]@{
+$requiredAssemblies = [ordered]@{
     'NinjaTrader.Core.dll' = 'core'
     'NinjaTrader.Gui.dll' = 'gui'
     'NinjaTrader.NinjaScript.dll' = 'ninjascript'
-}.GetEnumerator()) {
+}
+foreach ($assembly in $requiredAssemblies.GetEnumerator()) {
     $path = Join-Path $home "bin\$($assembly.Key)"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "runner_missing_ninjatrader_$($assembly.Value)"
