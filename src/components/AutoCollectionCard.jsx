@@ -21,6 +21,7 @@ import {
   buildAutoCollectionViewModel,
   confirmationPhrase,
   copyEnrollmentCode,
+  buildInstallCommand,
   isEnrollmentUsable,
   remainingEnrollmentSeconds,
 } from '../domain/autoCollectionViewModel';
@@ -181,12 +182,14 @@ export default function AutoCollectionCard({
   const [busy, setBusy] = useState(false);
   const [confirmation, setConfirmation] = useState(null);
   const [copyState, setCopyState] = useState('idle');
+  const [commandCopyState, setCommandCopyState] = useState('idle');
   const [installerStarted, setInstallerStarted] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.parse(initialStatus?.serverTime || '') || Date.now());
   const requestSequence = useRef(0);
   const activeRequest = useRef(null);
   const clockAnchor = useRef(null);
   const copyTimer = useRef(null);
+  const commandCopyTimer = useRef(null);
   const confirmationTrigger = useRef(null);
 
   function openConfirmation(action, trigger) {
@@ -225,6 +228,7 @@ export default function AutoCollectionCard({
     return () => {
       if (startTimer !== null) window.clearTimeout(startTimer);
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+      if (commandCopyTimer.current !== null) window.clearTimeout(commandCopyTimer.current);
       requestSequence.current += 1;
       activeRequest.current?.abort();
     };
@@ -293,6 +297,20 @@ export default function AutoCollectionCard({
     }
   }
 
+  async function handleCopyCommand() {
+    try {
+      await copyEnrollmentCode(installCommand);
+      setCommandCopyState('copied');
+      if (commandCopyTimer.current !== null) window.clearTimeout(commandCopyTimer.current);
+      commandCopyTimer.current = window.setTimeout(() => {
+        commandCopyTimer.current = null;
+        setCommandCopyState('idle');
+      }, 1800);
+    } catch {
+      setCommandCopyState('failed');
+    }
+  }
+
   async function handleCopy() {
     try {
       await copyEnrollmentCode(status?.enrollment?.code);
@@ -326,6 +344,7 @@ export default function AutoCollectionCard({
     ? status.enrollment
     : null;
   const hasRelease = Boolean(status?.release);
+  const installCommand = buildInstallCommand(status?.release);
   const displayClientName = status?.client?.name || clientName;
   const stepOneDone = Boolean(activeDevice || installerStarted);
   const stepTwoDone = Boolean(activeDevice);
@@ -358,16 +377,44 @@ export default function AutoCollectionCard({
       <ol className="auto-collection-trace" aria-label="Collector setup progress">
         <ConnectionStep
           number={1}
-          title="Download installer"
+          title="Install the agent"
           description={hasRelease ? `Windows agent ${status.release.version}` : 'Waiting for an approved Windows release.'}
           state={stepOneDone ? 'done' : hasRelease ? 'active' : 'future'}
         >
-          {hasRelease ? <a className="primary-button auto-collection-step-action" href={status.release.url} target="_blank" rel="noopener noreferrer" onClick={() => setInstallerStarted(true)}><Download size={14} /> Download agent</a> : null}
+          {hasRelease ? (
+            <>
+              <p className="auto-collection-step-hint">
+                On the client&apos;s VPS, open PowerShell as administrator with
+                NinjaTrader closed, then paste this:
+              </p>
+              <div className="auto-collection-code-wrap">
+                <code className="auto-collection-command">{installCommand}</code>
+                <button
+                  type="button"
+                  className="ghost-button icon-only"
+                  aria-label="Copy install command"
+                  onClick={handleCopyCommand}
+                >
+                  <Copy size={14} />
+                </button>
+                <span>{commandCopyState === 'copied' ? 'Copied' : commandCopyState === 'failed' ? 'Copy unavailable' : ''}</span>
+              </div>
+              <a
+                className="auto-collection-step-link"
+                href={status.release.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setInstallerStarted(true)}
+              >
+                <Download size={13} /> or download the package manually
+              </a>
+            </>
+          ) : null}
         </ConnectionStep>
         <ConnectionStep
           number={2}
-          title="Run as administrator"
-          description="Open the downloaded installer on the client VPS and approve the Windows prompt."
+          title="Approve the Windows prompt"
+          description="The script registers the service and deploys the NinjaTrader AddOn."
           state={stepTwoDone ? 'done' : installerStarted ? 'active' : 'future'}
         />
         <ConnectionStep

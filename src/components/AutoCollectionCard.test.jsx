@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import AutoCollectionCard from './AutoCollectionCard';
-import { buildAutoCollectionViewModel, confirmationPhrase, copyEnrollmentCode, remainingEnrollmentSeconds } from '../domain/autoCollectionViewModel';
+import { buildAutoCollectionViewModel, buildInstallCommand, confirmationPhrase, copyEnrollmentCode, remainingEnrollmentSeconds } from '../domain/autoCollectionViewModel';
 
 const base = {
   serverTime: '2026-07-23T16:45:00.000Z',
@@ -64,8 +64,8 @@ describe('auto collection setup view model', () => {
 describe('AutoCollectionCard rendering and actions', () => {
   it('renders one sequential four-step connection trace instead of generic cards', () => {
     const html = render(base);
-    expect(html).toContain('Download installer');
-    expect(html).toContain('Run as administrator');
+    expect(html).toContain('Install the agent');
+    expect(html).toContain('Approve the Windows prompt');
     expect(html).toContain('Enter one-time code');
     expect(html).toContain('Confirm connection');
     expect((html.match(/auto-collection-step/g) || []).length).toBeGreaterThanOrEqual(4);
@@ -120,5 +120,31 @@ describe('AutoCollectionCard rendering and actions', () => {
     expect(html).toContain('Permission required');
     expect(html).not.toContain('Generate one-time code');
     expect(html).not.toContain('Revoke access');
+  });
+});
+
+describe('install command', () => {
+  it('builds a one-line PowerShell install from the release url', () => {
+    const command = buildInstallCommand({ url: 'https://downloads.example.test/agent.zip' });
+    expect(command).toContain("Invoke-WebRequest 'https://downloads.example.test/agent.zip'");
+    expect(command).toContain('Expand-Archive');
+    expect(command).toContain('install-agent.ps1');
+  });
+
+  it('is empty when no release is published', () => {
+    expect(buildInstallCommand(null)).toBe('');
+    expect(buildInstallCommand({ url: '' })).toBe('');
+  });
+
+  it('escapes a single quote in the url so the command cannot break out', () => {
+    expect(buildInstallCommand({ url: "https://x.test/a'b.zip" })).toContain("'https://x.test/a''b.zip'");
+  });
+});
+
+describe('install step rendering', () => {
+  it('shows the copyable command when a release exists', () => {
+    const html = render(base);
+    expect(html).toContain('Install the agent');
+    expect(html).toContain('install-agent.ps1');
   });
 });

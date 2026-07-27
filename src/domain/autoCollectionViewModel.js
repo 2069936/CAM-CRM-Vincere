@@ -51,6 +51,24 @@ export async function copyEnrollmentCode(code, clipboard = globalThis.navigator?
   await clipboard.writeText(String(code || ''));
 }
 
+// One line the CAM pastes into an elevated PowerShell on the client's VPS. It
+// downloads the agent package and runs the installer inside it, so nothing has
+// to be signed or clicked through — the release only needs to be a reachable
+// .zip. Returns '' when no release is published yet.
+export function buildInstallCommand(release) {
+  const url = String(release?.url || '').trim();
+  if (!url) return '';
+  // Single-quoted in PowerShell so nothing in the URL is interpolated.
+  const safeUrl = url.replace(/'/g, "''");
+  return [
+    "$d=\"$env:TEMP\\vincere-agent\"",
+    'Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue',
+    `Invoke-WebRequest '${safeUrl}' -OutFile "$d.zip" -UseBasicParsing`,
+    'Expand-Archive "$d.zip" $d -Force',
+    '& "$d\\install-agent.ps1" -PackagePath $d',
+  ].join('; ');
+}
+
 export function confirmationPhrase(kind, clientName) {
   const verbs = { generate: 'GENERATE', rebind: 'REBIND', revoke: 'REVOKE' };
   const verb = verbs[kind];
