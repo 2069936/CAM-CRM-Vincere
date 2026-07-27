@@ -80,17 +80,12 @@ is rejected — that is deliberate, and it is why the variable must move with it
 
 ## Why the package is unsigned
 
-Distribution deliberately does not depend on a code-signing certificate, so
-onboarding is not blocked on buying one. Integrity is still enforced: the
-manifest is pinned by SHA-256 through the environment variable, and the package
-carries its own SHA-256 inside the manifest, so a tampered download is rejected.
-What is absent is the Authenticode signature, so Windows will warn when the
-script is run from the internet — `collector/docs/install-without-msi.md` covers
-`Unblock-File` for that.
-
-If a certificate is bought later, publish `Vincere-AutoExport-Setup.exe` with a
-`signingThumbprint` in the manifest and drop the `.zip` artifact from it; the CRM
-prefers the package when both are listed.
+Distribution does not depend on a code-signing certificate. Integrity is still
+enforced: the manifest is pinned by SHA-256 through the environment variable, and
+the package carries its own SHA-256 inside the manifest, so a tampered download
+is rejected. What is absent is the Authenticode signature, so Windows warns when
+a script downloaded from the internet is run — `collector/docs/installing.md`
+covers `Unblock-File` for that.
 
 ## What runs where
 

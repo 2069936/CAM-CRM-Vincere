@@ -116,11 +116,11 @@ jobs:
       - name: Build agent package ZIP for the script installer
         shell: pwsh
         run: |
-          # The package the PowerShell installer expands. Same binaries as the
-          # MSI, without needing a signed bundle to hand someone. The AddOn is
-          # deliberately absent: CI only ever authors it against a disposable
-          # payload, so the real one is deployed from the NinjaTrader-licensed
-          # machine. install-agent.ps1 warns and continues when it is missing.
+          # The package the PowerShell installer expands — this is how the
+          # agent is distributed. The AddOn is deliberately absent: CI only ever
+          # authors it against a disposable payload, so the real one is deployed
+          # from the NinjaTrader-licensed machine, and install-agent.ps1 warns
+          # and continues when it is missing.
           $stage = 'artifacts\agent-package'
           New-Item -ItemType Directory -Path "$stage\Agent", "$stage\Setup" -Force | Out-Null
           Copy-Item -Path 'artifacts\agent\*' -Destination "$stage\Agent" -Recurse -Force
@@ -128,7 +128,7 @@ jobs:
           Copy-Item -LiteralPath @(
             'collector\scripts\install-agent.ps1',
             'collector\scripts\uninstall-agent.ps1',
-            'collector\docs\install-without-msi.md'
+            'collector\docs\installing.md'
           ) -Destination $stage
           Compress-Archive -Path "$stage\*" `
             -DestinationPath 'artifacts\Vincere-AutoExport-Agent.zip' -Force

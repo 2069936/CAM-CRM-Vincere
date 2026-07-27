@@ -3,11 +3,10 @@
     Installs the Vincere Auto Export agent on a Windows trading machine.
 
 .DESCRIPTION
-    Does what the MSI does, without needing a signed installer: lays down the
-    self-contained agent, registers the Windows service, deploys the NinjaTrader
-    AddOn, and opens the setup window so the machine can be paired to a client.
+    Lays down the self-contained agent, registers the Windows service, deploys
+    the NinjaTrader AddOn, and opens the setup window so the machine can be
+    paired to a client.
 
-    Use this when you would rather run one script than distribute a signed MSI.
     The agent publish is self-contained win-x64, so the machine needs no .NET
     runtime installed.
 
