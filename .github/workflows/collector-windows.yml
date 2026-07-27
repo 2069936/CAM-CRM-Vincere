@@ -113,6 +113,31 @@ jobs:
           ) -Destination $probeStage
           Compress-Archive -Path "$probeStage\*" `
             -DestinationPath 'artifacts\Vincere-NinjaTrader-Parity-Probe.zip' -Force
+      - name: Build agent package ZIP for the script installer
+        shell: pwsh
+        run: |
+          # The package the PowerShell installer expands. Same binaries as the
+          # MSI, without needing a signed bundle to hand someone. The AddOn is
+          # deliberately absent: CI only ever authors it against a disposable
+          # payload, so the real one is deployed from the NinjaTrader-licensed
+          # machine. install-agent.ps1 warns and continues when it is missing.
+          $stage = 'artifacts\agent-package'
+          New-Item -ItemType Directory -Path "$stage\Agent", "$stage\Setup" -Force | Out-Null
+          Copy-Item -Path 'artifacts\agent\*' -Destination "$stage\Agent" -Recurse -Force
+          Copy-Item -Path 'artifacts\ui\*' -Destination "$stage\Setup" -Recurse -Force
+          Copy-Item -LiteralPath @(
+            'collector\scripts\install-agent.ps1',
+            'collector\scripts\uninstall-agent.ps1',
+            'collector\docs\install-without-msi.md'
+          ) -Destination $stage
+          Compress-Archive -Path "$stage\*" `
+            -DestinationPath 'artifacts\Vincere-AutoExport-Agent.zip' -Force
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: collector-agent-package-${{ github.run_number }}
+          path: artifacts/Vincere-AutoExport-Agent.zip
+          retention-days: 7
+          if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: collector-machine-msi-${{ github.run_number }}
