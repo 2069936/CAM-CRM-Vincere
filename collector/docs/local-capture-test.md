@@ -5,21 +5,29 @@ or CRM connection exists. It writes the snapshot to a file and sends nothing.
 
 ## What you need
 
-Only the AddOn. No agent, no service, no pairing code, no CRM.
+A machine with **NinjaTrader 8 installed** and the **.NET SDK 8**
+(free: https://dotnet.microsoft.com/download), plus a checkout of this
+repository. No agent, no service, no pairing code, no CRM.
+
+The AddOn compiles against NinjaTrader's own assemblies, so it can only be built
+where NinjaTrader is installed. That is why CI cannot produce it and why the
+agent package ships without it.
 
 ## Steps
 
-1. **Close NinjaTrader** on the VPS.
+1. **Close NinjaTrader.**
 
-2. **Copy the AddOn** into NinjaTrader's custom folder:
+2. **Build and install the AddOn** from an elevated PowerShell:
 
+   ```powershell
+   cd <repo>\collector\scripts
+   .\build-addon-local.ps1
    ```
-   Documents\NinjaTrader 8\bin\Custom\AddOns\
-   ```
 
-   Copy the four DLLs from the `AddOn` folder of the agent package:
-   `Vincere.AutoExport.NinjaTrader.dll`, `Vincere.AutoExport.NinjaTrader.Core.dll`,
-   `Vincere.AutoExport.Contracts.dll`, `Newtonsoft.Json.dll`.
+   It compiles against the local NinjaTrader install and copies the four DLLs
+   into `Documents\NinjaTrader 8\bin\Custom\AddOns`. If NinjaTrader is not in
+   the default location, pass `-NinjaTraderHome "<path>"` — the folder holding
+   `bin\NinjaTrader.Core.dll`.
 
 3. **Open NinjaTrader** and wait for the accounts to connect and populate — the
    capture reads what NinjaTrader has loaded at that moment.
