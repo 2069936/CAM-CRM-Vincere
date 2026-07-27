@@ -12,19 +12,24 @@ service, live ACL checks, the signed bundle, or Authenticode validation.
 
 | Field | Result |
 |---|---|
-| Workflow | [Collector Windows run 30052857125](https://github.com/pedro-cmyks/CAM-CRM-Vincere/actions/runs/30052857125) |
-| Commit | `bcff1b4bed9fd6023300aefc8c826b3ec1897254` |
+| Workflow | [Private Collector Windows run 30277500423](https://github.com/pedro-cmyks/CAM-CRM-Vincere-collector-build/actions/runs/30277500423) |
+| Reviewed public commit | `1e6bf452b291c2eafdc3cc9e327e0233dddd1ef5` |
+| Private snapshot commit | `7985277accf0a1a31a3054ea1ba9ce65be3e8cc9` |
+| Shared source tree | `a2afcf66f265d1f7d5a1a087744977d00d4d7d3f` |
 | Runner | GitHub-hosted `windows-2025` |
-| .NET tests | 135 passed, including 18 pure AddOn mapping/protocol tests |
-| Installer tests | 18 passed, including profile detection and strong parity-evidence enforcement |
+| .NET tests | 140 passed: 106 agent, 23 AddOn core, 9 setup UI, and 2 contract tests |
+| Installer tests | 32 passed, including profile detection, private-runner bootstrap, rollback, and strong parity-evidence enforcement |
 | WiX authoring | Disposable AddOn MSI and full Burn bundle compiled successfully; setup EXE deleted in CI and not published |
-| MSI artifact | `collector-machine-msi-18/Vincere.AutoExport.Machine.msi` |
-| MSI SHA-256 | `95b5584ccc05da3e13a06529d8cdb7ecb35fecdbb0bc679c84516c5d1579951d` |
-| Probe artifact | `ninjatrader-parity-probe-18/Vincere-NinjaTrader-Parity-Probe.zip` |
-| Probe ZIP SHA-256 | `568c4c0c04dd021a8f871909887a967064d8e0ca842cdc1f3236655359b3ec70` |
+| MSI artifact | `collector-machine-msi-4/Vincere.AutoExport.Machine.msi` |
+| MSI SHA-256 | `e2b590a9393a75bc12f86b833e4b2979b0d2cb7b5b2656acf65bffc33d25bc9b` |
+| Probe artifact | `ninjatrader-parity-probe-4/Vincere-NinjaTrader-Parity-Probe.zip` |
+| Probe ZIP SHA-256 | `13cb12ec8ee4e8780057a87b5be956c1b6abe68f1f2847656757c3d2a40f3854` |
 
-The artifact is unsigned and retained for seven days. It is portable-gate
-evidence only and must not be distributed as the production installer.
+The artifacts are unsigned and subject to GitHub's configured retention. They
+are portable-gate evidence only and must not be distributed as the production
+installer. The proprietary `ninjatrader-addon` and `signed-release` jobs were
+intentionally skipped: no controlled `ninjatrader8` runner is registered and
+`COLLECTOR_PROPRIETARY_BUILD_ENABLED` remains `false`.
 
 ## Controlled environment
 
