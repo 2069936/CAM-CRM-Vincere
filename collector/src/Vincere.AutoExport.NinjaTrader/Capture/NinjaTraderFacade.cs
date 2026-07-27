@@ -60,10 +60,31 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
             return rows;
         }
 
+        // The single gate for all four sections: an account filtered here also
+        // stops contributing strategies, orders and executions, so a close never
+        // carries trades belonging to an account it does not list.
         private static List<Account> SnapshotAccounts()
         {
+            List<Account> all;
             lock (Account.All)
-                return Account.All.ToList();
+                all = Account.All.ToList();
+
+            var relevant = new List<Account>(all.Count);
+            foreach (Account account in all)
+            {
+                Currency denomination = account.Denomination;
+                bool connected = String.Equals(
+                    PublicString(account, "ConnectionStatus"), "Connected", StringComparison.OrdinalIgnoreCase);
+                if (AccountRelevance.IsRelevant(
+                        account.Name,
+                        connected,
+                        AccountValue(account, AccountItem.CashValue, denomination),
+                        AccountValue(account, AccountItem.NetLiquidation, denomination)))
+                {
+                    relevant.Add(account);
+                }
+            }
+            return relevant;
         }
 
         private static AccountCaptureSource MapAccount(Account account)
