@@ -6967,3 +6967,7 @@ tr:nth-child(2) .rank-badge {
 @media print {
   .report-design-drawer { display: none !important; }
 }
+
+/* Draggable client rows in the sidebar. */
+.client-link[draggable="true"] { cursor: grab; }
+.client-link-dragging { opacity: 0.5; }

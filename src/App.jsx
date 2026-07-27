@@ -11364,6 +11364,7 @@ export default function App() {
   const [quickLogText, setQuickLogText] = useState("");
   const [quickLogAccount, setQuickLogAccount] = useState("");
   const [reportImport, setReportImport] = useState(null);
+  const [draggingClientId, setDraggingClientId] = useState(null);
   const [showCamDayReport, setShowCamDayReport] = useState(false);
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
@@ -11542,6 +11543,41 @@ export default function App() {
     state.camProfiles?.[0] ||
     null;
   const currentCamClients = clientsForCam(state.clients, currentCamProfile);
+  // Sidebar order: the CAM's manual drag order when they've set one, otherwise
+  // the default pinned + urgency sort. Clients missing from a saved order (newly
+  // added) fall to the bottom.
+  const sidebarClientOrder = currentCamProfile?.clientOrder || [];
+  const orderedSidebarClients = (() => {
+    if (sidebarClientOrder.length) {
+      const pos = new Map(sidebarClientOrder.map((id, i) => [id, i]));
+      return [...currentCamClients].sort(
+        (a, b) =>
+          (pos.has(a.id) ? pos.get(a.id) : Infinity) -
+          (pos.has(b.id) ? pos.get(b.id) : Infinity),
+      );
+    }
+    const critOpen = (c) =>
+      (c.dailyImports?.at(-1)?.flags || []).filter(
+        (f) =>
+          f.severity === "Critical" &&
+          f.status !== "Resolved" &&
+          f.status !== "Acknowledged",
+      ).length;
+    const urgencyScore = (c) => {
+      const bd = deriveClientBadge(c);
+      if (bd.tone === "danger") return 0;
+      if (bd.tone === "warning") return 1;
+      if (bd.tone === "muted" && bd.label !== "No data") return 2;
+      return 3;
+    };
+    return [...currentCamClients].sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (b.pinned && !a.pinned) return 1;
+      const diff = urgencyScore(a) - urgencyScore(b);
+      if (diff !== 0) return diff;
+      return critOpen(b) - critOpen(a);
+    });
+  })();
   const isManagerSession = session?.role === USER_ROLES.MANAGER;
   const canCreateDeleteClients =
     isManagerSession || Boolean(currentCamProfile?.canManageClients);
@@ -11745,6 +11781,22 @@ export default function App() {
     updateSupabaseCamProfile(camId, { reportConfig: config }).catch((error) => {
       console.error("[CRM] Failed to save report layout:", error);
       window.alert(`Could not save the report layout: ${error.message}`);
+    });
+  }
+
+  function handleReorderClients(draggedId, targetId) {
+    if (!draggedId || draggedId === targetId) return;
+    const camId = currentCamProfile?.id;
+    if (!camId) return;
+    const ids = orderedSidebarClients.map((c) => c.id);
+    const from = ids.indexOf(draggedId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setState((current) => updateCamProfile(current, camId, { clientOrder: ids }));
+    if (!isSupabaseConfigured) return;
+    updateSupabaseCamProfile(camId, { clientOrder: ids }).catch((error) => {
+      console.error("[CRM] Failed to save client order:", error);
     });
   }
 
@@ -12896,38 +12948,7 @@ export default function App() {
                       to add your first client.
                     </div>
                   )}
-                  {[...currentCamClients]
-                    .sort((a, b) => {
-                      if (a.pinned && !b.pinned) return -1;
-                      if (b.pinned && !a.pinned) return 1;
-                      const urgencyScore = (c) => {
-                        const bd = deriveClientBadge(c);
-                        if (bd.tone === "danger") return 0;
-                        if (bd.tone === "warning") return 1;
-                        if (bd.tone === "muted" && bd.label !== "No data")
-                          return 2;
-                        return 3;
-                      };
-                      const diff = urgencyScore(a) - urgencyScore(b);
-                      if (diff !== 0) return diff;
-                      const critA = (
-                        a.dailyImports?.at(-1)?.flags || []
-                      ).filter(
-                        (f) =>
-                          f.severity === "Critical" &&
-                          f.status !== "Resolved" &&
-                          f.status !== "Acknowledged",
-                      ).length;
-                      const critB = (
-                        b.dailyImports?.at(-1)?.flags || []
-                      ).filter(
-                        (f) =>
-                          f.severity === "Critical" &&
-                          f.status !== "Resolved" &&
-                          f.status !== "Acknowledged",
-                      ).length;
-                      return critB - critA;
-                    })
+                  {orderedSidebarClients
                     .map((client) => {
                       const badge = deriveClientBadge(client);
                       const todayClose = getClientImportByDate(
@@ -12942,11 +12963,26 @@ export default function App() {
                       return (
                         <button
                           className={
-                            !showOverview && selectedClient?.id === client.id
+                            (!showOverview && selectedClient?.id === client.id
                               ? "client-link active"
-                              : "client-link"
+                              : "client-link") +
+                            (draggingClientId === client.id
+                              ? " client-link-dragging"
+                              : "")
                           }
                           key={client.id}
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggingClientId(client.id);
+                            e.dataTransfer.effectAllowed = "move";
+                          }}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            handleReorderClients(draggingClientId, client.id);
+                            setDraggingClientId(null);
+                          }}
+                          onDragEnd={() => setDraggingClientId(null)}
                           onClick={() => {
                             setState((current) =>
                               selectClient(current, client.id),

@@ -363,6 +363,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     monthlyGoal: Number(cam.monthly_goal || 0),
     canManageClients: Boolean(cam.can_manage_clients),
     reportConfig: cam.report_config && typeof cam.report_config === 'object' ? cam.report_config : {},
+    clientOrder: Array.isArray(cam.client_order) ? cam.client_order : [],
     clientIds: assignmentRows
       .filter((assignment) => assignment.cam_profile_id === cam.id && clientByUuid[assignment.client_id])
       .map((assignment) => pickId(clientByUuid[assignment.client_id])),
@@ -596,6 +597,7 @@ function clientPatchToDb(patch = {}) {
   if ('pinnedNote' in patch) mapped.pinned_note = patch.pinnedNote || '';
   if ('notes' in patch) mapped.notes = patch.notes || '';
   if ('reportConfig' in patch) mapped.report_config = patch.reportConfig && typeof patch.reportConfig === 'object' ? patch.reportConfig : {};
+  if ('clientOrder' in patch) mapped.client_order = Array.isArray(patch.clientOrder) ? patch.clientOrder : [];
   if ('profile' in patch) {
     const profile = patch.profile || {};
     if ('stage' in profile) mapped.stage = profile.stage || 'Active';
