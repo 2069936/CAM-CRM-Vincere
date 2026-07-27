@@ -83,6 +83,11 @@ normalization, reconciliation, and daily-import persistence as manual uploads.
 Deployment, rollback, staging evidence, rate limits, retention, and replay
 procedures are documented in
 [`docs/verification/auto-collection-crm.md`](docs/verification/auto-collection-crm.md).
+The [shadow-pilot guide](docs/operations/auto-collection-pilot.md),
+[production-wave checklist](docs/operations/auto-collection-wave-checklist.md),
+and [support handoff](docs/operations/auto-collection-support-handoff.md) are
+blank operational templates; their presence is not evidence that a pilot or
+production rollout has passed.
 
 ## Important Data Rules
 
