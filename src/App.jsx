@@ -79,6 +79,7 @@ import {
   deleteTask,
   getClientImportByDate,
   replaceDailyImport,
+  removeDailyImport,
   resolveFlagInImport,
   selectCam,
   selectClient,
@@ -171,6 +172,7 @@ import {
   updateSupabaseTask,
   updateSupabaseTradingAccount,
   upsertSupabaseDailyImport,
+  deleteSupabaseDailyImport,
   upsertSupabaseTradingAccount,
 } from "./domain/supabaseStore";
 
@@ -11510,6 +11512,31 @@ export default function App() {
       });
   }
 
+  function handleUndoDailyImport(importRecord) {
+    if (!selectedClient || !importRecord) return;
+    const clientId = selectedClient.id;
+    const importId = importRecord.id;
+    // Optimistically drop it so the UI responds, then delete in Supabase and
+    // reload. The account registry is left intact — only this day's close goes.
+    setState((current) => removeDailyImport(current, clientId, importId));
+    if (!isSupabaseConfigured) return;
+    deleteSupabaseDailyImport(clientId, importId)
+      .then(() => {
+        auditSilently({
+          entityType: "daily_import",
+          entityId: importId,
+          action: "daily_import.delete",
+          afterData: { clientId, reportDate: importRecord.date },
+        });
+        return reloadSupabaseState(state.accountManager?.id, clientId);
+      })
+      .catch((error) => {
+        console.error("[CRM] Failed to delete daily import:", error);
+        window.alert(`Could not undo the upload: ${error.message}`);
+        reloadSupabaseState(state.accountManager?.id, clientId);
+      });
+  }
+
   function handleAccountUpdate(accountName, patch) {
     if (!selectedClient) return;
     let finalPatch = patch;
@@ -13110,6 +13137,24 @@ export default function App() {
                       >
                         <FileText size={16} /> Build Daily Report
                       </button>
+                      {dailyImport ? (
+                        <button
+                          className="ghost-button"
+                          title="Undo this day's upload - deletes the close, keeps the account registry"
+                          onClick={() =>
+                            setWorkspaceConfirmAction({
+                              title: `Undo the upload for ${selectedDate}?`,
+                              description: `This deletes ${selectedClient?.name}'s close for ${selectedDate} — the day's accounts, trades and flags. The account registry is kept, so you can re-upload the files.`,
+                              confirmLabel: "Undo upload",
+                              busyLabel: "Undoing...",
+                              variant: "danger",
+                              onConfirm: () => handleUndoDailyImport(dailyImport),
+                            })
+                          }
+                        >
+                          <Undo2 size={15} /> Undo upload
+                        </button>
+                      ) : null}
                     </div>
                   </div>
 

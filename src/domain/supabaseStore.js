@@ -362,6 +362,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     live: Boolean(cam.live),
     monthlyGoal: Number(cam.monthly_goal || 0),
     canManageClients: Boolean(cam.can_manage_clients),
+    reportConfig: cam.report_config && typeof cam.report_config === 'object' ? cam.report_config : {},
     clientIds: assignmentRows
       .filter((assignment) => assignment.cam_profile_id === cam.id && clientByUuid[assignment.client_id])
       .map((assignment) => pickId(clientByUuid[assignment.client_id])),
@@ -401,6 +402,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
       id: pickId(client),
       uuid: client.id,
       name: client.name,
+      reportConfig: client.report_config && typeof client.report_config === 'object' ? client.report_config : {},
       status: client.status || 'Active',
       pinned: Boolean(client.pinned),
       pinnedNote: client.pinned_note || '',
@@ -593,6 +595,7 @@ function clientPatchToDb(patch = {}) {
   if ('pinned' in patch) mapped.pinned = Boolean(patch.pinned);
   if ('pinnedNote' in patch) mapped.pinned_note = patch.pinnedNote || '';
   if ('notes' in patch) mapped.notes = patch.notes || '';
+  if ('reportConfig' in patch) mapped.report_config = patch.reportConfig && typeof patch.reportConfig === 'object' ? patch.reportConfig : {};
   if ('profile' in patch) {
     const profile = patch.profile || {};
     if ('stage' in profile) mapped.stage = profile.stage || 'Active';
@@ -823,6 +826,7 @@ export async function createSupabaseCamProfile(name, roleTitle = 'CAM') {
     status: data.status || 'Active',
     live: Boolean(data.live),
     canManageClients: Boolean(data.can_manage_clients),
+    reportConfig: data.report_config && typeof data.report_config === 'object' ? data.report_config : {},
     clientIds: [],
   };
 }
@@ -837,6 +841,7 @@ export async function updateSupabaseCamProfile(camProfileId, patch = {}) {
   if ('status' in patch) mapped.status = patch.status || 'Active';
   if ('live' in patch) mapped.live = Boolean(patch.live);
   if ('canManageClients' in patch) mapped.can_manage_clients = Boolean(patch.canManageClients);
+  if ('reportConfig' in patch) mapped.report_config = patch.reportConfig && typeof patch.reportConfig === 'object' ? patch.reportConfig : {};
 
   const { data, error } = await supabase
     .from('cam_profiles')
@@ -1284,6 +1289,20 @@ export async function updateSupabaseDailyImportStatus(importId, status) {
   const { data, error } = await query.select().maybeSingle();
   if (error) throw new Error(error.message);
   return data;
+}
+
+// Undo a day's upload: remove the whole close for (client, date). The child
+// tables (snapshots, strategies, orders, executions, flags) all cascade on the
+// daily_imports FK, so deleting the import row removes them too. The trading
+// accounts themselves are the persistent registry and are left untouched.
+export async function deleteSupabaseDailyImport(clientId, importId) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const clientUuid = await getClientUuid(clientId);
+  let query = supabase.from('daily_imports').delete().eq('client_id', clientUuid);
+  query = isUuid(importId) ? query.eq('id', importId) : query.eq('legacy_key', importId);
+  const { error } = await query;
+  if (error) throw new Error(error.message);
+  return true;
 }
 
 export function reportFromRow(row = {}) {
