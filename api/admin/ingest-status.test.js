@@ -144,6 +144,7 @@ describe('installer release manifest validation', () => {
   it('fetches a pinned HTTPS manifest and selects the signed setup bundle', async () => {
     await expect(resolveInstallerRelease(releaseEnv, { production: true, fetchImpl: fetchRelease })).resolves.toEqual({
       url: 'https://downloads.example.test/Vincere-AutoExport-Setup.exe',
+      kind: 'exe',
       version: '1.4.2',
       minimumAgentVersion: '1.4.2',
       minimumSchemaVersion: 1,
@@ -153,6 +154,39 @@ describe('installer release manifest validation', () => {
       signingThumbprint: 'A'.repeat(40),
     });
     expect(fetchRelease).toHaveBeenCalledWith(releaseEnv.AUTO_COLLECTION_RELEASE_MANIFEST_URL, expect.objectContaining({ redirect: 'error' }));
+  });
+
+  it('accepts an unsigned package release and reports it as a zip', async () => {
+    const { signingThumbprint, ...unsigned } = releaseManifest;
+    const manifest = {
+      ...unsigned,
+      artifacts: [
+        { name: 'Vincere-AutoExport-Agent.zip', url: 'https://downloads.example.test/Vincere-AutoExport-Agent.zip', sha256: 'b'.repeat(64), size: 900 },
+      ],
+    };
+    const text = JSON.stringify(manifest);
+    const env = { ...releaseEnv, AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: createHash('sha256').update(text).digest('hex') };
+    const fetchImpl = vi.fn(async () => new Response(text, { status: 200 }));
+    await expect(resolveInstallerRelease(env, { production: true, fetchImpl })).resolves.toMatchObject({
+      url: 'https://downloads.example.test/Vincere-AutoExport-Agent.zip',
+      kind: 'zip',
+      sha256: 'b'.repeat(64),
+      signingThumbprint: null,
+    });
+  });
+
+  it('prefers the package over the signed setup when a manifest publishes both', async () => {
+    const manifest = {
+      ...releaseManifest,
+      artifacts: [
+        ...releaseManifest.artifacts,
+        { name: 'Vincere-AutoExport-Agent.zip', url: 'https://downloads.example.test/Vincere-AutoExport-Agent.zip', sha256: 'c'.repeat(64), size: 900 },
+      ],
+    };
+    const text = JSON.stringify(manifest);
+    const env = { ...releaseEnv, AUTO_COLLECTION_RELEASE_MANIFEST_SHA256: createHash('sha256').update(text).digest('hex') };
+    const fetchImpl = vi.fn(async () => new Response(text, { status: 200 }));
+    await expect(resolveInstallerRelease(env, { production: true, fetchImpl })).resolves.toMatchObject({ kind: 'zip' });
   });
 
   it('reuses a verified immutable manifest instead of fetching once per client', async () => {

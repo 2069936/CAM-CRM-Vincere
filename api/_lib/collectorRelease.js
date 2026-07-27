@@ -7,7 +7,14 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const THUMBPRINT = /^[A-F0-9]{40,128}$/;
 const ARTIFACT_NAME = /^[A-Za-z0-9._-]+$/;
 const RELEASE_MANIFEST_MAX_BYTES = 64 * 1024;
-const SETUP_ARTIFACT = 'Vincere-AutoExport-Setup.exe';
+// Two ways to ship the agent. The signed setup executable, and the plain package
+// the PowerShell installer expands. The package is listed first because an
+// unsigned zip rollout does not need a code-signing certificate; a manifest that
+// carries both resolves to the package, and the signed setup is the fallback.
+const SETUP_ARTIFACTS = Object.freeze([
+  { name: 'Vincere-AutoExport-Agent.zip', kind: 'zip' },
+  { name: 'Vincere-AutoExport-Setup.exe', kind: 'exe' },
+]);
 const verifiedReleaseCache = new WeakMap();
 
 function canonicalTimestamp(value) {
@@ -16,11 +23,12 @@ function canonicalTimestamp(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function exactKeys(value, required) {
+function exactKeys(value, required, optional = []) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const keys = Object.keys(value).sort();
-  const expected = [...required].sort();
-  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+  const keys = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  if (keys.some((key) => !allowed.has(key))) return false;
+  return required.every((key) => keys.includes(key));
 }
 
 function approvedUrl(value, { production, origin } = {}) {
@@ -70,14 +78,23 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
   const expected = Buffer.from(expectedSha256, 'hex');
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error('hash');
   const manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  if (!exactKeys(manifest, ['schemaVersion', 'version', 'minimumAgentVersion', 'minimumSchemaVersion', 'publishedAt', 'signingThumbprint', 'artifacts'])
+  // signingThumbprint is optional: an unsigned package rollout has no
+  // certificate. When it is present it must still be a real thumbprint, so a
+  // malformed value is rejected rather than treated as unsigned. Integrity does
+  // not depend on it — the manifest is pinned by SHA-256 through the environment
+  // and every artifact carries its own SHA-256 below.
+  if (!exactKeys(
+    manifest,
+    ['schemaVersion', 'version', 'minimumAgentVersion', 'minimumSchemaVersion', 'publishedAt', 'artifacts'],
+    ['signingThumbprint'],
+  )
     || manifest.schemaVersion !== 1
     || !VERSION.test(manifest.version)
     || !VERSION.test(manifest.minimumAgentVersion)
     || !Number.isInteger(manifest.minimumSchemaVersion) || manifest.minimumSchemaVersion < 1
     || !canonicalTimestamp(manifest.publishedAt)
-    || !THUMBPRINT.test(manifest.signingThumbprint)
-    || !Array.isArray(manifest.artifacts) || manifest.artifacts.length < 3) throw new Error('manifest');
+    || ('signingThumbprint' in manifest && !THUMBPRINT.test(manifest.signingThumbprint))
+    || !Array.isArray(manifest.artifacts) || manifest.artifacts.length < 1) throw new Error('manifest');
 
   const names = new Set();
   for (const artifact of manifest.artifacts) {
@@ -89,17 +106,29 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
     approvedUrl(artifact.url, { production, origin: manifestUrl.origin });
     names.add(artifact.name);
   }
-  const setup = manifest.artifacts.find(({ name }) => name === SETUP_ARTIFACT);
+  let setup = null;
+  let kind = null;
+  for (const candidate of SETUP_ARTIFACTS) {
+    const match = manifest.artifacts.find(({ name }) => name === candidate.name);
+    if (match) {
+      setup = match;
+      kind = candidate.kind;
+      break;
+    }
+  }
   if (!setup) throw new Error('setup');
   return Object.freeze({
     url: approvedUrl(setup.url, { production, origin: manifestUrl.origin }).toString(),
+    // 'zip' is expanded by the PowerShell installer, 'exe' is run directly, so
+    // the UI can show the right instructions for whichever was published.
+    kind,
     version: manifest.version,
     minimumAgentVersion: manifest.minimumAgentVersion,
     minimumSchemaVersion: manifest.minimumSchemaVersion,
     sha256: setup.sha256,
     publishedAt: canonicalTimestamp(manifest.publishedAt),
     size: setup.size,
-    signingThumbprint: manifest.signingThumbprint,
+    signingThumbprint: manifest.signingThumbprint ?? null,
   });
 }
 

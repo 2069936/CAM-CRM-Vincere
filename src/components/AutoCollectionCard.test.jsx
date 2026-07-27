@@ -136,6 +136,11 @@ describe('install command', () => {
     expect(buildInstallCommand({ url: '' })).toBe('');
   });
 
+  it('is empty for a signed setup executable, which is run rather than expanded', () => {
+    expect(buildInstallCommand({ url: 'https://x.test/Setup.exe', kind: 'exe' })).toBe('');
+    expect(buildInstallCommand({ url: 'https://x.test/agent.zip', kind: 'zip' })).toContain('Expand-Archive');
+  });
+
   it('escapes a single quote in the url so the command cannot break out', () => {
     expect(buildInstallCommand({ url: "https://x.test/a'b.zip" })).toContain("'https://x.test/a''b.zip'");
   });

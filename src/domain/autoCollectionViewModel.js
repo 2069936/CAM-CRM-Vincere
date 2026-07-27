@@ -57,7 +57,9 @@ export async function copyEnrollmentCode(code, clipboard = globalThis.navigator?
 // .zip. Returns '' when no release is published yet.
 export function buildInstallCommand(release) {
   const url = String(release?.url || '').trim();
-  if (!url) return '';
+  // Only the package release is expandable. A signed setup executable is run
+  // directly, so it gets the download link instead of a command.
+  if (!url || (release?.kind && release.kind !== 'zip')) return '';
   // Single-quoted in PowerShell so nothing in the URL is interpolated.
   const safeUrl = url.replace(/'/g, "''");
   return [
