@@ -223,9 +223,13 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     const todayClose = { date, snapshots: [{ accountName: account.accountName, accountBalance: account.accountBalance, grossRealizedPnl: account.grossRealizedPnl }] };
     const closes = [...history, todayClose];
     const derived = {
-      trailing: account.trailingMaxDrawdown === undefined || account.trailingMaxDrawdown === null
-        ? deriveTrailingDrawdown(closes, account.accountName, date, { startBalance: meta.startBalance })
-        : null,
+      // Trailing drawdown is a prop-firm constraint. A cash account has no
+      // trailing rule to measure against, so deriving a distance-from-peak for
+      // one would invent a number that means nothing.
+      trailing: isCashType(meta.accountType)
+        || account.trailingMaxDrawdown !== undefined && account.trailingMaxDrawdown !== null
+        ? null
+        : deriveTrailingDrawdown(closes, account.accountName, date, { startBalance: meta.startBalance }),
       weekly: account.weeklyPnl === undefined || account.weeklyPnl === null
         ? deriveWeeklyPnl(closes, account.accountName, date)
         : null,
@@ -260,7 +264,10 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }));
     }
 
-    const ddLimit = Number(meta.maxDrawdownLimit);
+    // Same reason: a cash account cannot breach a trailing limit it does not
+    // have. Without this, a stale maxDrawdownLimit left on an account that was
+    // later reclassified as cash keeps raising drawdown flags forever.
+    const ddLimit = isCashType(meta.accountType) ? Number.NaN : Number(meta.maxDrawdownLimit);
     // Use the snapshot's value, which may have been reconstructed above.
     const snapshot = snapshots[snapshots.length - 1];
     const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
@@ -299,7 +306,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
           }));
         }
       }
-    } else if (rawDD !== 0) {
+    } else if (rawDD !== 0 && !isCashType(meta.accountType)) {
       // Model 2: no configured limit - trailingMaxDrawdown IS the remaining buffer (sign-based)
       // NT exports this as positive (buffer remaining); account dies when it hits 0 or goes negative
       if (rawDD <= 0) {

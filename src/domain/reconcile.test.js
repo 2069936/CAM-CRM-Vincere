@@ -458,3 +458,54 @@ describe('recalculateDailyImport', () => {
     expect(result.snapshots[0].accountBalance).toBe(51200);
   });
 });
+
+describe('trailing drawdown does not apply to cash accounts', () => {
+  const history = [
+    { date: '2026-07-24', snapshots: [{ accountName: 'CASH1', accountBalance: 52000, grossRealizedPnl: 0 }] },
+  ];
+  const parsed = (accountName) => ({
+    accounts: [{ accountName, accountBalance: 49000, grossRealizedPnl: -100, trailingMaxDrawdown: null, weeklyPnl: null }],
+    strategies: [], orders: [], executions: [],
+  });
+
+  it('leaves trailing alone for a cash account, since it has no trailing rule', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Cash - IRA', status: 'Active' } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.snapshots[0].trailingSource).toBeNull();
+    // Null, not 0: "does not apply" rather than "measured, and it is zero".
+    // A prop account with the same history would measure 3000 down from its peak.
+    expect(result.snapshots[0].trailingMaxDrawdown).toBeNull();
+  });
+
+  it('still derives trailing for a prop account', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Funded', status: 'Active' } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.snapshots[0].trailingSource).toBe('derived');
+    expect(result.snapshots[0].trailingMaxDrawdown).toBe(3000);
+  });
+
+  it('raises no drawdown flag on a cash account carrying a stale limit', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Cash - IRA', status: 'Active', maxDrawdownLimit: 2000 } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.flags.filter((f) => f.type.startsWith('Drawdown'))).toEqual([]);
+  });
+
+  it('still counts weekly PnL for cash, which is a real figure for it', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Cash - IRA', status: 'Active' } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.snapshots[0].weeklyPnlSource).toBe('derived');
+    expect(result.snapshots[0].weeklyPnl).toBe(-100);
+  });
+});
