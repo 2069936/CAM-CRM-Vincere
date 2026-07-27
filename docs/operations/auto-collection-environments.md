@@ -15,7 +15,9 @@ codes only. It never prints configuration values.
 - Production Vercel deployment access and the `collector-production` GitHub
   environment are restricted to approved release operators.
 - The self-hosted `ninjatrader8` runner is company controlled, patched, and has
-  proprietary NinjaTrader assemblies outside the checkout.
+  proprietary NinjaTrader assemblies outside the checkout. Follow the
+  [controlled runner runbook](ninjatrader-runner.md); never attach it to the
+  public fork.
 - The Windows signing certificate is hardware-backed or stored only in the
   protected GitHub environment. Its password and timestamp service are never
   added to repository files.

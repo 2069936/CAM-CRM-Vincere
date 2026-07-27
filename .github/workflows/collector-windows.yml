@@ -123,8 +123,8 @@ jobs:
 
   ninjatrader-addon:
     needs: addon-source
-    if: ${{ needs.addon-source.outputs.has_source == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: [self-hosted, Windows, ninjatrader8]
+    if: ${{ needs.addon-source.outputs.has_source == 'true' && github.event_name != 'pull_request' && vars.COLLECTOR_PROPRIETARY_BUILD_ENABLED == 'true' }}
+    runs-on: [self-hosted, windows, ninjatrader8]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -161,7 +161,7 @@ jobs:
   signed-release:
     if: startsWith(github.ref, 'refs/tags/collector-v')
     needs: [portable-tests, addon-source, ninjatrader-addon]
-    runs-on: [self-hosted, Windows, ninjatrader8]
+    runs-on: [self-hosted, windows, ninjatrader8]
     environment: collector-production
     timeout-minutes: 45
     permissions:

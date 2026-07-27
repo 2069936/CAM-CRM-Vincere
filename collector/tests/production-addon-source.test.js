@@ -21,6 +21,17 @@ describe('production NinjaTrader AddOn source boundary', () => {
     expect(workflow).not.toContain("find collector/src/Vincere.AutoExport.NinjaTrader -type f -name '*.cs'");
   });
 
+  it('never routes pull requests to the proprietary runner and requires an explicit enable switch', async () => {
+    const workflow = await readFile(join(ROOT, '.github/workflows/collector-windows.yml'), 'utf8');
+    const proprietaryJob = workflow.slice(
+      workflow.indexOf('  ninjatrader-addon:'),
+      workflow.indexOf('  signed-release:'),
+    );
+    expect(proprietaryJob).toContain("github.event_name != 'pull_request'");
+    expect(proprietaryJob).toContain("vars.COLLECTOR_PROPRIETARY_BUILD_ENABLED == 'true'");
+    expect(proprietaryJob).not.toContain('github.event.pull_request.head.repo.full_name');
+  });
+
   it('reads all four supported collections and keeps realized and gross PnL distinct', async () => {
     const source = await readFile(join(ADDON, 'Capture/NinjaTraderFacade.cs'), 'utf8');
     expect(source).toContain('Account.All');
