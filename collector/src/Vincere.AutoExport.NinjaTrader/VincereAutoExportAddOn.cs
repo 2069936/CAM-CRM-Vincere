@@ -24,6 +24,7 @@ namespace NinjaTrader.NinjaScript.AddOns
         private readonly AddOnDiagnostics diagnostics = new AddOnDiagnostics();
         private CapturePipeServer server;
         private NTMenuItem statusMenuItem;
+        private NTMenuItem exportFileMenuItem;
         private NTMenuItem newMenu;
         private ControlCenter attachedControlCenter;
 
@@ -115,20 +116,88 @@ namespace NinjaTrader.NinjaScript.AddOns
                 DateTimeOffset easternNow = TimeZoneInfo.ConvertTime(capturedAt, eastern);
                 string addOnVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
                 string ninjaTraderVersion = typeof(AddOnBase).Assembly.GetName().Version.ToString();
-                var snapshot = new SnapshotBuilder(new NinjaTraderFacade()).Build(
-                    new SnapshotBuildContext
-                    {
-                        CaptureId = Guid.NewGuid(),
-                        CapturedAt = capturedAt,
-                        TradingDate = easternNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                        AddonVersion = addOnVersion,
-                        NinjaTraderVersion = ninjaTraderVersion,
-                    });
-                completion.TrySetResult(snapshot);
+                completion.TrySetResult(BuildSnapshot(capturedAt, easternNow, addOnVersion, ninjaTraderVersion));
             }
             catch (Exception exception)
             {
                 completion.TrySetException(exception);
+            }
+        }
+
+        private static AutoExportSnapshotV1 BuildSnapshot(
+            DateTimeOffset capturedAt,
+            DateTimeOffset easternNow,
+            string addOnVersion,
+            string ninjaTraderVersion)
+        {
+            return new SnapshotBuilder(new NinjaTraderFacade()).Build(
+                new SnapshotBuildContext
+                {
+                    CaptureId = Guid.NewGuid(),
+                    CapturedAt = capturedAt,
+                    TradingDate = easternNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    AddonVersion = addOnVersion,
+                    NinjaTraderVersion = ninjaTraderVersion,
+                });
+        }
+
+        /// <summary>
+        /// Captures exactly what the collector would send and writes it to a file
+        /// instead, without contacting the CRM. Lets a capture be verified against
+        /// a real NinjaTrader before any pairing or service install exists.
+        /// </summary>
+        private void OnExportToFileClick(object sender, RoutedEventArgs eventArgs)
+        {
+            try
+            {
+                DateTimeOffset capturedAt = DateTimeOffset.Now;
+                TimeZoneInfo eastern;
+                try { eastern = TimeZoneInfo.FindSystemTimeZoneById(EasternTimeZoneId); }
+                catch { eastern = TimeZoneInfo.Local; }
+
+                AutoExportSnapshotV1 snapshot = BuildSnapshot(
+                    capturedAt,
+                    TimeZoneInfo.ConvertTime(capturedAt, eastern),
+                    Assembly.GetExecutingAssembly().GetName().Version.ToString(3),
+                    typeof(AddOnBase).Assembly.GetName().Version.ToString());
+
+                string folder = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    "VincereAutoExport");
+                System.IO.Directory.CreateDirectory(folder);
+                string path = System.IO.Path.Combine(
+                    folder,
+                    "snapshot-" + capturedAt.ToString("yyyy-MM-dd-HHmmss", CultureInfo.InvariantCulture) + ".json");
+
+                // Same serializer settings the collector uploads with, so what is
+                // inspected here is byte-for-byte what the CRM would receive.
+                string json = Newtonsoft.Json.JsonConvert.SerializeObject(
+                    snapshot,
+                    Newtonsoft.Json.Formatting.Indented,
+                    new Newtonsoft.Json.JsonSerializerSettings
+                    {
+                        NullValueHandling = Newtonsoft.Json.NullValueHandling.Include,
+                    });
+                System.IO.File.WriteAllText(path, json, new System.Text.UTF8Encoding(false));
+
+                MessageBox.Show(
+                    "Saved to:\n" + path
+                    + "\n\nAccounts: " + snapshot.Accounts.Count
+                    + "\nStrategies: " + snapshot.Strategies.Count
+                    + "\nOrders: " + snapshot.Orders.Count
+                    + "\nExecutions: " + snapshot.Executions.Count
+                    + "\n\nNothing was sent to the CRM.",
+                    "Vincere Auto Export - local test",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(
+                    "Capture failed: " + exception.Message,
+                    "Vincere Auto Export - local test",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
             }
         }
 
@@ -144,6 +213,14 @@ namespace NinjaTrader.NinjaScript.AddOns
             };
             statusMenuItem.Click += OnStatusClick;
             newMenu.Items.Add(statusMenuItem);
+
+            exportFileMenuItem = new NTMenuItem
+            {
+                Header = "Vincere: Export Snapshot to File (local test)",
+                Style = Application.Current.TryFindResource("MainMenuItem") as Style,
+            };
+            exportFileMenuItem.Click += OnExportToFileClick;
+            newMenu.Items.Add(exportFileMenuItem);
         }
 
         private void DetachStatusMenu()
@@ -154,7 +231,14 @@ namespace NinjaTrader.NinjaScript.AddOns
                 if (newMenu != null && newMenu.Items.Contains(statusMenuItem))
                     newMenu.Items.Remove(statusMenuItem);
             }
+            if (exportFileMenuItem != null)
+            {
+                exportFileMenuItem.Click -= OnExportToFileClick;
+                if (newMenu != null && newMenu.Items.Contains(exportFileMenuItem))
+                    newMenu.Items.Remove(exportFileMenuItem);
+            }
             statusMenuItem = null;
+            exportFileMenuItem = null;
             newMenu = null;
         }
 

@@ -106,6 +106,7 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
                 MaintenanceMargin = source.MaintenanceMargin,
                 Currency = source.Currency,
                 Status = source.Status,
+                AccountValues = source.AccountValues,
             };
         }
 
@@ -132,6 +133,7 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
                 StartedAt = source.StartedAt,
                 Parameters = parameters.Values,
                 ParameterCaptureStatus = parameters.Status,
+                ExtraValues = source.ExtraValues,
             };
         }
 
@@ -158,6 +160,7 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
                 Oco = source.Oco,
                 Name = source.Name,
                 NativeId = source.NativeId,
+                ExtraValues = source.ExtraValues,
             };
         }
 
@@ -184,6 +187,7 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
                 RealizedPnl = source.RealizedPnl,
                 ConnectionName = source.ConnectionName,
                 NativeId = source.NativeId,
+                ExtraValues = source.ExtraValues,
             };
         }
     }

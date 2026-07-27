@@ -102,6 +102,14 @@ namespace Vincere.AutoExport.Contracts
         [JsonProperty("currency")]
         public string Currency { get; set; }
 
+        /// <summary>
+        /// Every AccountItem NinjaTrader reported, keyed by enum name. The named
+        /// properties above cover only the ones the CRM reads today; this carries
+        /// the rest so nothing NinjaTrader knows is thrown away at capture time.
+        /// </summary>
+        [JsonProperty("accountValues")]
+        public IDictionary<string, decimal?> AccountValues { get; set; }
+
         [JsonProperty("status")]
         public string Status { get; set; }
     }
@@ -161,6 +169,16 @@ namespace Vincere.AutoExport.Contracts
 
         [JsonProperty("parameterCaptureStatus")]
         public string ParameterCaptureStatus { get; set; }
+
+        /// <summary>
+        /// Every other readable property NinjaTrader exposed for this row, keyed by
+        /// name. Captured by reflection rather than a fixed column list, so nothing
+        /// NinjaTrader knows is discarded — and unlike a grid export, this does not
+        /// depend on which columns happen to be switched on in the UI.
+        /// </summary>
+        [JsonProperty("extraValues")]
+        public IDictionary<string, object> ExtraValues { get; set; }
+
     }
 
     public sealed class OrderRowV1
@@ -221,6 +239,16 @@ namespace Vincere.AutoExport.Contracts
 
         [JsonProperty("nativeId")]
         public string NativeId { get; set; }
+
+        /// <summary>
+        /// Every other readable property NinjaTrader exposed for this row, keyed by
+        /// name. Captured by reflection rather than a fixed column list, so nothing
+        /// NinjaTrader knows is discarded — and unlike a grid export, this does not
+        /// depend on which columns happen to be switched on in the UI.
+        /// </summary>
+        [JsonProperty("extraValues")]
+        public IDictionary<string, object> ExtraValues { get; set; }
+
     }
 
     public sealed class ExecutionRowV1
@@ -281,5 +309,15 @@ namespace Vincere.AutoExport.Contracts
 
         [JsonProperty("nativeId")]
         public string NativeId { get; set; }
+
+        /// <summary>
+        /// Every other readable property NinjaTrader exposed for this row, keyed by
+        /// name. Captured by reflection rather than a fixed column list, so nothing
+        /// NinjaTrader knows is discarded — and unlike a grid export, this does not
+        /// depend on which columns happen to be switched on in the UI.
+        /// </summary>
+        [JsonProperty("extraValues")]
+        public IDictionary<string, object> ExtraValues { get; set; }
+
     }
 }

@@ -39,6 +39,16 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         public decimal? MaintenanceMargin { get; set; }
         public string Currency { get; set; }
         public string Status { get; set; }
+
+        /// <summary>
+        /// Every AccountItem NinjaTrader reports for this account, keyed by enum
+        /// name. Read by enumerating the enum rather than a hand-picked list, so a
+        /// value we never thought to ask for still reaches the CRM, and a new one
+        /// in a future NinjaTrader version arrives without a code change. Note that
+        /// trailing max drawdown and weekly PnL are NOT among them — they are not
+        /// exposed by the public API at all, only by the Accounts grid.
+        /// </summary>
+        public IDictionary<string, decimal?> AccountValues { get; set; }
     }
 
     public sealed class StrategyCaptureSource
@@ -60,6 +70,16 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         public string ConnectionName { get; set; }
         public DateTimeOffset? StartedAt { get; set; }
         public IEnumerable<StrategyParameterSource> Parameters { get; set; }
+
+        /// <summary>
+        /// Every readable scalar property NinjaTrader exposes on the underlying
+        /// object, keyed by property name. The named fields above are what the CRM
+        /// reads today; this carries everything else so a column nobody asked for
+        /// yet is still captured. Unlike a grid export, this does not depend on
+        /// which columns a user happens to have switched on.
+        /// </summary>
+        public IDictionary<string, object> ExtraValues { get; set; }
+
     }
 
     public sealed class OrderCaptureSource
@@ -83,6 +103,16 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         public string Oco { get; set; }
         public string Name { get; set; }
         public string NativeId { get; set; }
+
+        /// <summary>
+        /// Every readable scalar property NinjaTrader exposes on the underlying
+        /// object, keyed by property name. The named fields above are what the CRM
+        /// reads today; this carries everything else so a column nobody asked for
+        /// yet is still captured. Unlike a grid export, this does not depend on
+        /// which columns a user happens to have switched on.
+        /// </summary>
+        public IDictionary<string, object> ExtraValues { get; set; }
+
     }
 
     public sealed class ExecutionCaptureSource
@@ -106,6 +136,16 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         public decimal? RealizedPnl { get; set; }
         public string ConnectionName { get; set; }
         public string NativeId { get; set; }
+
+        /// <summary>
+        /// Every readable scalar property NinjaTrader exposes on the underlying
+        /// object, keyed by property name. The named fields above are what the CRM
+        /// reads today; this carries everything else so a column nobody asked for
+        /// yet is still captured. Unlike a grid export, this does not depend on
+        /// which columns a user happens to have switched on.
+        /// </summary>
+        public IDictionary<string, object> ExtraValues { get; set; }
+
     }
 
     public sealed class StrategyParameterSource

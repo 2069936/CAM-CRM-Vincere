@@ -83,6 +83,10 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 GrossRealizedPnl = grossRealized,
                 UnrealizedPnl = unrealized,
                 TotalPnl = realized.HasValue && unrealized.HasValue ? realized + unrealized : null,
+                // Not exposed by the public API. NinjaTrader only surfaces these
+                // two through the Accounts grid, which is why a screen-scraping
+                // export can read them and this cannot. Left null deliberately
+                // rather than guessed at.
                 WeeklyPnl = null,
                 TrailingMaxDrawdown = null,
                 BuyingPower = AccountValue(account, AccountItem.BuyingPower, denomination),
@@ -91,7 +95,28 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 MaintenanceMargin = AccountValue(account, AccountItem.MaintenanceMargin, denomination),
                 Currency = denomination.ToString(),
                 Status = PublicString(account, "ConnectionStatus"),
+                AccountValues = AllAccountValues(account, denomination),
             };
+        }
+
+        /// <summary>
+        /// Every AccountItem NinjaTrader will report, by enumerating the enum
+        /// instead of naming values one at a time. The named properties above only
+        /// cover a third of them, and a hand-picked list silently goes stale when
+        /// NinjaTrader adds a value. Items a connection does not answer for are
+        /// skipped rather than stored as null noise.
+        /// </summary>
+        private static IDictionary<string, decimal?> AllAccountValues(Account account, Currency denomination)
+        {
+            var values = new Dictionary<string, decimal?>(StringComparer.Ordinal);
+            foreach (object item in Enum.GetValues(typeof(AccountItem)))
+            {
+                var accountItem = (AccountItem)item;
+                decimal? value = AccountValue(account, accountItem, denomination);
+                if (value.HasValue)
+                    values[accountItem.ToString()] = value;
+            }
+            return values;
         }
 
         private static StrategyCaptureSource MapStrategy(Account account, StrategyBase strategy)
@@ -119,6 +144,7 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 ConnectionName = ConnectionName(account),
                 StartedAt = null,
                 Parameters = ReadParameters(strategy),
+                ExtraValues = ReadExtraValues(strategy),
             };
         }
 
@@ -148,6 +174,7 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 Oco = String.IsNullOrWhiteSpace(order.Oco) ? null : order.Oco,
                 Name = order.Name,
                 NativeId = null,
+                ExtraValues = ReadExtraValues(order),
             };
         }
 
@@ -175,6 +202,7 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 RealizedPnl = null,
                 ConnectionName = ConnectionName(account),
                 NativeId = null,
+                ExtraValues = ReadExtraValues(execution),
             };
         }
 
@@ -197,6 +225,57 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 parameters.Add(new StrategyParameterSource(property.Name, value, property.IsBrowsable));
             }
             return parameters;
+        }
+
+
+        /// <summary>
+        /// Every readable scalar property on a NinjaTrader object, by reflection,
+        /// so a column the CRM does not name today is still captured. Reading is
+        /// guarded per property: a strategy backed by a proprietary indicator can
+        /// throw when a property is touched, and one bad property must not cost us
+        /// the whole row. Only scalars are kept — following object graphs would
+        /// pull in live collections and risk touching NinjaTrader state.
+        /// </summary>
+        private static IDictionary<string, object> ReadExtraValues(object source)
+        {
+            var values = new Dictionary<string, object>(StringComparer.Ordinal);
+            if (source == null)
+                return values;
+
+            foreach (PropertyDescriptor property in TypeDescriptor.GetProperties(source))
+            {
+                object value;
+                try
+                {
+                    value = property.GetValue(source);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                object scalar = AsScalar(value);
+                if (scalar != null)
+                    values[property.Name] = scalar;
+            }
+            return values;
+        }
+
+        private static object AsScalar(object value)
+        {
+            if (value == null)
+                return null;
+
+            if (value is string text)
+                return text.Length > 512 ? text.Substring(0, 512) : text;
+            if (value is bool || value is int || value is long || value is short
+                || value is byte || value is float || value is double || value is decimal)
+                return value;
+            if (value is DateTime dateTime)
+                return dateTime.ToString("O", CultureInfo.InvariantCulture);
+            if (value.GetType().IsEnum)
+                return value.ToString();
+            return null;
         }
 
         private static decimal? AccountValue(Account account, AccountItem item, Currency currency)
