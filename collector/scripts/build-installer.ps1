@@ -39,29 +39,25 @@ if ($LASTEXITCODE -ne 0) { throw 'Agent publish failed.' }
 dotnet publish (Join-Path $root 'src\Vincere.AutoExport.Agent.UI\Vincere.AutoExport.Agent.UI.csproj') -c Release -r win-x64 --self-contained true -p:Version=$Version -o $uiPublish
 if ($LASTEXITCODE -ne 0) { throw 'UI publish failed.' }
 
-$owned = @(
-    Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse
-    $addOnPayload | ForEach-Object { Get-Item -LiteralPath (Join-Path $addOnPayloadDirectory $_.name) }
-) | ForEach-Object {
-    [ordered]@{
-        name = $_.Name
-        relativePath = [IO.Path]::GetRelativePath($staging, $_.FullName)
-        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-    }
-}
+$ownedPaths = @(
+    Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse |
+        Select-Object -ExpandProperty FullName
+    $addOnPayload | ForEach-Object { Join-Path $addOnPayloadDirectory $_.name }
+)
+$signablePaths = @(
+    Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse |
+        Where-Object { $_.Extension -in '.exe', '.dll' } |
+        Select-Object -ExpandProperty FullName
+    $addOnPayload | Where-Object name -ne 'Newtonsoft.Json.dll' |
+        ForEach-Object { Join-Path $addOnPayloadDirectory $_.name }
+)
 $ownershipManifest = Join-Path $staging 'ownership-manifest.json'
-[IO.File]::WriteAllText($ownershipManifest, ($owned | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+. (Join-Path $PSScriptRoot 'complete-owned-payload.ps1')
+$payloadArguments = @{}
+if ($ProductionSign) { $payloadArguments.SigningScriptPath = Join-Path $PSScriptRoot 'sign-artifacts.ps1' }
+Complete-OwnedPayload -OwnedPaths $ownedPaths -SignablePaths $signablePaths `
+    -StagingDirectory $staging -ManifestPath $ownershipManifest @payloadArguments | Out-Null
 Copy-Item -LiteralPath $ownershipManifest -Destination $agentPublish -Force
-
-if ($ProductionSign) {
-    & (Join-Path $PSScriptRoot 'sign-artifacts.ps1') -Paths @(
-        Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse |
-            Where-Object { $_.Extension -in '.exe', '.dll' } |
-            Select-Object -ExpandProperty FullName
-        $addOnPayload | Where-Object name -ne 'Newtonsoft.Json.dll' |
-            ForEach-Object { Join-Path $addOnPayloadDirectory $_.name }
-    )
-}
 
 $installerRoot = Join-Path $root 'src\Vincere.AutoExport.Installer'
 $machineProject = Join-Path $installerRoot 'Vincere.AutoExport.Installer.wixproj'

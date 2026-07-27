@@ -80,7 +80,9 @@ the supported-API parity gate. The installer validates and ships that exact
 four-file payload into NinjaTrader's supported compiled-assembly discovery
 folder, `Documents\NinjaTrader 8\bin\Custom`. The source-only probe remains in
 `bin\Custom\AddOns`; probe and UI-automation experiments are never accepted as
-installer inputs.
+installer inputs. For signed releases, the ownership manifest is generated
+after Authenticode signing so its SHA-256 values describe the exact bytes placed
+inside the MSIs.
 
 On a controlled Windows runner:
 
