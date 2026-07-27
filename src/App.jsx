@@ -117,6 +117,7 @@ import { buildClientSegments } from "./domain/clientSegments";
 import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import ClientKindBadge from "./components/ClientKindBadge";
 import {
@@ -2418,6 +2419,8 @@ function DataToolsPanel({
   const [isImporting, setIsImporting] = useState(false);
   const [isFetchingIntake, setIsFetchingIntake] = useState(false);
   const [logImportResult, setLogImportResult] = useState(null);
+  const [tradovateImportResult, setTradovateImportResult] = useState(null);
+  const [isParsingTradovate, setIsParsingTradovate] = useState(false);
   const [isParsingLogs, setIsParsingLogs] = useState(false);
   const [logPersisting, setLogPersisting] = useState(false);
 
@@ -2465,6 +2468,63 @@ function DataToolsPanel({
       reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
       reader.readAsText(file);
     });
+  }
+
+  async function parseTradovateFiles(files = []) {
+    const csvFiles = [...files].filter((file) =>
+      file.name.toLowerCase().endsWith(".csv"),
+    );
+    if (!csvFiles.length) {
+      setTradovateImportResult({ error: "No CSV files selected." });
+      return;
+    }
+    setIsParsingTradovate(true);
+    setTradovateImportResult(null);
+    try {
+      const parsed = [];
+      for (const file of csvFiles) {
+        const text = await readTextFile(file);
+        const { type, trades } = parseTradovateCsv(text);
+        if (type === "unknown" || !trades.length) continue;
+        // Prefer Position History (carries the account id) when both are given.
+        parsed.push({
+          fileName: file.name,
+          type,
+          summary: summarizeTradovateAccount(trades),
+        });
+      }
+      if (!parsed.length) {
+        setTradovateImportResult({
+          error:
+            "No Tradovate Performance or Position History file recognized. Export those two from NinjaTrader web / Tradovate.",
+        });
+        return;
+      }
+      // If both a Performance and a Position History were dropped, keep the one
+      // that has the account id so it can be mapped later.
+      const best = parsed.sort(
+        (a, b) => (b.summary.account ? 1 : 0) - (a.summary.account ? 1 : 0),
+      )[0];
+      setTradovateImportResult({ files: parsed, best });
+      setMessage(`Parsed ${best.summary.trades} Tradovate trades over ${best.summary.tradingDays} day(s).`);
+      setStatus("ready");
+      auditSilently({
+        entityType: "data_import",
+        action: "data_import.tradovate.parse",
+        afterData: {
+          fileCount: parsed.length,
+          trades: best.summary.trades,
+          account: best.summary.account || "",
+          manager: session?.displayName || session?.username || "",
+        },
+      });
+    } catch (error) {
+      console.error("[CRM] Failed to parse Tradovate CSV:", error);
+      setTradovateImportResult({ error: error.message || "Could not parse the Tradovate CSV." });
+      setStatus("error");
+    } finally {
+      setIsParsingTradovate(false);
+    }
   }
 
   async function parseNinjaTraderLogs(files = []) {
@@ -2962,6 +3022,94 @@ function DataToolsPanel({
                 <Upload size={14} /> {logPersisting ? "Saving..." : "Save matched activity"}
               </button>
             </div>
+          ) : null}
+        </div>
+        <div className="data-tool-card">
+          <strong>Tradovate / NinjaTrader web import</strong>
+          <p className="muted">
+            Upload the <b>Performance</b> or <b>Position History</b> CSV exported
+            from NinjaTrader web (Tradovate). Gives realized P/L per day and per
+            instrument. No algo name (Tradovate doesn't record it); account is a
+            numeric Tradovate id to be mapped to a CRM account.
+          </p>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            multiple
+            onChange={(event) => {
+              parseTradovateFiles(event.target.files || []);
+              event.target.value = "";
+            }}
+          />
+          {isParsingTradovate ? (
+            <div className="notice info">Parsing Tradovate export...</div>
+          ) : null}
+          {tradovateImportResult?.error ? (
+            <div className="notice error">{tradovateImportResult.error}</div>
+          ) : null}
+          {tradovateImportResult?.best ? (
+            (() => {
+              const s = tradovateImportResult.best.summary;
+              return (
+                <div className="intake-preview">
+                  <div className="intake-preview-head">
+                    <strong>
+                      {s.account ? `Account ${s.account}` : "Account (not in file)"}
+                    </strong>
+                    <span className="muted">
+                      {s.trades} trades · {s.tradingDays} day(s) · {s.firstDate} → {s.lastDate}
+                    </span>
+                  </div>
+                  <div className="lifecycle-stats">
+                    <div className="lifecycle-stat">
+                      <span className="lifecycle-stat-label">Realized P/L</span>
+                      <strong className={`lifecycle-stat-value ${s.realizedPnl >= 0 ? "positive" : "negative"}`}>
+                        {formatCurrency(s.realizedPnl)}
+                      </strong>
+                    </div>
+                    <div className="lifecycle-stat">
+                      <span className="lifecycle-stat-label">Win rate</span>
+                      <strong className="lifecycle-stat-value">{Math.round(s.winRate * 100)}%</strong>
+                    </div>
+                    <div className="lifecycle-stat">
+                      <span className="lifecycle-stat-label">Avg hold</span>
+                      <strong className="lifecycle-stat-value">
+                        {s.avgDurationSec ? `${Math.round(s.avgDurationSec / 60)}min` : "—"}
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="table-wrap">
+                    <table className="ops-table compact-table">
+                      <thead>
+                        <tr>
+                          <th>Instrument</th>
+                          <th>Realized</th>
+                          <th>Trades</th>
+                          <th>Win rate</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {s.byInstrument.map((row) => (
+                          <tr key={row.instrument}>
+                            <td><code>{row.instrument}</code></td>
+                            <td className={row.realizedPnl >= 0 ? "positive" : "negative"}>
+                              {formatCurrency(row.realizedPnl)}
+                            </td>
+                            <td>{row.trades}</td>
+                            <td>{Math.round(row.winRate * 100)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="muted" style={{ fontSize: 12 }}>
+                    Preview only. Linking this account to a CRM account and feeding
+                    the equity curve comes with the cash-account mapping (see
+                    docs/tradovate-api-plan.md).
+                  </p>
+                </div>
+              );
+            })()
           ) : null}
         </div>
         <div className="data-tool-card">
