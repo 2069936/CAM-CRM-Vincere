@@ -139,7 +139,12 @@ function Invoke-PrivateNinjaTraderRunnerConfiguration {
         }
     }
     finally {
-        [Environment]::SetEnvironmentVariable($tokenVariable, $previousToken, 'Process')
+        if ($null -eq $previousToken) {
+            Remove-Item "Env:$tokenVariable" -ErrorAction SilentlyContinue
+        }
+        else {
+            [Environment]::SetEnvironmentVariable($tokenVariable, $previousToken, 'Process')
+        }
         $tokenText = $null
         if ($tokenPointer -ne [IntPtr]::Zero) {
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPointer)
