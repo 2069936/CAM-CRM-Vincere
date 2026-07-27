@@ -4,6 +4,11 @@ Web CRM for managing trading client accounts from NinjaTrader end-of-day exports
 
 The goal is to replace a manual Excel workflow with a safer daily close process: upload the client's NinjaTrader CSV files, persist account classifications, review action flags, inspect account/strategy performance, and build a clean daily report.
 
+> **Deploying this branch?** Everything required — database migrations,
+> environment variables, and publishing the automatic collector — is in
+> **[`docs/DEPLOYING.md`](docs/DEPLOYING.md)**, in order, with what breaks if a
+> step is skipped. Start there; it is self-contained.
+
 ## What It Does
 
 - Tracks one account manager workspace with multiple clients.
