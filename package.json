@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "collector:verify-env": "node scripts/verify-auto-collection-env.mjs",
+    "collector:load-test": "node scripts/load-test-auto-collection.mjs",
     "probe:compare": "node scripts/compare-ninjatrader-probe.mjs",
     "probe:evidence": "node scripts/create-ninjatrader-parity-evidence.mjs"
   },
