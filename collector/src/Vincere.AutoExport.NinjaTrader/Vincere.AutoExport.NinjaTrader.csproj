@@ -9,6 +9,10 @@
     <ProjectReference Include="../Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" PrivateAssets="all" />
     <PackageReference Include="Newtonsoft.Json" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="WindowsBase" />
     <Reference Include="NinjaTrader.Core">
       <HintPath>$(NinjaTraderHome)\bin\NinjaTrader.Core.dll</HintPath>
       <Private>false</Private>

@@ -40,4 +40,26 @@ describe('production NinjaTrader AddOn source boundary', () => {
     expect(source).not.toMatch(/System\.Windows\.Automation|user32\.dll|SendInput|SetCursorPos|mouse_event/i);
     expect(source).not.toMatch(/ExportTabViaNativeMenu|Export As|\.csv\b/i);
   });
+
+  it('protects the capture pipe for SYSTEM, administrators, and the interactive user only', async () => {
+    const source = await readFile(join(ADDON, 'Pipe/CapturePipeSecurity.cs'), 'utf8');
+    expect(source).toContain('WellKnownSidType.LocalSystemSid');
+    expect(source).toContain('WellKnownSidType.BuiltinAdministratorsSid');
+    expect(source).toContain('WindowsIdentity.GetCurrent()');
+    expect(source).toContain('identity.User');
+    expect(source).toContain('SetAccessRuleProtection(true, false)');
+    expect(source).not.toMatch(/WorldSid|AuthenticatedUserSid|Everyone/i);
+  });
+
+  it('owns one cancellable server and marshals capture through the NinjaTrader dispatcher', async () => {
+    const server = await readFile(join(ADDON, 'Pipe/CapturePipeServer.cs'), 'utf8');
+    const addon = await readFile(join(ADDON, 'VincereAutoExportAddOn.cs'), 'utf8');
+    expect(server).toContain('CaptureConnectionHandler');
+    expect(server).toContain('WaitForConnectionAsync');
+    expect(server).toContain('Vincere.AutoExport.v1');
+    expect(addon).toContain('Application.Current.Dispatcher.BeginInvoke');
+    expect(addon).toContain('Vincere Auto Export Status');
+    expect(addon).toContain('Interlocked.CompareExchange');
+    expect(addon).not.toMatch(/deviceToken|enrollment|productKey|Authorization/i);
+  });
 });
