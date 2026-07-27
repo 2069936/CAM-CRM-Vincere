@@ -15,5 +15,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
+    <Compile Include="../../src/Vincere.AutoExport.NinjaTrader/Capture/NinjaTraderFacade.cs" Link="Production/NinjaTraderFacade.cs" />
   </ItemGroup>
 </Project>

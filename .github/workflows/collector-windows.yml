@@ -32,7 +32,18 @@ jobs:
         name: Detect production AddOn source
         shell: bash
         run: |
-          if [ -n "$(find collector/src/Vincere.AutoExport.NinjaTrader -type f -name '*.cs' -print -quit)" ]; then
+          required=(
+            collector/src/Vincere.AutoExport.NinjaTrader/Capture/NinjaTraderFacade.cs
+            collector/src/Vincere.AutoExport.NinjaTrader/Pipe/CapturePipeServer.cs
+            collector/src/Vincere.AutoExport.NinjaTrader/VincereAutoExportAddOn.cs
+          )
+          missing=false
+          for source in "${required[@]}"; do
+            if [ ! -f "$source" ]; then
+              missing=true
+            fi
+          done
+          if [ "$missing" = false ]; then
             echo 'has_source=true' >> "$GITHUB_OUTPUT"
           else
             echo 'has_source=false' >> "$GITHUB_OUTPUT"

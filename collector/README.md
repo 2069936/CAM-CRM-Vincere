@@ -32,6 +32,14 @@ The supported-API parity gate and its manual VPS instructions live in
 [`probe/README.md`](probe/README.md). Do not treat the production AddOn as ready
 until that comparison has been reviewed.
 
+Production AddOn work is activated in CI only when the supported-API facade,
+capture-pipe server, and NinjaTrader AddOn entry point all exist. A partial
+source file cannot produce a verified/packageable AddOn. The portable test
+assembly compiles the exact facade source against narrow API substitutes so its
+four-section mapping is exercised on normal CI; the controlled `ninjatrader8`
+runner remains authoritative for compilation against legitimate NinjaTrader
+assemblies and live parity.
+
 ## Machine configuration boundary
 
 All machine-owned state derives from `%ProgramData%\Vincere\AutoExport`. The
