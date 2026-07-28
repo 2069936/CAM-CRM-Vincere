@@ -16,8 +16,8 @@ public sealed class CaptureScheduleTests
         Instant winter = schedule.GetScheduledInstant(new LocalDate(2026, 1, 15));
         Instant summer = schedule.GetScheduledInstant(new LocalDate(2026, 7, 23));
 
-        Assert.Equal(Instant.FromUtc(2026, 1, 15, 21, 45), winter);
-        Assert.Equal(Instant.FromUtc(2026, 7, 23, 20, 45), summer);
+        Assert.Equal(Instant.FromUtc(2026, 1, 15, 21, 30), winter);
+        Assert.Equal(Instant.FromUtc(2026, 7, 23, 20, 30), summer);
     }
 
     [Fact]
@@ -28,7 +28,7 @@ public sealed class CaptureScheduleTests
         Instant next = schedule.GetNextScheduledInstant(
             Instant.FromUtc(2026, 3, 6, 22, 0));
 
-        Assert.Equal(Instant.FromUtc(2026, 3, 9, 20, 45), next);
+        Assert.Equal(Instant.FromUtc(2026, 3, 9, 20, 30), next);
     }
 
     [Fact]
@@ -37,10 +37,10 @@ public sealed class CaptureScheduleTests
         CaptureSchedule schedule = CaptureSchedule.Default;
 
         CaptureScheduleDecision before = schedule.Evaluate(
-            Instant.FromUtc(2026, 7, 23, 20, 44, 59),
+            Instant.FromUtc(2026, 7, 23, 20, 29, 59),
             lastScheduledTradingDate: null);
         CaptureScheduleDecision due = schedule.Evaluate(
-            Instant.FromUtc(2026, 7, 23, 20, 45, 1),
+            Instant.FromUtc(2026, 7, 23, 20, 30, 1),
             lastScheduledTradingDate: null);
 
         Assert.Equal(CaptureScheduleDecisionKind.Waiting, before.Kind);
