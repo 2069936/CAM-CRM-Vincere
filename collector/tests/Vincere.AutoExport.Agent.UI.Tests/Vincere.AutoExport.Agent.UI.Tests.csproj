@@ -17,5 +17,6 @@
   <ItemGroup>
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ControlPipeClient.cs" Link="ControlPipeClient.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/MainViewModel.cs" Link="MainViewModel.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/CaptureDayView.cs" Link="CaptureDayView.cs" />
   </ItemGroup>
 </Project>

@@ -48,11 +48,7 @@ public sealed class CaptureSchedule
 
         CaptureTime = captureTime;
         CutoffTime = cutoffTime;
-        EnabledDays = this.enabledDays;
     }
-
-    /// <summary>Days collection is expected. Weekends are absent by default.</summary>
-    public IReadOnlyCollection<IsoDayOfWeek> EnabledDays { get; }
 
     public static CaptureSchedule Default { get; } = new(
         new LocalTime(16, 30),
