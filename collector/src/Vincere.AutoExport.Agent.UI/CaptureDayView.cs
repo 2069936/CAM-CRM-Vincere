@@ -106,33 +106,27 @@ public static class CaptureTimeline
     private static string Describe(string status, string tradingDate, JObject day)
     {
         string date = FriendlyDate(tradingDate);
-        switch (status)
+        return status switch
         {
-            case Uploaded:
-            {
-                string time = CaptureTime(day);
-                int? accounts = Number(day, "AccountCount");
-                string counted = accounts.HasValue
-                    ? $" · {accounts.Value} account{(accounts.Value == 1 ? string.Empty : "s")}"
-                    : string.Empty;
-                return date + counted + (time == null ? string.Empty : " · " + time);
-            }
+            Uploaded => DescribeUploaded(date, day),
+            Queued => date + " · captured, not yet uploaded",
+            Failed => date + " · failed (" + (Text(day, "ErrorCode") ?? "unknown") + ")",
+            Missed => date + " · not collected",
+            Waiting => date + " · scheduled",
+            NotScheduled => date + " · not a trading day",
+            NotTracked => date + " · before collection started",
+            _ => date,
+        };
+    }
 
-            case Queued:
-                return date + " · captured, not yet uploaded";
-            case Failed:
-                return date + " · failed (" + (Text(day, "ErrorCode") ?? "unknown") + ")";
-            case Missed:
-                return date + " · not collected";
-            case Waiting:
-                return date + " · scheduled";
-            case NotScheduled:
-                return date + " · not a trading day";
-            case NotTracked:
-                return date + " · before collection started";
-            default:
-                return date;
-        }
+    private static string DescribeUploaded(string date, JObject day)
+    {
+        string time = CaptureTime(day);
+        int? accounts = Number(day, "AccountCount");
+        string counted = accounts.HasValue
+            ? $" · {accounts.Value} account{(accounts.Value == 1 ? string.Empty : "s")}"
+            : string.Empty;
+        return date + counted + (time == null ? string.Empty : " · " + time);
     }
 
     /// <summary>
