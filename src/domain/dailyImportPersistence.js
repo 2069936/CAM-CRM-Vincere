@@ -167,6 +167,10 @@ function mapExecution(execution, dailyImportId, accountByName) {
 
 function mapFlag(flag, dailyImportId, clientUuid, accountByName) {
   return {
+    // Carried through rather than left to the column default: the app keeps this
+    // flag in memory under the id reconcile gave it, and resolving it later
+    // matches on that id. A database-generated one would never reach the app.
+    id: flag.id,
     daily_import_id: dailyImportId,
     client_id: clientUuid,
     trading_account_id: accountIdFor(accountByName, flag.accountName),

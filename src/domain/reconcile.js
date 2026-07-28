@@ -93,12 +93,35 @@ function createDefaultAccount(account, existing = {}) {
   };
 }
 
+/**
+ * Flag ids must be UUIDs.
+ *
+ * A flag raised here is written straight to operational_flags, whose primary key
+ * is a uuid, and the same id is what the CRM later sends back to resolve it. A
+ * composite key like `Strategy disabled-FTDFYL1001-za9s0gd` read fine as a React
+ * key but Postgres rejected it, so closing a freshly imported flag failed: the
+ * optimistic update hid it, the next load brought it back, and only after a
+ * reload — once the row carried a database-generated uuid — did closing stick.
+ */
+function newFlagId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Older WebViews and pre-19 Node have no randomUUID. Shape matters more than
+  // entropy here: an id Postgres rejects is worse than a weaker random one.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === 'x' ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
 function makeFlag({ type, severity = 'Warning', accountName = '', message }) {
   return {
     // Unique id so flags never collide as React keys (which made them vanish).
     // Recalculate preserves triage by matching on type|account|message instead,
     // so a stable id is not needed for that.
-    id: `${type}-${accountName || 'client'}-${Math.random().toString(36).slice(2, 9)}`,
+    id: newFlagId(),
     type,
     severity,
     accountName,

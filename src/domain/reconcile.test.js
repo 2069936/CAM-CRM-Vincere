@@ -509,3 +509,56 @@ describe('trailing drawdown does not apply to cash accounts', () => {
     expect(result.snapshots[0].weeklyPnl).toBe(-100);
   });
 });
+
+describe('flag ids are uuids', () => {
+  // Regression: flags were keyed `${type}-${accountName}-${random}`, which React
+  // accepted and Postgres did not. Resolving a freshly imported flag failed with
+  // "invalid input syntax for type uuid", the optimistic update hid it anyway,
+  // and it returned on the next load.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  it('gives every flag an id operational_flags.id will accept', () => {
+    const result = reconcileDailyImport({
+      clientId: 'client-1',
+      date: '2026-07-27',
+      registry: {
+        'FTDFYL100195681612': {
+          alias: 'Apex 1', accountType: 'Funded',
+          status: 'Active', startBalance: 50000,
+        },
+      },
+      parsed: {
+        accounts: [{ accountName: 'FTDFYL100195681612', accountBalance: 50000 }],
+        strategies: [{ accountName: 'FTDFYL100195681612', strategyName: 'RBO-1.8', enabled: false }],
+        orders: [],
+        executions: [],
+      },
+    });
+
+    expect(result.flags.length).toBeGreaterThan(0);
+    // The exact shape that used to break: a disabled strategy on a real account.
+    expect(result.flags.map((flag) => flag.type)).toContain('Strategy disabled');
+    for (const flag of result.flags) {
+      expect(flag.id).toMatch(UUID);
+    }
+  });
+
+  it('does not repeat an id across flags', () => {
+    const result = reconcileDailyImport({
+      clientId: 'client-1',
+      date: '2026-07-27',
+      registry: {},
+      parsed: {
+        accounts: [
+          { accountName: 'ACC-A', accountBalance: 1000 },
+          { accountName: 'ACC-B', accountBalance: 2000 },
+        ],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+
+    const ids = result.flags.map((flag) => flag.id);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});

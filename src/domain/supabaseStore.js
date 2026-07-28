@@ -1249,8 +1249,19 @@ export async function deleteSupabaseActivity(entryId) {
   return true;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function updateSupabaseOperationalFlag(flagId, status) {
   if (!isSupabaseConfigured || !supabase) return null;
+  if (!UUID_PATTERN.test(String(flagId || ''))) {
+    // Reject before the request rather than letting Postgres answer with
+    // "invalid input syntax for type uuid", which named the column but not the
+    // cause. An id in this shape means the flag was never written, so resolving
+    // it would silently do nothing.
+    throw new Error(
+      'This flag has not been saved yet. Reload the page and try again.',
+    );
+  }
   const patch = {
     status,
     resolved_at: ['Resolved', 'Acknowledged', 'Ignored'].includes(status) ? new Date().toISOString() : null,
@@ -1295,6 +1306,7 @@ export async function replaceSupabaseOperationalFlags(clientId, importId, flags 
   const rows = flags.map((flag) => {
     const account = accountByName[String(flag.accountName || '').toLowerCase()];
     return {
+      id: flag.id,
       daily_import_id: importUuid,
       client_id: clientUuid,
       trading_account_id: account?.id || null,

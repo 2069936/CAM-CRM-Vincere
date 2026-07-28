@@ -199,9 +199,11 @@ describe('persistDailyImportWithClient', () => {
         connection: 'Lucid',
       }],
       flags: [{
+        id: '11111111-1111-4111-8111-111111111111',
         accountName: 'ACC-ONE', type: 'Review', severity: 'Critical', message: 'Check it',
         status: 'Acknowledged', resolvedAt: '2026-07-23T22:15:00.000Z', resolvedByUserId: 'user-1',
       }, {
+        id: '22222222-2222-4222-8222-222222222222',
         accountName: 'acc-one', type: 'Open review', message: 'Still open', status: 'Open',
       }],
     });
@@ -254,11 +256,16 @@ describe('persistDailyImportWithClient', () => {
       quantity: 1, price: 20100, time_text: '09:31', entry_exit: 'Entry', position: 'Long',
       name: 'Entry', commission: 1.24, rate: 0.35, connection: 'Lucid',
     }]);
+    // The id travels with the row. Without it Postgres mints its own, the app
+    // never learns it, and resolving the flag later targets an id the database
+    // has never seen.
     expect(db.insertRows).toHaveBeenNthCalledWith(4, 'operational_flags', [{
+      id: '11111111-1111-4111-8111-111111111111',
       daily_import_id: 'import-1', client_id: 'client-uuid', trading_account_id: 'account-1',
       type: 'Review', severity: 'Critical', message: 'Check it', status: 'Acknowledged',
       resolved_at: '2026-07-23T22:15:00.000Z', resolved_by_user_id: 'user-1',
     }, {
+      id: '22222222-2222-4222-8222-222222222222',
       daily_import_id: 'import-1', client_id: 'client-uuid', trading_account_id: 'account-1',
       type: 'Open review', severity: 'Warning', message: 'Still open', status: 'Open',
       resolved_at: null, resolved_by_user_id: null,
