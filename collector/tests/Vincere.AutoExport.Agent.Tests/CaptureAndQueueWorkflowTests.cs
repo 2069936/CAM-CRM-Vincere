@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Vincere.AutoExport.Agent.Capture;
+using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
 using Vincere.AutoExport.Agent.Security;
@@ -17,11 +18,17 @@ public sealed class CaptureAndQueueWorkflowTests
     public async Task AgentAddsMachineAndAgentMetadataBeforeDurableEnqueue()
     {
         AutoExportSnapshotV1 snapshot = Snapshot();
+        // Two real accounts, so the recorded count below proves the snapshot's
+        // contents reached the history rather than matching an empty default.
+        snapshot.Accounts.Add(new AccountRowV1 { AccountName = "APEX-1" });
+        snapshot.Accounts.Add(new AccountRowV1 { AccountName = "APEX-2" });
         FakeQueueWriter queue = new();
+        FakeCaptureHistory history = new();
         CaptureAndQueueWorkflow workflow = new(
             new FakeCaptureClient(snapshot),
             queue,
             new FixedMachineGuidSource("  MACHINE-GUID  "),
+            history,
             "1.2.3");
         CaptureRequestContext context = new(
             "2026-07-23",
@@ -36,6 +43,13 @@ public sealed class CaptureAndQueueWorkflowTests
         Assert.Equal("1.2.3", queue.Snapshot.Source.AgentVersion);
         Assert.Equal("0.4.0", queue.Snapshot.Source.AddonVersion);
         Assert.Equal("8.1.5.2", queue.Snapshot.Source.NinjaTraderVersion);
+
+        // The queued day is recorded with what it actually held, so the setup
+        // window can report "3 accounts" instead of just "something happened".
+        CaptureHistoryEntry recorded = Assert.Single(history.Entries);
+        Assert.Equal("2026-07-23", recorded.TradingDate);
+        Assert.Equal(2, recorded.AccountCount);
+        Assert.Null(recorded.ErrorCode);
     }
 
     [Fact]
@@ -46,6 +60,7 @@ public sealed class CaptureAndQueueWorkflowTests
             new FakeCaptureClient(Snapshot()),
             queue,
             new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
             "1.2.3");
         CaptureRequestContext context = new(
             "2026-07-24",
