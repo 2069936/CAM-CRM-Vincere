@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
@@ -27,7 +28,7 @@ public sealed class CollectorLoopTests
     {
         FakeQueue queue = new() { Next = Item };
         FakeTokenStore token = new(null);
-        UploadLoop loop = new(queue, new FakeCrm(), token, new CollectorState());
+        UploadLoop loop = new(queue, new FakeCrm(), token, new CollectorState(), new FakeCaptureHistory());
 
         await loop.RunOnceAsync(CancellationToken.None);
 
@@ -41,7 +42,7 @@ public sealed class CollectorLoopTests
         FakeQueue queue = new() { Next = Item };
         FakeCrm crm = new();
         CollectorState state = new();
-        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), state);
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), state, new FakeCaptureHistory());
 
         await loop.RunOnceAsync(CancellationToken.None);
 
@@ -63,7 +64,7 @@ public sealed class CollectorLoopTests
                 true,
                 disposition: CrmFailureDisposition.Retry),
         };
-        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState());
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory());
 
         await loop.RunOnceAsync(CancellationToken.None);
 
@@ -84,7 +85,7 @@ public sealed class CollectorLoopTests
                 false,
                 disposition: CrmFailureDisposition.RePair),
         };
-        UploadLoop loop = new(queue, crm, token, new CollectorState());
+        UploadLoop loop = new(queue, crm, token, new CollectorState(), new FakeCaptureHistory());
 
         await loop.RunOnceAsync(CancellationToken.None);
 
@@ -105,7 +106,7 @@ public sealed class CollectorLoopTests
         };
         CollectorState state = new();
         FakeClock clock = new(Instant.FromUtc(2026, 7, 23, 20, 45));
-        await new ScheduledCaptureLoop(scheduler, clock, state).RunOnceAsync(CancellationToken.None);
+        await new ScheduledCaptureLoop(scheduler, clock, state, new FakeCaptureHistory()).RunOnceAsync(CancellationToken.None);
         FakeCrm crm = new();
         FakeQueue queue = new();
         HeartbeatLoop heartbeat = new(
@@ -122,6 +123,108 @@ public sealed class CollectorLoopTests
         Assert.Equal("addon_unavailable", crm.Heartbeat.LastErrorCode);
         Assert.False(crm.Heartbeat.AddonAvailable);
         Assert.DoesNotContain("Accounts", crm.Heartbeat.LastErrorMessage ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task UploaderRecordsTheDayAsUploadedOnlyAfterAcknowledgement()
+    {
+        FakeQueue queue = new() { Next = Item };
+        FakeCaptureHistory history = new();
+        UploadLoop loop = new(queue, new FakeCrm(), new FakeTokenStore("token"), new CollectorState(), history);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "2026-07-23" }, history.Uploaded.ToArray());
+        Assert.Empty(history.Failures);
+    }
+
+    [Fact]
+    public async Task ARetryableUploadFailureLeavesTheDayUnmarked()
+    {
+        // A transient CRM outage is retried on the next pass. Painting the day red
+        // for a blip that fixes itself would train the CAM to ignore red.
+        FakeQueue queue = new() { Next = Item };
+        FakeCrm crm = new()
+        {
+            UploadError = new CrmClientException("crm_unavailable", "unavailable", true, disposition: CrmFailureDisposition.Retry),
+        };
+        FakeCaptureHistory history = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), history);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Empty(history.Failures);
+        Assert.Empty(history.Uploaded);
+    }
+
+    [Fact]
+    public async Task AQuarantinedUploadRecordsTheDayAsFailed()
+    {
+        FakeQueue queue = new() { Next = Item };
+        FakeCrm crm = new()
+        {
+            UploadError = new CrmClientException("payload_rejected", "rejected", false, disposition: CrmFailureDisposition.Quarantine),
+        };
+        FakeCaptureHistory history = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), history);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(("2026-07-23", "payload_rejected"), Assert.Single(history.Failures));
+    }
+
+    [Fact]
+    public async Task AnUnwritableHistoryDoesNotBreakTheUpload()
+    {
+        // History is a reporting aid. Losing it must never cost a completed
+        // upload, which would leave the queue item stuck and the day uncollected.
+        FakeQueue queue = new() { Next = Item };
+        FakeCaptureHistory history = new() { ThrowOnWrite = true };
+        UploadLoop loop = new(queue, new FakeCrm(), new FakeTokenStore("token"), new CollectorState(), history);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(Item, queue.Completed);
+    }
+
+    [Fact]
+    public async Task TheCaptureLoopRecordsOnlyDueDayFailures()
+    {
+        FakeCaptureHistory failed = new();
+        await new ScheduledCaptureLoop(
+                new FakeScheduler
+                {
+                    Result = new CaptureRunResult(
+                        new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-07-23", null),
+                        false,
+                        "addon_unavailable",
+                        null),
+                },
+                new FakeClock(Instant.FromUtc(2026, 7, 23, 20, 45)),
+                new CollectorState(),
+                failed)
+            .RunOnceAsync(CancellationToken.None);
+
+        // A weekend or an already-collected day reports no error and must leave
+        // no trace at all.
+        FakeCaptureHistory quiet = new();
+        await new ScheduledCaptureLoop(
+                new FakeScheduler
+                {
+                    Result = new CaptureRunResult(
+                        new CaptureScheduleDecision(CaptureScheduleDecisionKind.DisabledDay, "2026-07-25", null),
+                        false,
+                        null,
+                        null),
+                },
+                new FakeClock(Instant.FromUtc(2026, 7, 25, 20, 45)),
+                new CollectorState(),
+                quiet)
+            .RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(("2026-07-23", "addon_unavailable"), Assert.Single(failed.Failures));
+        Assert.Empty(quiet.Failures);
+        Assert.Empty(quiet.Entries);
     }
 
     private sealed class FakeClock : ICollectorClock

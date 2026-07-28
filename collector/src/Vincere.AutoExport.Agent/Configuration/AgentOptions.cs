@@ -12,7 +12,7 @@ public sealed record AgentOptions
     public string CrmBaseUrl { get; init; } = "https://cam-crm-vincere.vercel.app/";
 
     [JsonProperty("scheduleTime")]
-    public string ScheduleTime { get; init; } = "16:45";
+    public string ScheduleTime { get; init; } = "16:30";
 
     [JsonProperty("captureCutoffTime")]
     public string CaptureCutoffTime { get; init; } = "17:00";

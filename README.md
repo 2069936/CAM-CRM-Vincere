@@ -82,7 +82,7 @@ normalization, reconciliation, and daily-import persistence as manual uploads.
 - A late snapshot never silently replaces a closed day. Replacement requires a
   Manager, a reason, and an exact client/date confirmation; the transaction
   retains lineage and creates audit and critical operational records.
-- The initial schedule is 4:45 p.m. `America/New_York`. DST is evaluated from
+- The initial schedule is 4:30 p.m. `America/New_York`. DST is evaluated from
   the timezone, not a fixed UTC offset.
 
 Deployment, rollback, staging evidence, rate limits, retention, and replay

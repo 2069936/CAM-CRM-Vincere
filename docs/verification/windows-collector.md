@@ -81,7 +81,7 @@ Record batch IDs, stable error codes, counts, and timestamps only.
 |---|---|---|
 | Clean install and pair | Correct CRM client; token only in DPAPI file | pending |
 | NinjaTrader restart + test capture | Four non-synthesized sections queued | pending |
-| Scheduled 16:45 ET capture | Fires correctly in EST and EDT | pending |
+| Scheduled 16:30 ET capture | Fires correctly in EST and EDT | pending |
 | Network outage | Local pending item retained; later upload succeeds once | pending |
 | Service kill during upload | Receipt recovery; no duplicate normalized day | pending |
 | NinjaTrader closed at schedule | Stable unavailable code; retries before cutoff | pending |

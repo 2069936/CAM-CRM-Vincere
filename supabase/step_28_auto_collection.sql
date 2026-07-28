@@ -27,7 +27,7 @@ alter table public.ingest_devices
   add column if not exists credential_prefix text,
   add column if not exists status text not null default 'active',
   add column if not exists health_status text not null default 'pending',
-  add column if not exists schedule_time time without time zone not null default '16:45:00',
+  add column if not exists schedule_time time without time zone not null default '16:30:00',
   add column if not exists schedule_timezone text not null default 'America/New_York',
   add column if not exists agent_version text,
   add column if not exists addon_version text,
@@ -44,7 +44,7 @@ alter table public.ingest_devices
 -- correct the default installed by an earlier revision. Existing per-device
 -- schedule values are intentionally left untouched.
 alter table public.ingest_devices
-  alter column schedule_time set default '16:45:00';
+  alter column schedule_time set default '16:30:00';
 
 do $constraints$
 begin

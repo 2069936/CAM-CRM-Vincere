@@ -7,6 +7,74 @@
         Background="{StaticResource CanvasBrush}"
         Foreground="{StaticResource TextBrush}"
         FontFamily="Segoe UI Variable Text, Segoe UI">
+    <Window.Resources>
+        <!-- One cell of the seven-day strip. Each state carries a glyph as well as
+             a colour, so the strip still reads for an operator who cannot rely on
+             the red/green difference. -->
+        <DataTemplate x:Key="CaptureDayTemplate">
+            <Border Width="56" Margin="0,0,7,0" CornerRadius="7" Padding="0,9"
+                    ToolTip="{Binding Detail}"
+                    AutomationProperties.Name="{Binding Detail}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="#16202B" />
+                        <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Tone}" Value="ok">
+                                <Setter Property="Background" Value="#123024" />
+                                <Setter Property="BorderBrush" Value="#2FCA73" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="bad">
+                                <Setter Property="Background" Value="#331A1E" />
+                                <Setter Property="BorderBrush" Value="#FF6B6B" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="pending">
+                                <Setter Property="Background" Value="#2E2612" />
+                                <Setter Property="BorderBrush" Value="#F5B841" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <TextBlock Text="{Binding DayLabel}" FontSize="10" HorizontalAlignment="Center"
+                               Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding DateLabel}" FontSize="15" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" Margin="0,1,0,0" />
+                    <TextBlock HorizontalAlignment="Center" FontSize="12" Margin="0,3,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="·" />
+                                <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Uploaded">
+                                        <Setter Property="Text" Value="&#x2713;" />
+                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Queued">
+                                        <Setter Property="Text" Value="&#x21BB;" />
+                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Waiting">
+                                        <Setter Property="Text" Value="&#x2022;" />
+                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                        <Setter Property="Text" Value="!" />
+                                        <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Missed">
+                                        <Setter Property="Text" Value="&#x2715;" />
+                                        <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+    </Window.Resources>
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="280" />
@@ -58,7 +126,7 @@
 
                 <StackPanel Grid.Row="2">
                     <TextBlock Text="Daily capture" Foreground="{StaticResource MutedBrush}" FontSize="11" />
-                    <TextBlock Text="4:45 PM · New York" FontWeight="SemiBold" Margin="0,3,0,0" />
+                    <TextBlock Text="4:30 PM · New York" FontWeight="SemiBold" Margin="0,3,0,0" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -116,6 +184,24 @@
                                     <TextBlock Text="{Binding ClientName}" FontSize="18" FontWeight="SemiBold" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
+                            <Border Background="{StaticResource RaisedBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,14,0,0"
+                                    Visibility="{Binding HasDays, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel>
+                                    <TextBlock Text="L A S T   S E V E N   D A Y S" Foreground="{StaticResource MutedBrush}" FontSize="10" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding CollectionSummary}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,7,0,0"
+                                               AutomationProperties.LiveSetting="Polite" />
+                                    <ItemsControl ItemsSource="{Binding Days}" ItemTemplate="{StaticResource CaptureDayTemplate}" Margin="0,14,0,0"
+                                                  AutomationProperties.Name="Collection history, last seven days">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                    </ItemsControl>
+                                    <Border Background="#331A1E" BorderBrush="#FF6B6B" BorderThickness="1" CornerRadius="6" Padding="11,8" Margin="0,14,0,0"
+                                            Visibility="{Binding HasCollectionAlert, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="{Binding CollectionAlert}" Foreground="#FFD9D9" TextWrapping="Wrap" FontSize="12" />
+                                    </Border>
+                                </StackPanel>
+                            </Border>
                             <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
                                 <Button Content="Run test capture" Command="{Binding TestCaptureCommand}" AutomationProperties.Name="Run NinjaTrader test capture" />
                             </StackPanel>
@@ -132,15 +218,35 @@
                     </ScrollViewer>
                 </TabItem>
                 <TabItem>
-                    <StackPanel Margin="4,10" VerticalAlignment="Center">
+                  <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,10">
                         <Border Width="58" Height="58" CornerRadius="29" Background="{StaticResource SuccessBrush}" HorizontalAlignment="Left">
                             <TextBlock Text="✓" Foreground="#0F1720" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="Automatic collection is ready" FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="32" FontWeight="SemiBold" Margin="0,20,0,0" />
                         <TextBlock Text="Keep NinjaTrader open and connected. The service will capture, queue, and upload automatically." Foreground="{StaticResource MutedBrush}" FontSize="15" TextWrapping="Wrap" LineHeight="22" Margin="0,10,0,20" />
-                        <Button Content="Create support diagnostics" Command="{Binding CollectDiagnosticsCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" HorizontalAlignment="Left" AutomationProperties.Name="Create redacted support diagnostics" />
+                        <Border Background="{StaticResource RaisedBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,14,0,0"
+                                Visibility="{Binding HasDays, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock Text="L A S T   S E V E N   D A Y S" Foreground="{StaticResource MutedBrush}" FontSize="10" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding CollectionSummary}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,7,0,0"
+                                           AutomationProperties.LiveSetting="Polite" />
+                                <ItemsControl ItemsSource="{Binding Days}" ItemTemplate="{StaticResource CaptureDayTemplate}" Margin="0,14,0,0"
+                                              AutomationProperties.Name="Collection history, last seven days">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                                <Border Background="#331A1E" BorderBrush="#FF6B6B" BorderThickness="1" CornerRadius="6" Padding="11,8" Margin="0,14,0,0"
+                                        Visibility="{Binding HasCollectionAlert, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Text="{Binding CollectionAlert}" Foreground="#FFD9D9" TextWrapping="Wrap" FontSize="12" />
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                        <Button Content="Create support diagnostics" Command="{Binding CollectDiagnosticsCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" HorizontalAlignment="Left" Margin="0,18,0,0" AutomationProperties.Name="Create redacted support diagnostics" />
                         <TextBlock Text="{Binding DiagnosticsPath}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
                     </StackPanel>
+                  </ScrollViewer>
                 </TabItem>
             </TabControl>
 

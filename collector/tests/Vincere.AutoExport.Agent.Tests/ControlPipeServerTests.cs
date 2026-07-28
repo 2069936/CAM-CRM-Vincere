@@ -116,6 +116,7 @@ public sealed class ControlPipeServerTests : IDisposable
             new FakeQueue(),
             new CollectorState(),
             new FakeDiagnostics(directory),
+            new FakeCaptureHistory(),
             "1.2.3",
             "4.5.6");
         return new Harness(handler, options, token, crm);

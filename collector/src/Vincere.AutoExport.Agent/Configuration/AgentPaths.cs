@@ -11,7 +11,8 @@ public sealed record AgentPaths(
     string UploadingQueue,
     string SentQueue,
     string QuarantineQueue,
-    string Logs)
+    string Logs,
+    string History)
 {
     public static AgentPaths FromEnvironment()
     {
@@ -32,6 +33,7 @@ public sealed record AgentPaths(
             Path.Combine(queue, "uploading"),
             Path.Combine(queue, "sent"),
             Path.Combine(queue, "quarantine"),
-            Path.Combine(root, "logs"));
+            Path.Combine(root, "logs"),
+            Path.Combine(root, "history.json"));
     }
 }

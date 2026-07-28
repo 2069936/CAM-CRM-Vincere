@@ -297,9 +297,9 @@ describe('step 28 auto-collection migration contract', () => {
     expect(auditPayloads).not.toMatch(/lasterrormessage|machine|credential|token|ip|request/);
   });
 
-  it('corrects the new-device schedule default to 16:45 without rewriting existing rows', () => {
-    expect(normalizedSql).toMatch(/add column if not exists schedule_time time without time zone not null default '16:45:00'/);
-    expect(normalizedSql).toMatch(/alter table public\.ingest_devices alter column schedule_time set default '16:45:00'/);
+  it('corrects the new-device schedule default to 16:30 without rewriting existing rows', () => {
+    expect(normalizedSql).toMatch(/add column if not exists schedule_time time without time zone not null default '16:30:00'/);
+    expect(normalizedSql).toMatch(/alter table public\.ingest_devices alter column schedule_time set default '16:30:00'/);
     expect(normalizedSql).not.toMatch(/update public\.ingest_devices set schedule_time/);
   });
 

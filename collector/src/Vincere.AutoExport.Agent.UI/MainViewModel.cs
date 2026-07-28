@@ -24,10 +24,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool updateRequired;
     private string enrollmentCode = string.Empty;
     private string clientName;
-    private string scheduleTime = "16:45";
+    private string scheduleTime = "16:30";
     private string statusMessage = "Checking the Windows service…";
     private string queueSummary;
     private string diagnosticsPath;
+    private string collectionSummary = "No collection history yet";
+    private string collectionAlert;
+    private IReadOnlyList<CaptureDayView> days = Array.Empty<CaptureDayView>();
 
     public MainViewModel(IControlPipeClient client)
     {
@@ -66,6 +69,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string StatusMessage { get => statusMessage; private set => Set(ref statusMessage, value); }
     public string QueueSummary { get => queueSummary; private set => Set(ref queueSummary, value); }
     public string DiagnosticsPath { get => diagnosticsPath; private set => Set(ref diagnosticsPath, value); }
+
+    /// <summary>One line answering "did the last trading day land?".</summary>
+    public string CollectionSummary { get => collectionSummary; private set => Set(ref collectionSummary, value); }
+
+    /// <summary>Null when nothing needs attention, so the banner stays hidden.</summary>
+    public string CollectionAlert { get => collectionAlert; private set => Set(ref collectionAlert, value); }
+
+    public bool HasCollectionAlert => !string.IsNullOrEmpty(CollectionAlert);
+
+    /// <summary>The seven-day strip, oldest first.</summary>
+    public IReadOnlyList<CaptureDayView> Days
+    {
+        get => days;
+        private set
+        {
+            if (Set(ref days, value))
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasDays)));
+        }
+    }
+
+    public bool HasDays => Days.Count > 0;
     public ICommand PairCommand { get; }
     public ICommand TestCaptureCommand { get; }
     public ICommand SaveScheduleCommand { get; }
@@ -86,7 +110,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             JObject data = response.Data ?? new JObject();
             bool paired = data.Value<bool?>("Paired") ?? data.Value<bool?>("paired") ?? false;
             ClientName = Value(data, "ClientName", "clientName");
-            ScheduleTime = Value(data, "ScheduleTime", "scheduleTime") ?? "16:45";
+            ScheduleTime = Value(data, "ScheduleTime", "scheduleTime") ?? "16:30";
             JObject runtime = ObjectValue(data, "Runtime", "runtime");
             UpdateRequired = runtime?.Value<bool?>("UpdateRequired")
                 ?? runtime?.Value<bool?>("updateRequired")
@@ -94,11 +118,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
             JObject queue = ObjectValue(data, "Queue", "queue");
             int pending = queue?.Value<int?>("PendingCount") ?? queue?.Value<int?>("pendingCount") ?? 0;
             QueueSummary = pending == 0 ? "No uploads waiting" : $"{pending} upload{(pending == 1 ? string.Empty : "s")} waiting";
+            ApplyTimeline(data);
             CurrentStep = paired ? 3 : 2;
             StatusMessage = paired
                 ? $"Connected to {ClientName}. Restart NinjaTrader, then test the connection."
                 : "Service ready. Enter the one-time code from the CRM.";
         }, "The Windows service is unavailable. Open setup as administrator or repair the installation.");
+    }
+
+    private void ApplyTimeline(JObject data)
+    {
+        IReadOnlyList<CaptureDayView> parsed = CaptureTimeline.Parse(
+            data["Timeline"] ?? data["timeline"]);
+        Days = parsed;
+        CollectionSummary = CaptureTimeline.Summarize(parsed);
+        string alert = CaptureTimeline.Alert(parsed);
+        CollectionAlert = alert;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasCollectionAlert)));
     }
 
     public async Task PairAsync()
@@ -120,7 +156,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
             ClientName = Value(response.Data, "ClientName", "clientName");
-            ScheduleTime = Value(response.Data, "ScheduleTime", "scheduleTime") ?? "16:45";
+            ScheduleTime = Value(response.Data, "ScheduleTime", "scheduleTime") ?? "16:30";
             CurrentStep = 3;
             RequiresRestart = true;
             StatusMessage = $"Connected to {ClientName}. Restart NinjaTrader before the test.";

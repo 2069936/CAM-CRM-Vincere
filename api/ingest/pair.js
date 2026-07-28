@@ -212,7 +212,7 @@ export function createHandler({
           clientName: paired.clientName,
           deviceId: paired.deviceId,
           schedule: {
-            time: String(paired.scheduleTime || '16:45:00').slice(0, 5),
+            time: String(paired.scheduleTime || '16:30:00').slice(0, 5),
             timeZone: paired.scheduleTimezone || 'America/New_York',
           },
         });

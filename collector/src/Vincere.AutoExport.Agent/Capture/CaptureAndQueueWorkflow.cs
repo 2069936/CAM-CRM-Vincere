@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
+using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
 using Vincere.AutoExport.Agent.Security;
@@ -16,14 +17,17 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
     private readonly INinjaTraderCaptureClient captureClient;
     private readonly ISnapshotQueueWriter queue;
     private readonly IMachineGuidSource machineGuidSource;
+    private readonly ICaptureHistoryStore history;
     private readonly string agentVersion;
 
     public CaptureAndQueueWorkflow(
         INinjaTraderCaptureClient captureClient,
         ISnapshotQueueWriter queue,
         IMachineGuidSource machineGuidSource,
+        ICaptureHistoryStore history,
         string agentVersion)
     {
+        this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.captureClient = captureClient ?? throw new ArgumentNullException(nameof(captureClient));
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.machineGuidSource = machineGuidSource ?? throw new ArgumentNullException(nameof(machineGuidSource));
@@ -53,6 +57,22 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
         snapshot.Source.MachineId = MachineIdentity.ReadNormalized(machineGuidSource);
         snapshot.Source.AgentVersion = agentVersion;
         await queue.EnqueueAsync(snapshot, cancellationToken).ConfigureAwait(false);
+
+        // The snapshot is queued, so the day is collected whatever happens next.
+        // Recording it is a reporting nicety and must never undo that: a failure
+        // to write the history file cannot be allowed to surface as a capture
+        // error, which would make the scheduler retry an already-queued day.
+        try
+        {
+            await history.RecordCapturedAsync(
+                context.TradingDate,
+                snapshot.CapturedAt,
+                snapshot.Accounts?.Count ?? 0,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+        }
     }
 
     private static string FormatDate(LocalDate date)

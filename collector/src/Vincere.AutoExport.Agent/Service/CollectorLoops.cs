@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
 using Vincere.AutoExport.Agent.Crm;
+using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
 using Vincere.AutoExport.Agent.Security;
@@ -89,12 +90,18 @@ public sealed class ScheduledCaptureLoop : ICollectorLoop
     private readonly ICaptureScheduler scheduler;
     private readonly ICollectorClock clock;
     private readonly CollectorState state;
+    private readonly ICaptureHistoryStore history;
 
-    public ScheduledCaptureLoop(ICaptureScheduler scheduler, ICollectorClock clock, CollectorState state)
+    public ScheduledCaptureLoop(
+        ICaptureScheduler scheduler,
+        ICollectorClock clock,
+        CollectorState state,
+        ICaptureHistoryStore history)
     {
         this.scheduler = scheduler ?? throw new ArgumentNullException(nameof(scheduler));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         this.state = state ?? throw new ArgumentNullException(nameof(state));
+        this.history = history ?? throw new ArgumentNullException(nameof(history));
     }
 
     public string Name => "scheduler";
@@ -105,6 +112,23 @@ public sealed class ScheduledCaptureLoop : ICollectorLoop
         Instant now = clock.GetCurrentInstant();
         CaptureRunResult result = await scheduler.RunScheduledAsync(now, cancellationToken).ConfigureAwait(false);
         state.RecordCapture(result, now.ToDateTimeOffset());
+
+        // Only a due day that produced an error is worth a red cell. A weekend or
+        // an already-captured day reports no error, and the scheduler keeps
+        // retrying inside the window, so a later success clears this.
+        if (result.ErrorCode != null && !string.IsNullOrWhiteSpace(result.Decision?.TradingDate))
+        {
+            try
+            {
+                await history.RecordFailureAsync(
+                    result.Decision.TradingDate,
+                    result.ErrorCode,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+            }
+        }
     }
 }
 
@@ -114,13 +138,20 @@ public sealed class UploadLoop : ICollectorLoop
     private readonly ICollectorCrmClient crm;
     private readonly IDeviceTokenStore tokenStore;
     private readonly CollectorState state;
+    private readonly ICaptureHistoryStore history;
 
-    public UploadLoop(ICollectorQueue queue, ICollectorCrmClient crm, IDeviceTokenStore tokenStore, CollectorState state)
+    public UploadLoop(
+        ICollectorQueue queue,
+        ICollectorCrmClient crm,
+        IDeviceTokenStore tokenStore,
+        CollectorState state,
+        ICaptureHistoryStore history)
     {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
         this.state = state ?? throw new ArgumentNullException(nameof(state));
+        this.history = history ?? throw new ArgumentNullException(nameof(history));
     }
 
     public string Name => "uploader";
@@ -146,6 +177,11 @@ public sealed class UploadLoop : ICollectorLoop
                 acknowledgement.AcknowledgedAt,
                 cancellationToken).ConfigureAwait(false);
             state.RecordUploadSuccess(acknowledgement.AcknowledgedAt);
+            await RecordHistoryAsync(
+                () => history.RecordUploadedAsync(
+                    item.TradingDate,
+                    acknowledgement.AcknowledgedAt,
+                    cancellationToken)).ConfigureAwait(false);
         }
         catch (CrmClientException exception)
         {
@@ -162,8 +198,28 @@ public sealed class UploadLoop : ICollectorLoop
             else
             {
                 await queue.QuarantineAsync(item, exception.Code, cancellationToken).ConfigureAwait(false);
+
+                // Only a quarantine is terminal. A retry leaves the day pending,
+                // and marking it failed would flash red for a blip that the next
+                // pass fixes on its own.
+                await RecordHistoryAsync(
+                    () => history.RecordFailureAsync(
+                        item.TradingDate,
+                        exception.Code,
+                        cancellationToken)).ConfigureAwait(false);
             }
             state.RecordError(exception.Code, exception.Message);
+        }
+    }
+
+    private static async Task RecordHistoryAsync(Func<Task> record)
+    {
+        try
+        {
+            await record().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
         }
     }
 }

@@ -13,6 +13,8 @@
         <SolidColorBrush x:Key="PrimaryBrush" Color="#A78BFA" />
         <SolidColorBrush x:Key="InfoBrush" Color="#45A3FF" />
         <SolidColorBrush x:Key="SuccessBrush" Color="#2FCA73" />
+        <SolidColorBrush x:Key="WarningBrush" Color="#F5B841" />
+        <SolidColorBrush x:Key="DangerBrush" Color="#FF6B6B" />
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
             <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />

@@ -2,7 +2,7 @@
 
 The Manager fleet endpoint is the source of truth for the daily status. It uses
 the server clock in `America/New_York`; workstation time and browser locale do
-not affect the classification. The normal capture is 16:45 ET with a 15-minute
+not affect the classification. The normal capture is 16:30 ET with a 30-minute
 grace window.
 
 | Status | Meaning | Severity | Owner and response target |
@@ -33,3 +33,23 @@ Immediate rollout-stop conditions are any cross-client routing, credential or
 secret exposure, unsigned/tampered binaries, missing acknowledged data, or
 duplicate normalized records. Optional-field differences alone are not a stop
 when the approved probe contract records them as optional.
+
+## The seven-day strip in the setup window
+
+The agent keeps a per-day record in `C:\ProgramData\Vincere\AutoExport\history.json`
+and the setup window renders the last seven calendar days from it. A cell is only
+called `Missed` when three things hold: the weekday is one of the configured
+trading days, the day's cutoff has passed, and the agent has history reaching
+back at least that far.
+
+That last condition matters on a fresh install. A VPS paired on Friday has no
+record of Monday through Thursday, and reporting those as missed would open the
+window on a wall of red for days when nothing was installed to collect them. They
+show as `NotTracked` instead.
+
+**Known gap: market holidays.** Enabled trading days are weekdays, so a market
+holiday that falls Monday to Friday — Thanksgiving, Independence Day — has no
+capture and will be reported as `Missed`. The strip has no holiday calendar. Until
+one exists, treat a single red cell on a known market holiday as expected. Adding
+a holiday list to `AgentOptions` is the fix; it was left out rather than guessed
+at, because a wrong calendar would suppress real misses.

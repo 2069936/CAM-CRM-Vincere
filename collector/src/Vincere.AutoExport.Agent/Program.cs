@@ -7,6 +7,7 @@ using Vincere.AutoExport.Agent.Capture;
 using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Control;
 using Vincere.AutoExport.Agent.Crm;
+using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Diagnostics;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
@@ -33,11 +34,13 @@ builder.Services.AddSingleton<IMachineGuidSource, WindowsMachineGuidSource>();
 builder.Services.AddSingleton<ICollectorQueue>(_ => new SnapshotQueue(
     queueRoot,
     new WindowsAgentDirectorySecurity()));
+builder.Services.AddSingleton<ICaptureHistoryStore>(new CaptureHistoryStore(paths.History));
 builder.Services.AddSingleton<INinjaTraderCaptureClient, CapturePipeClient>();
 builder.Services.AddSingleton<ICaptureWorkflow>(provider => new CaptureAndQueueWorkflow(
     provider.GetRequiredService<INinjaTraderCaptureClient>(),
     provider.GetRequiredService<ICollectorQueue>(),
     provider.GetRequiredService<IMachineGuidSource>(),
+    provider.GetRequiredService<ICaptureHistoryStore>(),
     version));
 builder.Services.AddSingleton<ICaptureScheduler, CaptureScheduler>();
 builder.Services.AddSingleton<ICollectorCrmClient>(provider => CrmClient.CreateProduction(
@@ -67,6 +70,7 @@ builder.Services.AddSingleton<IControlCommandHandler>(provider => new ControlCom
     provider.GetRequiredService<ICollectorQueue>(),
     provider.GetRequiredService<CollectorState>(),
     provider.GetRequiredService<IDiagnosticsCollector>(),
+    provider.GetRequiredService<ICaptureHistoryStore>(),
     version,
     "1.0.0"));
 builder.Services.AddSingleton<ICollectorLoop, QueueRecoveryLoop>();

@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Security.AccessControl;
@@ -8,8 +9,10 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using NodaTime;
 using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Crm;
+using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
 using Vincere.AutoExport.Agent.Security;
@@ -38,7 +41,8 @@ public sealed record ControlStatusData(
     string ScheduleTime,
     string TimeZone,
     CollectorStatusSnapshot Runtime,
-    QueueStatus Queue);
+    QueueStatus Queue,
+    IReadOnlyList<CaptureDay> Timeline);
 
 public interface IDiagnosticsCollector
 {
@@ -63,6 +67,7 @@ public sealed class ControlCommandHandler : IControlCommandHandler
     private readonly ICollectorQueue queue;
     private readonly CollectorState state;
     private readonly IDiagnosticsCollector diagnostics;
+    private readonly ICaptureHistoryStore history;
     private readonly string agentVersion;
     private readonly string addonVersion;
 
@@ -75,6 +80,7 @@ public sealed class ControlCommandHandler : IControlCommandHandler
         ICollectorQueue queue,
         CollectorState state,
         IDiagnosticsCollector diagnostics,
+        ICaptureHistoryStore history,
         string agentVersion,
         string addonVersion)
     {
@@ -86,6 +92,7 @@ public sealed class ControlCommandHandler : IControlCommandHandler
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.state = state ?? throw new ArgumentNullException(nameof(state));
         this.diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
+        this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.agentVersion = agentVersion ?? throw new ArgumentNullException(nameof(agentVersion));
         this.addonVersion = addonVersion ?? throw new ArgumentNullException(nameof(addonVersion));
     }
@@ -148,7 +155,42 @@ public sealed class ControlCommandHandler : IControlCommandHandler
                 options.ScheduleTime,
                 options.TimeZone,
                 state.Snapshot(),
-                queueStatus));
+                queueStatus,
+                await BuildTimelineAsync(options, cancellationToken).ConfigureAwait(false)));
+    }
+
+    /// <summary>
+    /// How many calendar days the setup window shows. Seven ends on today and
+    /// covers a full week, so the two greyed weekend cells read as "nothing was
+    /// expected here" rather than as missing data.
+    /// </summary>
+    private const int TimelineDayCount = 7;
+
+    private async Task<IReadOnlyList<CaptureDay>> BuildTimelineAsync(
+        AgentOptions options,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            CaptureSchedule schedule = CaptureSchedule.FromOptions(options);
+            IReadOnlyList<CaptureHistoryEntry> entries =
+                await history.LoadAsync(cancellationToken).ConfigureAwait(false);
+            LocalDateTime now = clock.GetCurrentInstant()
+                .InZone(DateTimeZoneProviders.Tzdb[CaptureSchedule.TimeZoneId])
+                .LocalDateTime;
+            return CaptureDayTimeline.Build(
+                now,
+                schedule.CutoffTime,
+                schedule.EnabledDays,
+                entries,
+                TimelineDayCount);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // A status call that cannot build the strip should still answer with
+            // the pairing and queue state the operator came for.
+            return Array.Empty<CaptureDay>();
+        }
     }
 
     private async Task<ControlCommandResponse> PairAsync(

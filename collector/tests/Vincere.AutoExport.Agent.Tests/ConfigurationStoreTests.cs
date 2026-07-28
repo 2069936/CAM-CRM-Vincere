@@ -22,7 +22,7 @@ public sealed class ConfigurationStoreTests : IDisposable
         ConfigurationLoadResult result = await store.LoadAsync();
 
         Assert.False(result.RecoveredFromBackup);
-        Assert.Equal("16:45", result.Options.ScheduleTime);
+        Assert.Equal("16:30", result.Options.ScheduleTime);
         Assert.Equal("America/New_York", result.Options.TimeZone);
         Assert.Equal("17:00", result.Options.CaptureCutoffTime);
         Assert.Equal(
@@ -45,7 +45,7 @@ public sealed class ConfigurationStoreTests : IDisposable
         AgentConfigurationException invalidCutoff = await Assert.ThrowsAsync<AgentConfigurationException>(() =>
             store.SaveAsync(AgentOptions.CreateDefault() with
             {
-                CaptureCutoffTime = "16:45",
+                CaptureCutoffTime = "16:20",
             }));
 
         Assert.Equal("configuration_schedule_invalid", invalidDay.Code);
@@ -66,7 +66,7 @@ public sealed class ConfigurationStoreTests : IDisposable
         string backupJson = await File.ReadAllTextAsync(store.BackupPath);
         Assert.Equal("16:40", current.Options.ScheduleTime);
         Assert.Contains("device-1", backupJson);
-        Assert.Contains("16:45", backupJson);
+        Assert.Contains("16:30", backupJson);
         Assert.False(File.Exists(store.TemporaryPath));
     }
 
@@ -82,7 +82,7 @@ public sealed class ConfigurationStoreTests : IDisposable
         ConfigurationLoadResult result = await store.LoadAsync();
 
         Assert.True(result.RecoveredFromBackup);
-        Assert.Equal("16:45", result.Options.ScheduleTime);
+        Assert.Equal("16:30", result.Options.ScheduleTime);
     }
 
     [Fact]
@@ -112,7 +112,7 @@ public sealed class ConfigurationStoreTests : IDisposable
         await store.SaveAsync(first with { ScheduleTime = "16:35" });
 
         string backupJson = await File.ReadAllTextAsync(store.BackupPath);
-        Assert.Contains("16:45", backupJson);
+        Assert.Contains("16:30", backupJson);
         Assert.DoesNotContain("corrupt-current", backupJson);
     }
 
