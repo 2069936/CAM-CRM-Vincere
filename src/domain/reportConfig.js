@@ -16,6 +16,11 @@ export const REPORT_FIELDS = [
   { key: 'showTrailing', label: 'Drawdown / trailing column', advanced: true },
   { key: 'showWeeklyColumn', label: 'Weekly P&L column', advanced: true },
   { key: 'showFlags', label: 'Open flags section', advanced: false },
+  { key: 'showCumulativeChart', label: 'Cumulative P&L chart', advanced: false },
+  { key: 'showDailyChart', label: 'Daily P&L chart', advanced: false },
+  // Same curve as the cumulative chart, in a different unit, so it is a switch
+  // on that chart rather than a third chart saying the same thing again.
+  { key: 'chartAsPercent', label: 'Show cumulative as % of capital', advanced: true },
 ];
 
 // Defaults preserve the report exactly as it shipped, except progress-to-target
@@ -30,6 +35,11 @@ export const DEFAULT_REPORT_CONFIG = {
   showTrailing: true,
   showWeeklyColumn: true,
   showFlags: true,
+  // Charts are new, so they stay off until a CAM turns them on. An existing
+  // client's report must not change shape without someone choosing it.
+  showCumulativeChart: false,
+  showDailyChart: false,
+  chartAsPercent: false,
   headerNote: '',
 };
 
@@ -44,6 +54,11 @@ export const SIMPLIFIED_REPORT_CONFIG = {
   showTrailing: false,
   showWeeklyColumn: false,
   showFlags: false,
+  // A client who wants the essentials is usually the one who reads a picture
+  // faster than a table, so the simplified report keeps the two charts.
+  showCumulativeChart: true,
+  showDailyChart: true,
+  chartAsPercent: false,
   headerNote: '',
 };
 

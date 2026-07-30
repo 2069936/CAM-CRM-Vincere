@@ -54,6 +54,7 @@ import Dashboard from "./components/Dashboard";
 import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
 import ProfilePanel from "./components/ProfilePanel";
+import PerformanceCharts from './components/PerformanceCharts';
 import StackPlaybook from "./components/StackPlaybook";
 import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
@@ -6641,6 +6642,13 @@ function ReportPanel({
   onClose,
 }) {
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
+  // Bounded at the report's own date. A report re-opened for last Tuesday must
+  // show the client the shape of the book as it stood that day, not a curve
+  // that runs past the figures printed beside it.
+  const performanceHistory = useMemo(
+    () => clientDailyTotals(client).filter((day) => String(day.date) <= String(dailyImport?.date || '')),
+    [client, dailyImport],
+  );
   // The report layout the CAM sees. While the design drawer is open, `draft`
   // drives the sheet so edits preview live; otherwise the saved config applies.
   const savedConfig = useMemo(
@@ -7011,6 +7019,13 @@ function ReportPanel({
             </section>
           ) : null,
         ) : null}
+
+        <PerformanceCharts
+          history={performanceHistory}
+          showCumulative={Boolean(cfg.showCumulativeChart)}
+          showDaily={Boolean(cfg.showDailyChart)}
+          asPercent={Boolean(cfg.chartAsPercent)}
+        />
 
         {cfg.showFlags && report.openFlags.length ? (
           <section className="report-section">

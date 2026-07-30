@@ -7045,3 +7045,33 @@ tr:nth-child(2) .rank-badge {
   color: var(--warning);
   border-color: color-mix(in srgb, var(--warning) 38%, transparent);
 }
+
+/* Performance charts in the client report. Sized so the two charts and their
+   summary fit above the fold of a printed page rather than pushing the open
+   items onto a second sheet. */
+.report-performance-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+.report-performance-summary > div {
+  background: var(--surface-alt, rgba(127, 127, 127, 0.08));
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.report-performance-summary span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.report-performance-summary strong { font-size: 18px; font-weight: 600; }
+.report-chart { margin: 0 0 16px; }
+.report-chart-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.chart-empty { font-size: 12px; margin: 6px 0; }
