@@ -128,6 +128,14 @@ import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientL
 import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import {
+  AlgoContributionChart,
+  BookMixBar,
+  CoverageLoadChart,
+  FlagAgingChart,
+  TrailingBufferChart,
+  UploadCoverageGrid,
+} from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import ClientKindBadge from "./components/ClientKindBadge";
@@ -5070,6 +5078,29 @@ function ManagerOverview({
           );
         })()}
 
+        <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">
+          <div className="ov-pair">
+            <div>
+              <h4>Open flags by CAM, by age</h4>
+              <FlagAgingChart
+                clients={clients}
+                camProfiles={camProfiles}
+                today={asOfDate || todayIsoDate()}
+              />
+            </div>
+            <div>
+              <h4>Clients carried today</h4>
+              <CoverageLoadChart
+                camProfiles={camProfiles}
+                clients={clients}
+                coverage={coverage}
+                timeOff={timeOff}
+                date={asOfDate || todayIsoDate()}
+              />
+            </div>
+          </div>
+        </CollapsiblePanel>
+
         <section className="panel">
           <div className="panel-heading">
             <h3>Account managers</h3>
@@ -7716,6 +7747,19 @@ function ClientOverview({
         )}
       </div>
 
+      <section className="panel">
+        <div className="ov-pair">
+          <div>
+            <div className="panel-heading"><h3>Room before trailing limit</h3></div>
+            <TrailingBufferChart client={client} />
+          </div>
+          <div>
+            <div className="panel-heading"><h3>Result by algorithm</h3></div>
+            <AlgoContributionChart client={client} />
+          </div>
+        </div>
+      </section>
+
       <section className="panel client-overview-hero">
         <div>
           <div className="panel-heading">
@@ -9035,6 +9079,19 @@ function CamOverview({
           </div>
         </div>
       </div>
+
+      <CollapsiblePanel title="Book coverage and mix" tone="cam-charts-panel">
+        <div className="ov-pair">
+          <div>
+            <h4>Uploads over the last 10 trading days</h4>
+            <UploadCoverageGrid clients={clients} today={today} />
+          </div>
+          <div>
+            <h4>Accounts by type</h4>
+            <BookMixBar clients={clients} />
+          </div>
+        </div>
+      </CollapsiblePanel>
 
       <InsightFeedPanel insights={insights} onSelectClient={onSelectClient} />
 

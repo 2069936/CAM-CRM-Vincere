@@ -7075,3 +7075,48 @@ tr:nth-child(2) .rank-badge {
   margin-bottom: 5px;
 }
 .chart-empty { font-size: 12px; margin: 6px 0; }
+
+/* Overview charts. Bars are CSS, not SVG: they wrap and reflow with the panel,
+   and every one of them is a single proportion — a viewBox would buy nothing. */
+.ov-chart { display: flex; flex-direction: column; gap: 7px; }
+.ov-row { display: grid; grid-template-columns: 130px 1fr 92px; gap: 10px; align-items: center; }
+.ov-label {
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ov-track {
+  position: relative; display: flex; height: 14px; border-radius: 7px; overflow: hidden;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.14));
+}
+.ov-track.diverging::before {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+  background: var(--border); z-index: 1;
+}
+.ov-fill { height: 100%; border-radius: 7px; min-width: 2px; }
+.ov-seg { height: 100%; }
+.ov-seg + .ov-seg { border-left: 2px solid var(--surface, #fff); }
+.ov-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.ov-value.critical, .ov-value.negative { color: var(--error); }
+.ov-value.warning { color: var(--warning); }
+.ov-value em { font-style: normal; opacity: 0.7; }
+.ov-cells { display: flex; gap: 3px; }
+.ov-cell { width: 12px; height: 14px; border-radius: 3px; display: block; }
+.ov-cell.on { background: var(--success); }
+.ov-cell.off { background: var(--error); opacity: 0.35; }
+.ov-legend {
+  display: flex; flex-wrap: wrap; gap: 12px; list-style: none;
+  padding: 0; margin: 4px 0 8px; font-size: 11px; color: var(--muted);
+}
+.ov-legend li { display: flex; align-items: center; gap: 5px; }
+.ov-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.ov-away { margin-left: 6px; font-size: 10px; }
+.seg-0, .ov-dot.seg-0 { background: #2a78d6; }
+.seg-1, .ov-dot.seg-1 { background: #1baf7a; }
+.seg-2, .ov-dot.seg-2 { background: #eda100; }
+.seg-3, .ov-dot.seg-3 { background: #eb6834; }
+.seg-4, .ov-dot.seg-4 { background: #4a3aa7; }
+.age-0, .ov-dot.age-0 { background: #1baf7a; }
+.age-1, .ov-dot.age-1 { background: #eda100; }
+.age-2, .ov-dot.age-2 { background: #eb6834; }
+.age-3, .ov-dot.age-3 { background: #e34948; }
+.ov-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; }
+.ov-pair h4 { margin: 0 0 8px; font-size: 13px; }
