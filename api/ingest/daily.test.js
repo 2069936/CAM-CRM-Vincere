@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
 import { DailyImportClosedError } from '../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../src/domain/reconcile.js';
-import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
-import { ApiError } from '../_lib/http.js';
+import { canonicalSnapshotPayload } from '../../server/apiLib/autoImportStore.js';
+import { ApiError } from '../../server/apiLib/http.js';
 import { createHandler, config } from '../../server/autoCollection/ingest/daily.js';
 
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';

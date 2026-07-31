@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
 import { unzipSync } from 'fflate';
-import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
+import { canonicalSnapshotPayload } from '../../server/apiLib/autoImportStore.js';
 import { createDownloadStore, createHandler, storageObjectBytes } from '../../server/autoCollection/admin/ingest-download.js';
-import { ApiError } from '../_lib/http.js';
-import { DEFAULT_MAX_COMPRESSED_BYTES } from '../_lib/autoCollectionLimits.js';
+import { ApiError } from '../../server/apiLib/http.js';
+import { DEFAULT_MAX_COMPRESSED_BYTES } from '../../server/apiLib/autoCollectionLimits.js';
 
 const snapshot = JSON.parse(readFileSync(new URL('../../test/fixtures/auto-export/snapshot-v1.json', import.meta.url), 'utf8'));
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';

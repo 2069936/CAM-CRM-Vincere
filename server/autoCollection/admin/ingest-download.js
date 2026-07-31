@@ -1,18 +1,18 @@
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
-import { createApiClients, requireAppUser } from '../../../api/_lib/apiAuth.js';
+import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import {
   AUTO_IMPORT_BUCKET,
   DEFAULT_MAX_COMPRESSED_BYTES,
-} from '../../../api/_lib/autoImportStore.js';
+} from '../../apiLib/autoImportStore.js';
 import {
   buildSnapshotZip,
   deterministicDownloadName,
   validateStoredSnapshotMetadata,
   verifyStoredSnapshot,
-} from '../../../api/_lib/autoExportDownload.js';
-import { deriveAutoExportLimits, resolveAutoCollectionLimits } from '../../../api/_lib/autoCollectionLimits.js';
-import { ApiError, handleApiError, requireMethod } from '../../../api/_lib/http.js';
+} from '../../apiLib/autoExportDownload.js';
+import { deriveAutoExportLimits, resolveAutoCollectionLimits } from '../../apiLib/autoCollectionLimits.js';
+import { ApiError, handleApiError, requireMethod } from '../../apiLib/http.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DOWNLOAD_SELECT = [

@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError } from '../_lib/http.js';
+import { ApiError } from '../../server/apiLib/http.js';
 import {
   createHandler,
   createHeartbeatStore,

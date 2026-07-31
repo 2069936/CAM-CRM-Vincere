@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import process from 'node:process';
 import { describe, expect, it } from 'vitest';
 import fixture from '../test/fixtures/auto-export/snapshot-v1.json';
-import { csvForSection } from '../api/_lib/autoExportDownload.js';
+import { csvForSection } from '../server/apiLib/autoExportDownload.js';
 import {
   parseArguments,
   runShadowComparison,

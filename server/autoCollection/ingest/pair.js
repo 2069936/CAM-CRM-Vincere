@@ -1,7 +1,7 @@
 import process from 'node:process';
-import { createServiceClient } from '../../../api/_lib/apiAuth.js';
-import { normalizeCollectorVersion } from '../../../api/_lib/collectorVersion.js';
-import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../../api/_lib/http.js';
+import { createServiceClient } from '../../apiLib/apiAuth.js';
+import { normalizeCollectorVersion } from '../../apiLib/collectorVersion.js';
+import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
 import {
   deriveDeviceToken,
   digestEnrollmentCode,
@@ -10,7 +10,7 @@ import {
   normalizeEnrollmentCode,
   normalizeMachineId,
   normalizePairingNonce,
-} from '../../../api/_lib/ingestTokens.js';
+} from '../../apiLib/ingestTokens.js';
 
 const PUBLIC_PAIR_ERROR = 'invalid_or_expired_code';
 const SQL_DENIAL_CODES = Object.freeze({

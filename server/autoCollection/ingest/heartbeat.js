@@ -1,8 +1,8 @@
 import process from 'node:process';
-import { createServiceClient } from '../../../api/_lib/apiAuth.js';
-import { normalizeCollectorVersion, requiresCollectorUpdate } from '../../../api/_lib/collectorVersion.js';
-import { createDeviceAuthStore, requireIngestDevice } from '../../../api/_lib/deviceAuth.js';
-import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../../api/_lib/http.js';
+import { createServiceClient } from '../../apiLib/apiAuth.js';
+import { normalizeCollectorVersion, requiresCollectorUpdate } from '../../apiLib/collectorVersion.js';
+import { createDeviceAuthStore, requireIngestDevice } from '../../apiLib/deviceAuth.js';
+import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
 
 const HEARTBEAT_KEYS = new Set([
   'agentVersion',
