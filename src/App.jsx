@@ -160,6 +160,7 @@ import {
   loadSupabaseDataExport,
   loadSupabaseIntakeSheet,
 } from "./domain/supabaseDataPortability";
+import { isLocalSnapshotEnabled, loadLocalSnapshotState } from "./domain/localSnapshot";
 import {
   createSupabaseSopItem,
   createSupabaseSopSection,
@@ -11713,7 +11714,39 @@ export default function App() {
     setShowProfile(false);
   }, [state.selectedClientId]);
 
+  // Local snapshot mode. Read-only, and it takes precedence over Supabase so a
+  // developer with production credentials in .env cannot accidentally point a
+  // testing session at the live book.
   useEffect(() => {
+    if (!isLocalSnapshotEnabled()) return;
+    let cancelled = false;
+    loadLocalSnapshotState({
+      preferredCamProfileId: session?.camProfileId || null,
+    })
+      .then(({ state: localState, missing }) => {
+        if (cancelled) return;
+        setState(localState);
+        setRemoteStatus({
+          source: "local-snapshot",
+          status: "connected",
+          message: missing.length
+            ? `Local snapshot (read-only) - ${missing.length} table(s) absent: ${missing.join(", ")}`
+            : "Local snapshot (read-only)",
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRemoteStatus({
+          source: "local-snapshot",
+          status: "error",
+          message: error.message,
+        });
+      });
+    return () => { cancelled = true; };
+  }, [session?.camProfileId]);
+
+  useEffect(() => {
+    if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) return;
     let cancelled = false;
     loadSupabaseCrmState({

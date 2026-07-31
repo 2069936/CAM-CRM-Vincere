@@ -249,11 +249,39 @@ async function loadTable(table, columns = '*') {
   return all;
 }
 
+/**
+ * Table names the CRM state is built from, in the order buildCrmStateFromTables
+ * destructures them. A local snapshot must supply the same set.
+ */
+export const CRM_STATE_TABLES = [
+  'cam_profiles', 'clients', 'client_assignments', 'trading_accounts',
+  'payout_events', 'client_credentials', 'client_prop_firms', 'daily_imports',
+  'account_snapshots', 'strategy_snapshots', 'orders', 'executions',
+  'operational_flags', 'tasks', 'activity_logs', 'price_checks',
+  'cam_time_off', 'client_coverage',
+];
+
 export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}) {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY.');
   }
 
+  const rows = await Promise.all(CRM_STATE_TABLES.map((table) => loadTable(table)));
+  return buildCrmStateFromTables(
+    Object.fromEntries(CRM_STATE_TABLES.map((table, index) => [table, rows[index]])),
+    { preferredCamProfileId },
+  );
+}
+
+/**
+ * Builds the CRM state from raw table rows.
+ *
+ * Split out from the fetch so the same mapping serves a local snapshot. Running
+ * the app against a saved export otherwise means a second, parallel mapping
+ * that drifts from this one — and a local view that quietly disagrees with
+ * production is worse than no local view at all.
+ */
+export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = null } = {}) {
   const [
     camRows,
     clientRows,
@@ -273,26 +301,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     priceCheckRows,
     timeOffRows,
     coverageRows,
-  ] = await Promise.all([
-    loadTable('cam_profiles'),
-    loadTable('clients'),
-    loadTable('client_assignments'),
-    loadTable('trading_accounts'),
-    loadTable('payout_events'),
-    loadTable('client_credentials'),
-    loadTable('client_prop_firms'),
-    loadTable('daily_imports'),
-    loadTable('account_snapshots'),
-    loadTable('strategy_snapshots'),
-    loadTable('orders'),
-    loadTable('executions'),
-    loadTable('operational_flags'),
-    loadTable('tasks'),
-    loadTable('activity_logs'),
-    loadTable('price_checks'),
-    loadTable('cam_time_off'),
-    loadTable('client_coverage'),
-  ]);
+  ] = CRM_STATE_TABLES.map((table) => tables[table] || []);
 
   const visibleClientRows = (clientRows || []).filter((client) => (
     !client.deleted_at && client.status !== 'Inactive'
