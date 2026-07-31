@@ -4,6 +4,11 @@ Web CRM for managing trading client accounts from NinjaTrader end-of-day exports
 
 The goal is to replace a manual Excel workflow with a safer daily close process: upload the client's NinjaTrader CSV files, persist account classifications, review action flags, inspect account/strategy performance, and build a clean daily report.
 
+> **Deploying this branch?** Everything required — database migrations,
+> environment variables, and publishing the automatic collector — is in
+> **[`docs/DEPLOYING.md`](docs/DEPLOYING.md)**, in order, with what breaks if a
+> step is skipped. Start there; it is self-contained.
+
 ## What It Does
 
 - Tracks one account manager workspace with multiple clients.
@@ -59,6 +64,35 @@ npm run lint
 9. Expand an account to inspect strategies, attributed executions, and movement.
 10. Open CAM Overview to compare algorithms across clients.
 11. Click `Build Daily Report`, then print or save as PDF.
+
+## Automatic NinjaTrader Collection
+
+The automatic collector is additive to the manual four-CSV workflow. A Windows
+agent pairs one VPS to one CRM client with a one-time code, receives a typed
+snapshot from the NinjaTrader AddOn, queues it locally, and uploads immutable
+gzip JSON to the private `ninjatrader-imports` bucket. The CRM uses the same
+normalization, reconciliation, and daily-import persistence as manual uploads.
+
+- Managers open **Auto Collection** beside **Audit Logs** to monitor the fleet,
+  inspect immutable batch history, download JSON or a four-CSV ZIP, and perform
+  controlled replay.
+- Managers and the assigned CAM configure a client from the profile card. Raw
+  product keys, MachineGuid values, device tokens, and credential hashes are not
+  shown there.
+- A late snapshot never silently replaces a closed day. Replacement requires a
+  Manager, a reason, and an exact client/date confirmation; the transaction
+  retains lineage and creates audit and critical operational records.
+- The initial schedule is 4:30 p.m. `America/New_York`. DST is evaluated from
+  the timezone, not a fixed UTC offset.
+
+Deployment, rollback, staging evidence, rate limits, retention, and replay
+procedures are documented in
+[`docs/verification/auto-collection-crm.md`](docs/verification/auto-collection-crm.md).
+The [shadow-pilot guide](docs/operations/auto-collection-pilot.md),
+[production-wave checklist](docs/operations/auto-collection-wave-checklist.md),
+and [support handoff](docs/operations/auto-collection-support-handoff.md) are
+blank operational templates; their presence is not evidence that a pilot or
+production rollout has passed.
 
 ## Important Data Rules
 

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+    <IsPackable>false</IsPackable>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
+    <Compile Include="../Vincere.AutoExport.NinjaTrader.Core.Tests/NinjaTraderApiStubs.cs" Link="Stubs/NinjaTraderApiStubs.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.NinjaTrader/Capture/NinjaTraderFacade.cs" Link="Production/NinjaTraderFacade.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.NinjaTrader/Diagnostics/AddOnDiagnostics.cs" Link="Production/AddOnDiagnostics.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.NinjaTrader/Pipe/CapturePipeServer.cs" Link="Production/CapturePipeServer.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.NinjaTrader/VincereAutoExportAddOn.cs" Link="Production/VincereAutoExportAddOn.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,24 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle Name="Vincere Auto Export Setup" Manufacturer="Vincere Capital" Version="$(ProductVersion)"
+          UpgradeCode="1C305CC4-B4E4-4B57-9ECE-CB1FCB3D990D" Compressed="yes">
+    <Variable Name="NinjaTraderDocuments" Type="formatted" Value="[PersonalFolder]" Persisted="yes"
+              bal:Overridable="yes" />
+    <util:DirectorySearch Id="FindInteractiveNinjaTraderProfile"
+                          Path="[NinjaTraderDocuments]NinjaTrader 8"
+                          Variable="NinjaTraderProfileFound" Result="exists" />
+    <bal:Condition Condition="WixBundleInstalled OR NinjaTraderProfileFound"
+                   Message="NinjaTrader 8 was not found for the intended Windows user. Sign in to the Windows profile that runs NinjaTrader and start setup again." />
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" ShowVersion="yes"
+                                               LaunchTarget="[ProgramFiles64Folder]Vincere\Auto Export\Setup\Vincere.AutoExport.Agent.UI.exe" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage Id="MachinePackage" SourceFile="$(MachineMsi)" Vital="yes" Compressed="yes" />
+      <MsiPackage Id="AddOnPackage" SourceFile="$(AddOnMsi)" Vital="yes" Compressed="yes">
+        <MsiProperty Name="NINJATRADERDOCUMENTS" Value="[NinjaTraderDocuments]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

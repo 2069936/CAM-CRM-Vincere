@@ -289,6 +289,13 @@ export function replaceDailyImport(state, clientId, importResult) {
   });
 }
 
+export function removeDailyImport(state, clientId, importId) {
+  return updateClient(state, clientId, (client) => ({
+    ...client,
+    dailyImports: (client.dailyImports || []).filter((item) => item.id !== importId),
+  }));
+}
+
 export function getLatestClientImport(client) {
   if (!client?.dailyImports?.length) return null;
   return [...client.dailyImports].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];

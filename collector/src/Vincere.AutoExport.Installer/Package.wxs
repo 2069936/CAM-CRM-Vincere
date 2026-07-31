@@ -1,0 +1,72 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Vincere Auto Export" Manufacturer="Vincere Capital" Version="$(ProductVersion)"
+           UpgradeCode="7F458BB4-66D4-4C4D-BEB1-0B9B449B0AB7" Scope="perMachine" InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Vincere Auto Export is already installed."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" />
+    <util:QueryWindowsWellKnownSIDs />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="VincereCompanyFolder" Name="Vincere"><Directory Id="INSTALLFOLDER" Name="Auto Export" /></Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="VincereDataCompanyFolder" Name="Vincere"><Directory Id="AUTODATAROOT" Name="AutoExport" /></Directory>
+    </StandardDirectory>
+    <ComponentGroup Id="AgentPayloadComponents">
+      <Files Include="$(AgentPublishDir)/**" Directory="INSTALLFOLDER" Subdirectory="Agent">
+        <Exclude Files="$(AgentPublishDir)/Vincere.AutoExport.Agent.exe" />
+        <Exclude Files="$(AgentPublishDir)/**/*.pdb" />
+      </Files>
+    </ComponentGroup>
+    <ComponentGroup Id="SetupPayloadComponents">
+      <Files Include="$(UiPublishDir)/**" Directory="INSTALLFOLDER" Subdirectory="Setup">
+        <Exclude Files="$(UiPublishDir)/Vincere.AutoExport.Agent.UI.exe" />
+        <Exclude Files="$(UiPublishDir)/**/*.pdb" />
+      </Files>
+    </ComponentGroup>
+    <ComponentGroup Id="MachineComponents">
+      <Component Id="AgentServiceComponent" Directory="INSTALLFOLDER" Subdirectory="Agent" Guid="4F93FE36-6674-4F00-B0FB-27D27CB9167B">
+        <File Id="AgentServiceExe" Source="$(AgentPublishDir)/Vincere.AutoExport.Agent.exe" KeyPath="yes" />
+        <ServiceInstall Id="AgentServiceInstall" Name="Vincere Auto Export" DisplayName="Vincere Auto Export"
+                        Description="Collects NinjaTrader data for the Vincere CRM." Type="ownProcess"
+                        Start="auto" ErrorControl="normal" Account="LocalSystem">
+          <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+          <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart" RestartServiceDelayInSeconds="15" ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="AgentServiceControl" Name="Vincere Auto Export" Start="install" Stop="both"
+                        Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component Id="SetupUiComponent" Directory="INSTALLFOLDER" Subdirectory="Setup" Guid="8A73F919-8E4F-4E0A-A115-7F06FF58AA7B">
+        <File Id="SetupUiExe" Source="$(UiPublishDir)/Vincere.AutoExport.Agent.UI.exe" KeyPath="yes">
+          <Shortcut Id="SetupStartMenuShortcut" Directory="ProgramMenuFolder" Name="Vincere Auto Export Setup"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+        </File>
+      </Component>
+      <Component Id="ProgramDataAclComponent" Directory="AUTODATAROOT" Guid="3B0A4E0A-A8EA-4D64-9C7B-ED79DDB0AA63"
+                 Permanent="yes" NeverOverwrite="yes">
+        <CreateFolder>
+          <util:PermissionEx User="[WIX_ACCOUNT_LOCALSYSTEM_NODOMAIN]" GenericAll="yes" />
+          <util:PermissionEx User="[WIX_ACCOUNT_ADMINISTRATORS_NODOMAIN]" GenericAll="yes" />
+        </CreateFolder>
+        <RegistryValue Root="HKLM" Key="Software\Vincere\AutoExport" Name="DataRoot"
+                       Value="[AUTODATAROOT]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="EventSourceComponent" Directory="INSTALLFOLDER" Guid="4B7BA8D6-5225-4EB2-92A5-2EBC3B2E12B9">
+        <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\Vincere Auto Export">
+          <RegistryValue Name="EventMessageFile" Value="[INSTALLFOLDER]Agent\Vincere.AutoExport.Agent.exe"
+                         Type="expandable" KeyPath="yes" />
+          <RegistryValue Name="TypesSupported" Value="7" Type="integer" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+    <Feature Id="MachineFeature" Title="Vincere Auto Export service" Level="1">
+      <ComponentGroupRef Id="AgentPayloadComponents" />
+      <ComponentGroupRef Id="SetupPayloadComponents" />
+      <ComponentGroupRef Id="MachineComponents" />
+    </Feature>
+    <util:CloseApplication Id="CloseNinjaTraderForMachineUpgrade" Target="NinjaTrader.exe"
+                           Description="NinjaTrader must close before Vincere Auto Export is upgraded."
+                           CloseMessage="yes" ElevatedCloseMessage="yes" RebootPrompt="no" />
+  </Package>
+</Wix>

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildIncomeProjection, buildTodayBriefing } from './App';
+import { buildIncomeProjection, buildTodayBriefing, importAsOf } from './App';
 
 // ── buildIncomeProjection ─────────────────────────────────────────────────────
 
@@ -171,5 +171,33 @@ describe('buildTodayBriefing', () => {
     const briefing = buildTodayBriefing([okClient, critClient]);
     expect(briefing[0].client.name).toBe('Crit');
     expect(briefing[briefing.length - 1].urgency).toBe('ok');
+  });
+});
+
+describe('importAsOf', () => {
+  const client = {
+    dailyImports: [
+      { date: '2026-07-19', snapshots: [] },
+      { date: '2026-07-20', snapshots: [] },
+      { date: '2026-07-21', snapshots: [] },
+    ],
+  };
+
+  it('returns the most recent close when no date is pinned', () => {
+    expect(importAsOf(client, '').date).toBe('2026-07-21');
+    expect(importAsOf(client).date).toBe('2026-07-21');
+  });
+
+  it('returns that exact day when a date is pinned', () => {
+    expect(importAsOf(client, '2026-07-20').date).toBe('2026-07-20');
+  });
+
+  it('returns null when the client had no close that day', () => {
+    expect(importAsOf(client, '2026-07-15')).toBeNull();
+  });
+
+  it('handles a client with no closes at all', () => {
+    expect(importAsOf({ dailyImports: [] }, '2026-07-20')).toBeNull();
+    expect(importAsOf({}, '')).toBeNull();
   });
 });

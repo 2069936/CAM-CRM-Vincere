@@ -1,10 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
-
-/* global process */
-
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
+import { handleApiError, requireMethod, sendJson } from '../_lib/http.js';
 
 const EXPORT_TABLES = [
   'cam_profiles',
@@ -29,54 +24,6 @@ const EXPORT_TABLES = [
   'sop_items',
   'daily_sop_checklists',
 ];
-
-function send(res, status, body) {
-  res.status(status).json(body);
-}
-
-function requireConfig() {
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !PUBLISHABLE_KEY) {
-    throw new Error('Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_PUBLISHABLE_KEY server env.');
-  }
-}
-
-function clients() {
-  requireConfig();
-  return {
-    admin: createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    }),
-    auth: createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    }),
-  };
-}
-
-async function getAuthUserFromRequest(req, authClient) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token) throw Object.assign(new Error('Missing bearer token.'), { status: 401 });
-
-  const { data, error } = await authClient.auth.getUser(token);
-  if (error || !data?.user?.id) {
-    throw Object.assign(new Error('Invalid session token.'), { status: 401 });
-  }
-  return data.user;
-}
-
-async function requireManager(req, admin, authClient) {
-  const authUser = await getAuthUserFromRequest(req, authClient);
-  const { data, error } = await admin
-    .from('app_users')
-    .select('id, role, status')
-    .eq('auth_user_id', authUser.id)
-    .maybeSingle();
-  if (error) throw error;
-  if (data?.role !== 'Manager' || data.status === 'Inactive') {
-    throw Object.assign(new Error('Manager permission required.'), { status: 403 });
-  }
-  return data;
-}
 
 async function fetchAll(admin, table) {
   const pageSize = 1000;
@@ -111,42 +58,42 @@ async function createAuditLog(admin, userId, action, afterData = {}) {
   if (error) console.error('[CRM] Failed to write export audit log:', error);
 }
 
-export default async function handler(req, res) {
-  try {
-    if (req.method !== 'GET') {
-      res.setHeader('Allow', 'GET');
-      return send(res, 405, { error: 'Method not allowed.' });
-    }
+export function createHandler({ createClients = createApiClients } = {}) {
+  return async function handler(req, res) {
+    try {
+      requireMethod(req, ['GET']);
 
-    const { admin, auth } = clients();
-    const manager = await requireManager(req, admin, auth);
-    const tables = {};
-    const skippedTables = [];
-    for (const table of EXPORT_TABLES) {
-      const result = await fetchAll(admin, table);
-      if (result.skipped) {
-        skippedTables.push({ table, reason: result.reason });
-      } else {
-        tables[table] = result.rows;
+      const { admin, auth } = createClients();
+      const manager = await requireAppUser(req, { admin, authClient: auth, roles: ['Manager'] });
+      const tables = {};
+      const skippedTables = [];
+      for (const table of EXPORT_TABLES) {
+        const result = await fetchAll(admin, table);
+        if (result.skipped) {
+          skippedTables.push({ table, reason: result.reason });
+        } else {
+          tables[table] = result.rows;
+        }
       }
+
+      await createAuditLog(admin, manager.id, 'data_export.create', {
+        tableCount: Object.keys(tables).length,
+        tables: Object.keys(tables),
+        skippedTables,
+      });
+
+      return sendJson(res, 200, {
+        exportedAt: new Date().toISOString(),
+        source: 'cam-crm-supabase',
+        version: 1,
+        excludedTables: ['client_credentials', 'client_prop_firms'],
+        skippedTables,
+        tables,
+      });
+    } catch (error) {
+      return handleApiError(res, error, { fallbackMessage: 'Data export failed.' });
     }
-
-    await createAuditLog(admin, manager.id, 'data_export.create', {
-      tableCount: Object.keys(tables).length,
-      tables: Object.keys(tables),
-      skippedTables,
-    });
-
-    return send(res, 200, {
-      exportedAt: new Date().toISOString(),
-      source: 'cam-crm-supabase',
-      version: 1,
-      excludedTables: ['client_credentials', 'client_prop_firms'],
-      skippedTables,
-      tables,
-    });
-  } catch (error) {
-    console.error('[CRM] Data export API failed:', error);
-    return send(res, error.status || 500, { error: error.message || 'Data export failed.' });
   }
 }
+
+export default createHandler();

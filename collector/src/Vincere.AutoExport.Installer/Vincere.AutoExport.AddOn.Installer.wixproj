@@ -1,0 +1,20 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputName>Vincere.AutoExport.AddOn</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <NuGetLockFilePath>packages.addon.lock.json</NuGetLockFilePath>
+    <DefineConstants>ProductVersion=$(ProductVersion);AddOnPayloadDirectory=$(AddOnPayloadDirectory)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AddOn.Package.wxs" />
+    <PackageReference Include="WixToolset.Util.wixext" />
+  </ItemGroup>
+  <Target Name="ValidateInputs" BeforeTargets="Build">
+    <Error Condition="'$(ProductVersion)' == ''" Text="ProductVersion is required." />
+    <Error Condition="!Exists('$(AddOnPayloadDirectory)\Vincere.AutoExport.NinjaTrader.dll')" Text="The production NinjaTrader AddOn entrypoint is required; probe or UI-automation artifacts are not accepted." />
+    <Error Condition="!Exists('$(AddOnPayloadDirectory)\Vincere.AutoExport.NinjaTrader.Core.dll')" Text="The NinjaTrader Core runtime dependency is required." />
+    <Error Condition="!Exists('$(AddOnPayloadDirectory)\Vincere.AutoExport.Contracts.dll')" Text="The Snapshot contracts runtime dependency is required." />
+    <Error Condition="!Exists('$(AddOnPayloadDirectory)\Newtonsoft.Json.dll')" Text="The Newtonsoft.Json runtime dependency is required." />
+  </Target>
+</Project>

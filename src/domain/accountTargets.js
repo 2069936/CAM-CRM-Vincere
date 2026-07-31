@@ -6,7 +6,7 @@
 // be inferred from the current balance. Cash (live) accounts have no standard
 // size and no target — only their cash balance matters.
 
-import { ACCOUNT_TYPES } from './reconcile';
+import { ACCOUNT_TYPES, isCashType } from './reconcile';
 
 export const STANDARD_ACCOUNT_SIZES = [50000, 100000, 150000];
 
@@ -36,7 +36,7 @@ export function inferStartingBalance(currentBalance) {
 // The absolute target balance for an account of this type and starting size.
 // Cash accounts have no target. Sizes/types without a known rule return null.
 export function targetForAccount(accountType, startingBalance) {
-  if (accountType === ACCOUNT_TYPES.CASH) return null;
+  if (isCashType(accountType)) return null;
   const table = accountType === ACCOUNT_TYPES.EVALUATION_BULLET ? 'bulletBot' : 'standard';
   return TARGET_TABLE[table][Number(startingBalance)] ?? null;
 }
@@ -45,7 +45,7 @@ export function targetForAccount(accountType, startingBalance) {
 // Cash accounts get neither (balance is all that matters). Returns only the
 // fields we can infer; a null field means "leave for the user to set".
 export function suggestAccountDefaults(accountType, currentBalance) {
-  if (accountType === ACCOUNT_TYPES.CASH) {
+  if (isCashType(accountType)) {
     return { startingBalance: null, target: null };
   }
   const startingBalance = inferStartingBalance(currentBalance);

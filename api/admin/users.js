@@ -1,14 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
-
-/* global process */
-
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-function send(res, status, body) {
-  res.status(status).json(body);
-}
+import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
+import { handleApiError, readJsonBody, requireMethod, sendJson } from '../_lib/http.js';
 
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
@@ -40,36 +31,6 @@ function mapUser(row) {
     hasCamProfile: Boolean(row.cam_profile_id),
     lastActiveAt: row.last_active_at || '',
   };
-}
-
-function requireConfig() {
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !PUBLISHABLE_KEY) {
-    throw new Error('Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_PUBLISHABLE_KEY server env.');
-  }
-}
-
-function clients() {
-  requireConfig();
-  return {
-    admin: createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    }),
-    auth: createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    }),
-  };
-}
-
-async function getAuthUserFromRequest(req, authClient) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token) throw Object.assign(new Error('Missing bearer token.'), { status: 401 });
-
-  const { data: userData, error: userError } = await authClient.auth.getUser(token);
-  if (userError || !userData?.user?.id) {
-    throw Object.assign(new Error('Invalid session token.'), { status: 401 });
-  }
-  return userData.user;
 }
 
 function authUserDisplayName(authUser) {
@@ -114,26 +75,6 @@ async function bootstrapFirstManager(admin, authUser) {
     .single();
   if (error) throw error;
   return data;
-}
-
-async function requireManager(req, admin, authClient) {
-  const authUser = await getAuthUserFromRequest(req, authClient);
-
-  const { data: appUser, error: appUserError } = await admin
-    .from('app_users')
-    .select('id, role, status')
-    .eq('auth_user_id', authUser.id)
-    .maybeSingle();
-  if (appUserError) throw appUserError;
-
-  const managerUser = appUser || await bootstrapFirstManager(admin, authUser);
-  if (!managerUser) {
-    throw Object.assign(new Error('Manager permission required.'), { status: 403 });
-  }
-  if (managerUser.role !== 'Manager' || managerUser.status === 'Inactive') {
-    throw Object.assign(new Error('Manager permission required.'), { status: 403 });
-  }
-  return managerUser;
 }
 
 async function getCamProfileId(admin, camProfileId) {
@@ -380,33 +321,42 @@ async function deleteUser(admin, payload) {
   return mapUser(existing);
 }
 
-export default async function handler(req, res) {
-  try {
-    const { admin, auth } = clients();
-    await requireManager(req, admin, auth);
+export function createHandler({ createClients = createApiClients } = {}) {
+  return async function handler(req, res) {
+    try {
+      const { admin, auth } = createClients();
+      await requireAppUser(req, {
+        admin,
+        authClient: auth,
+        roles: ['Manager'],
+        // This is deliberately the sole bootstrap exception: only an empty
+        // app_users table can establish the first Manager.
+        bootstrap: ({ admin: service, authUser }) => bootstrapFirstManager(service, authUser),
+      });
 
-    if (req.method === 'GET') {
-      return send(res, 200, { users: await listUsers(admin) });
-    }
+      if (req.method === 'GET') {
+        return sendJson(res, 200, { users: await listUsers(admin) });
+      }
 
-    const payload = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
-    if (req.method === 'POST') {
-      const user = await createUser(admin, payload);
-      return send(res, 201, { user, users: await listUsers(admin) });
-    }
-    if (req.method === 'PATCH') {
-      const user = await updateUser(admin, payload);
-      return send(res, 200, { user, users: await listUsers(admin) });
-    }
-    if (req.method === 'DELETE') {
-      const user = await deleteUser(admin, payload);
-      return send(res, 200, { user, users: await listUsers(admin) });
-    }
+      const payload = await readJsonBody(req);
+      if (req.method === 'POST') {
+        const user = await createUser(admin, payload);
+        return sendJson(res, 201, { user, users: await listUsers(admin) });
+      }
+      if (req.method === 'PATCH') {
+        const user = await updateUser(admin, payload);
+        return sendJson(res, 200, { user, users: await listUsers(admin) });
+      }
+      if (req.method === 'DELETE') {
+        const user = await deleteUser(admin, payload);
+        return sendJson(res, 200, { user, users: await listUsers(admin) });
+      }
 
-    res.setHeader('Allow', 'GET, POST, PATCH, DELETE');
-    return send(res, 405, { error: 'Method not allowed.' });
-  } catch (error) {
-    const status = error.status || 500;
-    return send(res, status, { error: error.message || 'Unexpected user management error.' });
+      requireMethod(req, ['GET', 'POST', 'PATCH', 'DELETE']);
+    } catch (error) {
+      return handleApiError(res, error, { fallbackMessage: 'Unexpected user management error.' });
+    }
   }
 }
+
+export default createHandler();
