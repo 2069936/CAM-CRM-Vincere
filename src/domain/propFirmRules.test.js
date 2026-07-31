@@ -135,3 +135,37 @@ describe('summarizeRuleCoverage', () => {
     expect(summary.unresolved).toBe(1);
   });
 });
+
+describe('generic profit targets', () => {
+  it('falls back to the generic target when no firm rule exists', () => {
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Tradeify', startBalance: 50000 },
+      { rules: {} },
+    );
+
+    expect(limits.targetProfit).toBe(4000);
+    expect(limits.targetSource).toBe('generic');
+  });
+
+  it('lets a firm rule beat the generic one', () => {
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Legends', startBalance: 50000 },
+      { rules: { 'Legends|50000': { profitTarget: 3000 } } },
+    );
+
+    expect(limits.targetProfit).toBe(3000);
+    expect(limits.targetSource).toBe('firm-rule');
+  });
+
+  it('reports nothing for a size the desk was unsure of', () => {
+    // 150k was given as "159 or 160". A target nobody is sure of is not a
+    // target to measure an account against.
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Tradeify', startBalance: 150000 },
+      { rules: {} },
+    );
+
+    expect(limits.targetProfit).toBeNull();
+    expect(limits.targetSource).toBeNull();
+  });
+});

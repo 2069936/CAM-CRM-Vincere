@@ -110,6 +110,28 @@ export function firstObservedBalance(accountName, dailyImports = []) {
  */
 export const PROP_FIRM_RULES = {};
 
+/**
+ * Generic profit targets by account size, as a fallback below firm rules.
+ *
+ * Stated by the desk as target *balances*, not profit amounts: a 50k account
+ * passes at 54,000. Recorded that way and converted here, because writing the
+ * profit down instead invites someone to read 4,000 as a balance.
+ *
+ * UNCONFIRMED against any firm's published rules. This is a working assumption
+ * to make classification less blind, and a firm rule always wins over it. The
+ * 150k figure was given as "159 or 160" and is left out rather than picked:
+ * a target the desk was unsure of is not a target to measure an account against.
+ */
+export const GENERIC_TARGET_BALANCE = {
+  50000: 54000,
+  100000: 107000,
+};
+
+export function genericProfitTarget(size) {
+  const target = GENERIC_TARGET_BALANCE[size];
+  return target ? target - size : null;
+}
+
 export function ruleFor(firm, size, rules = PROP_FIRM_RULES) {
   if (!firm || !size) return null;
   return rules[`${firm}|${size}`] || null;
@@ -147,10 +169,12 @@ export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_
       : (rule?.trailingDrawdown != null ? 'firm-rule' : null),
     targetProfit: Number.isFinite(storedTarget) && storedTarget > 0
       ? storedTarget
-      : (rule?.profitTarget ?? null),
+      : (rule?.profitTarget ?? genericProfitTarget(size)),
     targetSource: Number.isFinite(storedTarget) && storedTarget > 0
       ? 'stored'
-      : (rule?.profitTarget != null ? 'firm-rule' : null),
+      : (rule?.profitTarget != null
+        ? 'firm-rule'
+        : (genericProfitTarget(size) != null ? 'generic' : null)),
     basis: rule?.basis ?? null,
   };
 }

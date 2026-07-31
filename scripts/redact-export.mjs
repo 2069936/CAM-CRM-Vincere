@@ -131,8 +131,29 @@ const ACCOUNT_FIELDS = new Set([
   'accountName', 'accountDisplayName',
 ]);
 
+/**
+ * A strategy's configuration identity, with nothing readable left.
+ *
+ * parameters_raw is the only field that says what an algo is actually set to.
+ * The name does not: a book held five distinct parameter sets all called
+ * URGO-4.5, so comparing configurations needs this field to survive in some
+ * form. Replacing it with [redacted N] leaves only its length, which is a
+ * fingerprint of the wrong thing.
+ *
+ * It also carries the client's licence key, which is per client. Hashing the
+ * raw string would therefore make two clients running an identical
+ * configuration look different — the exact comparison this is meant to enable.
+ * The key is stripped first, so the hash reflects the settings and nothing else.
+ */
+const LICENCE_KEY = /V-[0-9A-F]{6}-[0-9A-F]{8}-[0-9A-F]{6,8}W?/gi;
+
+function configFingerprint(value) {
+  return `cfg:${digest(value.replace(LICENCE_KEY, 'KEY')).slice(0, 16)}`;
+}
+
 function redactString(key, value) {
   if (!value.trim()) return value;
+  if (key === 'parameters_raw' || key === 'parametersRaw') return configFingerprint(value);
   if (ID_FIELDS.has(key)) return UUID.test(value) ? value : token(value);
   if (KEEP_FIELDS.has(key)) return value;
   // Named fields are handled before the shape check. An account name that is
