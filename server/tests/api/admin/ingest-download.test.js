@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
 import { unzipSync } from 'fflate';
-import { canonicalSnapshotPayload } from '../../server/apiLib/autoImportStore.js';
-import { createDownloadStore, createHandler, storageObjectBytes } from '../../server/autoCollection/admin/ingest-download.js';
-import { ApiError } from '../../server/apiLib/http.js';
-import { DEFAULT_MAX_COMPRESSED_BYTES } from '../../server/apiLib/autoCollectionLimits.js';
+import { canonicalSnapshotPayload } from '../../../apiLib/autoImportStore.js';
+import { createDownloadStore, createHandler, storageObjectBytes } from '../../../autoCollection/admin/ingest-download.js';
+import { ApiError } from '../../../apiLib/http.js';
+import { DEFAULT_MAX_COMPRESSED_BYTES } from '../../../apiLib/autoCollectionLimits.js';
 
-const snapshot = JSON.parse(readFileSync(new URL('../../test/fixtures/auto-export/snapshot-v1.json', import.meta.url), 'utf8'));
+const snapshot = JSON.parse(readFileSync(new URL('../../../../test/fixtures/auto-export/snapshot-v1.json', import.meta.url), 'utf8'));
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const BATCH_ID = '22222222-2222-4222-8222-222222222222';
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
