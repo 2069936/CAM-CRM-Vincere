@@ -118,13 +118,12 @@ export const PROP_FIRM_RULES = {};
  * profit down instead invites someone to read 4,000 as a balance.
  *
  * UNCONFIRMED against any firm's published rules. This is a working assumption
- * to make classification less blind, and a firm rule always wins over it. The
- * 150k figure was given as "159 or 160" and is left out rather than picked:
- * a target the desk was unsure of is not a target to measure an account against.
+ * to make classification less blind, and a firm rule always wins over it.
  */
 export const GENERIC_TARGET_BALANCE = {
   50000: 54000,
   100000: 107000,
+  150000: 159000,
 };
 
 export function genericProfitTarget(size) {

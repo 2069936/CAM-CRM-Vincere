@@ -157,11 +157,21 @@ describe('generic profit targets', () => {
     expect(limits.targetSource).toBe('firm-rule');
   });
 
-  it('reports nothing for a size the desk was unsure of', () => {
-    // 150k was given as "159 or 160". A target nobody is sure of is not a
-    // target to measure an account against.
+  it('covers every size the desk has confirmed', () => {
+    const targets = [[50000, 4000], [100000, 7000], [150000, 9000]];
+    for (const [size, expected] of targets) {
+      const limits = resolveAccountLimits(
+        { accountName: 'A1', connection: 'Tradeify', startBalance: size },
+        { rules: {} },
+      );
+      expect(limits.targetProfit).toBe(expected);
+      expect(limits.targetSource).toBe('generic');
+    }
+  });
+
+  it('reports nothing for a size with no generic target', () => {
     const limits = resolveAccountLimits(
-      { accountName: 'A1', connection: 'Tradeify', startBalance: 150000 },
+      { accountName: 'A1', connection: 'Tradeify', startBalance: 25000 },
       { rules: {} },
     );
 

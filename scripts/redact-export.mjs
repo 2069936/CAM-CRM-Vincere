@@ -147,8 +147,67 @@ const ACCOUNT_FIELDS = new Set([
  */
 const LICENCE_KEY = /V-[0-9A-F]{6}-[0-9A-F]{8}-[0-9A-F]{6,8}W?/gi;
 
+/**
+ * Two strategies with different parameters are not necessarily different
+ * strategies.
+ *
+ * Risk level changes how many contracts an algo opens — PosSize1/2/3 — and
+ * nothing else. A version changes what it does: entry, exit, stop, trail. One
+ * hash over the whole string cannot tell those apart, and reports a client on a
+ * higher risk setting as running a different version.
+ *
+ * NinjaTrader writes the parameters as `v1/v2/.../vN (Name1/Name2/.../NameN)`,
+ * so the names are in the string and the two groups can be separated. The
+ * fingerprint covers everything except sizing and the licence key; sizing gets
+ * its own, so a risk change is visible as a risk change.
+ */
+/**
+ * Splits on '/' without breaking the dates.
+ *
+ * NinjaTrader writes times as `1/1/2020 4:45:00 PM`, so a naive split turns one
+ * value into three. A real string had 37 fragments against 31 names — three
+ * dates, two extra pieces each — and the mismatch made the whole split fail
+ * silently back to hashing everything together.
+ */
+function splitValues(text) {
+  const parts = text.split('/');
+  const out = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    if (index + 2 < parts.length
+      && /^\d{1,2}$/.test(parts[index])
+      && /^\d{1,2}$/.test(parts[index + 1])
+      && /^\d{4}\b/.test(parts[index + 2])) {
+      out.push(`${parts[index]}/${parts[index + 1]}/${parts[index + 2]}`);
+      index += 2;
+    } else {
+      out.push(parts[index]);
+    }
+  }
+  return out;
+}
+
+function splitParameters(value) {
+  const match = String(value).match(/^([\s\S]*)\(([^()]*)\)\s*$/);
+  if (!match) return null;
+  const values = splitValues(match[1].trim());
+  const names = match[2].split('/');
+  if (values.length !== names.length) return null;
+  const sizing = [];
+  const config = [];
+  names.forEach((name, index) => {
+    const key = name.trim();
+    const entry = `${key}=${values[index]}`;
+    if (/^PosSize\d*$/i.test(key)) sizing.push(entry);
+    else if (/licen[cs]e ?key/i.test(key)) return;
+    else config.push(entry);
+  });
+  return { sizing: sizing.join('/'), config: config.join('/') };
+}
+
 function configFingerprint(value) {
-  return `cfg:${digest(value.replace(LICENCE_KEY, 'KEY')).slice(0, 16)}`;
+  const parts = splitParameters(value);
+  if (!parts) return `cfg:${digest(value.replace(LICENCE_KEY, 'KEY')).slice(0, 16)}`;
+  return `cfg:${digest(parts.config).slice(0, 16)}/size:${digest(parts.sizing).slice(0, 6)}`;
 }
 
 function redactString(key, value) {
