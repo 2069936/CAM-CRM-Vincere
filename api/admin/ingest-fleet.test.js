@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, parseFleetQuery } from './ingest-fleet.js';
+import { createHandler, parseFleetQuery } from '../_lib/adminHandlers/ingest-fleet.js';
 import { ApiError } from '../_lib/http.js';
 
 function response() {
