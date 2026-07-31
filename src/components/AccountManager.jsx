@@ -51,9 +51,18 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
   if (isCashType(account.accountType)) return <span className="field-na">N/A</span>;
   if (!firm) return <span className="field-na" title="No prop firm recognised in this account's connection">—</span>;
   if (!plans.length) {
+    // A firm nobody has researched yet. This must not block the row: the CAM can
+    // still type the drawdown into Max DD $ and the account behaves normally.
+    // What it should not do is look identical to a firm whose rules are loaded,
+    // because then nobody ever goes and gets them.
+    const known = Boolean(account.maxDrawdownLimit);
     return (
-      <span className="field-na" title={`No published rules on record for ${firm}`}>
+      <span
+        className={known ? 'muted' : 'plan-fallback'}
+        title={`No published rules on record for ${firm}. Enter Max DD $ by hand, or ask for the firm to be researched.`}
+      >
         {firm}
+        {known ? null : ' · needs review'}
       </span>
     );
   }

@@ -128,6 +128,7 @@ import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientL
 import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import { EXCLUDED_FROM_TOTAL, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
 import {
   AlgoContributionChart,
   BookMixBar,
@@ -3770,6 +3771,68 @@ function SopBuilderPanel() {
   );
 }
 
+/**
+ * What the headline figure is made of.
+ *
+ * A cash account and a prop evaluation are different businesses, and Bullet Bot
+ * evaluations alone were 58% of one day's trading loss — invisible in a single
+ * number. The split also shows what the headline leaves out: accounts marked
+ * Inactive / Ignore, and snapshots whose account no longer resolves at all.
+ * Those are excluded from the total but shown, because hiding them replaces one
+ * wrong figure with another and buries the data problem behind it.
+ */
+// Short labels for a narrow tile. The domain names stay long because they have
+// to be unambiguous in data; the tile has about eleven characters before the
+// column collapses and a figure gets clipped.
+const SEGMENT_LABELS = {
+  "Evaluations - Bullet Bot": "Bullet Bot",
+  "Evaluations - standard": "Evals",
+  "No account on record": "Orphaned",
+  Unclassified: "Unclassed",
+};
+
+function SegmentBreakdown({ segments }) {
+  const rows = segments?.segments || [];
+  if (!rows.length) return null;
+  const business = rollUpByBusiness(segments);
+  const label = (name) => SEGMENT_LABELS[name] || name;
+
+  return (
+    <div className="segment-breakdown">
+      <div className="segment-split">
+        <span>
+          prop <strong className={business.prop.dailyPnl >= 0 ? "positive" : "negative"}>
+            {formatCurrency(business.prop.dailyPnl)}
+          </strong> <em>{business.prop.accounts}</em>
+        </span>
+        <span>
+          cash <strong className={business.cash.dailyPnl >= 0 ? "positive" : "negative"}>
+            {formatCurrency(business.cash.dailyPnl)}
+          </strong> <em>{business.cash.accounts}</em>
+        </span>
+      </div>
+      <ul className="segment-list">
+        {rows.filter((row) => row.countedInTotal).map((row) => (
+          <li key={row.segment}>
+            <span title={row.segment}>{label(row.segment)}</span>
+            <span className={row.dailyPnl >= 0 ? "positive" : "negative"}>
+              {formatCurrency(row.dailyPnl)}
+            </span>
+            <em>{row.accounts}</em>
+          </li>
+        ))}
+        {rows.filter((row) => EXCLUDED_FROM_TOTAL.has(row.segment)).map((row) => (
+          <li key={row.segment} className="segment-excluded">
+            <span title={row.segment}>{label(row.segment)}</span>
+            <span>{formatCurrency(row.dailyPnl)}</span>
+            <em>{row.accounts}</em>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ManagerOverview({
   clients,
   camProfiles = [],
@@ -3898,6 +3961,14 @@ function ManagerOverview({
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
     [clients, activeCamProfiles, asOfDate, coverage],
+  );
+  // The headline tiles summed every snapshot together, so one figure quietly
+  // carried cash accounts, accounts marked Inactive / Ignore, and snapshots
+  // whose account no longer resolves. A cash account and a prop evaluation are
+  // not the same business.
+  const segments = useMemo(
+    () => buildSegmentTotals(latestImports(clients, asOfDate)),
+    [clients, asOfDate],
   );
   const totals = useMemo(
     () =>
@@ -4858,19 +4929,20 @@ function ManagerOverview({
           <div className="metric">
             <span>Team daily P&L</span>
             <strong
-              className={totals.dailyPnl >= 0 ? "positive" : "negative"}
+              className={segments.total.dailyPnl >= 0 ? "positive" : "negative"}
               style={{ fontSize: 22 }}
             >
-              {formatCurrency(totals.dailyPnl)}
+              {formatCurrency(segments.total.dailyPnl)}
             </strong>
+            <SegmentBreakdown segments={segments} />
           </div>
           <div className="metric">
             <span>Team weekly P&L</span>
             <strong
-              className={totals.weeklyPnl >= 0 ? "positive" : "negative"}
+              className={segments.total.weeklyPnl >= 0 ? "positive" : "negative"}
               style={{ fontSize: 22 }}
             >
-              {formatCurrency(totals.weeklyPnl)}
+              {formatCurrency(segments.total.weeklyPnl)}
             </strong>
           </div>
           <div className="metric">
