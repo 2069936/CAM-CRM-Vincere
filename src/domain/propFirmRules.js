@@ -108,7 +108,106 @@ export function firstObservedBalance(accountName, dailyImports = []) {
  * answers on the same account, and we established during the NinjaTrader work
  * that we do not yet know which each firm uses.
  */
-export const PROP_FIRM_RULES = {};
+export const PROP_FIRM_RULES = {
+  // Legends — thelegendstrading.com/plans + knowledge.thelegendstrading.com,
+  // read 2026-07-31. Explicitly end-of-day: "We calculate your Max Drawdown at
+  // the end of each trading day." Intraday was removed in the Jan 2026 change.
+  'Legends|Apprentice|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Legends|Apprentice|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'Legends|Apprentice|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day' },
+  'Legends|Elite|25000': { trailingDrawdown: 1250, profitTarget: 1500, basis: 'end-of-day' },
+  'Legends|Elite|50000': { trailingDrawdown: 2200, profitTarget: 2700, basis: 'end-of-day' },
+  'Legends|Elite|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'Legends|Elite|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day' },
+
+  // Lucid — lucidtrading.com plan cards + support.lucidtrading.com rule
+  // articles. Pro, Flex and Daily share one ladder; Direct does not.
+  'Lucid|Flex|25000': { trailingDrawdown: 1000, profitTarget: 1250, basis: 'end-of-day' },
+  'Lucid|Flex|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Lucid|Flex|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'Lucid|Flex|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day' },
+  'Lucid|Pro|25000': { trailingDrawdown: 1000, profitTarget: 1250, basis: 'end-of-day' },
+  'Lucid|Pro|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Lucid|Pro|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'Lucid|Pro|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day' },
+  // Direct breaks the ladder at the top two sizes. Quoting one "Lucid 100K
+  // drawdown" without naming the plan is wrong half the time.
+  'Lucid|Direct|50000': { trailingDrawdown: 2000, profitTarget: null, basis: 'end-of-day' },
+  'Lucid|Direct|100000': { trailingDrawdown: 3500, profitTarget: null, basis: 'end-of-day' },
+  'Lucid|Direct|150000': { trailingDrawdown: 5000, profitTarget: null, basis: 'end-of-day' },
+
+  // BluSky — blusky.pro. Evaluations are end-of-day per the help centre.
+  'Bluesky|Launch|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Bluesky|Launch|100000': { trailingDrawdown: 2500, profitTarget: 6000, basis: 'end-of-day' },
+  'Bluesky|Propel|25000': { trailingDrawdown: 1200, profitTarget: 1500, basis: 'end-of-day' },
+  'Bluesky|Propel|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Bluesky|Propel|100000': { trailingDrawdown: 2500, profitTarget: 6000, basis: 'end-of-day' },
+  'Bluesky|Orbit|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Bluesky|Orbit|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'Bluesky|Orbit|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day' },
+
+  // My Funded Futures — the one place basis changes with the account's STAGE.
+  // Rapid is end-of-day while evaluating and intraday once funded, off peak
+  // equity including unrealised gains. A derived figure understates it.
+  'MFF|Rapid|25000': { trailingDrawdown: 1000, profitTarget: 1500, basis: 'end-of-day', fundedBasis: 'intraday' },
+  'MFF|Rapid|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day', fundedBasis: 'intraday' },
+  'MFF|Rapid|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day', fundedBasis: 'intraday' },
+  'MFF|Rapid|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day', fundedBasis: 'intraday' },
+  'MFF|Pro|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'MFF|Pro|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'MFF|Pro|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day' },
+  'MFF|Flex|25000': { trailingDrawdown: 1000, profitTarget: 1500, basis: 'end-of-day' },
+  'MFF|Flex|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'MFF|Builder|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+
+  // Apex — three drawdown models run side by side. Same money at 50k, opposite
+  // basis, and the 150k figure is 4,000 where every other firm here says 4,500.
+  'Apex|Intraday Trail|25000': { trailingDrawdown: 1000, profitTarget: 1500, basis: 'intraday' },
+  'Apex|Intraday Trail|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'intraday' },
+  'Apex|Intraday Trail|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'intraday' },
+  'Apex|Intraday Trail|150000': { trailingDrawdown: 4000, profitTarget: 9000, basis: 'intraday' },
+  'Apex|EOD Trail|25000': { trailingDrawdown: 1000, profitTarget: 1500, basis: 'end-of-day' },
+  'Apex|EOD Trail|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
+  'Apex|EOD Trail|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
+  'Apex|EOD Trail|150000': { trailingDrawdown: 4000, profitTarget: 9000, basis: 'end-of-day' },
+};
+
+/**
+ * Plans a firm sells, for the classification prompt.
+ *
+ * The account's plan cannot be derived from anything the platform reports — it
+ * is a purchase decision — so a CAM has to say which one. Until they do, the
+ * fallback below is used and marked as a fallback.
+ */
+export function plansFor(firm, rules = PROP_FIRM_RULES) {
+  const plans = new Set();
+  for (const key of Object.keys(rules)) {
+    const [keyFirm, plan] = key.split('|');
+    if (keyFirm === firm) plans.add(plan);
+  }
+  return [...plans].sort();
+}
+
+/**
+ * The rule to use when the plan is unknown: the tightest drawdown that firm
+ * sells at that size.
+ *
+ * Every firm researched charges 2,000 on a 50k account except Legends Elite at
+ * 2,200. Guessing the looser number on an Apprentice account would raise the
+ * warning 200 dollars after the account was already dead; guessing the tighter
+ * one on an Elite raises it 200 dollars early. Only one of those is survivable,
+ * so an unknown plan always takes the tighter figure and says it is a fallback.
+ */
+export function tightestRuleFor(firm, size, rules = PROP_FIRM_RULES) {
+  let best = null;
+  for (const [key, rule] of Object.entries(rules)) {
+    const [keyFirm, , keySize] = key.split('|');
+    if (keyFirm !== firm || Number(keySize) !== Number(size)) continue;
+    if (rule.trailingDrawdown == null) continue;
+    if (!best || rule.trailingDrawdown < best.trailingDrawdown) best = rule;
+  }
+  return best;
+}
 
 /**
  * Generic profit targets by account size, as a fallback below firm rules.
@@ -131,9 +230,10 @@ export function genericProfitTarget(size) {
   return target ? target - size : null;
 }
 
-export function ruleFor(firm, size, rules = PROP_FIRM_RULES) {
+export function ruleFor(firm, size, plan = null, rules = PROP_FIRM_RULES) {
   if (!firm || !size) return null;
-  return rules[`${firm}|${size}`] || null;
+  if (plan) return rules[`${firm}|${plan}|${size}`] || null;
+  return tightestRuleFor(firm, size, rules);
 }
 
 /**
@@ -154,7 +254,9 @@ export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_
     ? storedStart
     : firstObservedBalance(account?.accountName, dailyImports);
   const size = inferAccountSize(startBalance);
-  const rule = ruleFor(firm, size, rules);
+  const plan = String(account?.propFirmPlan || '').trim() || null;
+  const rule = ruleFor(firm, size, plan, rules);
+  const planKnown = Boolean(plan && rules[`${firm}|${plan}|${size}`]);
 
   return {
     firm,
@@ -174,7 +276,17 @@ export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_
       : (rule?.profitTarget != null
         ? 'firm-rule'
         : (genericProfitTarget(size) != null ? 'generic' : null)),
+    plan,
+    // A rule found without a named plan is the tightest that firm sells at that
+    // size, not that account's own. Saying so keeps a fallback from reading as a
+    // confirmed limit.
+    planKnown,
+    ruleSource: rule ? (planKnown ? 'plan' : 'tightest-for-size') : null,
     basis: rule?.basis ?? null,
+    // Only MFF Rapid so far: end-of-day while evaluating, intraday once funded.
+    // A trailing figure derived from stored closes understates an intraday
+    // trail, so the account this applies to needs the reported number.
+    fundedBasis: rule?.fundedBasis ?? null,
   };
 }
 
@@ -205,7 +317,7 @@ export function summarizeRuleCoverage(clients = [], rules = PROP_FIRM_RULES) {
         key, firm: limits.firm, accountSize: limits.accountSize, accounts: 0, hasRule: false,
       };
       row.accounts += 1;
-      row.hasRule = ruleFor(limits.firm, limits.accountSize, rules) != null;
+      row.hasRule = ruleFor(limits.firm, limits.accountSize, limits.plan, rules) != null;
       combos.set(key, row);
     }
   }

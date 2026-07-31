@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   inferAccountSize,
   normalizePropFirm,
+  plansFor,
   resolveAccountLimits,
   summarizeRuleCoverage,
 } from './propFirmRules';
@@ -52,7 +53,7 @@ describe('inferAccountSize', () => {
 });
 
 describe('resolveAccountLimits', () => {
-  const rules = { 'Legends|50000': { trailingDrawdown: 2500, profitTarget: 3000, basis: 'end-of-day' } };
+  const rules = { 'Legends|Elite|50000': { trailingDrawdown: 2500, profitTarget: 3000, basis: 'end-of-day' } };
   const dailyImports = [
     { date: '2026-07-20', snapshots: [{ accountName: 'A1', accountBalance: 50000 }] },
     { date: '2026-07-27', snapshots: [{ accountName: 'A1', accountBalance: 47800 }] },
@@ -74,7 +75,7 @@ describe('resolveAccountLimits', () => {
 
   it('never overrides a number someone typed', () => {
     const limits = resolveAccountLimits(
-      { accountName: 'A1', connection: 'Legends', maxDrawdownLimit: 1800, startBalance: 50000 },
+      { accountName: 'A1', connection: 'Legends', propFirmPlan: 'Elite', maxDrawdownLimit: 1800, startBalance: 50000 },
       { dailyImports, rules },
     );
 
@@ -127,7 +128,7 @@ describe('summarizeRuleCoverage', () => {
       }],
     }];
 
-    const summary = summarizeRuleCoverage(clients, { 'Legends|50000': { trailingDrawdown: 2500 } });
+    const summary = summarizeRuleCoverage(clients, { 'Legends|Elite|50000': { trailingDrawdown: 2500 } });
 
     expect(summary.combos[0]).toMatchObject({ firm: 'Legends', accountSize: 50000, accounts: 2, hasRule: true });
     expect(summary.combos[1]).toMatchObject({ firm: 'Bluesky', accounts: 1, hasRule: false });
@@ -149,8 +150,8 @@ describe('generic profit targets', () => {
 
   it('lets a firm rule beat the generic one', () => {
     const limits = resolveAccountLimits(
-      { accountName: 'A1', connection: 'Legends', startBalance: 50000 },
-      { rules: { 'Legends|50000': { profitTarget: 3000 } } },
+      { accountName: 'A1', connection: 'Legends', propFirmPlan: 'Elite', startBalance: 50000 },
+      { rules: { 'Legends|Elite|50000': { profitTarget: 3000 } } },
     );
 
     expect(limits.targetProfit).toBe(3000);
@@ -177,5 +178,67 @@ describe('generic profit targets', () => {
 
     expect(limits.targetProfit).toBeNull();
     expect(limits.targetSource).toBeNull();
+  });
+});
+
+describe('plan-level rules', () => {
+  it('uses the tightest drawdown when the plan is unknown', () => {
+    // Legends sells 50k at 2,000 (Apprentice) and 2,200 (Elite). Guessing 2,200
+    // on an Apprentice account raises the warning 200 dollars after it is
+    // already dead; guessing 2,000 on an Elite raises it 200 early. Only one of
+    // those is survivable.
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Legends', startBalance: 50000 },
+    );
+
+    expect(limits.maxDrawdownLimit).toBe(2000);
+    expect(limits.planKnown).toBe(false);
+    expect(limits.ruleSource).toBe('tightest-for-size');
+  });
+
+  it('uses that account’s own plan once someone names it', () => {
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Legends', propFirmPlan: 'Elite', startBalance: 50000 },
+    );
+
+    expect(limits.maxDrawdownLimit).toBe(2200);
+    expect(limits.planKnown).toBe(true);
+    expect(limits.ruleSource).toBe('plan');
+  });
+
+  it('does not carry one plan’s ladder onto another', () => {
+    // Lucid Pro and Flex agree at every size; Direct does not, at the top two.
+    // Quoting a single "Lucid 100K drawdown" is wrong half the time.
+    const flex = resolveAccountLimits({ accountName: 'A', connection: 'Lucid', propFirmPlan: 'Flex', startBalance: 100000 });
+    const direct = resolveAccountLimits({ accountName: 'A', connection: 'Lucid', propFirmPlan: 'Direct', startBalance: 100000 });
+
+    expect(flex.maxDrawdownLimit).toBe(3000);
+    expect(direct.maxDrawdownLimit).toBe(3500);
+  });
+
+  it('carries the funded-stage basis where it differs from the evaluation one', () => {
+    // MFF Rapid is the only researched plan that changes basis with the stage.
+    // Everything derived from stored closes assumes end-of-day, so an intraday
+    // trail is understated and the account needs the reported figure.
+    const rapid = resolveAccountLimits({ accountName: 'A', connection: 'MFF', propFirmPlan: 'Rapid', startBalance: 50000 });
+    const pro = resolveAccountLimits({ accountName: 'A', connection: 'MFF', propFirmPlan: 'Pro', startBalance: 50000 });
+
+    expect(rapid.basis).toBe('end-of-day');
+    expect(rapid.fundedBasis).toBe('intraday');
+    expect(pro.fundedBasis).toBeNull();
+  });
+
+  it('offers the plans a firm actually sells, for the classification prompt', () => {
+    expect(plansFor('Legends')).toEqual(['Apprentice', 'Elite']);
+    expect(plansFor('Apex')).toEqual(['EOD Trail', 'Intraday Trail']);
+    expect(plansFor('Nobody')).toEqual([]);
+  });
+
+  it('knows Apex trails 4,000 at 150k where the others trail 4,500', () => {
+    const apex = resolveAccountLimits({ accountName: 'A', connection: 'Apex', propFirmPlan: 'EOD Trail', startBalance: 150000 });
+    const lucid = resolveAccountLimits({ accountName: 'A', connection: 'Lucid', propFirmPlan: 'Flex', startBalance: 150000 });
+
+    expect(apex.maxDrawdownLimit).toBe(4000);
+    expect(lucid.maxDrawdownLimit).toBe(4500);
   });
 });
