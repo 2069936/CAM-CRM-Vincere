@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { createApiClients, requireAppUser } from '../apiAuth.js';
+import { createApiClients, requireAppUser } from '../../../api/_lib/apiAuth.js';
 import { createDownloadStore } from './ingest-download.js';
-import { createAutoImportStore } from '../autoImportStore.js';
-import { verifyStoredSnapshot } from '../autoExportDownload.js';
-import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../http.js';
+import { createAutoImportStore } from '../../../api/_lib/autoImportStore.js';
+import { verifyStoredSnapshot } from '../../../api/_lib/autoExportDownload.js';
+import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../../api/_lib/http.js';
 import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';

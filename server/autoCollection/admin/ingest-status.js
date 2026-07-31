@@ -1,9 +1,9 @@
 import process from 'node:process';
-import { createApiClients, requireAppUser, requireClientAssignment } from '../apiAuth.js';
-import { resolveInstallerRelease } from '../collectorRelease.js';
-import { ApiError, handleApiError, requireMethod, sendJson } from '../http.js';
+import { createApiClients, requireAppUser, requireClientAssignment } from '../../../api/_lib/apiAuth.js';
+import { resolveInstallerRelease } from '../../../api/_lib/collectorRelease.js';
+import { ApiError, handleApiError, requireMethod, sendJson } from '../../../api/_lib/http.js';
 
-export { resolveInstallerRelease } from '../collectorRelease.js';
+export { resolveInstallerRelease } from '../../../api/_lib/collectorRelease.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_DEVICE_ERROR_CODES = new Set([

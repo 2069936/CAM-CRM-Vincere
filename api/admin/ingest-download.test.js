@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
 import { unzipSync } from 'fflate';
 import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
-import { createDownloadStore, createHandler, storageObjectBytes } from '../_lib/adminHandlers/ingest-download.js';
+import { createDownloadStore, createHandler, storageObjectBytes } from '../../server/autoCollection/admin/ingest-download.js';
 import { ApiError } from '../_lib/http.js';
 import { DEFAULT_MAX_COMPRESSED_BYTES } from '../_lib/autoCollectionLimits.js';
 

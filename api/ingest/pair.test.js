@@ -5,7 +5,7 @@ import {
   createPairRateLimiter,
   createPairStore,
   PairingDeniedError,
-} from '../_lib/ingestHandlers/pair.js';
+} from '../../server/autoCollection/ingest/pair.js';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';

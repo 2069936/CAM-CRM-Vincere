@@ -1,7 +1,7 @@
 import process from 'node:process';
-import { createApiClients, requireAppUser } from '../apiAuth.js';
-import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../http.js';
-import { issueEnrollmentCode } from '../ingestTokens.js';
+import { createApiClients, requireAppUser } from '../../../api/_lib/apiAuth.js';
+import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../../api/_lib/http.js';
+import { issueEnrollmentCode } from '../../../api/_lib/ingestTokens.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const REBIND_REASONS = Object.freeze(['vps_rebuilt', 'device_replaced', 'support_reset']);

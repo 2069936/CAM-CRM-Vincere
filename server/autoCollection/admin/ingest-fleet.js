@@ -1,7 +1,7 @@
 import process from 'node:process';
-import { createApiClients, requireAppUser } from '../apiAuth.js';
-import { resolveInstallerRelease } from '../collectorRelease.js';
-import { ApiError, handleApiError, requireMethod, sendJson } from '../http.js';
+import { createApiClients, requireAppUser } from '../../../api/_lib/apiAuth.js';
+import { resolveInstallerRelease } from '../../../api/_lib/collectorRelease.js';
+import { ApiError, handleApiError, requireMethod, sendJson } from '../../../api/_lib/http.js';
 import { classifyFleetRow, newYorkTradingClock, summarizeFleet } from '../../../src/domain/autoCollectionFleet.js';
 
 const DEVICE_COLUMNS = 'id,client_id,status,health_status,schedule_time,schedule_timezone,agent_version,addon_version,ninjatrader_version,last_seen_at,last_capture_at,last_success_at,last_error_code,revoked_at,created_at';

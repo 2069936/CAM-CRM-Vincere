@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import snapshotFixture from '../../test/fixtures/auto-export/snapshot-v1.json';
 import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
-import { createHandler, createReplayStore, parseReplayBody, processStoredReplay } from '../_lib/adminHandlers/ingest-reprocess.js';
+import { createHandler, createReplayStore, parseReplayBody, processStoredReplay } from '../../server/autoCollection/admin/ingest-reprocess.js';
 import { ApiError } from '../_lib/http.js';
 
 const BATCH_ID = '33333333-3333-4333-8333-333333333333';

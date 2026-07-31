@@ -1,10 +1,10 @@
-import batches from '../_lib/adminHandlers/ingest-batches.js';
-import download from '../_lib/adminHandlers/ingest-download.js';
-import enrollment from '../_lib/adminHandlers/ingest-enrollment.js';
-import fleet from '../_lib/adminHandlers/ingest-fleet.js';
-import reprocess from '../_lib/adminHandlers/ingest-reprocess.js';
-import status from '../_lib/adminHandlers/ingest-status.js';
-import verify from '../_lib/adminHandlers/ingest-verify.js';
+import batches from '../../server/autoCollection/admin/ingest-batches.js';
+import download from '../../server/autoCollection/admin/ingest-download.js';
+import enrollment from '../../server/autoCollection/admin/ingest-enrollment.js';
+import fleet from '../../server/autoCollection/admin/ingest-fleet.js';
+import reprocess from '../../server/autoCollection/admin/ingest-reprocess.js';
+import status from '../../server/autoCollection/admin/ingest-status.js';
+import verify from '../../server/autoCollection/admin/ingest-verify.js';
 
 // Static routes (users, data-export and intake-sheet) keep precedence. This
 // dispatcher preserves each existing ingest-* URL in one Vercel function.

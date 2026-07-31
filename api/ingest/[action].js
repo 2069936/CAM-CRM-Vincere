@@ -1,6 +1,6 @@
-import daily from '../_lib/ingestHandlers/daily.js';
-import heartbeat from '../_lib/ingestHandlers/heartbeat.js';
-import pair from '../_lib/ingestHandlers/pair.js';
+import daily from '../../server/autoCollection/ingest/daily.js';
+import heartbeat from '../../server/autoCollection/ingest/heartbeat.js';
+import pair from '../../server/autoCollection/ingest/pair.js';
 
 // Preserve the existing public routes (/api/ingest/daily, /heartbeat and /pair)
 // while deploying one Vercel function instead of three.

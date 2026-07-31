@@ -1,17 +1,17 @@
 import process from 'node:process';
 import { randomUUID } from 'node:crypto';
-import { createServiceClient } from '../apiAuth.js';
+import { createServiceClient } from '../../../api/_lib/apiAuth.js';
 import {
   createAutoImportStore,
   decodeSnapshotRequest,
-} from '../autoImportStore.js';
-import { createDeviceAuthStore, requireIngestDevice } from '../deviceAuth.js';
-import { ApiError, handleApiError, requireMethod, sendJson } from '../http.js';
+} from '../../../api/_lib/autoImportStore.js';
+import { createDeviceAuthStore, requireIngestDevice } from '../../../api/_lib/deviceAuth.js';
+import { ApiError, handleApiError, requireMethod, sendJson } from '../../../api/_lib/http.js';
 import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
-import { resolveAutoCollectionLimits } from '../autoCollectionLimits.js';
-import { normalizeMachineId } from '../ingestTokens.js';
+import { resolveAutoCollectionLimits } from '../../../api/_lib/autoCollectionLimits.js';
+import { normalizeMachineId } from '../../../api/_lib/ingestTokens.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
