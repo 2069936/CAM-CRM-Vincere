@@ -29,8 +29,16 @@ const FIRM_PATTERNS = [
   { firm: 'MFF', match: /^mff|my ?funded ?futures/i },
   { firm: 'Apex', match: /apex/i },
   { firm: 'Topstep', match: /topstep/i },
-  { firm: 'Take Profit Trader', match: /take ?profit|^tpt$/i },
+  { firm: 'Take Profit Trader', match: /take ?profit|^tpt$|^takept$/i },
+  { firm: 'Funded Futures Family', match: /^f{2,3}family|funded ?futures ?family|^funded futures$/i },
+  { firm: 'Bulenox', match: /bulenox/i },
+  { firm: 'TradeDay', match: /trade ?day/i },
 ];
+
+// A misspelling is the same firm. The book holds "Tradefify" beside "Tradeify",
+// and leaving them apart puts two accounts under a firm with no rules while the
+// rules for their actual firm sit right there.
+const FIRM_TYPOS = { TRADEFIFY: 'Tradeify', BLUSKY: 'Bluesky' };
 
 /**
  * The canonical firm for a connection, or null when it is not a firm at all.
@@ -45,7 +53,7 @@ export function normalizePropFirm(connection) {
   for (const { firm, match } of FIRM_PATTERNS) {
     if (match.test(text)) return firm;
   }
-  return text;
+  return FIRM_TYPOS[text.toUpperCase().replace(/[^A-Z]/g, '')] || text;
 }
 
 /** Sizes prop firms actually sell. */
@@ -108,8 +116,22 @@ export function firstObservedBalance(accountName, dailyImports = []) {
  * `basis` is per plan and does not converge across firms. Apex runs an intraday
  * and an end-of-day product at identical money; MFF Rapid switches from
  * end-of-day to intraday when the account funds, which is why `fundedBasis`
- * exists. Anything derived from stored closing balances assumes end-of-day, so
- * on an intraday plan the derived figure is a lower bound.
+ * exists.
+ *
+ * `breachTested` is a SEPARATE question from `basis`, and conflating them was a
+ * mistake worth naming. Tradeify's help centre is explicit: "Even though EOD
+ * drawdown only UPDATES at end of day, it is ENFORCED in real-time. If your
+ * balance hits the drawdown limit during trading, your account fails
+ * immediately - even if you might have recovered by end of day."
+ *
+ * So on an end-of-day plan, deriving the FLOOR from stored closing balances is
+ * correct — the floor genuinely only moves on the close. Concluding from those
+ * same closes that an account SURVIVED is not: a touch during the session kills
+ * it permanently and leaves no trace in any closing balance we store. A green
+ * account in this CRM can already be dead.
+ *
+ * Where breachTested is 'real-time', a derived figure answers "how much room
+ * was there at the close", never "was the account safe today".
  *
  * Sources are recorded in docs/prop-firm-rules-catalog.md.
  */
@@ -175,6 +197,26 @@ export const PROP_FIRM_RULES = {
   'Apex|EOD Trail|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day' },
   'Apex|EOD Trail|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day' },
   'Apex|EOD Trail|150000': { trailingDrawdown: 4000, profitTarget: 9000, basis: 'end-of-day' },
+
+  // Tradeify — tradeify.co + help.tradeify.co. Every plan updates end-of-day and
+  // every plan is enforced in real time. A plain fetch of the homepage returns
+  // an un-hydrated shell printing $1,000 on both the 25K and 50K cards, so these
+  // came from the live render and the help centre.
+  //
+  // Select Daily and Select Flex diverge above 50k: 100k is 3,000 on Flex and
+  // 2,500 on Daily, 150k is 4,500 and 3,500.
+  'Tradeify|Growth|25000': { trailingDrawdown: 1000, profitTarget: 1500, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Growth|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Growth|100000': { trailingDrawdown: 3500, profitTarget: 6000, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Growth|150000': { trailingDrawdown: 5000, profitTarget: 9000, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select|25000': { trailingDrawdown: 1000, profitTarget: 1500, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select|50000': { trailingDrawdown: 2000, profitTarget: 3000, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select|100000': { trailingDrawdown: 3000, profitTarget: 6000, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select|150000': { trailingDrawdown: 4500, profitTarget: 9000, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select Daily|25000': { trailingDrawdown: 1000, profitTarget: null, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select Daily|50000': { trailingDrawdown: 2000, profitTarget: null, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select Daily|100000': { trailingDrawdown: 2500, profitTarget: null, basis: 'end-of-day', breachTested: 'real-time' },
+  'Tradeify|Select Daily|150000': { trailingDrawdown: 3500, profitTarget: null, basis: 'end-of-day', breachTested: 'real-time' },
 };
 
 /**
@@ -292,6 +334,10 @@ export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_
     // A trailing figure derived from stored closes understates an intraday
     // trail, so the account this applies to needs the reported number.
     fundedBasis: rule?.fundedBasis ?? null,
+    // Whether a breach is checked continuously or only at the close. Where this
+    // is 'real-time', anything derived from stored closes can say how much room
+    // there was at the close and nothing about whether the account survived.
+    breachTested: rule?.breachTested ?? null,
   };
 }
 

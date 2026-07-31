@@ -264,3 +264,52 @@ describe('the plan survives a round trip', () => {
     expect(result.accounts['ACC-1'].propFirmPlan).toBe('Elite');
   });
 });
+
+describe('when the breach is tested, as opposed to when the limit moves', () => {
+  it('separates the two questions', () => {
+    // Tradeify's help centre: "Even though EOD drawdown only UPDATES at end of
+    // day, it is ENFORCED in real-time." Treating those as one thing let an
+    // end-of-day label imply that stored closes could prove an account safe.
+    const limits = resolveAccountLimits(
+      { accountName: 'A', connection: 'Tradeify', propFirmPlan: 'Growth', startBalance: 100000 },
+    );
+
+    expect(limits.basis).toBe('end-of-day');
+    expect(limits.breachTested).toBe('real-time');
+    expect(limits.maxDrawdownLimit).toBe(3500);
+  });
+
+  it('keeps the Select ladder apart from Select Daily above 50k', () => {
+    // Same firm, same size, 500 dollars of difference in the limit that ends
+    // the account.
+    const flex = resolveAccountLimits({ accountName: 'A', connection: 'Tradeify', propFirmPlan: 'Select', startBalance: 100000 });
+    const daily = resolveAccountLimits({ accountName: 'A', connection: 'Tradeify', propFirmPlan: 'Select Daily', startBalance: 100000 });
+
+    expect(flex.maxDrawdownLimit).toBe(3000);
+    expect(daily.maxDrawdownLimit).toBe(2500);
+  });
+
+  it('falls back to the tightest Tradeify plan at each size', () => {
+    // 100k spans 2,500 to 3,500 across Tradeify's own plans.
+    const unknown = resolveAccountLimits({ accountName: 'A', connection: 'Tradeify', startBalance: 100000 });
+
+    expect(unknown.maxDrawdownLimit).toBe(2500);
+    expect(unknown.ruleSource).toBe('tightest-for-size');
+  });
+});
+
+describe('firm name variants', () => {
+  it('folds a misspelling into the firm it meant', () => {
+    // The book holds "Tradefify" beside "Tradeify". Two accounts sat under a
+    // firm with no rules while their real firm's rules were already loaded.
+    expect(normalizePropFirm('Tradefify')).toBe('Tradeify');
+    expect(normalizePropFirm('TakePT')).toBe('Take Profit Trader');
+    expect(normalizePropFirm('FFFamily')).toBe('Funded Futures Family');
+    expect(normalizePropFirm('FUNDED FUTURES')).toBe('Funded Futures Family');
+    expect(normalizePropFirm('Tradeday')).toBe('TradeDay');
+  });
+
+  it('still leaves an unknown firm under its own name', () => {
+    expect(normalizePropFirm('Some New Firm')).toBe('Some New Firm');
+  });
+});
