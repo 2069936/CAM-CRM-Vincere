@@ -35,19 +35,31 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
             return false;
         }
 
+        /// <summary>
+        /// A disconnected account is not part of today's close.
+        ///
+        /// Its balance is whatever it was when the connection last dropped, so
+        /// sending it asserts a measurement that did not happen today. The
+        /// earlier rule kept any disconnected account that still showed money,
+        /// which is exactly the shape of an old prop-firm account left
+        /// configured after the client moved on: disconnected for months,
+        /// holding a frozen balance, and indistinguishable from a live one once
+        /// it reaches the CRM.
+        ///
+        /// The cost is a real account that happened to be offline at capture
+        /// time, which disappears for that day. That is the better failure: a
+        /// missing account raises a flag the CAM can see, while a stale one
+        /// contributes a wrong number to the day's totals in silence. Present
+        /// and wrong is worse than absent and flagged.
+        /// </summary>
         /// <param name="isConnected">Whether the account's connection is live.</param>
         /// <param name="cashValue">Cash the account holds, if reported.</param>
         /// <param name="netLiquidation">Net liquidation value, if reported.</param>
         public static bool IsRelevant(string accountName, bool isConnected, decimal? cashValue, decimal? netLiquidation)
         {
             if (IsPlatformAccount(accountName)) return false;
-            if (isConnected) return true;
-            return HasValue(cashValue) || HasValue(netLiquidation);
+            return isConnected;
         }
 
-        private static bool HasValue(decimal? amount)
-        {
-            return amount.HasValue && amount.Value != 0m;
-        }
     }
 }
