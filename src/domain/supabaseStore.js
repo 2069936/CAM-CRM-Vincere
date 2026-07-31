@@ -30,6 +30,7 @@ function accountMetaFromRow(row) {
     targetProfit: row.target_profit ?? '',
     startBalance: row.start_balance ?? '',
     maxDrawdownLimit: row.max_drawdown_limit ?? '',
+    propFirmPlan: row.prop_firm_plan || '',
     riskLevel: row.risk_level || '',
     bulletBotPassType: row.bullet_bot_pass_type || '',
     bulletBotDirection: row.bullet_bot_direction || '',
@@ -602,6 +603,7 @@ function accountPatchToDb(patch = {}) {
   if ('startBalance' in patch) mapped.start_balance = numberOrNull(patch.startBalance);
   if ('targetProfit' in patch) mapped.target_profit = numberOrNull(patch.targetProfit);
   if ('maxDrawdownLimit' in patch) mapped.max_drawdown_limit = numberOrNull(patch.maxDrawdownLimit);
+  if ('propFirmPlan' in patch) mapped.prop_firm_plan = String(patch.propFirmPlan || '') || null;
   if ('payoutCount' in patch) mapped.payout_count = numberOrNull(patch.payoutCount) || 0;
   if ('dateAdded' in patch) mapped.date_added = emptyToNull(patch.dateAdded);
   if ('dateFunded' in patch) mapped.date_funded = emptyToNull(patch.dateFunded);
@@ -1119,6 +1121,7 @@ export async function upsertSupabaseTradingAccount(clientId, accountName, meta =
     start_balance: numberOrNull(meta.startBalance),
     target_profit: numberOrNull(meta.targetProfit),
     max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
+    prop_firm_plan: String(meta.propFirmPlan || '') || null,
     risk_level: meta.riskLevel || '',
     bullet_bot_pass_type: meta.bulletBotPassType || '',
     bullet_bot_direction: meta.bulletBotDirection || '',

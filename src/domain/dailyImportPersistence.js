@@ -74,6 +74,7 @@ function mapTradingAccount(meta, clientUuid) {
     start_balance: numberOrNull(meta.startBalance),
     target_profit: numberOrNull(meta.targetProfit),
     max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
+    prop_firm_plan: String(meta.propFirmPlan || '') || null,
     risk_level: meta.riskLevel || '',
     bullet_bot_pass_type: meta.bulletBotPassType || '',
     bullet_bot_direction: meta.bulletBotDirection || '',

@@ -7120,3 +7120,10 @@ tr:nth-child(2) .rank-badge {
 .age-3, .ov-dot.age-3 { background: #e34948; }
 .ov-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; }
 .ov-pair h4 { margin: 0 0 8px; font-size: 13px; }
+
+/* Plan picker. The fallback note is amber, not red: an unnamed plan is a gap to
+   close, not a fault — the account is running on the tightest rule meanwhile. */
+.plan-picker { display: flex; flex-direction: column; gap: 2px; min-width: 128px; }
+.plan-picker select { width: 100%; }
+.plan-picker small { font-size: 10px; line-height: 1.3; }
+.plan-fallback { color: var(--warning); }

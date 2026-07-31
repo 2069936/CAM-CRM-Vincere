@@ -94,19 +94,24 @@ export function firstObservedBalance(accountName, dailyImports = []) {
 }
 
 /**
- * Firm rules, keyed `${firm}|${size}`.
+ * Firm rules, keyed `${firm}|${plan}|${size}`.
  *
- * DELIBERATELY EMPTY. These numbers decide whether an account is reported as
- * safe or about to breach, and inventing them would put a fabricated threshold
- * in front of a money decision. Fill from each firm's published rules; there is
- * a place to record them and their source in
- * docs/prop-firm-rules-catalog.md.
+ * Every figure was read from the firm's own pages on 2026-07-31 and checked by a
+ * second independent pass. Nothing here is inferred: these numbers decide
+ * whether an account reads as safe or about to breach, so a plausible guess
+ * would be worse than a blank.
  *
- *   'Legends|50000': { trailingDrawdown: 2500, profitTarget: 3000, basis: 'end-of-day' },
+ * Keyed by plan because every firm sells the same size under several, and they
+ * diverge. Legends 50k is 2,000 on Apprentice and 2,200 on Elite. Lucid 100k is
+ * 3,000 on Pro and Flex but 3,500 on Direct.
  *
- * basis matters: an intraday trail and an end-of-day trail give different
- * answers on the same account, and we established during the NinjaTrader work
- * that we do not yet know which each firm uses.
+ * `basis` is per plan and does not converge across firms. Apex runs an intraday
+ * and an end-of-day product at identical money; MFF Rapid switches from
+ * end-of-day to intraday when the account funds, which is why `fundedBasis`
+ * exists. Anything derived from stored closing balances assumes end-of-day, so
+ * on an intraday plan the derived figure is a lower bound.
+ *
+ * Sources are recorded in docs/prop-firm-rules-catalog.md.
  */
 export const PROP_FIRM_RULES = {
   // Legends — thelegendstrading.com/plans + knowledge.thelegendstrading.com,

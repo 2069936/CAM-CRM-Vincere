@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS, isCashType } from '../domain/reconcile';
+import { normalizePropFirm, plansFor, resolveAccountLimits } from '../domain/propFirmRules';
 
 const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.UNASSIGNED,
@@ -27,7 +28,76 @@ const PASS_TYPES = ['', '1-day pass', '2-day pass', '3-day pass'];
 const DIRECTIONS = ['', 'Long', 'Short'];
 const RISK_OPTIONS = ['', ...RISK_LEVELS];
 
-export default function AccountManager({ accounts, snapshots, onUpdateAccount, onAddAccount, onRemoveAccount, mode }) {
+/**
+ * Names the account's plan, which nothing the platform reports can reveal.
+ *
+ * Firm and size are derivable — the connection names the firm, the earliest
+ * balance on record gives the size — but the plan is a purchase decision, and it
+ * is the plan that sets the limits. Legends sells 50k at 2,000 on Apprentice and
+ * 2,200 on Elite; Lucid 100k is 3,000 on Pro and 3,500 on Direct.
+ *
+ * Until a CAM names it, the account runs on the tightest drawdown that firm
+ * sells at that size. That is deliberately the pessimistic guess: warning 200
+ * dollars early is survivable, warning 200 dollars after the account is dead is
+ * not. The cell says so rather than presenting the fallback as settled.
+ *
+ * Picking a plan writes the limits onto the account. They stay editable —
+ * published rules change, and a stored value the desk typed always wins.
+ */
+function PlanPicker({ account, dailyImports, onUpdateAccount }) {
+  const firm = normalizePropFirm(account.connection);
+  const plans = firm ? plansFor(firm) : [];
+
+  if (isCashType(account.accountType)) return <span className="field-na">N/A</span>;
+  if (!firm) return <span className="field-na" title="No prop firm recognised in this account's connection">—</span>;
+  if (!plans.length) {
+    return (
+      <span className="field-na" title={`No published rules on record for ${firm}`}>
+        {firm}
+      </span>
+    );
+  }
+
+  const limits = resolveAccountLimits(account, { dailyImports });
+
+  const apply = (plan) => {
+    if (!plan) {
+      onUpdateAccount(account.accountName, { propFirmPlan: '' });
+      return;
+    }
+    const next = resolveAccountLimits({ ...account, propFirmPlan: plan }, { dailyImports });
+    onUpdateAccount(account.accountName, {
+      propFirmPlan: plan,
+      // Only filled from the rule when the desk has not typed its own number.
+      ...(account.maxDrawdownLimit ? {} : { maxDrawdownLimit: next.maxDrawdownLimit ?? '' }),
+      ...(account.targetProfit ? {} : { targetProfit: next.targetProfit ?? '' }),
+    });
+  };
+
+  const hint = limits.accountSize
+    ? `${firm} ${(limits.accountSize / 1000)}k`
+    : `${firm}, size unknown — set Start Bal $ to resolve the limits`;
+
+  return (
+    <div className="plan-picker">
+      <select
+        value={account.propFirmPlan || ''}
+        onChange={(event) => apply(event.target.value)}
+        aria-label={`Plan for ${account.accountName}`}
+      >
+        <option value="">Which plan?</option>
+        {plans.map((plan) => <option key={plan} value={plan}>{plan}</option>)}
+      </select>
+      <small className={limits.planKnown ? 'muted' : 'plan-fallback'} title={hint}>
+        {limits.planKnown
+          ? hint
+          : `${hint} · using tightest`}
+      </small>
+    </div>
+  );
+}
+
+export default function AccountManager({ accounts, snapshots, dailyImports = [], onUpdateAccount, onAddAccount, onRemoveAccount, mode }) {
   const isCash = mode === 'cash';
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState(ACCOUNT_TYPES.FUNDED);
@@ -82,6 +152,7 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
             {!isCash ? <th>Pass</th> : null}
             {!isCash ? <th>Direction</th> : null}
             {!isCash ? <th>Payout</th> : null}
+            {!isCash ? <th>Plan</th> : null}
             {!isCash ? <th>Start Bal $</th> : null}
             {!isCash ? <th>Target $</th> : null}
             {!isCash ? <th>Max DD $</th> : null}
@@ -174,6 +245,15 @@ export default function AccountManager({ accounts, snapshots, onUpdateAccount, o
                       onChange={(event) => onUpdateAccount(account.accountName, { startBalance: event.target.value })}
                     />
                   )}
+                </td>
+              ) : null}
+              {!isCash ? (
+                <td>
+                  <PlanPicker
+                    account={account}
+                    dailyImports={dailyImports}
+                    onUpdateAccount={onUpdateAccount}
+                  />
                 </td>
               ) : null}
               {!isCash ? (

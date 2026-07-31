@@ -14267,6 +14267,7 @@ export default function App() {
                             <AccountManager
                               {...currentTabData}
                               mode={tabMode(effectiveActiveTab)}
+                              dailyImports={selectedClient?.dailyImports || []}
                               onUpdateAccount={handleAccountUpdate}
                               onAddAccount={(accountName, meta) => {
                                 if (!selectedClient || !accountName.trim())

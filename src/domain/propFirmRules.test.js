@@ -242,3 +242,25 @@ describe('plan-level rules', () => {
     expect(lucid.maxDrawdownLimit).toBe(4500);
   });
 });
+
+describe('the plan survives a round trip', () => {
+  it('is preserved by the registry rebuild', async () => {
+    // reconcile rebuilds the registry on every import. A field it does not carry
+    // forward is silently dropped the next morning, so the CAM's answer would
+    // last exactly one day.
+    const { reconcileDailyImport } = await import('./reconcile');
+    const result = reconcileDailyImport({
+      clientId: 'c1',
+      date: '2026-07-27',
+      registry: {
+        'ACC-1': { accountType: 'Funded', propFirmPlan: 'Elite', connection: 'Legends' },
+      },
+      parsed: {
+        accounts: [{ accountName: 'ACC-1', accountBalance: 50000, connection: 'Legends' }],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+
+    expect(result.accounts['ACC-1'].propFirmPlan).toBe('Elite');
+  });
+});

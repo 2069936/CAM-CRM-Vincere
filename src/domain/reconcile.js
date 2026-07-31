@@ -80,6 +80,10 @@ function createDefaultAccount(account, existing = {}) {
     startBalance: existing.startBalance ?? '',
     targetProfit: existing.targetProfit ?? '',
     maxDrawdownLimit: existing.maxDrawdownLimit ?? '',
+    // Which plan the client bought. Not derivable from anything the platform
+    // reports, and it is what sets the drawdown: Legends 50k is 2,000 on
+    // Apprentice and 2,200 on Elite.
+    propFirmPlan: existing.propFirmPlan || '',
     riskLevel: existing.riskLevel || '',
     algoStack: existing.algoStack || '',
     dailyLossLimit: existing.dailyLossLimit || '',
