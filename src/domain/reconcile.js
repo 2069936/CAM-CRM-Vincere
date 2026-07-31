@@ -1,4 +1,5 @@
 import { summarizePnlSources } from './pnlSourceSummary.js';
+import { scopeExecutionsToDay, scopeOrdersToDay } from './tradingDayScope';
 import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './derivedAccountMetrics.js';
 
 export const ACCOUNT_TYPES = {
@@ -222,10 +223,18 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   const registryByLower = Object.fromEntries(Object.entries(registry || {}).map(([k, v]) => [k.toLowerCase(), v]));
   const sourceAccounts = (parsed.accounts || []).filter((account) => !isSimulatorAccount(account.accountName));
   const strategies = (parsed.strategies || []).filter((strategy) => !isSimulatorAccount(strategy.accountName));
-  const orders = (parsed.orders || []).filter((order) => !isSimulatorAccount(order.accountName));
+  // Scoped to the day before anything else reads them. The AddOn hands over
+  // whatever NinjaTrader has loaded, which on a first capture is months of
+  // history, and every row of it arrives stamped with today's trading date.
+  const orders = scopeOrdersToDay(
+    (parsed.orders || []).filter((order) => !isSimulatorAccount(order.accountName)),
+    date,
+  );
   const orderStrategyById = Object.fromEntries(orders.map((order) => [order.id, order.strategyName || '']));
-  const executions = (parsed.executions || [])
-    .filter((execution) => !isSimulatorAccount(execution.accountName))
+  const executions = scopeExecutionsToDay(
+    (parsed.executions || []).filter((execution) => !isSimulatorAccount(execution.accountName)),
+    date,
+  )
     .map((execution) => ({
       ...execution,
       strategyName: orderStrategyById[execution.orderId] || '',
