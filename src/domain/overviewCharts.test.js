@@ -268,6 +268,72 @@ describe('buildFlagAging', () => {
     expect(rows[0].total).toBe(1);
   });
 
+  it('counts a still-open flag once, not once per day it survived', () => {
+    // reconcile re-derives flags every import, so the same problem reappears
+    // with a fresh id each day. Summing across history counted one flag ten
+    // times and put 1,900 on a chart beside a header reading 253.
+    const persistent = [{
+      id: 'c1',
+      dailyImports: Array.from({ length: 10 }, (_, index) => ({
+        date: `2026-07-${String(14 + index).padStart(2, '0')}`,
+        flags: [{ status: 'Open', type: 'Missing account', accountName: 'A', message: 'gone' }],
+      })),
+    }];
+
+    const rows = buildFlagAging(persistent, camProfiles, '2026-07-23');
+
+    expect(rows[0].total).toBe(1);
+  });
+
+  it('ages a flag from when the problem started, not from the latest import', () => {
+    // Counting on the latest close alone would date every flag to that close
+    // and report every one of them as zero days old.
+    const persistent = [{
+      id: 'c1',
+      dailyImports: Array.from({ length: 10 }, (_, index) => ({
+        date: `2026-07-${String(14 + index).padStart(2, '0')}`,
+        flags: [{ status: 'Open', type: 'Missing account', accountName: 'A', message: 'gone' }],
+      })),
+    }];
+
+    const rows = buildFlagAging(persistent, camProfiles, '2026-07-23');
+
+    expect(rows[0].oldestDays).toBe(9);
+    expect(rows[0].buckets.rotten).toBe(0);
+    expect(rows[0].buckets.stale).toBe(1);
+  });
+
+  it('treats a different problem on the same account as its own flag', () => {
+    const twoProblems = [{
+      id: 'c1',
+      dailyImports: [
+        { date: '2026-07-20', flags: [{ status: 'Open', type: 'Missing account', accountName: 'A', message: 'gone' }] },
+        { date: '2026-07-23', flags: [
+          { status: 'Open', type: 'Missing account', accountName: 'A', message: 'gone' },
+          { status: 'Open', type: 'Strategy disabled', accountName: 'A', message: 'off' },
+        ] },
+      ],
+    }];
+
+    const rows = buildFlagAging(twoProblems, camProfiles, '2026-07-23');
+
+    expect(rows[0].total).toBe(2);
+    expect(rows[0].buckets.today).toBe(1);   // the newly disabled strategy
+    expect(rows[0].buckets.week).toBe(1);    // the account missing since the 20th
+  });
+
+  it('ignores a flag that was resolved on the latest close', () => {
+    const resolvedNow = [{
+      id: 'c1',
+      dailyImports: [
+        { date: '2026-07-20', flags: [{ status: 'Open', type: 'X', accountName: 'A', message: 'm' }] },
+        { date: '2026-07-23', flags: [{ status: 'Resolved', type: 'X', accountName: 'A', message: 'm' }] },
+      ],
+    }];
+
+    expect(buildFlagAging(resolvedNow, camProfiles, '2026-07-23')).toEqual([]);
+  });
+
   it('ignores flags dated after the day being viewed', () => {
     // The manager view can be scoped to a past date; a flag from later has not
     // happened yet from that vantage point.

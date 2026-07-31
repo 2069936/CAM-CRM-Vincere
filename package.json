@@ -16,7 +16,8 @@
     "collector:audit-day": "node scripts/audit-auto-collection-day.mjs",
     "collector:compare-shadow": "node scripts/compare-auto-and-manual-imports.mjs",
     "probe:compare": "node scripts/compare-ninjatrader-probe.mjs",
-    "probe:evidence": "node scripts/create-ninjatrader-parity-evidence.mjs"
+    "probe:evidence": "node scripts/create-ninjatrader-parity-evidence.mjs",
+    "dev:local": "VITE_LOCAL_SNAPSHOT=1 vite --host 127.0.0.1"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

@@ -200,49 +200,88 @@ export const FLAG_AGE_BUCKETS = [
   { key: 'rotten', label: '14+ days', maxAge: Infinity },
 ];
 
+/** A flag's identity across days. reconcile re-derives flags every import with a
+ * fresh id, so the id cannot tell you the same problem is still there. Type,
+ * account and message can — it is the same key recalculate uses to preserve
+ * triage. */
+function flagKey(flag) {
+  return [flag.type, flag.accountName || '', flag.message || ''].join('|');
+}
+
+function isOpen(flag) {
+  const status = flag.status || 'Open';
+  return status !== 'Resolved' && status !== 'Acknowledged';
+}
+
 /**
  * Open flags per CAM, bucketed by how long they have been open.
  *
- * Counting flags alone ranks a CAM who caught five things this morning below
- * one sitting on two from a fortnight ago, which inverts the thing a manager
- * needs to see. Sorted by the oldest bucket first for the same reason.
+ * Counted on the latest close only. A still-open flag reappears in every
+ * import, so summing across history counts one problem once per day it
+ * survived — the same trap the open-flags table already carries a comment
+ * about, and it inflated this chart to 1,900 against a header reading 253.
+ *
+ * Age is not the import's date, which would make every flag zero days old.
+ * It is how far back the same problem — same type, same account, same message —
+ * appears without interruption. That is the number a manager wants: not when
+ * this row was written, but how long this has been true.
+ *
+ * Ordered by the oldest flag rather than the count, because five caught this
+ * morning is a working CAM and two left for a fortnight is the problem.
  */
 export function buildFlagAging(clients = [], camProfiles = [], today) {
   const clientCam = camIndex(camProfiles);
+  const camName = Object.fromEntries(camProfiles.map((cam) => [cam.id, cam.name]));
   const byCam = new Map();
-  const ensure = (camId, name) => {
+
+  for (const client of clients) {
+    const imports = (client.dailyImports || [])
+      .filter((entry) => entry?.date && String(entry.date) <= String(today))
+      .slice()
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    const latest = imports[0];
+    if (!latest) continue;
+
+    const open = (latest.flags || []).filter(isOpen);
+    if (!open.length) continue;
+
+    // One pass back through history, indexed, rather than a scan per flag.
+    const seenOn = new Map();
+    for (const entry of imports) {
+      for (const flag of entry.flags || []) {
+        if (!isOpen(flag)) continue;
+        const key = flagKey(flag);
+        const previous = seenOn.get(key);
+        if (!previous || String(entry.date) < String(previous)) seenOn.set(key, entry.date);
+      }
+    }
+
+    const camId = clientCam[client.id] || 'unassigned';
     if (!byCam.has(camId)) {
       byCam.set(camId, {
         camId,
-        camName: name,
+        camName: camName[camId] || 'Unassigned',
         buckets: Object.fromEntries(FLAG_AGE_BUCKETS.map((bucket) => [bucket.key, 0])),
         total: 0,
         oldestDays: 0,
       });
     }
-    return byCam.get(camId);
-  };
-  const camName = Object.fromEntries(camProfiles.map((cam) => [cam.id, cam.name]));
+    const row = byCam.get(camId);
 
-  for (const client of clients) {
-    const camId = clientCam[client.id] || 'unassigned';
-    for (const dailyImport of client.dailyImports || []) {
-      for (const flag of dailyImport.flags || []) {
-        if ((flag.status || 'Open') !== 'Open') continue;
-        const age = daysBetween(dailyImport.date, today);
-        if (age === null || age < 0) continue;
-        const row = ensure(camId, camName[camId] || 'Unassigned');
-        const bucket = FLAG_AGE_BUCKETS.find((entry) => age <= entry.maxAge);
-        row.buckets[bucket.key] += 1;
-        row.total += 1;
-        if (age > row.oldestDays) row.oldestDays = age;
-      }
+    for (const flag of open) {
+      const firstSeen = seenOn.get(flagKey(flag)) || latest.date;
+      const age = daysBetween(firstSeen, today);
+      if (age === null || age < 0) continue;
+      const bucket = FLAG_AGE_BUCKETS.find((entry) => age <= entry.maxAge);
+      row.buckets[bucket.key] += 1;
+      row.total += 1;
+      if (age > row.oldestDays) row.oldestDays = age;
     }
   }
 
-  return [...byCam.values()].sort((a, b) => (
-    b.oldestDays - a.oldestDays || b.total - a.total
-  ));
+  return [...byCam.values()]
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.oldestDays - a.oldestDays || b.total - a.total);
 }
 
 // Coverage load is not built here on purpose. buildCamWorkload in camCoverage.js

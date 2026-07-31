@@ -11585,6 +11585,13 @@ export default function App() {
         },
   );
   const [session, setSession] = useState(() => {
+    // Local snapshot mode signs itself in as a Manager. There is nothing to
+    // authenticate against — app_users is dropped from the snapshot on purpose,
+    // and the data is already redacted and read-only. A login form with no
+    // backing store would just be a door with no wall around it.
+    if (isLocalSnapshotEnabled()) {
+      return { id: "local-snapshot", name: "Local snapshot", role: USER_ROLES.MANAGER };
+    }
     try {
       const raw = sessionStorage.getItem("cam_crm_session");
       return raw ? JSON.parse(raw) : null;
@@ -11637,6 +11644,11 @@ export default function App() {
   const [platformView, setPlatformView] = useState("manager");
   // On mount: if session was restored, re-validate and restore workspace
   useEffect(() => {
+    // Local snapshot mode has its own session and no Supabase to revalidate
+    // against. Without this guard the "no Supabase, so sign out" branch below
+    // clears it on mount and the app falls back to a login form that cannot
+    // authenticate anyone.
+    if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) {
       persistSession(null);
       return;
