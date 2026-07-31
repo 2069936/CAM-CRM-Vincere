@@ -157,7 +157,8 @@ describe('installer release manifest validation', () => {
   });
 
   it('accepts an unsigned package release and reports it as a zip', async () => {
-    const { signingThumbprint, ...unsigned } = releaseManifest;
+    const unsigned = { ...releaseManifest };
+    delete unsigned.signingThumbprint;
     const manifest = {
       ...unsigned,
       artifacts: [
