@@ -7104,33 +7104,3 @@ tr:nth-child(2) .rank-badge {
   margin-bottom: 5px;
 }
 .chart-empty { font-size: 12px; margin: 6px 0; }
-
-/* Visible while a signed-in user reloads the Supabase-backed dashboard. */
-.dashboard-loading {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(18, 22, 42, 0.15);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-}
-.dashboard-loading-card {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: min(100%, 320px);
-  padding: 20px 22px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 14px 40px rgba(22, 26, 51, 0.12);
-}
-.dashboard-loading-card strong { display: block; font-size: 14px; }
-.dashboard-loading-card p { margin: 4px 0 9px; color: var(--text-muted); font-size: 12px; }
-.dashboard-loading-progress { width: min(220px, 52vw); height: 5px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.22); }
-.dashboard-loading-progress span { display: block; height: 100%; border-radius: inherit; background: var(--primary, #6d5dfc); transition: width 180ms ease-out; }
-.dashboard-loading-spinner { color: var(--primary, #6d5dfc); animation: dashboard-loading-spin 0.9s linear infinite; }
-@keyframes dashboard-loading-spin { to { transform: rotate(360deg); } }

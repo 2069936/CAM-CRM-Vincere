@@ -1414,24 +1414,6 @@ function activeCamProfilesForUsers(camProfiles = [], users = []) {
   return activeProfiles.filter((profile) => activeCamIds.has(profile.id));
 }
 
-function DashboardLoading({ elapsedMs }) {
-  const progress = Math.min(94, 14 + (elapsedMs / 120));
-  return (
-    <main className="dashboard-loading" role="status" aria-live="polite">
-      <div className="dashboard-loading-card">
-        <LoaderCircle className="dashboard-loading-spinner" size={30} />
-        <div>
-          <strong>Loading dashboard data</strong>
-          <p>Fetching your latest CRM data</p>
-          <div className="dashboard-loading-progress" aria-label="Dashboard data is loading">
-            <span style={{ width: `${progress}%` }} />
-          </div>
-        </div>
-      </div>
-    </main>
-  );
-}
-
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -11581,10 +11563,6 @@ export default function App() {
           message: "Supabase environment is required.",
       },
   );
-  const [loadStartedAt, setLoadStartedAt] = useState(() => (
-    isSupabaseConfigured ? Date.now() : null
-  ));
-  const [loadElapsedMs, setLoadElapsedMs] = useState(0);
   const [session, setSession] = useState(() => {
     try {
       const raw = sessionStorage.getItem("cam_crm_session");
@@ -11706,9 +11684,6 @@ export default function App() {
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
 
   function beginDashboardLoad(message = "Loading dashboard data...") {
-    const startedAt = Date.now();
-    setLoadStartedAt(startedAt);
-    setLoadElapsedMs(0);
     setRemoteStatus({ source: "supabase", status: "loading", message });
   }
 
@@ -11721,14 +11696,6 @@ export default function App() {
         console.error("[CRM] Trade history loaded after dashboard shell failed:", error);
       });
   }
-
-  useEffect(() => {
-    if (remoteStatus.status !== "loading" || !loadStartedAt) return undefined;
-    const updateElapsed = () => setLoadElapsedMs(Date.now() - loadStartedAt);
-    updateElapsed();
-    const timer = window.setInterval(updateElapsed, 100);
-    return () => window.clearInterval(timer);
-  }, [remoteStatus.status, loadStartedAt]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -11746,7 +11713,6 @@ export default function App() {
           status: "connected",
           message: "Connected to Supabase",
         });
-        setLoadStartedAt(null);
         hydrateTradeHistory();
         if (session?.role === USER_ROLES.CAM && session.camProfileId)
           setPlatformView("cam");
@@ -11759,7 +11725,6 @@ export default function App() {
           status: "error",
           message: `Supabase unavailable: ${error.message}`,
         });
-        setLoadStartedAt(null);
       });
     return () => {
       cancelled = true;
@@ -11817,7 +11782,6 @@ export default function App() {
       status: "connected",
       message: "Connected to Supabase",
     });
-    setLoadStartedAt(null);
     hydrateTradeHistory();
     return nextState;
   }
@@ -12889,10 +12853,6 @@ export default function App() {
         }}
       />
     );
-  }
-
-  if (remoteStatus.status === "loading") {
-    return <DashboardLoading elapsedMs={loadElapsedMs} />;
   }
 
   if (platformView === "manager" && !isManagerSession) {
