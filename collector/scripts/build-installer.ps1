@@ -1,0 +1,79 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+(?:\.\d+)?$')][string]$Version,
+    [Parameter(Mandatory)][string]$AddOnSource,
+    [Parameter(Mandatory)][string]$AddOnVerificationPath,
+    [string]$ArtifactsDirectory = (Join-Path $PSScriptRoot '..\artifacts'),
+    [switch]$ProductionSign
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+if (-not $IsWindows) { throw 'The WiX installer build requires Windows.' }
+$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $root '..'))
+$addOn = (Resolve-Path -LiteralPath $AddOnSource -ErrorAction Stop).Path
+. (Join-Path $PSScriptRoot 'addon-payload.ps1')
+$verification = Get-Content -LiteralPath $AddOnVerificationPath -Raw | ConvertFrom-Json
+if ($verification.schemaVersion -ne 1 -or
+    $verification.contract -ne 'SnapshotV1' -or
+    -not $verification.supportedApiParityPassed) {
+    throw 'The AddOn verification receipt is missing, stale, or does not prove supported-API parity.'
+}
+$addOnPayload = @(Assert-AddOnPayloadReceipt -AddOnPath $addOn -Verification $verification)
+$addOnPayloadDirectory = [IO.Path]::GetDirectoryName($addOn)
+if ($verification.sha256 -ne $addOnPayload[0].sha256) {
+    throw 'The AddOn verification receipt is missing, stale, or does not prove supported-API parity.'
+}
+. (Join-Path $root 'src\Vincere.AutoExport.Installer\CustomActions\DetectNinjaTrader.ps1')
+if (Test-NinjaTraderRunning) { throw 'Close NinjaTrader before building or installing the AddOn.' }
+
+$artifacts = [IO.Path]::GetFullPath($ArtifactsDirectory)
+$staging = Join-Path $artifacts 'staging'
+$agentPublish = Join-Path $staging 'agent'
+$uiPublish = Join-Path $staging 'ui'
+New-Item -ItemType Directory -Path $agentPublish, $uiPublish, $artifacts -Force | Out-Null
+
+dotnet publish (Join-Path $root 'src\Vincere.AutoExport.Agent\Vincere.AutoExport.Agent.csproj') -c Release -r win-x64 --self-contained true -p:Version=$Version -o $agentPublish
+if ($LASTEXITCODE -ne 0) { throw 'Agent publish failed.' }
+dotnet publish (Join-Path $root 'src\Vincere.AutoExport.Agent.UI\Vincere.AutoExport.Agent.UI.csproj') -c Release -r win-x64 --self-contained true -p:Version=$Version -o $uiPublish
+if ($LASTEXITCODE -ne 0) { throw 'UI publish failed.' }
+
+$ownedPaths = @(
+    Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse |
+        Select-Object -ExpandProperty FullName
+    $addOnPayload | ForEach-Object { Join-Path $addOnPayloadDirectory $_.name }
+)
+$signablePaths = @(
+    Get-ChildItem -LiteralPath $agentPublish, $uiPublish -File -Recurse |
+        Where-Object { $_.Extension -in '.exe', '.dll' } |
+        Select-Object -ExpandProperty FullName
+    $addOnPayload | Where-Object name -ne 'Newtonsoft.Json.dll' |
+        ForEach-Object { Join-Path $addOnPayloadDirectory $_.name }
+)
+$ownershipManifest = Join-Path $staging 'ownership-manifest.json'
+. (Join-Path $PSScriptRoot 'complete-owned-payload.ps1')
+$payloadArguments = @{}
+if ($ProductionSign) { $payloadArguments.SigningScriptPath = Join-Path $PSScriptRoot 'sign-artifacts.ps1' }
+Complete-OwnedPayload -OwnedPaths $ownedPaths -SignablePaths $signablePaths `
+    -StagingDirectory $staging -ManifestPath $ownershipManifest @payloadArguments | Out-Null
+Copy-Item -LiteralPath $ownershipManifest -Destination $agentPublish -Force
+
+$installerRoot = Join-Path $root 'src\Vincere.AutoExport.Installer'
+$machineProject = Join-Path $installerRoot 'Vincere.AutoExport.Installer.wixproj'
+$addOnProject = Join-Path $installerRoot 'Vincere.AutoExport.AddOn.Installer.wixproj'
+$bundleProject = Join-Path $installerRoot 'Vincere.AutoExport.Bundle.wixproj'
+dotnet build $machineProject -c Release -p:ProductVersion=$Version -p:AgentPublishDir=$agentPublish -p:UiPublishDir=$uiPublish -p:OutputPath=$artifacts
+if ($LASTEXITCODE -ne 0) { throw 'Machine MSI build failed.' }
+dotnet build $addOnProject -c Release -p:ProductVersion=$Version -p:AddOnPayloadDirectory=$addOnPayloadDirectory -p:OutputPath=$artifacts
+if ($LASTEXITCODE -ne 0) { throw 'AddOn MSI build failed.' }
+
+$machineMsi = Join-Path $artifacts 'Vincere.AutoExport.Machine.msi'
+$addOnMsi = Join-Path $artifacts 'Vincere.AutoExport.AddOn.msi'
+if ($ProductionSign) { & (Join-Path $PSScriptRoot 'sign-artifacts.ps1') -Paths $machineMsi, $addOnMsi }
+dotnet build $bundleProject -c Release -p:ProductVersion=$Version -p:MachineMsi=$machineMsi -p:AddOnMsi=$addOnMsi -p:OutputPath=$artifacts
+if ($LASTEXITCODE -ne 0) { throw 'Bundle build failed.' }
+$bundle = Join-Path $artifacts 'Vincere-AutoExport-Setup.exe'
+if ($ProductionSign) { & (Join-Path $PSScriptRoot 'sign-artifacts.ps1') -Paths $bundle }
+
+Get-Item -LiteralPath $machineMsi, $addOnMsi, $bundle

@@ -2,6 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { makeAccountAlias, recalculateDailyImport, reconcileDailyImport } from './reconcile';
 
 describe('reconcileDailyImport', () => {
+  it('preserves explicit null snapshot values but defaults missing legacy fields to zero', () => {
+    const nullResult = reconcileDailyImport({
+      clientId: 'nulls', date: '2026-07-23', registry: {}, parsed: {
+        accounts: [{ accountName: 'ACC1', grossRealizedPnl: null, trailingMaxDrawdown: null, accountBalance: null, weeklyPnl: null, unrealizedPnl: null }],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+    expect(nullResult.snapshots[0]).toMatchObject({
+      grossRealizedPnl: null, trailingMaxDrawdown: null, accountBalance: null, weeklyPnl: null, unrealizedPnl: null,
+    });
+
+    const legacyResult = reconcileDailyImport({
+      clientId: 'legacy', date: '2026-07-23', registry: {}, parsed: {
+        accounts: [{ accountName: 'ACC2', grossRealizedPnl: 0, accountBalance: -1 }],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+    expect(legacyResult.snapshots[0]).toMatchObject({
+      grossRealizedPnl: 0, trailingMaxDrawdown: 0, accountBalance: -1, weeklyPnl: 0, unrealizedPnl: 0,
+    });
+  });
+
   it('preserves existing manual classification and flags only new accounts', () => {
     const registry = {
       ACC1: {
@@ -434,5 +456,109 @@ describe('recalculateDailyImport', () => {
     expect(result.snapshots).toHaveLength(1);
     expect(result.snapshots[0].strategies).toHaveLength(1);
     expect(result.snapshots[0].accountBalance).toBe(51200);
+  });
+});
+
+describe('trailing drawdown does not apply to cash accounts', () => {
+  const history = [
+    { date: '2026-07-24', snapshots: [{ accountName: 'CASH1', accountBalance: 52000, grossRealizedPnl: 0 }] },
+  ];
+  const parsed = (accountName) => ({
+    accounts: [{ accountName, accountBalance: 49000, grossRealizedPnl: -100, trailingMaxDrawdown: null, weeklyPnl: null }],
+    strategies: [], orders: [], executions: [],
+  });
+
+  it('leaves trailing alone for a cash account, since it has no trailing rule', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Cash - IRA', status: 'Active' } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.snapshots[0].trailingSource).toBeNull();
+    // Null, not 0: "does not apply" rather than "measured, and it is zero".
+    // A prop account with the same history would measure 3000 down from its peak.
+    expect(result.snapshots[0].trailingMaxDrawdown).toBeNull();
+  });
+
+  it('still derives trailing for a prop account', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Funded', status: 'Active' } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.snapshots[0].trailingSource).toBe('derived');
+    expect(result.snapshots[0].trailingMaxDrawdown).toBe(3000);
+  });
+
+  it('raises no drawdown flag on a cash account carrying a stale limit', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Cash - IRA', status: 'Active', maxDrawdownLimit: 2000 } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.flags.filter((f) => f.type.startsWith('Drawdown'))).toEqual([]);
+  });
+
+  it('still counts weekly PnL for cash, which is a real figure for it', () => {
+    const result = reconcileDailyImport({
+      clientId: 'c', date: '2026-07-27', history,
+      registry: { CASH1: { accountName: 'CASH1', accountType: 'Cash - IRA', status: 'Active' } },
+      parsed: parsed('CASH1'),
+    });
+    expect(result.snapshots[0].weeklyPnlSource).toBe('derived');
+    expect(result.snapshots[0].weeklyPnl).toBe(-100);
+  });
+});
+
+describe('flag ids are uuids', () => {
+  // Regression: flags were keyed `${type}-${accountName}-${random}`, which React
+  // accepted and Postgres did not. Resolving a freshly imported flag failed with
+  // "invalid input syntax for type uuid", the optimistic update hid it anyway,
+  // and it returned on the next load.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  it('gives every flag an id operational_flags.id will accept', () => {
+    const result = reconcileDailyImport({
+      clientId: 'client-1',
+      date: '2026-07-27',
+      registry: {
+        'FTDFYL100195681612': {
+          alias: 'Apex 1', accountType: 'Funded',
+          status: 'Active', startBalance: 50000,
+        },
+      },
+      parsed: {
+        accounts: [{ accountName: 'FTDFYL100195681612', accountBalance: 50000 }],
+        strategies: [{ accountName: 'FTDFYL100195681612', strategyName: 'RBO-1.8', enabled: false }],
+        orders: [],
+        executions: [],
+      },
+    });
+
+    expect(result.flags.length).toBeGreaterThan(0);
+    // The exact shape that used to break: a disabled strategy on a real account.
+    expect(result.flags.map((flag) => flag.type)).toContain('Strategy disabled');
+    for (const flag of result.flags) {
+      expect(flag.id).toMatch(UUID);
+    }
+  });
+
+  it('does not repeat an id across flags', () => {
+    const result = reconcileDailyImport({
+      clientId: 'client-1',
+      date: '2026-07-27',
+      registry: {},
+      parsed: {
+        accounts: [
+          { accountName: 'ACC-A', accountBalance: 1000 },
+          { accountName: 'ACC-B', accountBalance: 2000 },
+        ],
+        strategies: [], orders: [], executions: [],
+      },
+    });
+
+    const ids = result.flags.map((flag) => flag.id);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });

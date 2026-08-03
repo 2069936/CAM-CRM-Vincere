@@ -52,3 +52,47 @@ describe('buildClientPropFirms', () => {
     expect(firms[0].firm).toBe('Lucid'); // sorted by count desc
   });
 });
+
+describe('cash subtype segments', () => {
+  const client = {
+    accountRegistry: {
+      IRA1: { accountName: 'IRA1', accountType: 'Cash - IRA' },
+      STR1: { accountName: 'STR1', accountType: 'Cash - Straight' },
+      OLD1: { accountName: 'OLD1', accountType: 'Cash' },
+      FND1: { accountName: 'FND1', accountType: 'Funded' },
+    },
+  };
+  const dailyImport = {
+    accounts: {},
+    snapshots: [
+      { accountName: 'IRA1', accountBalance: 1000, grossRealizedPnl: 10 },
+      { accountName: 'STR1', accountBalance: 2000, grossRealizedPnl: 20 },
+      { accountName: 'OLD1', accountBalance: 500, grossRealizedPnl: 5 },
+      { accountName: 'FND1', accountBalance: 50000, grossRealizedPnl: 100 },
+    ],
+  };
+  const seg = buildClientSegments(client, dailyImport);
+
+  it('reports IRA and straight cash separately', () => {
+    expect(seg.cashIra.count).toBe(1);
+    expect(seg.cashIra.balance).toBe(1000);
+    expect(seg.cashStraight.count).toBe(1);
+    expect(seg.cashStraight.balance).toBe(2000);
+  });
+
+  it('keeps legacy Cash in its own bucket so it is not double counted', () => {
+    expect(seg.cashLegacy.count).toBe(1);
+    expect(seg.cashLegacy.balance).toBe(500);
+  });
+
+  it('still exposes the combined cash total', () => {
+    expect(seg.cash.count).toBe(3);
+    expect(seg.cash.balance).toBe(3500);
+    expect(seg.cash.dailyPnl).toBe(35);
+  });
+
+  it('does not mix cash into funded', () => {
+    expect(seg.funded.count).toBe(1);
+    expect(seg.funded.balance).toBe(50000);
+  });
+});

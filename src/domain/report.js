@@ -1,4 +1,5 @@
 import { buildClientSegments } from './clientSegments';
+import { ACCOUNT_TYPES, isCashType } from './reconcile';
 
 function ciLookup(registry, accountName) {
   if (!registry || !accountName) return {};
@@ -155,14 +156,24 @@ export function buildDailyReportSummary(client, dailyImport) {
   const grouped = {
     evaluations: [],
     funded: [],
+    // `cash` is every cash account combined; cashIra / cashStraight split it so
+    // the two can be reported separately without losing the combined total.
     cash: [],
+    cashIra: [],
+    cashStraight: [],
+    cashLegacy: [],
     ignored: [],
   };
 
   for (const snapshot of snapshots) {
     const meta = ciLookup(registry, snapshot.accountName) || {};
     const row = { ...snapshot, meta };
-    if (meta.accountType === 'Cash') grouped.cash.push(row);
+    if (isCashType(meta.accountType)) {
+      grouped.cash.push(row);
+      if (meta.accountType === ACCOUNT_TYPES.CASH_IRA) grouped.cashIra.push(row);
+      else if (meta.accountType === ACCOUNT_TYPES.CASH_STRAIGHT) grouped.cashStraight.push(row);
+      else grouped.cashLegacy.push(row);
+    }
     else if (meta.accountType === 'Funded') grouped.funded.push(row);
     else if (meta.accountType === 'Inactive / Ignore') grouped.ignored.push(row);
     else if (meta.accountType?.startsWith('Evaluation')) grouped.evaluations.push(row);
@@ -206,6 +217,8 @@ export function buildDailyReportSummary(client, dailyImport) {
       evaluations: grouped.evaluations.length,
       funded: grouped.funded.length,
       cash: grouped.cash.length,
+      cashIra: grouped.cashIra.length,
+      cashStraight: grouped.cashStraight.length,
       openFlags: openFlags.length,
       criticalFlags: criticalFlags.length,
     },
