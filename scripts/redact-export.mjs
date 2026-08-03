@@ -204,10 +204,22 @@ function splitParameters(value) {
   return { sizing: sizing.join('/'), config: config.join('/') };
 }
 
+/**
+ * Keeps the parameters, drops only the licence key.
+ *
+ * An earlier version hashed the whole string. That preserved comparisons but
+ * destroyed everything downstream of them: the risk chart reads StopLossTicks
+ * and ProfitTargetTicks out of this field, and against a hashed snapshot every
+ * family rendered as "no stop or target on record". A local copy that cannot
+ * exercise the charts is most of the reason for having one.
+ *
+ * The settings themselves identify nobody — they are the same numbers across
+ * every client running that configuration. The licence key is the only per-client
+ * value in the string, so replacing it is enough, and it also makes two clients
+ * on identical settings compare equal, which hashing the raw string did not.
+ */
 function configFingerprint(value) {
-  const parts = splitParameters(value);
-  if (!parts) return `cfg:${digest(value.replace(LICENCE_KEY, 'KEY')).slice(0, 16)}`;
-  return `cfg:${digest(parts.config).slice(0, 16)}/size:${digest(parts.sizing).slice(0, 6)}`;
+  return String(value).replace(LICENCE_KEY, 'KEY');
 }
 
 function redactString(key, value) {

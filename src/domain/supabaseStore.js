@@ -47,13 +47,18 @@ function accountMetaFromRow(row) {
   };
 }
 
-function strategyFromRow(row) {
+function strategyFromRow(row, accountById = {}) {
   const params = row.params_parsed && typeof row.params_parsed === 'object'
     ? row.params_parsed
     : {};
   return {
     id: row.id,
     strategyName: row.strategy_name || '',
+    // The row points at an account and the mapped object dropped it, so
+    // anything reading dailyImport.strategies saw rows belonging to nobody.
+    // Per-account grouping — which family runs where, how many accounts a
+    // configuration is on — came out empty against real data.
+    accountName: accountById[row.trading_account_id]?.account_name || '',
     strategyFamily: row.strategy_family || '',
     strategyVersion: row.strategy_version || '',
     instrument: row.instrument || '',
@@ -349,7 +354,7 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
   }
 
   for (const strategy of strategyRows) {
-    const mapped = strategyFromRow(strategy);
+    const mapped = strategyFromRow(strategy, accountByUuid);
     if (strategy.account_snapshot_id) {
       if (!strategiesBySnapshot[strategy.account_snapshot_id]) strategiesBySnapshot[strategy.account_snapshot_id] = [];
       strategiesBySnapshot[strategy.account_snapshot_id].push(mapped);

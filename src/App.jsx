@@ -129,6 +129,8 @@ import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
+import StrategyRiskScatter from "./components/StrategyRiskScatter";
+import { buildStrategyRiskProfile } from "./domain/strategyRiskProfile";
 import {
   AlgoContributionChart,
   BookMixBar,
@@ -8909,6 +8911,14 @@ function CamOverview({
   });
 
   const today = todayIsoDate();
+  // Exposure is frequency divided by reward:risk — a family that fires ten times
+  // a day for less than it risks carries more than one that fires twice for
+  // three times its stop.
+  const riskProfile = useMemo(
+    () => buildStrategyRiskProfile(clients, { asOfDate: today }),
+    [clients, today],
+  );
+
   const closeStats = (() => {
     const withUpload = clients.filter((c) => getClientImportByDate(c, today));
     const closed = withUpload.filter(
@@ -9152,6 +9162,10 @@ function CamOverview({
           </div>
         </div>
       </div>
+
+      <CollapsiblePanel title="Algorithm risk profile" tone="cam-charts-panel">
+        <StrategyRiskScatter rows={riskProfile} />
+      </CollapsiblePanel>
 
       <CollapsiblePanel title="Book coverage and mix" tone="cam-charts-panel">
         <div className="ov-pair">

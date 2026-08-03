@@ -67,14 +67,16 @@ function missingReason(row) {
 /**
  * Strategy families placed by how hard they trade against how much they ask for.
  *
- * Both axes run backwards on purpose. Plotted the conventional way — fills
- * rising to the right, reward:risk rising upward — the dangerous combination
- * (trades constantly, targets less than it risks) lands in the bottom-right,
- * the last corner the eye reaches. Reversing both is a 180° rotation of that
- * plot, which puts the high-exposure corner top-left where reading starts. The
- * cost is that a reversed axis is easy to misread, so every tick carries its
- * number, both axis titles state their direction in words, and the corner is
- * labelled rather than left to be inferred.
+ * Axes run the conventional way: fills rise to the right, reward:risk rises
+ * upward. That puts the dangerous combination — trades constantly, targets less
+ * than it risks — in the bottom right rather than the top left, which is the
+ * corner the eye reaches last.
+ *
+ * An earlier version reversed both axes to move that corner to the top left.
+ * The corner is worth less than the convention. This chart is glanced at to
+ * judge risk, and a reversed axis is misread in exactly the direction that
+ * matters: a family that trades hard on a thin edge reading as the opposite.
+ * The corner is labelled instead.
  *
  * Bubble area — not radius — is proportional to the number of accounts running
  * the family, because area is what the eye actually compares. The floor at
@@ -116,9 +118,9 @@ export default function StrategyRiskScatter({ rows = [], limit = 14 }) {
   const yMax = Math.max(1.25, Math.max(...shown.map((row) => row.rewardRisk), 0) * 1.12);
   const maxAccounts = Math.max(1, ...shown.map((row) => row.accounts || 0));
 
-  // Reversed on both axes — see the component note.
-  const X = (fills) => dx1 - (Math.min(fills, xMax) / xMax) * (dx1 - dx0);
-  const Y = (ratio) => dy0 + (Math.min(ratio, yMax) / yMax) * (dy1 - dy0);
+  // Conventional: fills rise to the right, reward:risk rises upward.
+  const X = (fills) => dx0 + (Math.min(fills, xMax) / xMax) * (dx1 - dx0);
+  const Y = (ratio) => dy1 - (Math.min(ratio, yMax) / yMax) * (dy1 - dy0);
   const radius = (accounts) => Math.max(R_MIN, R_MAX * Math.sqrt(Math.max(accounts || 0, 0) / maxAccounts));
 
   const fractions = [0, 0.25, 0.5, 0.75, 1];
@@ -160,7 +162,7 @@ export default function StrategyRiskScatter({ rows = [], limit = 14 }) {
   const belowParity = shown.filter((row) => row.rewardRisk < 1).length;
   const summary = [
     `Reward to risk against median fills per account-day for ${shown.length} strategy famil${shown.length === 1 ? 'y' : 'ies'}.`,
-    'Both axes run backwards, so the busiest families with the thinnest edge sit in the top left.',
+    'The busiest families with the thinnest edge sit in the bottom right.',
     worst
       ? `Highest exposure is ${worst.family} at ${fmtFills(worst.fillsPerDay)} fills a day on ${fmtRatio(worst.rewardRisk)} reward to risk across ${worst.accounts} account${worst.accounts === 1 ? '' : 's'}.`
       : '',
@@ -208,11 +210,11 @@ export default function StrategyRiskScatter({ rows = [], limit = 14 }) {
               1 : 1
             </text>
 
-            {/* Sits above the plot rect, not inside it: a family with a very
-                thin edge lands hard against the top and would be covered by a
-                caption placed in the corner it is meant to describe. */}
-            <text x={x0} y={y0 - 9} fontSize="11" fontWeight="600" fill="var(--error)">
-              ↖ high exposure — busiest, thinnest edge
+            {/* Sits above the plot rect rather than inside the corner it names:
+                a family with a very thin edge lands hard against the axis and
+                would be covered by a caption placed there. */}
+            <text x={x1} y={y0 - 9} textAnchor="end" fontSize="11" fontWeight="600" fill="var(--error)">
+              high exposure — busiest, thinnest edge ↘
             </text>
 
             <line x1={x0} x2={x1} y1={y1} y2={y1} stroke="var(--border)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
@@ -230,13 +232,13 @@ export default function StrategyRiskScatter({ rows = [], limit = 14 }) {
             ))}
 
             <text x={(x0 + x1) / 2} y={H - 12} textAnchor="middle" fontSize="11" fill="var(--muted)">
-              Median fills per account-day — more to the left
+              Median fills per account-day — busier to the right
             </text>
             <text
               x={15} y={(y0 + y1) / 2} textAnchor="middle" fontSize="11" fill="var(--muted)"
               transform={`rotate(-90 15 ${(y0 + y1) / 2})`}
             >
-              Reward : risk — thinner toward the top
+              Reward : risk — thinner toward the bottom
             </text>
 
             {/* Half-transparent fills with a matching ring so families that land
