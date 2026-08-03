@@ -166,6 +166,8 @@ import {
   insertSupabasePayoutEvent,
   insertSupabaseTask,
   loadSupabaseCrmState,
+  loadSupabaseTradeHistory,
+  mergeSupabaseTradeHistory,
   loadSupabaseDailySopTemplate,
   loadSupabaseReports,
   loadSupabaseAuditLogs,
@@ -11559,7 +11561,7 @@ export default function App() {
           source: "supabase",
           status: "error",
           message: "Supabase environment is required.",
-        },
+      },
   );
   const [session, setSession] = useState(() => {
     try {
@@ -11681,9 +11683,24 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
 
+  function beginDashboardLoad(message = "Loading dashboard data...") {
+    setRemoteStatus({ source: "supabase", status: "loading", message });
+  }
+
+  function hydrateTradeHistory() {
+    loadSupabaseTradeHistory()
+      .then((history) => {
+        setState((current) => mergeSupabaseTradeHistory(current, history));
+      })
+      .catch((error) => {
+        console.error("[CRM] Trade history loaded after dashboard shell failed:", error);
+      });
+  }
+
   useEffect(() => {
     if (!isSupabaseConfigured) return;
     let cancelled = false;
+    beginDashboardLoad();
     loadSupabaseCrmState({
       preferredCamProfileId:
         session?.camProfileId || state.accountManager?.id || state.camProfiles?.[0]?.id || null,
@@ -11696,6 +11713,7 @@ export default function App() {
           status: "connected",
           message: "Connected to Supabase",
         });
+        hydrateTradeHistory();
         if (session?.role === USER_ROLES.CAM && session.camProfileId)
           setPlatformView("cam");
       })
@@ -11746,6 +11764,7 @@ export default function App() {
 
   async function reloadSupabaseState(preferredCamProfileId = null, selectedClientId = null) {
     if (!isSupabaseConfigured) return null;
+    beginDashboardLoad("Refreshing dashboard data...");
     const remoteState = await loadSupabaseCrmState({
       preferredCamProfileId:
         preferredCamProfileId ||
@@ -11763,6 +11782,7 @@ export default function App() {
       status: "connected",
       message: "Connected to Supabase",
     });
+    hydrateTradeHistory();
     return nextState;
   }
 
