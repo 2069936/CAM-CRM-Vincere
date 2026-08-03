@@ -166,6 +166,8 @@ import {
   insertSupabasePayoutEvent,
   insertSupabaseTask,
   loadSupabaseCrmState,
+  loadSupabaseTradeHistory,
+  mergeSupabaseTradeHistory,
   loadSupabaseDailySopTemplate,
   loadSupabaseReports,
   loadSupabaseAuditLogs,
@@ -1413,14 +1415,17 @@ function activeCamProfilesForUsers(camProfiles = [], users = []) {
 }
 
 function DashboardLoading({ elapsedMs }) {
-  const seconds = Math.max(0, elapsedMs / 1000).toFixed(1);
+  const progress = Math.min(94, 14 + (elapsedMs / 120));
   return (
     <main className="dashboard-loading" role="status" aria-live="polite">
       <div className="dashboard-loading-card">
         <LoaderCircle className="dashboard-loading-spinner" size={30} />
         <div>
           <strong>Loading dashboard data</strong>
-          <p>Fetching your latest CRM data <span>{seconds}s</span></p>
+          <p>Fetching your latest CRM data</p>
+          <div className="dashboard-loading-progress" aria-label="Dashboard data is loading">
+            <span style={{ width: `${progress}%` }} />
+          </div>
         </div>
       </div>
     </main>
@@ -11707,6 +11712,16 @@ export default function App() {
     setRemoteStatus({ source: "supabase", status: "loading", message });
   }
 
+  function hydrateTradeHistory() {
+    loadSupabaseTradeHistory()
+      .then((history) => {
+        setState((current) => mergeSupabaseTradeHistory(current, history));
+      })
+      .catch((error) => {
+        console.error("[CRM] Trade history loaded after dashboard shell failed:", error);
+      });
+  }
+
   useEffect(() => {
     if (remoteStatus.status !== "loading" || !loadStartedAt) return undefined;
     const updateElapsed = () => setLoadElapsedMs(Date.now() - loadStartedAt);
@@ -11732,6 +11747,7 @@ export default function App() {
           message: "Connected to Supabase",
         });
         setLoadStartedAt(null);
+        hydrateTradeHistory();
         if (session?.role === USER_ROLES.CAM && session.camProfileId)
           setPlatformView("cam");
       })
@@ -11802,6 +11818,7 @@ export default function App() {
       message: "Connected to Supabase",
     });
     setLoadStartedAt(null);
+    hydrateTradeHistory();
     return nextState;
   }
 
