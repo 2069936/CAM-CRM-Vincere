@@ -4,8 +4,8 @@ import {
   createHandler,
   createVerificationStore,
   parseVerificationQuery,
-} from './ingest-verify.js';
-import { ApiError } from '../_lib/http.js';
+} from '../../../autoCollection/admin/ingest-verify.js';
+import { ApiError } from '../../../apiLib/http.js';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';

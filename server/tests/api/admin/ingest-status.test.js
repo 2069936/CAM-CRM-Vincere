@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, createIngestStatusStore, resolveInstallerRelease } from './ingest-status.js';
+import { createHandler, createIngestStatusStore, resolveInstallerRelease } from '../../../autoCollection/admin/ingest-status.js';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';

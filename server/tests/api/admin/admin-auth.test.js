@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createHandler as createUsersHandler } from './users.js';
-import { createHandler as createIntakeHandler } from './intake-sheet.js';
-import { createHandler as createExportHandler } from './data-export.js';
+import { createHandler as createUsersHandler } from '../../../../api/admin/users.js';
+import { createHandler as createIntakeHandler } from '../../../../api/admin/intake-sheet.js';
+import { createHandler as createExportHandler } from '../../../../api/admin/data-export.js';
 
 function response() {
   return {

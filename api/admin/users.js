@@ -1,5 +1,5 @@
-import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
-import { handleApiError, readJsonBody, requireMethod, sendJson } from '../_lib/http.js';
+import { createApiClients, requireAppUser } from '../../server/apiLib/apiAuth.js';
+import { handleApiError, readJsonBody, requireMethod, sendJson } from '../../server/apiLib/http.js';
 
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();

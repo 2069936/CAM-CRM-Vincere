@@ -234,22 +234,36 @@ function reportError(label, error) {
 // (id) so every table loads in full.
 async function loadTable(table, columns = '*') {
   const pageSize = 1000;
+  const { count, error: countError } = await supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true });
+  reportError(`${table} count`, countError);
+
+  const pageCount = Math.ceil(Number(count || 0) / pageSize);
+  if (!pageCount) return [];
+
+  // Fetching every page one after another made large history tables wait for
+  // several network round trips. The result remains complete and ordered, but
+  // pages now load together.
+  const pages = await Promise.all(
+    Array.from({ length: pageCount }, (_, page) => {
+      const from = page * pageSize;
+      return supabase
+        .from(table)
+        .select(columns)
+        .order('id', { ascending: true })
+        .range(from, from + pageSize - 1);
+    }),
+  );
   const all = [];
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await supabase
-      .from(table)
-      .select(columns)
-      .order('id', { ascending: true })
-      .range(from, from + pageSize - 1);
+  for (const { data, error } of pages) {
     reportError(table, error);
-    const rows = data || [];
-    all.push(...rows);
-    if (rows.length < pageSize) break;
+    all.push(...(data || []));
   }
   return all;
 }
 
-export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}) {
+export async function loadSupabaseCrmState({ preferredCamProfileId = null, includeTradeHistory = false } = {}) {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY.');
   }
@@ -284,8 +298,8 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     loadTable('daily_imports'),
     loadTable('account_snapshots'),
     loadTable('strategy_snapshots'),
-    loadTable('orders'),
-    loadTable('executions'),
+    includeTradeHistory ? loadTable('orders') : Promise.resolve([]),
+    includeTradeHistory ? loadTable('executions') : Promise.resolve([]),
     loadTable('operational_flags'),
     loadTable('tasks'),
     loadTable('activity_logs'),
@@ -424,6 +438,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     const dailyImports = (importsByClient[client.id] || [])
       .map((dailyImport) => ({
         id: dailyImport.legacy_key || dailyImport.id,
+        uuid: dailyImport.id,
         clientId: pickId(client),
         date: dailyImport.trading_date,
         importedAt: dailyImport.imported_at,
@@ -503,6 +518,45 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null } = {}
     timeOff: (timeOffRows || []).map((row) => timeOffFromRow(row, camIdByUuid)),
     coverage: (coverageRows || []).map((row) => coverageFromRow(row, camIdByUuid, clientIdByUuid)),
     selectedClientId,
+  };
+}
+
+// Orders and executions are the two largest tables. They are intentionally
+// loaded after the dashboard shell so login/reload is not blocked by trade
+// history that most overview screens do not render immediately.
+export async function loadSupabaseTradeHistory() {
+  const [orders, executions] = await Promise.all([
+    loadTable('orders'),
+    loadTable('executions'),
+  ]);
+  return { orders, executions };
+}
+
+export function mergeSupabaseTradeHistory(state, { orders = [], executions = [] }) {
+  const accountsByUuid = Object.fromEntries(
+    (state.clients || []).flatMap((client) => Object.values(client.accountRegistry || {}))
+      .map((account) => [account.id, account]),
+  );
+  const ordersByImport = {};
+  const executionsByImport = {};
+  for (const order of orders) {
+    if (!ordersByImport[order.daily_import_id]) ordersByImport[order.daily_import_id] = [];
+    ordersByImport[order.daily_import_id].push(orderFromRow(order, accountsByUuid));
+  }
+  for (const execution of executions) {
+    if (!executionsByImport[execution.daily_import_id]) executionsByImport[execution.daily_import_id] = [];
+    executionsByImport[execution.daily_import_id].push(executionFromRow(execution, accountsByUuid));
+  }
+  return {
+    ...state,
+    clients: (state.clients || []).map((client) => ({
+      ...client,
+      dailyImports: (client.dailyImports || []).map((dailyImport) => ({
+        ...dailyImport,
+        orders: ordersByImport[dailyImport.uuid || dailyImport.id] || [],
+        executions: executionsByImport[dailyImport.uuid || dailyImport.id] || [],
+      })),
+    })),
   };
 }
 

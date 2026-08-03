@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import snapshotFixture from '../../test/fixtures/auto-export/snapshot-v1.json';
-import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
-import { createHandler, createReplayStore, parseReplayBody, processStoredReplay } from './ingest-reprocess.js';
-import { ApiError } from '../_lib/http.js';
+import snapshotFixture from '../../../../test/fixtures/auto-export/snapshot-v1.json';
+import { canonicalSnapshotPayload } from '../../../apiLib/autoImportStore.js';
+import { createHandler, createReplayStore, parseReplayBody, processStoredReplay } from '../../../autoCollection/admin/ingest-reprocess.js';
+import { ApiError } from '../../../apiLib/http.js';
 
 const BATCH_ID = '33333333-3333-4333-8333-333333333333';
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
