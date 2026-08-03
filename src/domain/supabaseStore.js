@@ -234,17 +234,31 @@ function reportError(label, error) {
 // (id) so every table loads in full.
 async function loadTable(table, columns = '*') {
   const pageSize = 1000;
+  const { count, error: countError } = await supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true });
+  reportError(`${table} count`, countError);
+
+  const pageCount = Math.ceil(Number(count || 0) / pageSize);
+  if (!pageCount) return [];
+
+  // Fetching every page one after another made large history tables wait for
+  // several network round trips. The result remains complete and ordered, but
+  // pages now load together.
+  const pages = await Promise.all(
+    Array.from({ length: pageCount }, (_, page) => {
+      const from = page * pageSize;
+      return supabase
+        .from(table)
+        .select(columns)
+        .order('id', { ascending: true })
+        .range(from, from + pageSize - 1);
+    }),
+  );
   const all = [];
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await supabase
-      .from(table)
-      .select(columns)
-      .order('id', { ascending: true })
-      .range(from, from + pageSize - 1);
+  for (const { data, error } of pages) {
     reportError(table, error);
-    const rows = data || [];
-    all.push(...rows);
-    if (rows.length < pageSize) break;
+    all.push(...(data || []));
   }
   return all;
 }
