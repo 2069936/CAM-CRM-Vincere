@@ -128,8 +128,10 @@ import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientL
 import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
-import { EXCLUDED_FROM_TOTAL, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
+import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
+import BulletBotDeskPanel from "./components/BulletBotDeskPanel";
+import CapitalDetailPanel from "./components/CapitalDetailPanel";
 import StrategyRiskScatter from "./components/StrategyRiskScatter";
 import { buildStrategyRiskProfile } from "./domain/strategyRiskProfile";
 import {
@@ -3796,11 +3798,60 @@ const SEGMENT_LABELS = {
   Unclassified: "Unclassed",
 };
 
-function SegmentBreakdown({ segments }) {
+// The id of the panel a segment row opens, so aria-expanded has something to
+// point at: the detail cannot render inside the tile and lands further down the
+// document, which a screen reader cannot associate on its own.
+const CAPITAL_DETAIL_ID = "manager-capital-detail";
+
+/**
+ * One segment row.
+ *
+ * Declared at module scope, NOT inside SegmentBreakdown. A component defined in
+ * a render body gets a new function identity every render, React treats that as
+ * a different element type, and the whole <li> subtree is unmounted and
+ * remounted — so the button the user just pressed is destroyed, focus falls back
+ * to <body>, and a keyboard user loses their place in the list on every toggle.
+ *
+ * The key handed back is `row.segment`, the long domain name, never
+ * `SEGMENT_LABELS[row.segment]`. buildCapitalDetail keys its blocks off
+ * segmentFor(), the same function buildSegmentTotals uses, so
+ * "Evaluations - Bullet Bot" matches and "Bullet Bot" (what the tile prints)
+ * would match nothing and silently open a segment reading $0.
+ */
+function SegmentRow({ row, excluded = false, open = false, onToggleSegment = null }) {
+  const cells = (
+    <>
+      <span title={row.segment}>{SEGMENT_LABELS[row.segment] || row.segment}</span>
+      <span className={excluded ? undefined : row.dailyPnl >= 0 ? "positive" : "negative"}>
+        {formatCurrency(row.dailyPnl)}
+      </span>
+      <em>{row.accounts}</em>
+    </>
+  );
+  if (!onToggleSegment) {
+    return <li className={excluded ? "segment-excluded" : undefined}>{cells}</li>;
+  }
+  return (
+    <li className={excluded ? "segment-clickable segment-excluded" : "segment-clickable"}>
+      <button
+        type="button"
+        className={open ? "segment-row open" : "segment-row"}
+        aria-expanded={open}
+        aria-controls={open ? CAPITAL_DETAIL_ID : undefined}
+        title={open ? `Hide capital detail for ${row.segment}` : `Capital detail for ${row.segment}`}
+        onClick={() => onToggleSegment(open ? null : row.segment)}
+      >
+        <ChevronDown className={open ? "chevron open" : "chevron"} size={11} />
+        {cells}
+      </button>
+    </li>
+  );
+}
+
+function SegmentBreakdown({ segments, openSegment = null, onToggleSegment = null }) {
   const rows = segments?.segments || [];
   if (!rows.length) return null;
   const business = rollUpByBusiness(segments);
-  const label = (name) => SEGMENT_LABELS[name] || name;
 
   return (
     <div className="segment-breakdown">
@@ -3818,20 +3869,21 @@ function SegmentBreakdown({ segments }) {
       </div>
       <ul className="segment-list">
         {rows.filter((row) => row.countedInTotal).map((row) => (
-          <li key={row.segment}>
-            <span title={row.segment}>{label(row.segment)}</span>
-            <span className={row.dailyPnl >= 0 ? "positive" : "negative"}>
-              {formatCurrency(row.dailyPnl)}
-            </span>
-            <em>{row.accounts}</em>
-          </li>
+          <SegmentRow
+            key={row.segment}
+            row={row}
+            open={openSegment === row.segment}
+            onToggleSegment={onToggleSegment}
+          />
         ))}
         {rows.filter((row) => EXCLUDED_FROM_TOTAL.has(row.segment)).map((row) => (
-          <li key={row.segment} className="segment-excluded">
-            <span title={row.segment}>{label(row.segment)}</span>
-            <span>{formatCurrency(row.dailyPnl)}</span>
-            <em>{row.accounts}</em>
-          </li>
+          <SegmentRow
+            key={row.segment}
+            row={row}
+            excluded
+            open={openSegment === row.segment}
+            onToggleSegment={onToggleSegment}
+          />
         ))}
       </ul>
     </div>
@@ -3950,6 +4002,12 @@ function ManagerOverview({
   const [managerConfirmAction, setManagerConfirmAction] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managerRenderedAt] = useState(() => Date.now());
+  // Which segment tile has its capital detail open. Held here rather than in
+  // SegmentBreakdown because the detail cannot render inside the tile: the tile
+  // is one cell of a repeat(4, minmax(160px, 1fr)) grid and CapitalDetailPanel
+  // carries four tables. The tile is the control; the panel opens full width
+  // directly under the grid.
+  const [openCapitalSegment, setOpenCapitalSegment] = useState(null);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
   const teamHistory = useMemo(
     () => buildTeamHistory(clients).slice(-10),
@@ -3975,6 +4033,19 @@ function ManagerOverview({
     () => buildSegmentTotals(latestImports(clients, asOfDate)),
     [clients, asOfDate],
   );
+  // The tile row behind the open capital panel, so the panel can say what the
+  // tile counted. Null when the open segment has no snapshot on anybody's
+  // latest close — which happens as soon as the as-of picker moves — and the
+  // sentence is then withheld rather than printed with a 0 in it.
+  const openCapitalTileRow = openCapitalSegment
+    ? segments.segments.find((row) => row.segment === openCapitalSegment) || null
+    : null;
+  // Same reason, for the desk-level Bullet Bot panel further down: it reports
+  // 240 accounts where the tile reports 168, and the two are counted from
+  // different cohorts rather than in disagreement.
+  const bulletBotTileRow = segments.segments.find(
+    (row) => row.segment === SEGMENTS.EVAL_BULLET,
+  ) || null;
   // Firm-wide rather than one CAM's book: the manager's question is which
   // configurations carry exposure across everyone, not what a single client runs.
   const riskProfile = useMemo(
@@ -4945,7 +5016,11 @@ function ManagerOverview({
             >
               {formatCurrency(segments.total.dailyPnl)}
             </strong>
-            <SegmentBreakdown segments={segments} />
+            <SegmentBreakdown
+              segments={segments}
+              openSegment={openCapitalSegment}
+              onToggleSegment={setOpenCapitalSegment}
+            />
           </div>
           <div className="metric">
             <span>Team weekly P&L</span>
@@ -5016,6 +5091,43 @@ function ManagerOverview({
             </div>
           )}
         </div>
+
+        {/* The capital behind whichever segment tile is open.
+            The tile's account count and this panel's are two different counts
+            and both are right: the tile counts snapshots on each client's most
+            recent close (168 Bullet Bot accounts, 9 Ignored ones), while this
+            panel counts every account that has a balance on record on any of
+            the imported closes (236 and 72). The gap is 8x on Ignored, so the
+            bridge is RENDERED, not left in this comment — a manager reading
+            "9" on the tile and "72 accounts" in the panel it opens has no way
+            to reach that reconciliation from a source file. */}
+        {openCapitalSegment ? (
+          <section className="panel capital-detail-panel" id={CAPITAL_DETAIL_ID}>
+            <div className="panel-heading">
+              <h3>Capital · {openCapitalSegment}</h3>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setOpenCapitalSegment(null)}
+              >
+                Close
+              </button>
+            </div>
+            {openCapitalTileRow ? (
+              <p className="muted capital-note">
+                The tile above counts the {openCapitalTileRow.accounts} accounts in this segment
+                that reported on their client&apos;s most recent close. Everything below counts
+                every account with a balance on any imported close, so where the two account
+                counts differ, neither is wrong.
+              </p>
+            ) : null}
+            <CapitalDetailPanel
+              clients={clients}
+              segment={openCapitalSegment}
+              asOfDate={asOfDate}
+            />
+          </section>
+        ) : null}
 
         <InsightFeedPanel
           insights={managerInsights}
@@ -5161,6 +5273,33 @@ function ManagerOverview({
             </CollapsiblePanel>
           );
         })()}
+
+        {/* Bullet Bot across the whole desk.
+            The Stack Playbook tab already ran buildBulletBotStats over ALL
+            clients, so the desk answer existed — it was just filed inside one
+            client's tab and computed differently (236 accounts, 22 passes, a 9%
+            rate whose denominator held 86 accounts with no target at all).
+            StackPlaybook now renders this same component, so there is one
+            Bullet Bot answer in the app rather than two.
+
+            The 240 here and the Bullet Bot tile's 168 above are different
+            counts, not a discrepancy: this counts every account the registry
+            types as a Bullet Bot evaluation, the tile counts the ones that
+            reported on their client's most recent close, and 236 of the 240
+            have ever been seen in a snapshot. That reconciliation is rendered
+            below, not left here — a comment reconciles nothing for a manager
+            looking at 168 and 240 on one screen. */}
+        <CollapsiblePanel title="Bullet Bot across the desk" tone="ops-charts-panel">
+          {bulletBotTileRow ? (
+            <p className="muted chart-empty">
+              The Bullet Bot tile above reads {bulletBotTileRow.accounts} accounts: the ones that
+              reported on their client&apos;s most recent close. This panel scores every account
+              the registry types as a Bullet Bot evaluation, reported or not, so the two counts
+              answer different questions.
+            </p>
+          ) : null}
+          <BulletBotDeskPanel clients={clients} />
+        </CollapsiblePanel>
 
         <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
           <div className="ov-pair">

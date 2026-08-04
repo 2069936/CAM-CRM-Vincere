@@ -6,7 +6,8 @@ import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
 import { buildAccountLifecycle } from '../domain/accountLifecycle';
 import LifecycleByAlgo from './LifecycleByAlgo';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
-import { buildBulletBotStats } from '../domain/bulletBotStats';
+import { buildBulletBotDeskStats } from '../domain/bulletBotDeskStats';
+import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 
@@ -307,7 +308,15 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
   const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
   const riskCurves = buildRiskScalingCurve(comboPerf);
-  const bbStats = buildBulletBotStats(teamClients);
+  // Desk-wide, despite living in one client's tab: this card has always been fed
+  // teamClients. It used to run buildBulletBotStats, which answered the same
+  // question with different arithmetic — 236 accounts against 240, 22 passes
+  // against 37, and a 9% rate whose denominator contained 86 accounts carrying
+  // no profit target at all, so they could never satisfy balance >= target and
+  // counted as failures. Two desk-wide Bullet Bot totals in one app is the
+  // reason a manager stops trusting either. Same component, same numbers, both
+  // places.
+  const bbStats = buildBulletBotDeskStats(teamClients);
   const comboFirm = buildComboByFirm(teamClients, comboFromStrategies);
   const logAlgoAgg = aggregateLogFamilyHistory(logAlgoHistory);
   const sigGroups = groupStrategiesBySignature(teamClients);
@@ -517,32 +526,15 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
       ) : null}
 
       {/* ── Bullet Bot ─────────────────────────────────────── */}
-      {bbStats.overall.accounts ? (
+      {bbStats.cohort.accounts ? (
         <section className="panel">
           <button className="registry-toggle" onClick={() => setBbOpen((v) => !v)}>
             <ChevronDown className={bbOpen ? 'chevron open' : 'chevron'} size={16} />
             <h3>Bullet Bot</h3>
-            <span className="muted">Pass rate + days-to-pass by direction</span>
-            <span className="count">{bbStats.overall.accounts}</span>
+            <span className="muted">Whole desk · pass rate and days-to-pass by direction</span>
+            <span className="count">{bbStats.cohort.accounts}</span>
           </button>
-          {bbOpen ? (
-            <div className="bb-grid">
-              {[{ label: 'Long', s: bbStats.long }, { label: 'Short', s: bbStats.short }, { label: 'Overall', s: bbStats.overall }].map(({ label, s }) => (
-                <div className="bb-card" key={label}>
-                  <div className="bb-card-head"><strong>{label}</strong><span className="muted">{s.accounts} acct</span></div>
-                  <div className="bb-passrate">
-                    <div className="combo-bar-track"><i style={{ width: `${Math.round(s.passRate * 100)}%`, background: 'var(--success)' }} /></div>
-                    <span className="positive">{Math.round(s.passRate * 100)}%</span>
-                  </div>
-                  <div className="bb-stats muted">
-                    <span>{s.passed}/{s.accounts} passed</span>
-                    <span>{s.fired} fired</span>
-                    <span>{s.avgDaysToPass != null ? `~${Math.round(s.avgDaysToPass)}d to pass` : 'no passes yet'}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
+          {bbOpen ? <BulletBotDeskPanel clients={teamClients} /> : null}
         </section>
       ) : null}
 
