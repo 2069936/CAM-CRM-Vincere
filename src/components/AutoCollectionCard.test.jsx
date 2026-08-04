@@ -105,6 +105,33 @@ describe('AutoCollectionCard rendering and actions', () => {
     expect(render({ ...base, device: { id: 'device', agentVersion: '1.4.1', addonVersion: '1.0.0', ninjaTraderVersion: '8.1.5.2', schedule: { time: '16:45:00', timezone: 'America/New_York' }, ...device } })).toContain(copy);
   });
 
+  it('falls back to the real default capture time, not a stale literal', () => {
+    // The card showed 4:45 PM for any client without a device — which is every
+    // client before install, the moment a CAM is most likely to read it out.
+    // The default had moved to 16:30 in step_28 and in the agent, and the card
+    // kept advertising a time nobody would capture at.
+    const html = render({ ...base, device: null });
+
+    expect(html).toContain('4:30 PM ET');
+    expect(html).not.toContain('4:45 PM ET');
+  });
+
+  it('reads any schedule as a wall clock, not just the one that was special-cased', () => {
+    const morning = render({
+      ...base,
+      device: { id: 'd', schedule: { time: '09:05:00', timezone: 'Europe/London' } },
+    });
+    const noon = render({
+      ...base,
+      device: { id: 'd', schedule: { time: '12:00:00', timezone: 'America/New_York' } },
+    });
+
+    expect(morning).toContain('9:05 AM');
+    expect(morning).toContain('Europe/London');
+    // Noon is the case a 12-hour conversion gets wrong by turning it into 0:00.
+    expect(noon).toContain('12:00 PM ET');
+  });
+
   it('shows binding, timestamps, versions, 16:45 ET schedule, and intentional controls', () => {
     const html = render({ ...base, device: { id: 'device', healthStatus: 'online', status: 'active', lastSeenAt: '2026-07-23T16:44:00.000Z', lastCaptureAt: '2026-07-22T20:45:00.000Z', lastSuccessAt: '2026-07-22T20:46:00.000Z', agentVersion: '1.4.2', addonVersion: '1.1.0', ninjaTraderVersion: '8.1.5.2', schedule: { time: '16:45:00', timezone: 'America/New_York' } } });
     expect(html).toContain('Acme Trading');

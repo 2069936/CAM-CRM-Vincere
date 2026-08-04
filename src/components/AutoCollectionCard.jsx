@@ -52,11 +52,27 @@ function formatTime(value) {
   }).format(date);
 }
 
+// The default lives in step_28 and in the agent's own AgentOptions. Repeating it
+// here as a literal meant the card kept advertising 16:45 after the default moved
+// to 16:30 — and it shows on unpaired clients, where the fallback is all there is.
+// A CAM reading this tells the client a time nobody will capture at.
+const DEFAULT_CAPTURE_TIME = '16:30';
+
+// Any time reads as a wall clock, not only the one value that used to be
+// special-cased. New York shortens to ET because that is what a CAM says out
+// loud; every other zone keeps its full name rather than being guessed at.
 function formatSchedule(schedule) {
-  const time = String(schedule?.time || '16:45:00').slice(0, 5);
+  const time = String(schedule?.time || DEFAULT_CAPTURE_TIME).slice(0, 5);
   const timezone = schedule?.timezone || 'America/New_York';
-  if (time === '16:45' && timezone === 'America/New_York') return 'Daily at 4:45 PM ET';
-  return `Daily at ${time} · ${timezone}`;
+  const [rawHour, minute] = time.split(':');
+  const hour = Number(rawHour);
+  if (!Number.isFinite(hour)) return `Daily at ${time} · ${timezone}`;
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const twelve = hour % 12 === 0 ? 12 : hour % 12;
+  const clock = `${twelve}:${minute} ${suffix}`;
+  return timezone === 'America/New_York'
+    ? `Daily at ${clock} ET`
+    : `Daily at ${clock} · ${timezone}`;
 }
 
 function StepMarker({ status = 'future' }) {
