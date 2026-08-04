@@ -1,5 +1,5 @@
-import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
-import { handleApiError, requireMethod, sendJson } from '../_lib/http.js';
+import { createApiClients, requireAppUser } from '../../server/apiLib/apiAuth.js';
+import { handleApiError, requireMethod, sendJson } from '../../server/apiLib/http.js';
 
 const EXPORT_TABLES = [
   'cam_profiles',

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import snapshot from '../../test/fixtures/auto-export/snapshot-v1.json';
-import { csvForSection } from '../../api/_lib/autoExportDownload.js';
+import { csvForSection } from '../../server/apiLib/autoExportDownload.js';
 import { normalizeAutoImportSnapshot } from './autoImport.js';
 import { parseNinjaTraderCsvText } from './csvImport.js';
 import { reconcileDailyImport } from './reconcile.js';

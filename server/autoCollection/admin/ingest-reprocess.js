@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { createApiClients, requireAppUser } from '../_lib/apiAuth.js';
+import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { createDownloadStore } from './ingest-download.js';
-import { createAutoImportStore } from '../_lib/autoImportStore.js';
-import { verifyStoredSnapshot } from '../_lib/autoExportDownload.js';
-import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../_lib/http.js';
-import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
-import { reconcileDailyImport } from '../../src/domain/reconcile.js';
-import { persistDailyImportWithClient } from '../../src/domain/dailyImportPersistence.js';
+import { createAutoImportStore } from '../../apiLib/autoImportStore.js';
+import { verifyStoredSnapshot } from '../../apiLib/autoExportDownload.js';
+import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
+import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
+import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
+import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REPLAYABLE = new Set(['failed', 'incomplete', 'late_closed_day', 'processing']);

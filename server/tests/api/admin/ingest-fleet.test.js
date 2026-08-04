@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, parseFleetQuery } from './ingest-fleet.js';
-import { ApiError } from '../_lib/http.js';
+import { createHandler, parseFleetQuery } from '../../../autoCollection/admin/ingest-fleet.js';
+import { ApiError } from '../../../apiLib/http.js';
 
 function response() {
   return {

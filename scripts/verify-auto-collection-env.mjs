@@ -2,8 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { resolve } from 'node:path';
-import { resolveInstallerRelease } from '../api/_lib/collectorRelease.js';
-import { compareCollectorVersions, normalizeCollectorVersion } from '../api/_lib/collectorVersion.js';
+import { resolveInstallerRelease } from '../server/apiLib/collectorRelease.js';
+import { compareCollectorVersions, normalizeCollectorVersion } from '../server/apiLib/collectorVersion.js';
 
 const PLACEHOLDER = /^(?:change[-_ ]?me|replace[-_ ]?me|placeholder|todo|xxx+|your[-_ ].*)$/i;
 const REQUIRED_TEXT = [

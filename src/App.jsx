@@ -178,6 +178,8 @@ import {
   insertSupabasePayoutEvent,
   insertSupabaseTask,
   loadSupabaseCrmState,
+  loadSupabaseTradeHistory,
+  mergeSupabaseTradeHistory,
   loadSupabaseDailySopTemplate,
   loadSupabaseReports,
   loadSupabaseAuditLogs,
@@ -6517,7 +6519,12 @@ function MonthlyReportPanel({ client, month, onClose }) {
   });
 
   return (
-    <div className="report-overlay">
+    <div
+      className="report-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="report-sheet">
         <div className="report-actions no-print">
           <button
@@ -6526,8 +6533,14 @@ function MonthlyReportPanel({ client, month, onClose }) {
           >
             <FileText size={14} /> Print / Save PDF
           </button>
-          <button className="ghost-button" onClick={onClose}>
-            Close
+          <button
+            className="report-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            title="Close report"
+          >
+            <X size={18} />
           </button>
         </div>
         <header className="report-header">
@@ -6872,7 +6885,12 @@ function ReportPanel({
   };
 
   return (
-    <div className="report-overlay">
+    <div
+      className="report-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="report-sheet">
         <div className="report-actions no-print">
           <span className={`remote-pill ${saveStatus === "error" ? "error" : saveStatus === "saved" ? "connected" : ""}`}>
@@ -6900,8 +6918,14 @@ function ReportPanel({
           >
             <FileText size={14} /> Print / Save PDF
           </button>
-          <button className="ghost-button" onClick={onClose}>
-            Close
+          <button
+            className="report-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            title="Close report"
+          >
+            <X size={18} />
           </button>
         </div>
 
@@ -7190,7 +7214,12 @@ function CamDayReportPanel({ clients, date, camName, onClose }) {
   const totalPnl = rows.reduce((s, r) => s + Number(r.report.totals.grossRealizedPnl || 0), 0);
   const sign = (n) => (n >= 0 ? "+" : "");
   return (
-    <div className="report-overlay">
+    <div
+      className="report-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="report-sheet">
         <div className="report-actions no-print">
           <button
@@ -7199,7 +7228,15 @@ function CamDayReportPanel({ clients, date, camName, onClose }) {
           >
             <FileText size={14} /> Print / Save PDF
           </button>
-          <button className="ghost-button" onClick={onClose}>Close</button>
+          <button
+            className="report-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close report"
+            title="Close report"
+          >
+            <X size={18} />
+          </button>
         </div>
         <header className="report-header">
           <div>
@@ -11668,7 +11705,7 @@ export default function App() {
           source: "supabase",
           status: "error",
           message: "Supabase environment is required.",
-        },
+      },
   );
   const [session, setSession] = useState(() => {
     // Local snapshot mode signs itself in as a Manager. There is nothing to
@@ -11802,15 +11839,19 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
 
-  // Keep the CAM Profile view mutually exclusive with the other sub-views without
-  // threading setShowProfile(false) through every navigation handler: clear it
-  // when the user opens Overview/SOP or switches to a client.
-  useEffect(() => {
-    if (showOverview || showSOP) setShowProfile(false);
-  }, [showOverview, showSOP]);
-  useEffect(() => {
-    setShowProfile(false);
-  }, [state.selectedClientId]);
+  function beginDashboardLoad(message = "Loading dashboard data...") {
+    setRemoteStatus({ source: "supabase", status: "loading", message });
+  }
+
+  function hydrateTradeHistory() {
+    loadSupabaseTradeHistory()
+      .then((history) => {
+        setState((current) => mergeSupabaseTradeHistory(current, history));
+      })
+      .catch((error) => {
+        console.error("[CRM] Trade history loaded after dashboard shell failed:", error);
+      });
+  }
 
   // Local snapshot mode. Read-only, and it takes precedence over Supabase so a
   // developer with production credentials in .env cannot accidentally point a
@@ -11847,6 +11888,7 @@ export default function App() {
     if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) return;
     let cancelled = false;
+    beginDashboardLoad();
     loadSupabaseCrmState({
       preferredCamProfileId:
         session?.camProfileId || state.accountManager?.id || state.camProfiles?.[0]?.id || null,
@@ -11859,6 +11901,7 @@ export default function App() {
           status: "connected",
           message: "Connected to Supabase",
         });
+        hydrateTradeHistory();
         if (session?.role === USER_ROLES.CAM && session.camProfileId)
           setPlatformView("cam");
       })
@@ -11909,6 +11952,7 @@ export default function App() {
 
   async function reloadSupabaseState(preferredCamProfileId = null, selectedClientId = null) {
     if (!isSupabaseConfigured) return null;
+    beginDashboardLoad("Refreshing dashboard data...");
     const remoteState = await loadSupabaseCrmState({
       preferredCamProfileId:
         preferredCamProfileId ||
@@ -11926,6 +11970,7 @@ export default function App() {
       status: "connected",
       message: "Connected to Supabase",
     });
+    hydrateTradeHistory();
     return nextState;
   }
 
@@ -11956,6 +12001,7 @@ export default function App() {
       }
       if (e.altKey && e.key === "o") {
         e.preventDefault();
+        setShowProfile(false);
         setShowOverview(true);
         setShowSOP(false);
       }
@@ -11972,11 +12018,13 @@ export default function App() {
       }
       if (e.altKey && e.key === "s") {
         e.preventDefault();
+        setShowProfile(false);
         setShowSOP(true);
         setShowOverview(false);
       }
       if (e.altKey && e.key === "n") {
         e.preventDefault();
+        setShowProfile(false);
         setActiveTab("Tasks");
         setShowOverview(false);
         setShowSOP(false);
@@ -12100,6 +12148,7 @@ export default function App() {
       addClient(current, clientName, current.accountManager?.id),
     );
     setNewClientName("");
+    setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
     if (isSupabaseConfigured) {
@@ -12127,6 +12176,7 @@ export default function App() {
       return clientId ? { ...next, selectedClientId: clientId } : next;
     });
     setPlatformView("cam");
+    setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
     setRegistryOpen(false);
@@ -12139,6 +12189,7 @@ export default function App() {
 
   function openManagerWorkspace() {
     setPlatformView("manager");
+    setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
     if (isSupabaseConfigured) {
@@ -13324,6 +13375,7 @@ export default function App() {
                             : "client-link"
                         }
                         onClick={() => {
+                          setShowProfile(false);
                           setShowOverview(true);
                           setShowSOP(false);
                           closeMobileSidebar();
@@ -13342,6 +13394,7 @@ export default function App() {
                   <button
                     className={showSOP ? "client-link active" : "client-link"}
                     onClick={() => {
+                      setShowProfile(false);
                       setShowSOP(true);
                       setShowOverview(false);
                       closeMobileSidebar();
@@ -13424,6 +13477,7 @@ export default function App() {
                             setState((current) =>
                               selectClient(current, client.id),
                             );
+                            setShowProfile(false);
                             setShowOverview(false);
                             setShowSOP(false);
                             setClientSearch("");
@@ -13516,6 +13570,7 @@ export default function App() {
                             setState((current) =>
                               selectClient(current, client.id),
                             );
+                            setShowProfile(false);
                             setShowOverview(false);
                             setShowSOP(false);
                             markClientViewed(client.id);
@@ -13750,26 +13805,12 @@ export default function App() {
                 allClients={state.clients || []}
                 onSelectClient={(clientId) => {
                   setState((current) => selectClient(current, clientId));
+                  setShowProfile(false);
                   setShowOverview(false);
                   setShowSOP(false);
                 }}
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
-                onCompleteTask={(clientId, taskId) => {
-                  const patch = {
-                    done: true,
-                    doneAt: new Date().toISOString(),
-                  };
-                  setState((current) =>
-                    updateTask(current, clientId, taskId, patch),
-                  );
-                  updateSupabaseTask(taskId, patch).catch((error) => {
-                    console.error("[CRM] Failed to complete task:", error);
-                    window.alert(
-                      `Could not complete task in Supabase: ${error.message}`,
-                    );
-                  });
-                }}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
@@ -14625,6 +14666,7 @@ export default function App() {
                             : currentCamProfile;
                           if (ownerCam) openCamWorkspace(ownerCam.id, r.client.id);
                           else setState((s) => selectClient(s, r.client.id));
+                          setShowProfile(false);
                           setShowOverview(false);
                           setShowSOP(false);
                           setActiveTab(r.tab);
@@ -14664,6 +14706,7 @@ export default function App() {
                             : currentCamProfile;
                           if (ownerCam) openCamWorkspace(ownerCam.id, r.client.id);
                           else setState((s) => selectClient(s, r.client.id));
+                          setShowProfile(false);
                           setShowOverview(false);
                           setShowSOP(false);
                           setActiveTab(r.tab);

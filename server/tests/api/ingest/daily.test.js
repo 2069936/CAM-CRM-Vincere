@@ -2,17 +2,17 @@ import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { normalizeAutoImportSnapshot } from '../../src/domain/autoImport.js';
-import { DailyImportClosedError } from '../../src/domain/dailyImportPersistence.js';
-import { reconcileDailyImport } from '../../src/domain/reconcile.js';
-import { canonicalSnapshotPayload } from '../_lib/autoImportStore.js';
-import { ApiError } from '../_lib/http.js';
-import { createHandler, config } from './daily.js';
+import { normalizeAutoImportSnapshot } from '../../../../src/domain/autoImport.js';
+import { DailyImportClosedError } from '../../../../src/domain/dailyImportPersistence.js';
+import { reconcileDailyImport } from '../../../../src/domain/reconcile.js';
+import { canonicalSnapshotPayload } from '../../../apiLib/autoImportStore.js';
+import { ApiError } from '../../../apiLib/http.js';
+import { createHandler, config } from '../../../autoCollection/ingest/daily.js';
 
 const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
 const CAPTURE_ID = '0f5fa8a0-2e84-43d8-8788-24055979f6fe';
-const contractFixture = JSON.parse(readFileSync(new URL('../../test/fixtures/auto-export/snapshot-v1.json', import.meta.url), 'utf8'));
+const contractFixture = JSON.parse(readFileSync(new URL('../../../../test/fixtures/auto-export/snapshot-v1.json', import.meta.url), 'utf8'));
 
 function snapshot(overrides = {}) {
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fixture from '../../test/fixtures/auto-export/snapshot-v1.json';
-import { csvForSection } from '../../api/_lib/autoExportDownload.js';
+import { csvForSection } from '../../server/apiLib/autoExportDownload.js';
 import { compareAutoAndManual } from './autoManualComparison.mjs';
 
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
