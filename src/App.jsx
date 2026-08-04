@@ -130,6 +130,7 @@ import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
+import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import BulletBotDeskPanel from "./components/BulletBotDeskPanel";
 import CapitalDetailPanel from "./components/CapitalDetailPanel";
 import StrategyRiskScatter from "./components/StrategyRiskScatter";
@@ -5312,6 +5313,23 @@ function ManagerOverview({
               <StrategyRiskScatter rows={riskProfile} limit={10} />
             </div>
           </div>
+        </CollapsiblePanel>
+
+        {/*
+          Its own panel rather than a third column in the pair above, because it
+          carries two roll-up tables and .ov-pair can be handed 320px.
+
+          The panel above answers "who is the odd one out" by comparing accounts
+          to each other; it cannot say what an account SHOULD run, because the
+          cohort is its only reference. This one compares against the 911 set
+          files, so it names the version — and finds what the cohort view
+          structurally cannot: a difference the whole cohort shares. RBO, B2X
+          and ARPD have no exact match at all, yet 34 to 53 rows each sit on one
+          version with the same settings changed to the same values, which the
+          cohort comparison reads as unanimity.
+        */}
+        <CollapsiblePanel title="Against the set-file library" tone="ops-charts-panel">
+          <SetFileMatchPanel clients={clients} asOfDate={asOfDate} />
         </CollapsiblePanel>
 
         <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">

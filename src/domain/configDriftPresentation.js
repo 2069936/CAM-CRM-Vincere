@@ -26,11 +26,29 @@
 const SENTINEL_CLOCK = /^1\/1\/2020 (\d{1,2}):(\d{2})(?::(\d{2}))? (AM|PM)$/;
 
 /**
+ * The same instant in the set files' dialect.
+ *
+ * The XML writes `2020-01-01T16:45:00` where the export writes
+ * `1/1/2020 4:45:00 PM`, and setFileNormalise.js canonicalises both sides to the
+ * ISO form — so every value the set-file matcher hands this module arrives in
+ * that shape. Nine fields carry times, and without this case all nine render as
+ * a 19-character machine string in a column 320px wide. The drift panel never
+ * produces this form, so nothing it renders changes.
+ */
+const SENTINEL_CLOCK_ISO = /^2020-01-01T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/**
  * A sentinel-dated timestamp as a desk clock time, or null when the value is not
  * one — a real date is content and must survive untouched.
  */
 export function formatClockValue(value) {
-  const match = SENTINEL_CLOCK.exec(String(value ?? '').trim());
+  const text = String(value ?? '').trim();
+  const iso = SENTINEL_CLOCK_ISO.exec(text);
+  if (iso) {
+    const second = iso[3] || '00';
+    return second === '00' ? `${iso[1]}:${iso[2]}` : `${iso[1]}:${iso[2]}:${second}`;
+  }
+  const match = SENTINEL_CLOCK.exec(text);
   if (!match) return null;
   let hour = Number(match[1]);
   if (!(hour >= 1 && hour <= 12)) return null;
@@ -161,8 +179,12 @@ export function formatParameterValue(name, value) {
   if (clock) return clock;
   const known = PARAMETERS[String(name || '')];
   if (known?.kind === 'toggle') {
-    if (text === 'True') return 'on';
-    if (text === 'False') return 'off';
+    // Two dialects again: the export writes `True`, the set files write `true`,
+    // and setFileNormalise.js lower-cases both. 36 of the 113 unmatched values
+    // measured against the library were only this. Case-insensitive here so a
+    // toggle reads as on/off whichever side of the comparison it came from.
+    if (/^true$/i.test(text)) return 'on';
+    if (/^false$/i.test(text)) return 'off';
   }
   return text;
 }
