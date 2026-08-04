@@ -7179,3 +7179,18 @@ tr:nth-child(2) .rank-badge {
 .segment-list li span:nth-child(2) { font-variant-numeric: tabular-nums; }
 .segment-list em { font-style: normal; text-align: right; opacity: 0.65; }
 .segment-excluded { opacity: 0.45; text-decoration: line-through; }
+
+/* Configuration review. Reads as a question, not an alarm: amber for the count,
+   never red, because a minority configuration is often deliberate. */
+.drift-panel { display: flex; flex-direction: column; gap: 12px; }
+.drift-row { border-left: 2px solid var(--border); padding-left: 10px; }
+.drift-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.drift-count { margin-left: auto; color: var(--warning); font-size: 12px; white-space: nowrap; }
+.drift-majority { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; margin-top: 3px; }
+.drift-panel code {
+  font-size: 11px; padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.12));
+}
+.drift-outliers { list-style: none; margin: 5px 0 0; padding: 0; }
+.drift-outliers li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 11px; padding: 1px 0; }
+.drift-change { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }

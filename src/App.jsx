@@ -129,6 +129,7 @@ import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
+import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import StrategyRiskScatter from "./components/StrategyRiskScatter";
 import { buildStrategyRiskProfile } from "./domain/strategyRiskProfile";
 import {
@@ -3974,6 +3975,12 @@ function ManagerOverview({
     () => buildSegmentTotals(latestImports(clients, asOfDate)),
     [clients, asOfDate],
   );
+  // Firm-wide rather than one CAM's book: the manager's question is which
+  // configurations carry exposure across everyone, not what a single client runs.
+  const riskProfile = useMemo(
+    () => buildStrategyRiskProfile(clients, { asOfDate }),
+    [clients, asOfDate],
+  );
   const totals = useMemo(
     () =>
       cams.reduce(
@@ -5154,6 +5161,19 @@ function ManagerOverview({
             </CollapsiblePanel>
           );
         })()}
+
+        <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
+          <div className="ov-pair">
+            <div>
+              <h4>Settings against the cohort</h4>
+              <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
+            </div>
+            <div>
+              <h4>Exposure by algorithm</h4>
+              <StrategyRiskScatter rows={riskProfile} limit={10} />
+            </div>
+          </div>
+        </CollapsiblePanel>
 
         <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">
           <div className="ov-pair">

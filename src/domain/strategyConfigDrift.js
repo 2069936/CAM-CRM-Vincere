@@ -25,6 +25,22 @@ const LICENCE_KEY = /V-[0-9A-F]{6}-[0-9A-F]{8}-[0-9A-F]{6,8}W?/gi;
 const SIZING = /^PosSize\d*$/i;
 
 /**
+ * Field separator for a configuration key.
+ *
+ * Not '/'. Parameter VALUES contain slashes — CloseAllOpenTradeTime is written
+ * `1/1/2020 4:45:00 PM` — so a key joined and split on '/' tears that value into
+ * three and every configuration collapses to `CloseAllOpenTradeTime=1`. Two
+ * setups differing only by their end-of-day close time then compared equal, and
+ * the panel showed an outlier with an empty diff beside a majority whose label
+ * read identically.
+ *
+ * This is the third time a '/' split has caused a silent wrong answer here: it
+ * also broke the value/name alignment in the parameter parser and in the
+ * redaction script. A separator that cannot occur in the data ends the class.
+ */
+const FIELD = '\u0001';
+
+/**
  * Splits values on '/' without breaking the timestamps.
  *
  * Times are written `1/1/2020 4:45:00 PM`, so a naive split turns one value into
@@ -72,7 +88,12 @@ export function configKeyOf(parametersRaw) {
     if (/licen[cs]e ?key/i.test(name)) return;
     parts.push(`${name}=${values[index]}`);
   });
-  return parts.join('/');
+  // Sorted, because NinjaTrader does not guarantee an order and two strategies
+  // with identical settings listed differently produced different keys. On a
+  // real book that split one 83-account configuration into a 73 and a 10, and
+  // the 10 was then reported as a deviation from itself — with an empty diff,
+  // since nothing actually differed.
+  return parts.sort().join(FIELD);
 }
 
 /** A short, stable label for a configuration nobody should have to read in full. */
@@ -96,6 +117,46 @@ export function shortConfigLabel(configKey, parametersRaw) {
   // Falls back to a stable fragment rather than an empty label: the caller still
   // needs to tell two configurations apart on screen.
   return String(configKey || '').slice(0, 28) || 'unreadable';
+}
+
+/**
+ * What actually differs between two configurations.
+ *
+ * A fixed label — profit targets and stop — rendered the majority and an
+ * outlier identically whenever they differed in some other parameter, which is
+ * most of the time. Two rows reading `PT 400/450/500 · SL 300` above each other
+ * tell a CAM nothing about what to check.
+ *
+ * Named parameters only. Configurations whose shapes do not line up cannot be
+ * diffed field by field, and inventing a comparison there would be worse than
+ * saying so.
+ */
+export function describeConfigDifference(dominantKey, outlierKey) {
+  const toMap = (key) => {
+    const map = new Map();
+    for (const part of String(key || '').split(FIELD)) {
+      const at = part.indexOf('=');
+      if (at > 0) map.set(part.slice(0, at), part.slice(at + 1));
+    }
+    return map;
+  };
+  const from = toMap(dominantKey);
+  const to = toMap(outlierKey);
+  if (!from.size || !to.size) return [];
+
+  const changes = [];
+  for (const [name, value] of to) {
+    const other = from.get(name);
+    if (other === value) continue;
+    // A parameter the majority does not carry at all was being skipped, so two
+    // configurations that differ only by an added setting produced an empty
+    // diff — and the panel fell back to a label identical to the majority's.
+    changes.push({ name, from: other ?? null, to: value });
+  }
+  for (const [name, value] of from) {
+    if (!to.has(name)) changes.push({ name, from: value, to: null });
+  }
+  return changes;
 }
 
 /**
@@ -189,6 +250,9 @@ export function buildConfigDrift(clients = [], {
       outliers: outliers.map((config) => ({
         label: config.label,
         count: config.count,
+        // What to look at. The label alone repeats the majority's whenever the
+        // difference sits outside the fields it shows.
+        changes: describeConfigDifference(dominant.configKey, config.configKey),
         accounts: config.accounts,
       })),
       outlierAccounts: outliers.reduce((sum, config) => sum + config.count, 0),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildConfigDrift, configKeyOf, shortConfigLabel } from './strategyConfigDrift';
+import { buildConfigDrift, configKeyOf, describeConfigDifference, shortConfigLabel } from './strategyConfigDrift';
 
 const params = ({ pt = '400/450/500', sl = '300', size = '1/1/0', key = 'V-8F5D54-C32866C2-3DB348W' } = {}) => {
   const [pt1, pt2, pt3] = pt.split('/');
@@ -63,7 +63,7 @@ describe('shortConfigLabel', () => {
 
   it('still labels a configuration it cannot parse', () => {
     // A blank label leaves two configurations indistinguishable on screen.
-    expect(shortConfigLabel('SomeKey=1/Other=2', 'unparseable')).not.toBe('');
+    expect(shortConfigLabel(configKeyOf('1/2 (SomeKey/Other)'), 'unparseable')).not.toBe('');
   });
 });
 
@@ -173,5 +173,94 @@ describe('a group with no majority', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].dominant.share).toBe(89);   // 16 of 18
     expect(rows[0].outlierAccounts).toBe(2);
+  });
+});
+
+describe('describeConfigDifference', () => {
+  it('names the parameters that actually changed', () => {
+    // The fixed label showed profit targets and stop only, so the majority and
+    // an outlier rendered identically whenever they differed elsewhere — two
+    // rows reading "PT 400/450/500 · SL 300" above each other, telling a CAM
+    // nothing about what to check.
+    const changes = describeConfigDifference(
+      configKeyOf('400/300/200 (ProfitTargetTicks1/StopLossTicks/TrailByTicks)'),
+      configKeyOf('400/300/150 (ProfitTargetTicks1/StopLossTicks/TrailByTicks)'),
+    );
+
+    expect(changes).toEqual([{ name: 'TrailByTicks', from: '200', to: '150' }]);
+  });
+
+  it('reports a parameter the outlier does not carry at all', () => {
+    const changes = describeConfigDifference(configKeyOf('1/2 (A/B)'), configKeyOf('1 (A)'));
+
+    expect(changes).toEqual([{ name: 'B', from: '2', to: null }]);
+  });
+
+  it('reports a parameter only the outlier carries', () => {
+    // Skipping these produced an empty diff for two configurations that differ
+    // only by an added setting, and the panel then fell back to a label
+    // identical to the majority's — two rows saying the same thing.
+    const changes = describeConfigDifference(configKeyOf('1 (A)'), configKeyOf('1/7 (A/NewSetting)'));
+
+    expect(changes).toEqual([{ name: 'NewSetting', from: null, to: '7' }]);
+  });
+
+  it('never returns an empty diff for two different configurations', () => {
+    const pairs = [
+      [configKeyOf('1/2 (A/B)'), configKeyOf('1/3 (A/B)')],
+      [configKeyOf('1 (A)'), configKeyOf('1/2 (A/B)')],
+      [configKeyOf('1/2 (A/B)'), configKeyOf('1 (A)')],
+      [configKeyOf('1/2 (A/B)'), configKeyOf('9/3 (A/C)')],
+    ];
+    for (const [left, right] of pairs) {
+      expect(describeConfigDifference(left, right).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('says nothing rather than guessing when a key cannot be read', () => {
+    expect(describeConfigDifference('', 'A=1')).toEqual([]);
+    expect(describeConfigDifference('unparseable', 'also unparseable')).toEqual([]);
+  });
+
+  it('finds no difference between identical configurations', () => {
+    expect(describeConfigDifference(configKeyOf('1/2 (A/B)'), configKeyOf('1/2 (A/B)'))).toEqual([]);
+  });
+});
+
+describe('parameter order', () => {
+  it('treats the same settings listed in a different order as one configuration', () => {
+    // NinjaTrader does not guarantee an order. On a real book this split one
+    // 83-account configuration into 73 and 10, and the 10 was then reported as
+    // deviating from itself — with an empty diff, because nothing differed.
+    const a = configKeyOf('400/300/True (ProfitTargetTicks1/StopLossTicks/TrailIsOn)');
+    const b = configKeyOf('True/300/400 (TrailIsOn/StopLossTicks/ProfitTargetTicks1)');
+
+    expect(a).toBe(b);
+    expect(describeConfigDifference(a, b)).toEqual([]);
+  });
+
+  it('still separates a real change when the order also differs', () => {
+    const a = configKeyOf('400/300 (ProfitTargetTicks1/StopLossTicks)');
+    const b = configKeyOf('250/400 (StopLossTicks/ProfitTargetTicks1)');
+
+    expect(a).not.toBe(b);
+    expect(describeConfigDifference(a, b)).toEqual([{ name: 'StopLossTicks', from: '300', to: '250' }]);
+  });
+});
+
+describe('values that contain a slash', () => {
+  it('does not let a timestamp collapse two different configurations', () => {
+    // CloseAllOpenTradeTime is written `1/1/2020 4:45:00 PM`. Joining the key
+    // with '/' tore that into three, so every configuration reduced to
+    // CloseAllOpenTradeTime=1 and two setups differing only by their end-of-day
+    // close compared equal — the panel showed an outlier with an empty diff
+    // next to a majority whose label read the same.
+    const early = configKeyOf('1/1/2020 4:30:00 PM/300 (CloseAllOpenTradeTime/StopLossTicks)');
+    const late = configKeyOf('1/1/2020 4:45:00 PM/300 (CloseAllOpenTradeTime/StopLossTicks)');
+
+    expect(early).not.toBe(late);
+    expect(describeConfigDifference(early, late)).toEqual([
+      { name: 'CloseAllOpenTradeTime', from: '1/1/2020 4:30:00 PM', to: '1/1/2020 4:45:00 PM' },
+    ]);
   });
 });
