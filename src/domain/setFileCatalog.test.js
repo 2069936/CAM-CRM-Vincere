@@ -242,23 +242,42 @@ describe('the catalog itself', () => {
     expect(catalog.ambiguity.namedVariants).toBe(292);
     expect(catalog.ambiguity.periodsIdentical).toBe(292);
     expect(catalog.ambiguity.periodsDiffer).toEqual([]);
-    expect(catalog.ambiguity.pfTwinsDiffer).toEqual([]);
-    expect(catalog.ambiguity.pfTwinsIdentical).toBe(107);
+
+    // Three twins DIVERGE, and this assertion exists to keep that visible rather
+    // than let it settle into the background.
+    //
+    // Every _PF variant used to be identical to its base — 107 of them. Aligning
+    // RBO and ARPD to the configuration 53 and 35 rows were already running moved
+    // the base files and not the prop-firm twins, because the twins are separate
+    // catalog families and no account runs those tuples today. So the library is
+    // now internally inconsistent in exactly three places, by an edit made here.
+    //
+    // This is a pending decision, not a settled state: the _PF file is the same
+    // algorithm for a prop-firm account, so it probably wants the same change.
+    // If the twins are aligned too, this list returns to empty and
+    // pfTwinsIdentical returns to 107 — update both together.
+    expect(catalog.ambiguity.pfTwinsDiffer).toEqual([
+      'ARPD|MGC|Low|1', 'RBO|M2K|Low|1', 'RBO|M2K|Medium|1',
+    ]);
+    expect(catalog.ambiguity.pfTwinsIdentical).toBe(104);
   });
 
   it('is smaller than its file count suggests', () => {
-    // 911 files, 190 distinct parameter sets, 82 distinct version identities.
+    // 911 files, 193 distinct parameter sets, 85 distinct version identities.
     // The matcher's ambiguity depends on these numbers, not on 911.
     //
-    // 82, not the 92 counted before: `SIZING` matched only `PosSize\d*`, so
+    // 85, not the 82 counted before the library was aligned: moving RBO's two
+    // v1 tuples and ARPD's one away from their _PF twins split three shared
+    // version identities into six. It is 82, not the 92 counted before that:
+    // `SIZING` matched only `PosSize\d*`, so
     // TendoCentinel's sizing axis — spelled `Position1Size`/`Position2Size`/
     // `Position3Size` — was being read as version identity, and its 5 versions
     // counted as 15, one per risk level. Sizing is the risk level, not the
     // version, so those 15 are 5. No other family moved, and no row on the book
     // changed classification: 619 of 619 identical before and after.
-    expect(catalog.counts.distinctConfigurations).toBe(190);
-    expect(catalog.counts.distinctVersionIdentities).toBe(82);
-    expect(catalog.configurations.length).toBe(190);
+    expect(catalog.counts.distinctConfigurations).toBe(193);
+    expect(catalog.counts.distinctVersionIdentities).toBe(85);
+    expect(catalog.configurations.length).toBe(193);
   });
 
   it('treats every spelling of position size as the risk level', () => {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildConfigDrift, configKeyOf, describeConfigDifference, shortConfigLabel } from './strategyConfigDrift';
+import {
+  buildConfigCohorts,
+  buildConfigDrift,
+  configKeyOf,
+  configParametersOf,
+  describeConfigDifference,
+  shortConfigLabel,
+} from './strategyConfigDrift';
+import { SIZING, normaliseSetFileValue } from './setFileNormalise';
 
 const params = ({ pt = '400/450/500', sl = '300', size = '1/1/0', key = 'V-8F5D54-C32866C2-3DB348W' } = {}) => {
   const [pt1, pt2, pt3] = pt.split('/');
@@ -262,5 +270,117 @@ describe('values that contain a slash', () => {
     expect(describeConfigDifference(early, late)).toEqual([
       { name: 'CloseAllOpenTradeTime', from: '1/1/2020 4:30:00 PM', to: '1/1/2020 4:45:00 PM' },
     ]);
+  });
+});
+
+describe('buildConfigCohorts', () => {
+  const clients = [
+    client('a', [row('A1'), row('A2'), row('A3', { sl: '250' })]),
+    client('b', [{ ...row('B1'), instrument: 'MNQ 09-26' }]),
+  ];
+
+  it('returns every cohort, including the ones buildConfigDrift declines to judge', () => {
+    // The point of the extraction. buildConfigDrift sees 43 cohorts on the real
+    // book and prints 10; the other 33 leave a bare `continue`, so "checked and
+    // uniform", "too small to judge" and "does not exist" all render as absence.
+    const cohorts = buildConfigCohorts(clients);
+
+    expect(cohorts.map((cohort) => `${cohort.family}|${cohort.instrument}`))
+      .toEqual(['URGO|MNQ SEP26', 'URGO|MNQ 09-26']);
+    expect(buildConfigDrift(clients)).toEqual([]);
+  });
+
+  it('ranks configurations majority first and keeps who is on each', () => {
+    const [cohort] = buildConfigCohorts(clients);
+
+    expect(cohort.total).toBe(3);
+    expect(cohort.configs.map((config) => config.count)).toEqual([2, 1]);
+    expect(cohort.configs[1].accounts).toEqual([{
+      clientId: 'a',
+      clientName: 'a',
+      accountName: 'A3',
+      strategyName: '0 - URGO-4.5',
+      instrument: 'MNQ SEP26',
+      importDate: '2026-08-03',
+    }]);
+  });
+
+  it('counts a row nobody can parse instead of shrinking the cohort silently', () => {
+    const [cohort] = buildConfigCohorts([
+      client('a', [row('A1'), { ...row('A2'), parametersRaw: '' }]),
+    ]);
+
+    expect(cohort.total).toBe(1);
+    expect(cohort.unreadable).toBe(1);
+  });
+
+  it('reads the family and the contract however the caller asks it to', () => {
+    // setFileMatch prefers the import's own strategy_family column; this file's
+    // default reads the strategy name. The two disagree on spelling for five
+    // families, and two panels spelling one family two ways is a bug the reader
+    // has to resolve.
+    const tagged = [client('a', [{ ...row('A1'), strategyFamily: 'URGO_PF' }])];
+    const [cohort] = buildConfigCohorts(tagged, {
+      familyOf: (strategy) => strategy.strategyFamily,
+      instrumentOf: () => 'MNQ',
+    });
+
+    expect(cohort.family).toBe('URGO_PF');
+    expect(cohort.instrument).toBe('MNQ');
+  });
+
+  it('walks every import when asked, and only the latest by default', () => {
+    const history = [{
+      id: 'a',
+      name: 'a',
+      dailyImports: [
+        { date: '2026-08-01', strategies: [row('A1', { sl: '250' })] },
+        { date: '2026-08-03', strategies: [row('A1')] },
+      ],
+    }];
+
+    expect(buildConfigCohorts(history)[0].total).toBe(1);
+    expect(buildConfigCohorts(history, { imports: 'all' })[0].total).toBe(2);
+  });
+});
+
+describe('configKeyOf options', () => {
+  it('leaves both dialects alone by default', () => {
+    // The drift panel compares exports to exports, so raw values are fine there
+    // and changing them would move its 10 rows.
+    expect(configKeyOf(params())).toContain('TradeEndTime=1/1/2020 2:00:00 PM');
+  });
+
+  it('canonicalises values when the caller has to sit beside the set files', () => {
+    // The XML writes `2020-01-01T14:00:00` where the export writes
+    // `1/1/2020 2:00:00 PM`, and `true` where the export writes `True`. Stating
+    // the same instant twice in two dialects looks like a difference.
+    const key = configKeyOf(params(), { normaliseValue: normaliseSetFileValue });
+
+    expect(key).toContain('TradeEndTime=2020-01-01T14:00:00');
+    expect(key).toContain('TrailIsOn=true');
+  });
+
+  it('drops sizing under whichever spelling the caller uses', () => {
+    // This file knows one spelling of four. BulletBot writes PositionSize,
+    // TendoCentinel Position{n}Size, MotusTemplar ScaleInSize.
+    const raw = '2/400 (PositionSize/ProfitTargetTicks1)';
+
+    expect(configKeyOf(raw)).toContain('PositionSize=2');
+    expect(configKeyOf(raw, { sizing: SIZING })).toBe('ProfitTargetTicks1=400');
+  });
+});
+
+describe('configParametersOf', () => {
+  it('reads a configuration key back as the settings it stands for', () => {
+    // The key was the only place the parsed configuration survived, and
+    // buildConfigDrift discarded it — so a caller that needs to state the
+    // configuration rather than a diff against it had nothing to read.
+    expect(configParametersOf(configKeyOf('400/300 (ProfitTargetTicks1/StopLossTicks)')))
+      .toEqual({ ProfitTargetTicks1: '400', StopLossTicks: '300' });
+  });
+
+  it('answers an empty map for nothing rather than throwing', () => {
+    expect(configParametersOf(null)).toEqual({});
   });
 });

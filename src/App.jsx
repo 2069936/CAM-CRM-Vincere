@@ -123,9 +123,13 @@ import {
   buildCamRecord,
   coverageForClient,
   effectiveClientIds,
+  pendingTimeOffAlert,
 } from "./domain/camCoverage";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
-import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
+import TimeOffPanel, {
+  PendingTimeOffNotice,
+  TimeOffRequestForm,
+} from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
@@ -3899,6 +3903,7 @@ function ManagerOverview({
   onApproveTimeOff,
   onDenyTimeOff,
   onEndCoverage,
+  onEditCoverage,
   onOpenCam,
   onCreateCam,
   onUpdateCamProfile,
@@ -4135,6 +4140,19 @@ function ManagerOverview({
     );
     return (clients || []).filter((client) => !assignedClientIds.has(client.id));
   }, [clients, activeCamProfiles]);
+
+  // Time-off requests nobody has decided yet. Lives in ManagerOverview and
+  // nowhere else on purpose: this screen only renders for a manager session
+  // (platformView === "manager" && isManagerSession), and a CAM being told
+  // "1 request pending" that only a manager can action is noise.
+  //
+  // pendingTimeOffAlert counts status === 'Pending' rows against the day on
+  // screen — never timeOff.length, which on a desk that has been running is
+  // mostly decided rows, and would only ever climb.
+  const timeOffAlert = useMemo(
+    () => pendingTimeOffAlert(timeOff, asOfDate || todayIsoDate()),
+    [timeOff, asOfDate],
+  );
 
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthlyKpis = useMemo(() => {
@@ -4486,6 +4504,12 @@ function ManagerOverview({
                   {totals.flags} open flag{totals.flags !== 1 ? "s" : ""}
                 </span>
               )}
+              {timeOffAlert.pending > 0 && (
+                <span className="badge warning">
+                  {timeOffAlert.pending} time-off request
+                  {timeOffAlert.pending !== 1 ? "s" : ""} pending
+                </span>
+              )}
             </div>
             {/* Pins the whole page to one trading day: metrics, flags, rosters
                 and every client's numbers come from that day's close. */}
@@ -4613,6 +4637,8 @@ function ManagerOverview({
             {teamCopyDone ? "Copied!" : "Copy Team Report"}
           </button>
         </div>
+
+        <PendingTimeOffNotice alert={timeOffAlert} camProfiles={camProfiles} />
 
         {unassignedClients.length > 0 && (
           <div className="notice warning">
@@ -6015,6 +6041,7 @@ function ManagerOverview({
           onApprove={onApproveTimeOff}
           onDeny={onDenyTimeOff}
           onEndCoverage={onEndCoverage}
+          onEditCoverage={onEditCoverage}
         />
 
         <LifecycleRollupPanel
@@ -12490,13 +12517,67 @@ export default function App() {
           entityType: "cam_time_off",
           entityId: request.id,
           action: "cam_time_off.approve",
-          afterData: { camId: request.camProfileId, covered: assignments.length },
+          // The assignments themselves, not just how many. This used to store
+          // `covered: 3` and nothing else, so who covered whom could not be
+          // reconstructed from history — the one place it would still exist
+          // after the coverage rows expire.
+          afterData: {
+            camId: request.camProfileId,
+            covered: assignments.length,
+            startDate: request.startDate,
+            endDate: request.endDate || request.startDate,
+            assignments: assignments.map((row) => ({
+              clientId: row.clientId,
+              coveringCamId: row.coveringCamId,
+            })),
+          },
         });
         return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
       })
       .catch((error) => {
         console.error("[CRM] Failed to approve time off:", error);
         window.alert(`Could not approve: ${error.message}`);
+      });
+  }
+
+  /**
+   * Change who covers what on an already-approved request, without denying and
+   * re-approving it.
+   *
+   * Reuses replaceSupabaseCoverage — the same write the approval makes. It
+   * deletes every client_coverage row carrying this time_off_id and re-inserts
+   * the new set, so a reassignment replaces rather than accumulates; passing an
+   * empty list is how a cover is removed outright.
+   */
+  function handleEditCoverage(request, assignments = []) {
+    if (!isSupabaseConfigured) return;
+    replaceSupabaseCoverage(assignments, {
+      timeOffId: request.id,
+      absentCamId: request.camProfileId,
+      startDate: request.startDate,
+      endDate: request.endDate,
+    })
+      .then(() => {
+        auditSilently({
+          entityType: "client_coverage",
+          entityId: request.id,
+          action: "client_coverage.reassign",
+          afterData: {
+            camId: request.camProfileId,
+            covered: assignments.length,
+            startDate: request.startDate,
+            endDate: request.endDate || request.startDate,
+            assignments: assignments.map((row) => ({
+              clientId: row.clientId,
+              coveringCamId: row.coveringCamId,
+            })),
+          },
+        });
+        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
+      })
+      .catch((error) => {
+        console.error("[CRM] Failed to reassign coverage:", error);
+        window.alert(`Could not save the cover: ${error.message}`);
       });
   }
 
@@ -12513,7 +12594,25 @@ export default function App() {
   function handleEndCoverage(entry) {
     if (!isSupabaseConfigured) return;
     deleteSupabaseCoverage(entry.id)
-      .then(() => reloadSupabaseState(state.accountManager?.id, state.selectedClientId))
+      .then(() => {
+        // Ending a cover is a hard delete of the row; without this the only
+        // record that the client was ever watched by someone else disappears
+        // with it. Audited like the approval and the reassign.
+        auditSilently({
+          entityType: "client_coverage",
+          entityId: entry.id,
+          action: "client_coverage.end",
+          afterData: {
+            clientId: entry.clientId,
+            coveringCamId: entry.coveringCamId,
+            absentCamId: entry.absentCamId,
+            timeOffId: entry.timeOffId || null,
+            startDate: entry.startDate,
+            endDate: entry.endDate || entry.startDate,
+          },
+        });
+        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
+      })
       .catch((error) => {
         console.error("[CRM] Failed to end coverage:", error);
         window.alert(`Could not end the cover: ${error.message}`);
@@ -13236,6 +13335,7 @@ export default function App() {
             onApproveTimeOff={handleApproveTimeOff}
             onDenyTimeOff={handleDenyTimeOff}
             onEndCoverage={handleEndCoverage}
+            onEditCoverage={handleEditCoverage}
             onOpenCam={openCamWorkspace}
             onCreateCam={(name) => {
               createSupabaseCamProfile(name)

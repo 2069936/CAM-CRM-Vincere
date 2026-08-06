@@ -7084,8 +7084,76 @@ tr:nth-child(2) .rank-badge {
   gap: 10px;
   margin-bottom: 6px;
 }
-.timeoff-cover-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.timeoff-cover-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 .timeoff-subhead { margin: 16px 0 6px; font-size: 13px; }
+
+/* The committed distribution for an approved request. Open by default: it is
+   the confirmation that the approval did anything, so hiding it behind a click
+   recreates the problem it exists to fix. */
+.timeoff-approved {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.timeoff-approved > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.timeoff-approved > summary::-webkit-details-marker { display: none; }
+.timeoff-approved > summary::before {
+  content: "▾";
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.timeoff-approved:not([open]) > summary::before { content: "▸"; }
+
+/* base → after, per CAM, in clients and accounts. */
+.coverage-load-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+.coverage-load-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  /* --surface, not --surface-1: nothing in this file ever defined --surface-1,
+     so the chip rendered with no background at all against .timeoff-approved's
+     --surface-2 panel. */
+  background: var(--surface);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.coverage-load-chip.is-loaded { border-color: var(--accent, var(--line)); }
+.coverage-load-chip.is-blocked { opacity: 0.6; }
+.coverage-load-figure { color: var(--text-muted); }
+.coverage-load-chip.is-loaded .coverage-load-figure:not(.muted) { color: inherit; font-weight: 600; }
+
+.coverage-blocked {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--danger, #c0392b);
+}
+.coverage-refusal { margin: 8px 0; font-size: 12px; }
 .timeoff-form {
   display: flex;
   gap: 10px;
@@ -7359,6 +7427,43 @@ tr:nth-child(2) .rank-badge {
   font-size: 11px; color: var(--muted); cursor: pointer; line-height: 1.45;
 }
 .drift-rest-body { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+
+/* Observed references — the families the library does not hold, checked against
+   themselves.
+
+   Everything here is dashed and boxed, and the word "observed" is repeated on
+   the section, on every cohort head and on the reference table's own summary.
+   That is not decoration. Every row above this box is an account measured
+   against a file the desk WROTE; every row inside it is an account measured
+   against what its neighbours HAPPEN to do, and the second kind fails silently —
+   a cohort that all moved together produces a reference that moved with it and a
+   section that reports agreement. A reader who cannot tell the two apart at a
+   glance has been handed the authority of the first for the price of the second.
+
+   Solid borders and the amber accent are the catalogued sections' language, so
+   this one gets neither: dashed rule, info-coloured badge, and the section's
+   caveat is a full paragraph rather than a title attribute — 47 rows of this
+   book land here today and a tooltip nobody hovers is not a caveat. */
+.drift-observed {
+  display: flex; flex-direction: column; gap: 12px;
+  border: 1px dashed var(--border); border-radius: 6px; padding: 11px 12px;
+}
+.drift-observed-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.drift-observed-warn {
+  font-size: 11px; line-height: 1.5; margin: 0; padding: 7px 9px;
+  border-radius: 6px; border-left: 2px dashed var(--info);
+  background: var(--surface-alt, rgba(127, 127, 127, 0.1));
+}
+.drift-observed-row { border-left-style: dashed; }
+.drift-observed-fact { font-size: 11px; line-height: 1.45; margin: 4px 0 0; color: var(--muted); }
+/* A cohort with no norm is a finding with its own box, not an empty section.
+   Dashed left rule like everything here, and never the amber of a to-verify
+   count: "we could not establish a reference" is not a list of accounts. */
+.drift-observed-none { border-left: 2px dashed var(--muted); }
+.badge.observed {
+  color: var(--info); background: transparent;
+  border: 1px dashed var(--info-border);
+}
 
 /* Capital detail. The caveats are not decoration here: on the real book one
    capital movement is nameable across 36 days and 584 accounts, held capital is

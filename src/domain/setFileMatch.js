@@ -69,7 +69,7 @@ export const MATCH = Object.freeze({
  * those apart: on the real book it would have called `PT 200/400/500` against a
  * catalogued `PT 40/50/70` a near miss because the other 28 fields agreed.
  */
-const VERSION_IDENTITY = /^(ProfitTargetTicks\d*|StopLossTicks)$/;
+export const VERSION_IDENTITY = /^(ProfitTargetTicks\d*|StopLossTicks)$/;
 
 /* ── Candidate selection ──────────────────────────────────────────────────── */
 
@@ -344,6 +344,41 @@ function separatingFields(results, live) {
   return fields;
 }
 
+/* ── Naming a row's family and contract ───────────────────────────────────── */
+
+/**
+ * What family the BOOK says this row is.
+ *
+ * The import's own attribution first, the strategy name second. The snapshot
+ * column says `OGX_PF`; strategyFamilyOf reads `0 - OGX-PF-2.4` as `OGX-PF`.
+ * Both resolve, but the column is what the importer decided and the name is a
+ * reconstruction of it.
+ *
+ * Exported because a second module grouping the same rows must group them the
+ * same way. It did not, and the two panels then spelled five families two ways —
+ * `IFSP_PF` here against `IFSP-PF` there — for the same accounts.
+ */
+export function bookFamilyOf(strategy) {
+  return String(strategy?.strategyFamily || '').trim()
+    || strategyFamilyOf(strategy?.strategyName) || '';
+}
+
+/**
+ * The contract a row is grouped under: the catalogued root when the library has
+ * one, the leading symbol otherwise.
+ *
+ * The fallback is a display grouping only — `NQ SEP26` is the full-size contract
+ * Bullet Bot runs and the library holds no full-size template, which is a fact
+ * about the library, not about NQ. Callers that need to know the difference read
+ * `catalogInstrumentOf` directly.
+ *
+ * One root, not three strings: G4M runs `MES SEP26` (43 rows), `MES 09-26` (3)
+ * and `MESU6` (1), and all three are MES.
+ */
+export function instrumentGroupOf(instrument) {
+  return catalogInstrumentOf(instrument) || leadingSymbol(instrument) || '(none)';
+}
+
 /* ── One strategy row ─────────────────────────────────────────────────────── */
 
 /**
@@ -356,12 +391,7 @@ function separatingFields(results, live) {
  * version" would be the panel asserting something it did not measure.
  */
 export function matchStrategyRow(strategy, { minSharedFields = 8, nearMaxFields = 4 } = {}) {
-  // The import's own attribution first, the strategy name second. The snapshot
-  // column says `OGX_PF`; strategyFamilyOf reads `0 - OGX-PF-2.4` as `OGX-PF`.
-  // Both resolve, but the column is what the importer decided and the name is a
-  // reconstruction of it.
-  const bookFamily = String(strategy?.strategyFamily || '').trim()
-    || strategyFamilyOf(strategy?.strategyName) || '';
+  const bookFamily = bookFamilyOf(strategy);
   const instrument = String(strategy?.instrument || '').trim();
   const catalogFamily = resolveCatalogFamily(bookFamily);
   const instrumentRoot = catalogInstrumentOf(instrument);
@@ -704,11 +734,7 @@ export function buildSetFileMatch(clients = [], {
     family.rows.push(row);
     if (row.classification === MATCH.NEAR && row.identityConfirmed) family.nearOnVersion += 1;
 
-    // The catalogued root when there is one, the leading symbol otherwise. The
-    // fallback is a display grouping only and is flagged as uncatalogued —
-    // `NQ SEP26` is the full-size contract Bullet Bot runs and the library holds
-    // no full-size template, which is a fact about the library, not about NQ.
-    const instrumentKey = row.instrumentRoot || leadingSymbol(row.instrument) || '(none)';
+    const instrumentKey = instrumentGroupOf(row.instrument);
     if (!instruments.has(instrumentKey)) {
       instruments.set(instrumentKey, {
         instrument: instrumentKey,

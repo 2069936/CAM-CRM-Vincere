@@ -1,10 +1,13 @@
 import { useMemo } from 'react';
-import { buildSetFileMatch, MATCH } from '../domain/setFileMatch';
+import { buildSetFileMatch, MATCH, VERSION_IDENTITY } from '../domain/setFileMatch';
+import { buildSynthesizedReference, REFERENCE } from '../domain/synthesizedReference';
 import {
+  buildNoteFor,
   countAccounts,
   describeChangeRow,
   describeParameter,
   formatParameterValue,
+  headlineFor,
   rollUpAccounts,
 } from '../domain/configDriftPresentation';
 
@@ -31,12 +34,18 @@ import {
  * claim, and 118 of this book's 329 exact matches are the 11-field kind.
  */
 export default function SetFileMatchPanel({ clients = [], asOfDate = '', limit = 8 }) {
-  const view = useMemo(
-    () => buildMatchView(buildSetFileMatch(clients, { asOfDate }), { limit }),
-    [clients, asOfDate, limit],
-  );
+  const view = useMemo(() => {
+    const result = buildSetFileMatch(clients, { asOfDate });
+    return {
+      ...buildMatchView(result, { limit }),
+      // Same result object, so the catalogued section and the observed one are
+      // gated on one set of classifications rather than on two computations that
+      // could disagree about which rows the library can speak to.
+      observed: buildObservedView(buildSynthesizedReference(clients, { asOfDate, match: result })),
+    };
+  }, [clients, asOfDate, limit]);
 
-  const { totals, families, rest, notMeasured, provenance } = view;
+  const { totals, families, rest, notMeasured, provenance, observed } = view;
 
   if (!totals.rows) {
     return <p className="muted chart-empty">No strategy rows to compare against the set-file library.</p>;
@@ -79,9 +88,14 @@ export default function SetFileMatchPanel({ clients = [], asOfDate = '', limit =
               account{family.accounts === 1 ? '' : 's'})
             </span>
           ))}
-          . The library has no folder for {notMeasured.length === 1 ? 'it' : 'them'}, so nothing here
-          can say what these accounts should be running. They are not uncatalogued — they are
-          unmeasured, and the two must not be read as the same finding.
+          . The library has no folder for {notMeasured.length === 1 ? 'it' : 'them'}, so nothing the
+          desk wrote can say what these accounts should be running. They are not uncatalogued — they
+          are unmeasured, and the two must not be read as the same finding.
+          {observed.cohorts.length ? (
+            <> Observed references for {observed.cohorts.length === 1 ? 'it' : 'them'} are at the
+              bottom of this panel, derived from the accounts rather than from the library.
+            </>
+          ) : null}
         </p>
       ) : null}
 
@@ -116,6 +130,8 @@ export default function SetFileMatchPanel({ clients = [], asOfDate = '', limit =
           </div>
         </details>
       ) : null}
+
+      <ObservedSection observed={observed} />
 
       <p className="drift-ask">
         Matched against {provenance.files} set files holding {provenance.distinctConfigurations}{' '}
@@ -458,6 +474,330 @@ function FamilyRow({ family }) {
   );
 }
 
+/* ── Observed references ──────────────────────────────────────────────────── */
+
+/**
+ * The families the library does not hold, checked against themselves.
+ *
+ * A separate section rather than more rows in the list above, and it is not a
+ * styling preference. Every row above is an account measured against something
+ * the desk WROTE. Every row here is an account measured against what its
+ * neighbours HAPPEN to do. Mixed into one list, a CAM would carry the authority
+ * of the first kind onto the second — and the second kind's failure mode is
+ * silent: a cohort that all moved together produces a reference that moved with
+ * it and a section that reports agreement.
+ *
+ * So: its own box, a dashed rule, the word "observed" on the section, on every
+ * cohort head and on every group badge, and no set-file name, version number or
+ * risk level anywhere inside it. Those are claims only the library can make.
+ */
+function ObservedSection({ observed }) {
+  if (!observed.cohorts.length) return null;
+  const { totals } = observed;
+
+  return (
+    <section className="drift-observed">
+      <div className="drift-observed-head">
+        <strong>Observed references</strong>
+        <span
+          className="badge observed"
+          title="Derived from the accounts on this book, not from the desk's set-file library."
+        >
+          observed, not catalogued
+        </span>
+        {/* "0 to verify" beside a cohort nothing could be measured on is the
+            same claim as "0 fields compared" on an unreadable export: a zero
+            where there is no measurement. When no cohort in this section
+            produced a reference, there is no count to state. */}
+        {totals.withReference ? (
+          <span
+            className="drift-count"
+            title={totals.withoutReference
+              ? `${totals.withoutReference} of these cohorts produced no reference at all and are outside this count.`
+              : undefined}
+          >
+            {/* Accounts, and it says the word. Every chip under this head counts
+                accounts, and the domain's row count is a different number
+                whenever one account exports twice — which happens on this book.
+                A bare number here that disagreed with the chips below it would
+                be unresolvable by the reader. */}
+            {totals.toVerifyAccounts} account
+            {totals.toVerifyAccounts === 1 ? '' : 's'} to verify
+          </span>
+        ) : (
+          <span className="drift-count muted">no reference established</span>
+        )}
+      </div>
+      <p className="drift-observed-warn">
+        These {totals.cohorts === 1 ? 'accounts run a family' : 'accounts run families'} the library
+        has no folder for, so there is nothing the desk wrote to check them against. What follows is
+        not a set file: it is the configuration the accounts themselves converge on, read off this
+        book. It states what the cohort does, never what the desk decided — and if a cohort was
+        changed together, the reference changed with it and everything below will read as agreeing.
+        Use it to find the account that stands apart, not to confirm a family is correct.
+      </p>
+
+      {observed.cohorts.map((cohort) => (
+        <ObservedCohort key={cohort.key} cohort={cohort} />
+      ))}
+    </section>
+  );
+}
+
+function ObservedCohort({ cohort }) {
+  return (
+    <section className="drift-row drift-observed-row">
+      <div className="drift-head">
+        <strong>{cohort.family}</strong>
+        <span className="muted">{cohort.instrument}</span>
+        <span className="badge observed">observed</span>
+        {cohort.reference ? (
+          <span className="drift-count">
+            {cohort.verifyAccounts} account{cohort.verifyAccounts === 1 ? '' : 's'} to verify
+          </span>
+        ) : (
+          <span className="drift-count muted">no reference</span>
+        )}
+      </div>
+
+      {cohort.reference ? (
+        <>
+          <p className="drift-majority">
+            <span className="muted">
+              {cohort.reference.rows} of {cohort.rows} row{cohort.rows === 1 ? '' : 's'} (
+              {cohort.reference.share}%) run the same configuration
+            </span>
+            <span
+              className="badge muted"
+              title="How many separate configurations the cohort splits into. A high share across 3 configurations is a different claim from the same share across 16."
+            >
+              {cohort.distinctConfigurations} configuration
+              {cohort.distinctConfigurations === 1 ? '' : 's'} across {cohort.accounts} account
+              {cohort.accounts === 1 ? '' : 's'}
+            </span>
+          </p>
+
+          <p className="drift-observed-fact">
+            {cohort.identityLine} {cohort.fieldsLine}
+          </p>
+
+          {cohort.historyLine ? (
+            <p className="drift-observed-fact">{cohort.historyLine}</p>
+          ) : null}
+
+          <details className="drift-rest">
+            <summary>
+              {/* The table below has one row per COMPARED setting, so that is the
+                  number stated here. The reference's own field count is the
+                  smaller one whenever a minority build carries settings the
+                  reference has no field for, and heading a 7-row table "4
+                  settings" is the mismatch this panel exists not to make. */}
+              The observed reference — {cohort.reference.comparedFieldCount} setting
+              {cohort.reference.comparedFieldCount === 1 ? '' : 's'}
+              {cohort.reference.fieldCount === cohort.reference.comparedFieldCount
+                ? ''
+                : `, ${cohort.reference.fieldCount} of them carried by the reference itself`}
+              , and how many rows carry each. Not a set file: no version, no risk level, no
+              filename, because the library has none to give.
+            </summary>
+            <div className="drift-table-wrap">
+              <table className="drift-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Setting</th>
+                    <th scope="col">
+                      Observed reference
+                      <em>the majority configuration</em>
+                    </th>
+                    <th scope="col">
+                      Across the cohort
+                      <em>rows carrying each value</em>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cohort.referenceFields.map((field) => (
+                    <tr key={field.name}>
+                      <th scope="row">
+                        {field.mapped ? (
+                          field.label
+                        ) : (
+                          <code title="No safe plain-language name for this parameter — shown exactly as the strategy writes it.">
+                            {field.name}
+                          </code>
+                        )}
+                        {field.unit ? <em>{field.unit}</em> : null}
+                        {field.identity ? (
+                          <em title="Profit targets and the stop are what identify a version on this desk.">
+                            version identity
+                          </em>
+                        ) : null}
+                      </th>
+                      <td>
+                        {/* A setting the reference has no field for is stated,
+                            never dashed. An em dash in a value column reads as
+                            "blank" or as zero, and "the reference does not carry
+                            this" is neither. Same wording as the diff table
+                            below, which already had it right. */}
+                        {field.absentFromReference ? (
+                          <span className="drift-absent">not in the reference</span>
+                        ) : (
+                          field.value
+                        )}
+                      </td>
+                      <td className={field.unanimous ? '' : 'drift-here'}>
+                        {field.unanimous ? (
+                          <span className="muted">every row</span>
+                        ) : (
+                          /* `value · rows`, not `value on N rows`. The prose form
+                             renders a toggle as "on on 2 rows" and an absent
+                             field as "not in that build on 14 rows"; every
+                             toggle on this desk (Martingale, Break-even,
+                             Re-entry, the seven weekday filters) hits it as soon
+                             as it varies. */
+                          field.spread.map((entry, index) => (
+                            <span key={entry.value}>
+                              {index ? ', ' : ''}
+                              {entry.value} · {entry.rows} row{entry.rows === 1 ? '' : 's'}
+                            </span>
+                          ))
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </>
+      ) : (
+        <p className="drift-recurring drift-observed-none">{cohort.noReferenceLine}</p>
+      )}
+
+      {cohort.groups.length ? (
+        <ul className="drift-groups">
+          {cohort.groups.map((group) => (
+            <li key={group.key} className="drift-group">
+              <details>
+                <summary>
+                  <span className="drift-summary-body">
+                    <span className="drift-group-head">
+                      <span
+                        className="drift-group-count"
+                        title={group.tally.unnamedRows
+                          ? `${group.tally.accounts} identified account${group.tally.accounts === 1 ? '' : 's'} and ${group.tally.unnamedRows} strategy row${group.tally.unnamedRows === 1 ? '' : 's'} with no trading account on the import.`
+                          : undefined}
+                      >
+                        {group.count} account{group.count === 1 ? '' : 's'}
+                      </span>
+                      <span className={`badge ${group.tone}`}>{group.classLabel}</span>
+                      <span
+                        className="drift-more"
+                        title={`${group.rows} of the cohort's ${cohort.rows} strategy rows. The count beside it is accounts, which is the smaller number whenever one account exports twice.`}
+                      >
+                        {group.share}% of the cohort
+                      </span>
+                    </span>
+                    <span className="drift-headline">{group.headline}</span>
+                    <span className="drift-build">{group.reading}</span>
+                    {group.note ? <span className="drift-build">{group.note}</span> : null}
+                    <span className="drift-who muted">{group.whoLine}</span>
+                  </span>
+                </summary>
+                <div className="drift-detail">
+                  {group.changes.length ? (
+                    <div className="drift-table-wrap">
+                      <table className="drift-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">Setting</th>
+                            <th scope="col">
+                              Observed reference
+                              <em>{cohort.reference.rows} rows of {cohort.rows}</em>
+                            </th>
+                            <th scope="col">
+                              These {group.count}
+                              <em>account{group.count === 1 ? '' : 's'}</em>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.changes.map((change) => (
+                            <tr key={change.name}>
+                              <th scope="row">
+                                {change.mapped ? (
+                                  change.label
+                                ) : (
+                                  <code title="No safe plain-language name for this parameter — shown exactly as the strategy writes it.">
+                                    {change.name}
+                                  </code>
+                                )}
+                                {change.unit ? <em>{change.unit}</em> : null}
+                                {change.identity ? (
+                                  <em title="Profit targets and the stop are what identify a version on this desk. A difference here is a different version, not a tweak.">
+                                    version identity
+                                  </em>
+                                ) : null}
+                              </th>
+                              <td>
+                                {change.absentInCohort ? (
+                                  <span className="drift-absent">not in the reference</span>
+                                ) : (
+                                  change.cohort
+                                )}
+                              </td>
+                              <td className="drift-here">
+                                {change.absentHere ? (
+                                  <span className="drift-absent">not in this export</span>
+                                ) : (
+                                  change.here
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+
+                  <p className="drift-build">{group.evidence}</p>
+
+                  <ul className="drift-accounts">
+                    {group.clients.map((client) => (
+                      <li key={client.clientId}>
+                        <strong>{client.clientName}</strong>
+                        {client.accounts.length ? (
+                          <span className="drift-account-numbers">{client.accounts.join('  ')}</span>
+                        ) : null}
+                        {client.unnamedRows ? (
+                          <span className="drift-absent">
+                            {client.unnamedRows} row{client.unnamedRows === 1 ? '' : 's'} with no
+                            account number on the import
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </details>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {cohort.reference && !cohort.groups.length ? (
+        <p className="drift-observed-fact">
+          Every row in this cohort runs the reference configuration — which is what makes it the
+          reference, not evidence that it is right. A cohort that agrees with itself is the one case
+          this comparison can say nothing about.
+        </p>
+      ) : null}
+
+      <p className="drift-observed-fact muted">{cohort.provenanceLine}</p>
+    </section>
+  );
+}
+
 /* ── View model ───────────────────────────────────────────────────────────── */
 
 const CLASS_LABEL = {
@@ -760,4 +1100,281 @@ function buildMatchView(result, { limit = 8 } = {}) {
     notMeasured: result.notMeasuredFamilies,
     provenance: result.catalogProvenance,
   };
+}
+
+/* ── Observed reference view model ────────────────────────────────────────── */
+
+const percent = (fraction) => Math.round(fraction * 100);
+const plural = (count, one, many) => (count === 1 ? one : many);
+
+/**
+ * Why the library could not answer, in the words of the gap rather than of the
+ * code. All 47 rows in scope today carry `family-not-in-library`; the other two
+ * reasons are the same hole seen from the instrument side and are 0 rows only
+ * because every Bullet Bot file is instrument-less and stays a candidate for any
+ * contract.
+ */
+function uncoveredLine(cohort) {
+  const reasons = new Set(cohort.whyUncovered);
+  if (reasons.has('no-file-for-instrument')) {
+    return `The library has a folder for ${cohort.family} but no file for ${cohort.instrument}.`;
+  }
+  if (reasons.has('instrument-not-in-library')) {
+    return `The library holds no template for ${cohort.instrument}.`;
+  }
+  return `The library has no folder for ${cohort.family}.`;
+}
+
+/**
+ * What the cohort agrees on where it matters most.
+ *
+ * The desk's own definition of a version — profit targets and the stop — so a
+ * unanimous cohort can be described as one version with settings adjusted rather
+ * than as a popularity contest. G4M is unanimous on all four across all 47 rows.
+ *
+ * Three outcomes, three sentences. `unanimous` is null when the export carries
+ * none of those fields, and that case must not borrow either of the other two:
+ * "the cohort disagrees" and "nothing was compared" are different answers.
+ */
+function identityLineOf(cohort) {
+  const { identity } = cohort.reference;
+  const count = identity.fields.length;
+  if (identity.unanimous === null) {
+    return 'This export carries none of the settings the desk uses to identify a version, so '
+      + 'nothing here can say whether the cohort is on one version or several.';
+  }
+  if (!identity.unanimous) {
+    return `The cohort does not agree on the ${count} ${plural(count, 'setting', 'settings')} the `
+      + 'desk uses to identify a version, so it is running more than one — the reference below is '
+      + 'the most common of them, not the family\'s.';
+  }
+  const values = identity.fields.map((name) => {
+    const meta = describeParameter(name);
+    const value = formatParameterValue(name, identity.values[name]);
+    return `${meta.label} ${value}${meta.unit ? ` ${meta.unit}` : ''}`;
+  });
+  return `All ${cohort.rows} rows agree on the ${count} ${plural(count, 'setting', 'settings')} the `
+    + `desk uses to identify a version — ${values.join(', ')} — so this cohort is one version with `
+    + 'settings adjusted, not several versions in one place.';
+}
+
+/**
+ * How much of the reference is the whole cohort speaking, and what is held out.
+ *
+ * The denominator is `comparedFieldCount` — every setting any build in the
+ * cohort carries — because that is the set `unanimousFields` and `varyingFields`
+ * are counted over and the two halves have to add up to it. Against the
+ * reference's own `fieldCount` this printed "4 of the 4 compared settings are
+ * identical on every row and 3 vary" on a cohort whose minority build carried
+ * three Martingale settings the reference has no field for.
+ */
+function fieldsLineOf(cohort) {
+  const { reference } = cohort;
+  const unanimous = reference.unanimousFields.length;
+  const varying = reference.varyingFields.length;
+  const names = reference.varyingFields
+    .map((field) => describeParameter(field.name).label)
+    .join(', ');
+  const sizing = reference.excluded.sizing;
+  return `${unanimous} of the ${reference.comparedFieldCount} compared settings are identical on every row`
+    + `${varying ? ` and ${varying} ${plural(varying, 'varies', 'vary')} (${names})` : ''}.`
+    + (sizing.length
+      ? ` Position sizing (${sizing.join(', ')}) and the licence key are held out — sizing is the `
+        + 'risk level, which the desk sets per client on purpose.'
+      : ' The licence key is held out.');
+}
+
+/**
+ * Whether today's majority is new.
+ *
+ * The only check on the reference available anywhere in the book, and it is a
+ * weak one: it can show that a configuration is not last week's change, never
+ * that it is what the desk wanted. Said in the sentence, not left to be inferred.
+ */
+function historyLineOf(cohort) {
+  const { history } = cohort;
+  if (!history) return null;
+  if (!history.referenceIsAllTimeMajority) {
+    return `Over every import on record this configuration is ${history.referenceRows} of `
+      + `${history.rows} strategy rows (${history.referenceShare}%) and is not the most common one, `
+      + 'so today\'s majority is a recent move rather than a settled state.';
+  }
+  return `The same configuration has been the majority for as long as this book records — `
+    + `${history.referenceRows} of ${history.rows} strategy rows across all imports `
+    + `(${history.referenceShare}%). That is stability, not endorsement: it is the same book, `
+    + 'counted by row, so a client who imports often weighs more than one who imported once.';
+}
+
+/**
+ * The sentence for a cohort that gets NO reference.
+ *
+ * The whole reason this module reports non-findings at all. A fragmented cohort
+ * and a clean one look identical when both are dropped, and the difference
+ * between them is the difference between "nothing to do" and "we cannot tell".
+ */
+function noReferenceLineOf(cohort, guards) {
+  if (cohort.status === REFERENCE.NO_MAJORITY) {
+    const rest = cohort.rows - cohort.largest.rows;
+    return `No reference could be established here. ${cohort.rows} rows split across `
+      + `${cohort.distinctConfigurations} configurations and the largest holds ${cohort.largest.rows}`
+      + ` of them (${cohort.largest.share}%), under the ${percent(guards.minDominantShare)}% a `
+      + 'majority needs to count as a norm. This is "there is nothing to compare against", not '
+      + `"everything is fine": a reference built from ${cohort.largest.rows} rows would list the `
+      + `other ${rest} as departures from a configuration most of the cohort does not run.`;
+  }
+  if (cohort.status === REFERENCE.COHORT_TOO_SMALL) {
+    return `No reference. ${cohort.rows} ${plural(cohort.rows, 'row is', 'rows are')} under the `
+      + `${guards.minCohort}-row floor, and in a cohort this small the majority is one client's `
+      + 'preference — reporting the rest against it would manufacture a standard rather than find '
+      + 'one. Not the same as finding nothing wrong.';
+  }
+  return `No reference. None of this cohort's ${cohort.unreadableRows} `
+    + `${plural(cohort.unreadableRows, 'row', 'rows')} exported parameters that could be read, so `
+    + 'nothing was compared.';
+}
+
+/** How the cohort was assembled, under every cohort. */
+function provenanceLineOf(cohort) {
+  const parts = [
+    `Derived from ${cohort.rows} strategy ${plural(cohort.rows, 'row', 'rows')} on `
+    + `${cohort.accounts} ${plural(cohort.accounts, 'account', 'accounts')} across `
+    + `${cohort.clients} ${plural(cohort.clients, 'client', 'clients')}, latest import each`
+    + `${cohort.unnamedRows
+      ? `, plus ${cohort.unnamedRows} ${plural(cohort.unnamedRows, 'row', 'rows')} with no trading `
+        + 'account on the import'
+      : ''}.`,
+  ];
+  if (cohort.unreadableRows) {
+    parts.push(`${cohort.unreadableRows} ${plural(cohort.unreadableRows, 'row', 'rows')} exported `
+      + 'nothing readable and sit outside every share above.');
+  }
+  parts.push(uncoveredLine(cohort));
+  if (!cohort.instrumentCatalogued) {
+    parts.push(`The library holds no template for ${cohort.instrument} for any family either, so `
+      + 'this cohort has two gaps, not one.');
+  }
+  return parts.join(' ');
+}
+
+/**
+ * One minority configuration, ready to render.
+ *
+ * `variant` and `outlier` are two different findings and the domain already
+ * separates them: above the outlier share a group is a second configuration the
+ * cohort runs, below it a group is worth a look. G4M's 11 accounts closing at
+ * 16:30 are 23% — and `Close all open trades → 16:30` is the most recurring
+ * change on the whole book, 14 of 29 drift groups. Listing them as departures
+ * would put a desk decision on a review list eleven times.
+ */
+function toObservedGroup(config, kind, cohort, guards) {
+  const changes = sortChanges(config.changes.map((change) => ({
+    ...describeChangeRow(change),
+    // The desk's own definition of a version, carried onto an observed diff so
+    // a minority that differs on a profit target sorts above one that differs on
+    // a trail frequency. No difference here can be `sizing`: the reference
+    // excludes sizing by construction.
+    identity: VERSION_IDENTITY.test(change.name),
+    sizing: false,
+  })));
+  const count = config.tally.total;
+  const clients = rollUpAccounts(config.accounts);
+  return {
+    key: config.key,
+    kind,
+    count,
+    tally: config.tally,
+    // The share's own numerator, so the tooltip can state the denominator the
+    // percentage is actually over rather than leaving a reader to assume it is
+    // the account count printed beside it.
+    rows: config.rows,
+    share: config.share,
+    classLabel: kind === 'variant' ? 'second configuration' : 'to verify',
+    tone: kind === 'variant' ? 'info' : 'warning',
+    headline: headlineFor(config.changes, count),
+    // The share is already a chip on the collapsed row, so the sentence says
+    // what the share MEANS rather than repeating the number beside itself.
+    reading: kind === 'variant'
+      ? `Above the ${percent(guards.outlierShare)}% floor, so this reads as a second configuration `
+        + 'the cohort runs rather than as accounts departing from one.'
+      : 'A minority configuration is a question, not a fault — the desk customises clients on '
+        + 'purpose, so what this asks is whether it was asked for.',
+    note: buildNoteFor(config.changes),
+    changes,
+    // The comparison runs over every setting either side carries, so that is the
+    // denominator. Against the reference's own field count it read "compared
+    // against the reference's 4 settings; 3 differ" for a group whose three
+    // differences were settings the reference has no field for — three of four,
+    // none of them among the four.
+    evidence: `Compared field by field across the ${cohort.reference.comparedFieldCount} settings `
+      + `this cohort carries between its builds; ${changes.length} `
+      + `${plural(changes.length, 'differs', 'differ')}. The reference is `
+      + `${cohort.reference.rows} of this cohort's ${cohort.rows} rows and nothing the desk wrote.`,
+    clients,
+    whoLine: whoLineOf(clients),
+  };
+}
+
+/**
+ * Everything the observed section renders, derived once.
+ *
+ * Cohorts without a reference are kept, deliberately. They are the ones a panel
+ * is tempted to drop, and dropping them is how "we could not establish a norm
+ * here" becomes indistinguishable from "nothing found here".
+ */
+function buildObservedView(result) {
+  const guards = result.guards;
+  const cohorts = result.cohorts.map((cohort) => {
+    const groups = cohort.reference
+      ? [
+        ...cohort.outliers.map((config) => toObservedGroup(config, 'outlier', cohort, guards)),
+        ...cohort.variants.map((config) => toObservedGroup(config, 'variant', cohort, guards)),
+      ]
+      : [];
+    return {
+      ...cohort,
+      // What the cohort head prints. Accounts, matching the chip on every group
+      // below it; the row count is the same number today and stops being one the
+      // moment an account exports twice in a cohort, which this book does
+      // elsewhere. The row count is not derived here at all — an unrendered
+      // second total beside a rendered one is how the two drift apart.
+      verifyAccounts: cohort.outliers.reduce((sum, config) => sum + config.tally.total, 0),
+      identityLine: cohort.reference ? identityLineOf(cohort) : null,
+      fieldsLine: cohort.reference ? fieldsLineOf(cohort) : null,
+      historyLine: cohort.reference ? historyLineOf(cohort) : null,
+      noReferenceLine: cohort.reference ? null : noReferenceLineOf(cohort, guards),
+      provenanceLine: provenanceLineOf(cohort),
+      referenceFields: cohort.reference
+        ? cohort.reference.fields.map((field) => ({
+          ...describeParameter(field.name),
+          // The reference's own value, not the field's most common one. They
+          // agree on this book and they need not: the majority CONFIGURATION can
+          // hold a value that is not the majority value of that field once the
+          // minorities are counted together.
+          // The `'—'` is unreachable now that `absentFromReference` carries the
+          // only case that produced a null — every value in the parameter map is
+          // a string. Left as the last resort rather than deleted: a bare null
+          // reaching JSX renders as nothing at all, which is the blank cell this
+          // panel has already shipped once.
+          value: formatParameterValue(field.name, cohort.reference.parameters[field.name]) ?? '—',
+          // "The reference has no field for this" is a different claim from "the
+          // reference sets it to nothing", and only the parameter map can tell
+          // them apart — formatParameterValue returns null for both.
+          absentFromReference: !Object.prototype.hasOwnProperty.call(
+            cohort.reference.parameters, field.name,
+          ),
+          identity: VERSION_IDENTITY.test(field.name),
+          unanimous: field.unanimous,
+          spread: field.unanimous ? null : field.values.map((entry) => ({
+            value: formatParameterValue(field.name, entry.value) ?? 'not in that build',
+            rows: entry.rows,
+          })),
+        })).sort((a, b) => Number(b.identity) - Number(a.identity)
+          || a.rank - b.rank
+          || a.label.localeCompare(b.label))
+        : [],
+      groups,
+    };
+  });
+
+  return { ...result, cohorts, guards };
 }

@@ -124,8 +124,8 @@ describe('the whole book', () => {
     expect(totals.rows).toBe(619);
     expect(totals.exact + totals.ambiguous + totals.near + totals.none
       + totals.undetermined + totals.notMeasured).toBe(619);
-    expect(totals.exact).toBe(329);
-    expect(totals.near).toBe(168);
+    expect(totals.exact).toBe(400);
+    expect(totals.near).toBe(97);
     expect(totals.none).toBe(75);
     expect(totals.ambiguous).toBe(0);
     expect(totals.undetermined).toBe(0);
@@ -258,7 +258,7 @@ describe('near and none', () => {
     // Version identity is what separates the two classes: ProfitTargetTicks*
     // and StopLossTicks are the version on this desk.
     const near = view.rows.filter((row) => row.classification === MATCH.NEAR);
-    expect(near.length).toBe(168);
+    expect(near.length).toBe(97);
     const withIdentityDiff = near.filter((row) => row.differences.some((d) => d.identity));
     expect(withIdentityDiff).toEqual([]);
   });
@@ -296,7 +296,7 @@ describe('near and none', () => {
   });
 
   it('leaves the risk level null when the files carrying the configuration disagree', () => {
-    // Measured on the library: 2 of the 190 configurations are carried by named
+    // Measured on the library: 2 of the 193 configurations are carried by named
     // variants at DIFFERENT risk levels — `PLPI (PL) 5 Min Candle v4` and `v5`
     // are byte-identical at Medium and at High, PosSize included, so nothing in
     // the parameters can say which of the two an account is on. The rule is
@@ -351,8 +351,8 @@ describe('the roll-ups a manager reads', () => {
     expect(byFamily.get('Bullet Bot')).toMatchObject({ rows: 138, exact: 118, none: 20, near: 0 });
     expect(byFamily.get('IFSP')).toMatchObject({ rows: 95, exact: 78, near: 16, none: 1 });
     expect(byFamily.get('URGO')).toMatchObject({ rows: 89, exact: 72, near: 12, none: 5 });
-    expect(byFamily.get('RBO')).toMatchObject({ rows: 54, exact: 0, near: 53, none: 1 });
-    expect(byFamily.get('B2X')).toMatchObject({ rows: 38, exact: 0, near: 34, none: 4 });
+    expect(byFamily.get('RBO')).toMatchObject({ rows: 54, exact: 43, near: 10, none: 1 });
+    expect(byFamily.get('B2X')).toMatchObject({ rows: 38, exact: 28, near: 6, none: 4 });
     // The book spells three families differently from the library.
     expect(byFamily.get('Bullet Bot').catalogFamily).toBe('BulletBot');
     // And a base family must not resolve to its prop-firm twin: they are
@@ -372,15 +372,28 @@ describe('the roll-ups a manager reads', () => {
   });
 
   it('finds the question a whole family shares', () => {
-    // 43 of RBO's 54 rows differ from their closest file in the same two
-    // settings with the same values. That is one question about whether the
-    // library is behind the book, not 43 about clients.
+    // This assertion is what the roll-up is FOR, and it has now caught the thing
+    // twice over.
+    //
+    // It first read 43 of RBO's 54 rows differing from their closest file in the
+    // same two settings with the same values — BreakEvenOffset 50 to 25 and
+    // EntryOrderTickOffset 1 to 0. One question about whether the library was
+    // behind the book, not 43 questions about clients. The library was aligned to
+    // those two values, and those 43 rows became exact matches.
+    //
+    // What is left is the next question down, and only that one: 10 rows on the
+    // same version differing on the close time alone. It stands because the desk
+    // does not agree on a value — 41 RBO rows close at 16:50 and these 10 at
+    // 16:30 — so no edit to the library can settle it. The same split runs
+    // through ARPD, B2X, URGO, IFSP and OGX.
     const rbo = view.families.find((family) => family.family === 'RBO');
-    expect(rbo.recurring.rows).toBe(43);
-    expect(rbo.recurring.names).toEqual(['BreakEvenOffset', 'EntryOrderTickOffset']);
+    expect(rbo.recurring.rows).toBe(10);
+    expect(rbo.recurring.names).toEqual(['CloseAllOpenTradeTime']);
     expect(rbo.recurring.sameValues).toBe(true);
     expect(rbo.recurring.changes[0]).toEqual({
-      name: 'BreakEvenOffset', catalogValues: ['50'], liveValues: ['25'],
+      name: 'CloseAllOpenTradeTime',
+      catalogValues: ['2020-01-01T16:50:00'],
+      liveValues: ['2020-01-01T16:30:00'],
     });
   });
 
@@ -398,9 +411,9 @@ describe('the roll-ups a manager reads', () => {
 
   it('carries the catalog\'s own admission of what it cannot decide', () => {
     expect(view.catalogProvenance.files).toBe(911);
-    expect(view.catalogProvenance.distinctConfigurations).toBe(190);
+    expect(view.catalogProvenance.distinctConfigurations).toBe(193);
     expect(view.catalogProvenance.ambiguity.periodsIdentical).toBe(292);
-    expect(view.catalogProvenance.ambiguity.pfTwinsIdentical).toBe(107);
+    expect(view.catalogProvenance.ambiguity.pfTwinsIdentical).toBe(104);
   });
 });
 

@@ -311,9 +311,17 @@ export function headlineFor(changes, count) {
     const top = valued[0];
     if (top.rank === RANK.UNKNOWN) {
       // Reachable only when every valued change is an unrecognised name. 0 of 29
-      // groups on this book, and the guard is the point: URGO2 and URGO4 must
-      // never be the sentence a CAM is handed.
-      return `${plural(valued.length, '1 setting', `${valued.length} settings`)} differ from the cohort, `
+      // drift groups on this book, and the guard is the point: URGO2 and URGO4
+      // must never be the sentence a CAM is handed.
+      //
+      // No longer hypothetical. The observed-reference section reaches it on its
+      // only finding: G4M's single outlier differs from its cohort in
+      // `EdgeLeverage` alone, which is deliberately unmapped, so this is the
+      // whole sentence that account gets. It read "1 setting differ from the
+      // cohort" — the plural helper covered the noun and not the verb, and the
+      // one branch that had never rendered was the one carrying the typo.
+      return `${plural(valued.length, '1 setting', `${valued.length} settings`)} `
+        + `${plural(valued.length, 'differs', 'differ')} from the cohort, `
         + 'none of them a named risk control — open the row for the raw parameters.';
     }
     const here = withUnit(top.here, top.unit);

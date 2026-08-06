@@ -72,8 +72,24 @@ function splitValues(text) {
  * including sizing reports a client on a higher risk setting as running a
  * different version. Of 127 config-and-risk combinations on a real book, 17 were
  * only risk.
+ *
+ * Two options, both defaulting to exactly what this file has always done, so the
+ * drift panel's 10 rows are byte-for-byte unchanged:
+ *
+ *   `sizing` — this file's `/^PosSize\d*$/i` covers the 17 families that spell it
+ *   that way and misses BulletBot's `PositionSize`, TendoCentinel's
+ *   `Position{n}Size` and MotusTemplar's `ScaleInSize`. setFileNormalise.js
+ *   carries all four spellings; a caller comparing against the desk's own rule
+ *   passes that one instead of re-deriving it here.
+ *
+ *   `normaliseValue` — raw export values, so `1/1/2020 4:45:00 PM` stays in the
+ *   NinjaTrader dialect while the set files say `2020-01-01T16:45:00`, and
+ *   `True` would not equal `true`. Harmless while every value in a comparison
+ *   comes from the same export, which is the drift panel's case; a caller whose
+ *   output sits beside catalogued set-file values passes `normaliseSetFileValue`
+ *   so both sides are stated in one dialect.
  */
-export function configKeyOf(parametersRaw) {
+export function configKeyOf(parametersRaw, { sizing = SIZING, normaliseValue = null } = {}) {
   const text = String(parametersRaw || '').trim();
   if (!text) return null;
   const match = text.match(/^([\s\S]*)\(([^()]*)\)\s*$/);
@@ -84,9 +100,9 @@ export function configKeyOf(parametersRaw) {
 
   const parts = [];
   names.forEach((name, index) => {
-    if (SIZING.test(name)) return;
+    if (sizing.test(name)) return;
     if (/licen[cs]e ?key/i.test(name)) return;
-    parts.push(`${name}=${values[index]}`);
+    parts.push(`${name}=${normaliseValue ? normaliseValue(values[index]) : values[index]}`);
   });
   // Sorted, because NinjaTrader does not guarantee an order and two strategies
   // with identical settings listed differently produced different keys. On a
@@ -131,15 +147,33 @@ export function shortConfigLabel(configKey, parametersRaw) {
  * diffed field by field, and inventing a comparison there would be worse than
  * saying so.
  */
+function toMap(key) {
+  // A Map, not a plain object. Insertion order is the key's own sorted order for
+  // a Map whatever the names look like; an object reorders any name that reads
+  // as an array index, and `G4M1`/`URGO2`-style names are one convention away
+  // from being bare digits.
+  const map = new Map();
+  for (const part of String(key || '').split(FIELD)) {
+    const at = part.indexOf('=');
+    if (at > 0) map.set(part.slice(0, at), part.slice(at + 1));
+  }
+  return map;
+}
+
+/**
+ * A configuration key read back as `{name: value}`.
+ *
+ * The key is the only place the parsed configuration survives — buildConfigDrift
+ * uses it internally and then discards it — so a caller that needs to state the
+ * configuration itself, rather than a diff against it, had nothing to read. Same
+ * parser as describeConfigDifference, so the two can never disagree about what a
+ * key says. Sizing and the licence key are already gone: configKeyOf dropped them.
+ */
+export function configParametersOf(configKey) {
+  return Object.fromEntries(toMap(configKey));
+}
+
 export function describeConfigDifference(dominantKey, outlierKey) {
-  const toMap = (key) => {
-    const map = new Map();
-    for (const part of String(key || '').split(FIELD)) {
-      const at = part.indexOf('=');
-      if (at > 0) map.set(part.slice(0, at), part.slice(at + 1));
-    }
-    return map;
-  };
   const from = toMap(dominantKey);
   const to = toMap(outlierKey);
   if (!from.size || !to.size) return [];
@@ -160,6 +194,122 @@ export function describeConfigDifference(dominantKey, outlierKey) {
 }
 
 /**
+ * Every (family, instrument) cohort on the book with its configurations counted
+ * and ranked, majority first. No verdicts — the guards live in the callers.
+ *
+ * Extracted from buildConfigDrift rather than copied. buildConfigDrift throws
+ * away everything it does not report: on the real book it sees 43 cohorts and
+ * prints 10, and each of the 33 it drops leaves a bare `continue`. A cohort that
+ * was checked and found uniform, a cohort of three accounts and a cohort that
+ * does not exist all render identically — absent — which is the "cannot be
+ * determined is null, never 0" rule broken one level up from the numbers.
+ *
+ * The three injection points exist because the second caller needs a different
+ * reading of the SAME rows, not a different algorithm:
+ *
+ *   `familyOf` — the default is the strategy NAME. setFileMatch.js:363 prefers
+ *   the import's own `strategy_family` column and falls back to the name, and
+ *   the two disagree on spelling for five families: `IFSP_PF` in the column,
+ *   `IFSP-PF` reconstructed from `0 - IFSP-PF-1.1`. Two panels spelling one
+ *   family two ways is a bug the reader has to resolve.
+ *
+ *   `instrumentOf` — the default is the raw contract string, which splits one
+ *   root three ways: G4M runs `MES SEP26` (43 rows), `MES 09-26` (3) and `MESU6`
+ *   (1), and the catalog maps all three to `MES`. Regrouping the whole book on
+ *   the root merges 43 cohorts into 19.
+ *
+ *   `imports` — 'latest' is every client's most recent import, which is what a
+ *   CAM is looking at. 'all' walks every import up to the bound, which is how a
+ *   caller asks whether today's majority has been the majority all along. Note
+ *   what 'all' counts: strategy rows across imports, so a client who imports
+ *   daily weighs more than one who imported once. It is a stability signal, not
+ *   a population.
+ *
+ * Defaults reproduce buildConfigDrift's original behaviour exactly.
+ */
+export function buildConfigCohorts(clients = [], {
+  asOfDate = '',
+  imports = 'latest',
+  familyOf = (strategy) => strategyFamilyOf(strategy?.strategyName),
+  instrumentOf = (strategy) => String(strategy?.instrument || '').trim(),
+  keyOf = (strategy) => configKeyOf(strategy?.parametersRaw),
+} = {}) {
+  const bound = String(asOfDate || '').slice(0, 10);
+  const groups = new Map();
+
+  for (const client of clients || []) {
+    const inScope = (client?.dailyImports || [])
+      .filter((entry) => entry?.date && (!bound || String(entry.date).slice(0, 10) <= bound))
+      .slice()
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const walk = imports === 'all' ? inScope : inScope.slice(-1);
+    if (!walk.length) continue;
+
+    for (const daily of walk) {
+      for (const strategy of daily.strategies || []) {
+        const family = familyOf(strategy);
+        const instrument = instrumentOf(strategy);
+        if (!family || !instrument) continue;
+
+        const groupKey = `${family}${FIELD}${instrument}`;
+        if (!groups.has(groupKey)) {
+          groups.set(groupKey, {
+            key: groupKey, family, instrument, total: 0, unreadable: 0, configs: new Map(),
+          });
+        }
+        const group = groups.get(groupKey);
+
+        const configKey = keyOf(strategy);
+        if (!configKey) {
+          // Counted, never folded into a configuration. An export nobody can
+          // parse is not evidence of running anything, and a cohort that
+          // silently shrank by the rows it could not read reports a share whose
+          // denominator the reader cannot see. 0 of 619 latest rows today.
+          group.unreadable += 1;
+          continue;
+        }
+
+        group.total += 1;
+        if (!group.configs.has(configKey)) {
+          group.configs.set(configKey, {
+            configKey,
+            label: shortConfigLabel(configKey, strategy.parametersRaw),
+            // One raw export per configuration, kept so a caller can ask what
+            // the export carried that the key does not — the sizing fields and
+            // the licence key are dropped by configKeyOf and a caller naming
+            // what it excluded has to be able to name them.
+            sample: strategy.parametersRaw || '',
+            count: 0,
+            accounts: [],
+          });
+        }
+        const config = group.configs.get(configKey);
+        config.count += 1;
+        config.accounts.push({
+          clientId: client.id,
+          clientName: client.name || client.id,
+          accountName: strategy.accountName || '',
+          strategyName: strategy.strategyName || '',
+          // Neither of these was on the drift panel's account entries, so a
+          // finding could not be joined to the set-file panel's per-row table
+          // and a cohort merged from three contract strings could not say which
+          // one an account is actually on.
+          instrument: String(strategy?.instrument || '').trim(),
+          importDate: daily.date || null,
+        });
+      }
+    }
+  }
+
+  return [...groups.values()].map((group) => ({
+    ...group,
+    // Majority first. A stable sort, so configurations of equal size keep the
+    // order they were first seen in — the drift panel's row order depends on it.
+    configs: [...group.configs.values()].sort((a, b) => b.count - a.count),
+  }));
+}
+
+/**
  * Configurations running against the majority, per family and instrument.
  *
  * `minCohort` is the guard that keeps this honest. With three accounts split
@@ -173,54 +323,12 @@ export function buildConfigDrift(clients = [], {
   outlierShare = 0.15,
   minDominantShare = 0.4,
 } = {}) {
-  const bound = String(asOfDate || '').slice(0, 10);
-  const groups = new Map();
-
-  for (const client of clients || []) {
-    const imports = (client?.dailyImports || [])
-      .filter((entry) => entry?.date && (!bound || String(entry.date).slice(0, 10) <= bound))
-      .slice()
-      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    const latest = imports[imports.length - 1];
-    if (!latest) continue;
-
-    for (const strategy of latest.strategies || []) {
-      const family = strategyFamilyOf(strategy?.strategyName);
-      const instrument = String(strategy?.instrument || '').trim();
-      const configKey = configKeyOf(strategy?.parametersRaw);
-      if (!family || !instrument || !configKey) continue;
-
-      const groupKey = `${family}|${instrument}`;
-      if (!groups.has(groupKey)) {
-        groups.set(groupKey, { family, instrument, total: 0, configs: new Map() });
-      }
-      const group = groups.get(groupKey);
-      group.total += 1;
-      if (!group.configs.has(configKey)) {
-        group.configs.set(configKey, {
-          configKey,
-          label: shortConfigLabel(configKey, strategy.parametersRaw),
-          count: 0,
-          accounts: [],
-        });
-      }
-      const config = group.configs.get(configKey);
-      config.count += 1;
-      config.accounts.push({
-        clientId: client.id,
-        clientName: client.name || client.id,
-        accountName: strategy.accountName || '',
-        strategyName: strategy.strategyName || '',
-      });
-    }
-  }
-
   const rows = [];
-  for (const group of groups.values()) {
+  for (const group of buildConfigCohorts(clients, { asOfDate })) {
     // Below the cohort floor there is no majority to deviate from, so nothing
     // here is reportable — not "no drift found", simply not measured.
     if (group.total < minCohort) continue;
-    const configs = [...group.configs.values()].sort((a, b) => b.count - a.count);
+    const configs = group.configs;
     const dominant = configs[0];
     // A single configuration means every account agrees.
     if (configs.length < 2) continue;
