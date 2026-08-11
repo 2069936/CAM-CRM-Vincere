@@ -34,7 +34,14 @@ export default function SimulationReportSection({ simulation }) {
     <section className="report-section report-simulation">
       <header className="report-simulation-head">
         <h2>{simulation.label}</h2>
-        <span className="sim-chip">Simulated funds</span>
+        {/*
+          Only when there IS something simulated. A block holding nothing but
+          undetermined accounts was still wearing this chip, so a client whose
+          three real accounts happened to be named Practice / Demo 4 / Simulator
+          read "Simulated funds" over $200,000 of possibly-real money. Telling a
+          client their money is play money is the same defect as the reverse.
+        */}
+        {hasAccounts ? <span className="sim-chip">Simulated funds</span> : null}
       </header>
       <p className="report-simulation-note">{simulation.note}</p>
 

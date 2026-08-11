@@ -202,8 +202,21 @@ export function buildSimulationSection(client, dailyImport, liveAccountCount = 0
   return {
     // Every label that will sit next to a number. Currency formatting alone does
     // not carry "this is not money", so the words do.
-    label: 'Simulation (not real money)',
-    note: 'These accounts trade simulated funds. Their balances and results are shown separately and are not included in any figure above.',
+    //
+    // The wording follows WHAT IS ACTUALLY IN THE SECTION. With no simulated
+    // account in it, the block was still headed "Simulation (not real money)"
+    // above the sentence "These accounts trade simulated funds" — printed over a
+    // list of accounts whose whole classification is that nobody knows what they
+    // are. A client reading it was told $200,000 of possibly-real money was play
+    // money, which is the same misreport as the opposite one and lands on the
+    // client rather than on the desk.
+    label: simRows.length
+      ? 'Simulation (not real money)'
+      : 'Accounts not included in the figures above',
+    note: simRows.length
+      ? 'These accounts trade simulated funds. Their balances and results are shown separately and are not included in any figure above.'
+      : 'These accounts could not be identified as either real money or simulated funds, so they are left out of every figure above. They are not being reported as simulated either.',
+    hasSimulation: simRows.length > 0,
     accounts: simRows,
     totals: summarizeAccountRows(simRows).totals,
     counts: {
@@ -247,6 +260,10 @@ export function buildDailyReportSummary(client, dailyImport) {
     cashIra: [],
     cashStraight: [],
     cashLegacy: [],
+    // Real money whose pool nobody has named yet. Its own bucket rather than a
+    // corner of `ignored`: an account the desk has not classified is still the
+    // client's money, and `ignored` is not counted anywhere.
+    unclassified: [],
     ignored: [],
   };
 
@@ -262,16 +279,42 @@ export function buildDailyReportSummary(client, dailyImport) {
     else if (meta.accountType === 'Funded') grouped.funded.push(row);
     else if (meta.accountType === 'Inactive / Ignore') grouped.ignored.push(row);
     else if (meta.accountType?.startsWith('Evaluation')) grouped.evaluations.push(row);
-    else grouped.ignored.push(row);
+    else grouped.unclassified.push(row);
   }
 
-  const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash];
+  // UNCLASSIFIED IS REAL MONEY AND IS COUNTED.
+  //
+  // It used to fall into `ignored`, which is in no total, so a close whose
+  // account type nobody had set yet was worth $0 on the client's report. That is
+  // the default state of every account the day it first appears — reconcile
+  // raises `New account ... needs manual classification` for exactly this — so it
+  // is the state a FIRST import is read in. Printed from the 11 real exports with
+  // an empty registry, all 11 clients' reports read $0.00 real money against a
+  // simulation block showing $100,000: Craig's 2026-08-06 said $0.00 / 0 accounts
+  // while his two funded accounts held $85,829.60. That is the same $0 dcd3196
+  // set out to fix, from a second cause, and it survived the sim split because
+  // the split happens upstream of this grouping.
+  //
+  // `operationsSegments.js` has always counted the same accounts (SEGMENTS.
+  // UNCLASSIFIED is not in EXCLUDED_FROM_TOTAL), so the desk's own view and the
+  // client's report disagreed on the same accounts on the same day. This is the
+  // report moving to the view, not a new policy.
+  //
+  // `ignored` keeps only 'Inactive / Ignore' — an explicit human decision that
+  // this account is not to be counted, which is a different fact from "not yet
+  // looked at".
+  const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash, ...grouped.unclassified];
   // `totals` is REAL MONEY ONLY and always has been. `snapshots` above never
   // contains a simulated close (reconcile.js and buildCrmStateFromTables both
   // split first), and `simulation` below is built from its own arrays, so the
   // two can never be summed by accident.
   const { totals } = summarizeAccountRows(allVisible);
-  const simulation = buildSimulationSection(client, dailyImport, allVisible.length);
+  // The denominator is every LIVE CLOSE, not every close the report happened to
+  // group into a tile. `allVisible` drops an Unassigned or Inactive / Ignore
+  // account, so a client with two unclassified real accounts and one Sim101 was
+  // told "Simulated accounts 1 of 1" - which reads as "everything you have is
+  // simulated" on the one report where that sentence must be exact.
+  const simulation = buildSimulationSection(client, dailyImport, snapshots.length);
 
   const openFlags = (dailyImport?.flags || []).filter((f) => f.status !== 'Resolved' && f.status !== 'Acknowledged');
   const criticalFlags = openFlags.filter((f) => f.severity === 'Critical');

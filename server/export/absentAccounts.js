@@ -18,6 +18,7 @@
 // reads, asks it once per trading date, and reports what it says.
 
 import { LIFECYCLE_STATES, buildAccountLifecycleStates } from '../../src/domain/accountLifecycle.js';
+import { ACCOUNT_NATURES, classifyAccountNature } from '../../src/domain/simulationAccounts.js';
 import { ACCOUNT_TYPES } from '../../src/domain/reconcile.js';
 
 /**
@@ -338,6 +339,7 @@ export function buildAbsenceIndex({
       [ABSENCE_REASONS.ABSENT_FINISHED]: 0,
     };
     let ignored = 0;
+    let simulated = 0;
 
     for (const account of accounts) {
       const key = nameKey(account.account_name);
@@ -364,6 +366,22 @@ export function buildAbsenceIndex({
       // collection failure that is really a shelf of retired accounts.
       const markedIgnore = account.account_type === ACCOUNT_TYPES.IGNORE;
       if (markedIgnore) ignored += 1;
+
+      // A registered simulation account only appears in the grid while somebody
+      // has it loaded, so it is absent on most closes by design. reconcile.js
+      // exempts it from the CRM's own Missing-account sweep for exactly that
+      // reason; without the same exemption here the export's report rate falls
+      // by one account-day per client per close forever, and the desk reads a
+      // collection failure that is a simulator sitting idle.
+      //
+      // Counted apart rather than filtered out, the same way markedIgnore is:
+      // the row stays in `absentAccounts` so nothing disappears from the
+      // payload, and the headline stops charging for it.
+      const isSimulated = classifyAccountNature(
+        { accountType: account.account_type || '', simulationMode: account.simulation_mode || '' },
+        { accountName: account.account_name || '' },
+      ).nature === ACCOUNT_NATURES.SIMULATION;
+      if (isSimulated) simulated += 1;
 
       let reason;
       if (!reportedDates.length) reason = ABSENCE_REASONS.NEVER_REPORTED_IN_RANGE;
@@ -475,6 +493,10 @@ export function buildAbsenceIndex({
         // A subset of `absent`, not a fifth reason: an ignore-marked account is
         // still counted under whichever reason applies to it.
         absentMarkedIgnore: { count: ignored, of: absent.length },
+        // Also a subset of `absent`, not a fifth reason. See the comment beside
+        // `isSimulated` above: a simulator that did not report is not a missed
+        // collection.
+        absentSimulation: { count: simulated, of: absent.length },
         snapshotRows,
         clientFiledNothing,
         // One `of` for the four counts beside it rather than four copies of the

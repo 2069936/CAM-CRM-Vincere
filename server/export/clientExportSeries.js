@@ -19,6 +19,12 @@
 // Every consumer re-deriving that gets it wrong quietly. Once, here, is better.
 
 import { buildPerformanceSeries, summarizePerformance } from '../../src/domain/performanceSeries.js';
+// A LEAF module: it imports nothing, so it resolves under plain Node ESM the
+// same way performanceSeries.js does. This file cannot reach
+// operationsSegments.js for the same rule (its chain uses extension-less
+// specifiers), which is why the nature is computed here from the classifier
+// directly rather than from a segment.
+import { ACCOUNT_NATURES, classifyAccountNature } from '../../src/domain/simulationAccounts.js';
 import { buildAbsenceIndex } from './absentAccounts.js';
 
 /**
@@ -148,6 +154,48 @@ function countBy(rows, key) {
  * are undated. It is one filter, and what it guards against is a desk-wide false
  * alarm.
  */
+/**
+ * The nature of the money behind one snapshot row.
+ *
+ * `simulation_mode` is the CAM's explicit override and outranks everything; the
+ * account_type and the Sim<number> naming come next. A row with no registry
+ * account behind it (41 of 3,100 on the real book) is classified off its stored
+ * account_name alone, which is what stops an unregistered Sim101 close from
+ * being exported as real capital.
+ */
+function natureOf(account, snapshot) {
+  return classifyAccountNature(
+    {
+      accountType: account?.account_type || '',
+      simulationMode: account?.simulation_mode || '',
+    },
+    { accountName: snapshot?.account_name || account?.account_name || '' },
+  ).nature;
+}
+
+/** Per-nature subtotals for the rows that are NOT real money. */
+function summarizeExcluded(rows) {
+  if (!rows.length) return null;
+  const of = (nature) => {
+    const picked = rows.filter((row) => row.nature === nature);
+    if (!picked.length) return null;
+    return {
+      accounts: picked.length,
+      realizedPnl: sumOrNull(picked.map((row) => row.realizedPnl)),
+      unrealizedPnl: sumOrNull(picked.map((row) => row.unrealizedPnl)),
+      accountBalance: sumOrNull(picked.map((row) => row.accountBalance)),
+    };
+  };
+  return {
+    accounts: rows.length,
+    // Simulated funds. Not money, and never summed with anything that is.
+    simulation: of(ACCOUNT_NATURES.SIMULATION),
+    // Neither confirmed real nor confirmed simulated. Left out of both totals
+    // rather than guessed into one of them.
+    undetermined: of(ACCOUNT_NATURES.UNDETERMINED),
+  };
+}
+
 function buildDays({
   clientId,
   imports,
@@ -204,6 +252,22 @@ function buildDays({
         // KB on the busiest CAM, and MAX_RESPONSE_BYTES in clientExport.js
         // explains why that is a rounding error against a structural problem.
         accountType: account?.account_type || null,
+        // WHAT KIND OF MONEY THIS ROW IS, and why.
+        //
+        // Until 2026-08-11 a simulated close could not reach this table at all:
+        // reconcile dropped every `sim*` row before anything was stored. That
+        // filter is gone and simulated closes are now persisted alongside real
+        // ones, so this payload started carrying them with nothing to say so.
+        // Craig Weschke's 2026-08-06 is the measured case: his day exports as
+        // balance 185,419.60 / realized -1,298.00 when the real figures are
+        // 85,829.60 and 0.00 — his Sim101's 99,590.00 and its entire -1,298.00
+        // loss attributed to him as money, in a payload whose whole purpose is
+        // to feed an analysis outside the CRM.
+        //
+        // Recomputed from the account's CURRENT record rather than stored on the
+        // snapshot, which is the same rule the app uses (supabaseStore.js): a
+        // CAM correcting a misclassification fixes every historical close.
+        nature: natureOf(account, snapshot),
         realizedPnl: numberOrNull(snapshot.gross_realized_pnl),
         unrealizedPnl: numberOrNull(snapshot.unrealized_pnl),
         accountBalance: numberOrNull(snapshot.account_balance),
@@ -213,7 +277,14 @@ function buildDays({
     });
 
     const date = String(dailyImport.trading_date).slice(0, 10);
-    const realizedPnl = sumOrNull(accounts.map((row) => row.realizedPnl));
+    // EVERY TOTAL BELOW IS REAL MONEY ONLY. `accounts` keeps every row of the
+    // day, of every nature, because dropping one would hide a close that was
+    // filed; the aggregates take the live ones. The rest are summed separately,
+    // under their own labelled keys, so the payload states them instead of
+    // either hiding them or adding them in.
+    const liveRows = accounts.filter((row) => row.nature === ACCOUNT_NATURES.LIVE);
+    const notLiveRows = accounts.filter((row) => row.nature !== ACCOUNT_NATURES.LIVE);
+    const realizedPnl = sumOrNull(liveRows.map((row) => row.realizedPnl));
     const weekStart = weekStartOf(date);
 
     // Two week-to-date figures because they answer different questions and
@@ -222,7 +293,7 @@ function buildDays({
     // against the balance move on 2,075 of 2,237 July pairs where gross managed
     // 1,656. `derivedInRange` is this export's own running sum, which is only
     // as complete as the range asked for.
-    const weekToDateReported = sumOrNull(accounts.map((row) => row.weeklyPnlReported));
+    const weekToDateReported = sumOrNull(liveRows.map((row) => row.weeklyPnlReported));
     const runningWeek = weekStart ? derivedByWeek.get(weekStart) ?? null : null;
     const weekToDateDerived = realizedPnl === null && runningWeek === null
       ? null
@@ -255,12 +326,18 @@ function buildDays({
       coverage: absence.coverage,
       totals: {
         realizedPnl,
-        unrealizedPnl: sumOrNull(accounts.map((row) => row.unrealizedPnl)),
-        accountBalance: sumOrNull(accounts.map((row) => row.accountBalance)),
+        unrealizedPnl: sumOrNull(liveRows.map((row) => row.unrealizedPnl)),
+        accountBalance: sumOrNull(liveRows.map((row) => row.accountBalance)),
         // Snapshot rows filed this day, which is NOT the size of the book. The
         // book's size on this day is coverage.existedOnDay, and the gap between
-        // the two is coverage.absent.
-        accounts: accounts.length,
+        // the two is coverage.absent. Real-money rows only, like the three
+        // figures above it — a count that included the simulated rows would be
+        // the denominator of totals that do not.
+        accounts: liveRows.length,
+        // Stated, never added. Null when the day held nothing of that nature, so
+        // "no simulated account" and "a simulated account that ended flat" are
+        // different values rather than the same 0.
+        excluded: summarizeExcluded(notLiveRows),
       },
       week: {
         weekStart,

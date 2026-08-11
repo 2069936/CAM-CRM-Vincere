@@ -120,6 +120,38 @@ const PLATFORM_SIM_NAME = /^sim[\s_-]*\d+$/i;
  */
 const AMBIGUOUS_NAME = /^sim$|^sim[^a-z0-9]|\b(?:demo|practice|simulator|simulated|simulation)\b/i;
 
+/**
+ * The platform's naming with something ELSE attached: `Sim101 - backup`,
+ * `Sim101a`, `Sim 1 copy`.
+ *
+ * These used to fall all the way through to LIVE, because PLATFORM_SIM_NAME is
+ * anchored at both ends and AMBIGUOUS_NAME's `^sim[^a-z0-9]` cannot fire on a
+ * name whose fourth character is a digit. So a duplicated or annotated Sim101 —
+ * the shape a desk produces the moment it runs two SIM sessions, or copies one
+ * to keep a record — was counted as real desk capital at NinjaTrader's stock
+ * $100,000, with no flag and nothing on any surface to say so.
+ *
+ * UNDETERMINED rather than SIMULATION: `Sim101 - backup` is almost certainly a
+ * simulator, but `Sim500 Funded` could genuinely be a live account somebody
+ * numbered that way, and the whole point of this module is that a guess about
+ * which bucket money belongs in gets reported instead of made.
+ */
+const PLATFORM_SIM_NAME_WITH_SUFFIX = /^sim[\s_-]*\d/i;
+
+/**
+ * Characters that are invisible on every surface a human reads.
+ *
+ * `Sim101` and `Sim101` with a zero-width space glued to the end are the same
+ * account to anyone looking at the NinjaTrader grid or at this CRM, and the
+ * second one was being classified as real desk capital. Zero-width space,
+ * zero-width non-joiner and joiner, the
+ * word joiner and the BOM all survive String.trim(), which strips only
+ * whitespace, so they have to be removed explicitly before any name is matched.
+ * They are stripped for MATCHING only — every message still quotes the name as
+ * it was stored, so a CAM searching for it can still find it.
+ */
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/g;
+
 function text(value) {
   return String(value ?? '').trim();
 }
@@ -128,19 +160,30 @@ function lower(value) {
   return text(value).toLowerCase();
 }
 
+function matchable(value) {
+  return text(value).replace(INVISIBLE, '').trim();
+}
+
 function nameSignal(accountName) {
   const name = text(accountName);
-  if (!name) return null;
-  if (PLATFORM_SIM_NAME.test(name)) {
+  const match = matchable(accountName);
+  if (!match) return null;
+  if (PLATFORM_SIM_NAME.test(match)) {
     return {
       nature: ACCOUNT_NATURES.SIMULATION,
       reason: `the account is named ${name}, which is NinjaTrader's Sim<number> simulation naming`,
     };
   }
-  if (AMBIGUOUS_NAME.test(name)) {
+  if (AMBIGUOUS_NAME.test(match)) {
     return {
       nature: ACCOUNT_NATURES.UNDETERMINED,
       reason: `the name ${name} reads like a simulator but is not NinjaTrader's Sim<number> naming, so it could equally be a real account`,
+    };
+  }
+  if (PLATFORM_SIM_NAME_WITH_SUFFIX.test(match)) {
+    return {
+      nature: ACCOUNT_NATURES.UNDETERMINED,
+      reason: `the name ${name} starts with NinjaTrader's Sim<number> simulation naming but does not end there, so it could be a copy of a simulator or a real account numbered that way`,
     };
   }
   return null;

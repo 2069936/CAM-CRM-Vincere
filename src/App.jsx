@@ -7155,6 +7155,10 @@ function ReportPanel({
     cashIra: "Cash Accounts - IRA",
     cashStraight: "Cash Accounts - Straight",
     cashLegacy: "Cash Accounts (unclassified)",
+    // These are counted in the totals above (see report.js buildDailyReportSummary),
+    // so they need a table like every other counted pool. Without one the report
+    // would state a balance it never itemises.
+    unclassified: "Accounts Awaiting Classification",
   };
 
   return (
@@ -7346,7 +7350,7 @@ function ReportPanel({
           </section>
         ) : null}
 
-        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy"].map((group) =>
+        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy", "unclassified"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
               <h2>{GROUP_LABELS[group]}</h2>

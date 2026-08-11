@@ -104,6 +104,19 @@ export function makeAccountAlias(accountName, connection = '') {
   // breakage rather than discretion: Sim101 became "Live - m101" in a
   // client-facing report, which looks like a bug to the client and to the CAM.
   if (name.length <= 8) return `${label} - ${name}`;
+  // A nickname somebody typed is shown whole too. `Craig - Sub 1` was printed to
+  // the client as `Live - ub 1`: the same "looks like breakage" the length rule
+  // was added to stop, on a live funded account, four rows above a simulated one
+  // that renders correctly.
+  //
+  // A space alone is NOT enough to call something a nickname, though. The masking
+  // exists so a full prop-firm account number does not sit in front of whoever is
+  // looking, and a CAM who types the firm in beside the number — `Apex 12345678`,
+  // `Topstep Eval 50285301` — produces a name with both a space and the whole
+  // number in it. Keyed off the number instead: a run of 5+ digits is an issued
+  // identifier, never a nickname, so it keeps the last-four treatment however it
+  // is spaced. `Craig - Sub 1` has no such run and is shown whole.
+  if (/\s/.test(name) && !/\d{5}/.test(name)) return `${label} - ${name}`;
   return `${label} - ${name.slice(-4)}`;
 }
 
