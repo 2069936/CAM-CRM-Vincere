@@ -136,6 +136,11 @@ import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
+import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
+import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
+import LiveAccountsPanel from "./components/LiveAccountsPanel";
+import CamFlagQueue from "./components/CamFlagQueue";
+import { buildCamFlagQueue, createCamFlagResolver } from "./domain/camFlagQueue";
 import BulletBotDeskPanel from "./components/BulletBotDeskPanel";
 import CapitalDetailPanel from "./components/CapitalDetailPanel";
 import StrategyRiskScatter from "./components/StrategyRiskScatter";
@@ -4203,6 +4208,34 @@ function ManagerOverview({
     };
   }, [clients, currentMonth]);
 
+  // Built here, not only inside the panel, so the reconciliation line the panel
+  // renders is computed from the same classifier the panel renders — with the
+  // same asOfDate and the same 5-close staleness default, which is what makes
+  // "178" on the tile and "178" in the panel the same 178 rather than two
+  // numbers that happen to match today. 5 ms per call on the real book (718
+  // accounts, 3,100 snapshot rows), memoised on the same keys as the tile.
+  const lifecycleStates = useMemo(
+    () => buildAccountLifecycleStates(clients, { asOf: asOfDate }),
+    [clients, asOfDate],
+  );
+  // The exact filter the "Funded accounts active" tile above uses: registry
+  // type Funded, status neither Failed nor Inactive. Repeated rather than
+  // shared because the point is to state the tile's own population and then say
+  // what the closes make of it.
+  const fundedActiveLifecycle = useMemo(() => {
+    const inTile = lifecycleStates.accounts.filter(
+      (account) =>
+        account.accountType === "Funded" &&
+        account.status !== "Failed" &&
+        account.status !== "Inactive",
+    );
+    return {
+      total: inTile.length,
+      finished: inTile.filter((account) => account.state === "finished").length,
+      stale: inTile.filter((account) => account.state === "stale").length,
+    };
+  }, [lifecycleStates]);
+
   function submitCam(event) {
     event.preventDefault();
     if (!newCamName.trim()) return;
@@ -5358,6 +5391,39 @@ function ManagerOverview({
         */}
         <CollapsiblePanel title="Against the set-file library" tone="ops-charts-panel">
           <SetFileMatchPanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Third review panel on this screen, same promise as the two above: it
+          proposes, a human decides. Nothing here writes, and the word "delete"
+          appears nowhere in it.
+
+          It sits after them rather than beside them because it is the one that
+          reads the registry's own Failed column and disagrees with it in both
+          directions on this book: 143 accounts are past their drawdown limit
+          and were never marked Failed, while 6 of the 47 visible Failed
+          accounts are still reporting with a positive buffer (four of them
+          still filling orders) and are deliberately NOT suggested. The panel
+          prints both sides, so a manager reading "181 finished" next to the
+          registry's "48 Failed" can see why the two numbers differ instead of
+          assuming one of them is broken.
+        */}
+        <CollapsiblePanel title="Accounts to review for retirement" tone="ops-charts-panel">
+          {/* Rendered, not left in a comment: the KPI strip at the top of this
+              same screen says "Funded accounts active 178" and this panel says
+              "181 breached / finished", and a manager reading both needs the
+              bridge on screen. Same lesson as the Bullet Bot 168-vs-240 line
+              above. The three numbers are read off the same classifier the
+              panel below renders, so they cannot drift from it. */}
+          <p className="muted chart-empty">
+            The &ldquo;Funded accounts active&rdquo; tile at the top of this page reads{" "}
+            {monthlyKpis.fundedActive} — registry type Funded, status neither Failed nor
+            Inactive. This panel holds {fundedActiveLifecycle.total} accounts under that same
+            filter, and the closes put {fundedActiveLifecycle.finished} of them past their
+            trailing drawdown limit and {fundedActiveLifecycle.stale} silent for five closes or
+            more. The tile counts what the registry says; this counts what the book shows.
+          </p>
+          <AccountLifecyclePanel clients={clients} asOfDate={asOfDate} />
         </CollapsiblePanel>
 
         <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">
@@ -7823,6 +7889,10 @@ function ClientOverview({
 }) {
   const [monthlyExpanded, setMonthlyExpanded] = useState("");
   const overview = buildClientOverview(client, dailyImport);
+  // Same expression buildClientOverview resolves `latest` from, so the badge
+  // cannot name a different close from the one the list was counted on.
+  const distributionCloseDate =
+    dailyImport?.date || client?.dailyImports?.at(-1)?.date || null;
   const lifetime = buildLifetimeStats(client);
   const maxDistribution = Math.max(
     ...overview.distribution.map((item) => item.count),
@@ -8155,7 +8225,21 @@ function ClientOverview({
         <div className="panel">
           <div className="panel-heading">
             <h3>Strategy distribution</h3>
-            <span className="badge muted">Latest close</span>
+            {/* The badge used to read just "Latest close", which named no date
+                and hid a fallback: buildClientOverview uses the picked import
+                when there is one and silently drops to dailyImports.at(-1) when
+                there is not — and on this book the picker opens on today, which
+                has no close for any of the 96 clients, so this list is always
+                the fallback. It also counts strategy ROWS on that ONE close,
+                while "What is running right now" below walks each account back
+                to its own last close: Gray Elm reads 4 here and 8 strategy rows
+                there, across 8 different dates. Naming the date is what lets a
+                reader tell the two apart instead of calling one of them wrong. */}
+            <span className="badge muted">
+              {distributionCloseDate
+                ? `Strategy rows on ${distributionCloseDate}`
+                : "No close on file"}
+            </span>
           </div>
           <div className="distribution-list">
             {overview.distribution.map((item) => (
@@ -9096,6 +9180,7 @@ function CamOverview({
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
+  onResolveFlag,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -9198,22 +9283,22 @@ function CamOverview({
         .length,
     0,
   );
-  const criticalFlagsOpen = clients.reduce((n, c) => {
-    return (
-      n +
-      (c.dailyImports || []).reduce(
-        (m, di) =>
-          m +
-          (di.flags || []).filter(
-            (f) =>
-              f.severity === "Critical" &&
-              f.status !== "Resolved" &&
-              f.status !== "Acknowledged",
-          ).length,
-        0,
-      )
-    );
-  }, 0);
+  // One flag model for this whole screen: the tile below and the queue further
+  // down are the same object, so they cannot drift apart.
+  //
+  // This tile used to run its own reduce over every import in history and count
+  // database rows. That is not the number a CAM can act on: a problem still open
+  // on eleven closes has eleven rows in operational_flags, so the tile read
+  // Ellis Glen 134 where there are 59 distinct critical problems, and Marlow
+  // Cedar's book is 1,952 open records for 1,055 problems. Counting records as
+  // if they were problems is the 1,900-against-a-header-reading-253 defect; the
+  // queue reports `occurrences` separately so the historical copies stay
+  // visible and closable rather than being summed into the headline.
+  const flagQueue = useMemo(
+    () => buildCamFlagQueue(clients, { today }),
+    [clients, today],
+  );
+  const criticalFlagsOpen = flagQueue.totals.critical;
   const staleContactClients = clients.filter((c) => {
     const d = lastContactDaysAgo(c);
     return d === null || d >= 7;
@@ -9278,7 +9363,10 @@ function CamOverview({
           </div>
           {criticalFlagsOpen > 0 && (
             <div className="metric" style={{ textAlign: "right" }}>
-              <span>Critical flags</span>
+              {/* "problems" is load-bearing: this is distinct problems, which is
+                  what the queue below lists and what a CAM closes. The flag
+                  records behind them are counted there, not here. */}
+              <span>Critical flag problems</span>
               <strong className="negative" style={{ fontSize: 20 }}>
                 {criticalFlagsOpen}
               </strong>
@@ -9405,6 +9493,30 @@ function CamOverview({
           </div>
         </div>
       </div>
+
+      {/*
+        The queue, directly under the tile that counts it — and handed the SAME
+        `flagQueue` object the tile read, not a second build, so the two cannot
+        disagree by construction.
+
+        This is the first place in the app a CAM can actually close a flag. The
+        client Dashboard has Resolve buttons, but its handler takes only a
+        flagId and reads the client and the import off `selectedClient` /
+        `dailyImport`, so it can only close flags on the day the date picker is
+        pinned to; on this book that day (today) has no import for any of the 96
+        clients, so it returns on its first line and the button does nothing.
+        Every button below sends (clientId, importId, flagId) read off its own
+        row — firing all 149 of one CAM's Resolve buttons produces 315 write
+        calls, one per open occurrence, none of them naming a latest import.
+      */}
+      <CamFlagQueue
+        clients={clients}
+        today={today}
+        queue={flagQueue}
+        onResolveFlag={onResolveFlag}
+        onLogClientActivity={onLogClientActivity}
+        onSelectClient={onSelectClient}
+      />
 
       <CollapsiblePanel title="Algorithm risk profile" tone="cam-charts-panel">
         <StrategyRiskScatter rows={riskProfile} />
@@ -9655,9 +9767,14 @@ function CamOverview({
             />
             <h3>Today's briefing</h3>
             <div style={{ display: "flex", gap: 8 }}>
+              {/* These count CLIENTS, not flags: buildTodayBriefing returns one
+                  entry per client and `urgency` is that client's worst thing.
+                  Worth saying out loud now that the flag queue on the same
+                  screen prints a count of flag problems. */}
               {urgencyCounts.critical ? (
                 <span className="badge danger">
-                  {urgencyCounts.critical} critical
+                  {urgencyCounts.critical} client
+                  {urgencyCounts.critical === 1 ? "" : "s"} critical
                 </span>
               ) : null}
               {urgencyCounts.warning ? (
@@ -9670,8 +9787,33 @@ function CamOverview({
                   {urgencyCounts.pending} not uploaded
                 </span>
               ) : null}
+              {/*
+                "All clear" was a claim this section cannot make. Every flag it
+                reads comes from `client.dailyImports.at(-1)` — the client's most
+                recent close and nothing else — while the queue below holds every
+                open flag on every close. On the real book that gap is the whole
+                story for two CAMs: Ellis Glen carries 149 open problems (59
+                critical) and Oakley Ash 250 (53 critical), and NOT ONE of them
+                is on a latest close, so this badge rendered "All clear"
+                directly under a header tile reading 59. It now says clear only
+                when the queue is empty too, and otherwise states exactly what
+                it did measure.
+
+                The replacement text does NOT say "older": Quinn Glen's 12 open
+                flags and Avery Birch's 4 are all ON their clients' latest
+                closes and are simply not Critical, so calling them older would
+                be a second wrong claim in place of the first.
+              */}
               {!urgencyCounts.critical && !urgencyCounts.warning ? (
-                <span className="badge success">All clear</span>
+                flagQueue.totals.rows ? (
+                  <span className="badge muted">
+                    No critical flag on any latest close ·{" "}
+                    {flagQueue.totals.rows} open flag
+                    {flagQueue.totals.rows === 1 ? "" : "s"} in the queue below
+                  </span>
+                ) : (
+                  <span className="badge success">All clear</span>
+                )
               ) : null}
             </div>
           </button>
@@ -12963,6 +13105,28 @@ export default function App() {
       );
   }
 
+  // The same write, with the three ids passed in instead of read off the screen.
+  //
+  // handleResolveFlag above closes whatever flag belongs to `selectedClient` on
+  // `dailyImport`, which is fine for the client Dashboard — the row being
+  // clicked IS on that import — and useless anywhere else: on this book the
+  // date picker opens on today (2026-08-11) and the last close is 2026-07-30, so
+  // `dailyImport` is null and the handler returns before doing anything. The CAM
+  // flag queue lists flags from 51 different imports at once, so it has to name
+  // the import per row. This is modelled on the manager's onResolveFlag, which
+  // already took (clientId, importId, flagId, status); createCamFlagResolver
+  // refuses a call missing any of the three rather than silently no-opping,
+  // because a silent no-op looks exactly like a resolution that worked — the row
+  // leaves the queue and is back on the next load.
+  const resolveFlagByIds = createCamFlagResolver({
+    setState,
+    audit: auditSilently,
+    onError: (error) => {
+      console.error("[CRM] Failed to update flag from the CAM queue:", error);
+      window.alert(`Could not update flag in Supabase: ${error.message}`);
+    },
+  });
+
   function handleBulkResolveFlags(status = "Acknowledged") {
     if (!selectedClient || !dailyImport) return;
     const openFlags = (dailyImport.flags || []).filter(
@@ -14142,6 +14306,7 @@ export default function App() {
                 }}
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
+                onResolveFlag={resolveFlagByIds}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
@@ -14641,16 +14806,54 @@ export default function App() {
                     aria-label={effectiveActiveTab}
                   >
                     {effectiveActiveTab === "Overview" ? (
-                      <ClientOverview
-                        client={selectedClient}
-                        dailyImport={dailyImport}
-                        allClients={state.clients || []}
-                        camName={currentCamProfile?.name || ""}
-                        onRequestMonthlyReport={(month) =>
-                          setMonthlyReportMonth(month)
-                        }
-                        onLogPayout={handleLogPayout}
-                      />
+                      <>
+                        <ClientOverview
+                          client={selectedClient}
+                          dailyImport={dailyImport}
+                          allClients={state.clients || []}
+                          camName={currentCamProfile?.name || ""}
+                          onRequestMonthlyReport={(month) =>
+                            setMonthlyReportMonth(month)
+                          }
+                          onLogPayout={handleLogPayout}
+                        />
+                        {/*
+                          "What is running" for this client, and the only place
+                          on the client workspace where the date is per account
+                          rather than per screen.
+
+                          Everything above this line is rendered from
+                          `dailyImport`, which is the ONE day the date picker is
+                          pinned to — seeded from the wall clock, and on this
+                          book today (2026-08-11) has a close for 0 of 96
+                          clients, so the whole tab reads "nothing uploaded"
+                          twelve days after the last real close. This panel
+                          never consults the clock: it walks each account back
+                          to the most recent close that account actually appears
+                          in. That matters because the closes disagree per
+                          account — 158 of 595 live accounts last reported
+                          before their own client's latest close, up to 17 days
+                          behind, and Gray Elm's 18 accounts sit on 8 different
+                          dates. Every row therefore prints its own "as of", and
+                          `asOfDate` is deliberately NOT passed: the panel takes
+                          it as an upper bound, so handing it the pinned day
+                          would re-introduce the bug it exists to fix.
+
+                          `clients` is the whole book, not this CAM's slice, so
+                          the "N days behind the desk" yardstick is measured
+                          against the desk's real latest close.
+                        */}
+                        <CollapsiblePanel
+                          title="What is running right now"
+                          tone="cam-charts-panel"
+                          defaultOpen
+                        >
+                          <LiveAccountsPanel
+                            client={selectedClient}
+                            clients={state.clients || []}
+                          />
+                        </CollapsiblePanel>
+                      </>
                     ) : null}
                     {effectiveActiveTab === "Activity" ? (
                       <ActivityLog
