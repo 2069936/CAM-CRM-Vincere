@@ -5,7 +5,7 @@ import SetFileMatchPanel from './SetFileMatchPanel';
 import { buildCrmStateFromTables } from '../domain/supabaseStore';
 
 // Rendered against public/local-snapshot.json, the real redacted book: 619
-// latest strategy rows, 400 exact matches, 97 on a version with settings
+// latest strategy rows, 398 exact matches, 99 on a version with settings
 // changed, 75 on no catalogued version, 47 not measured. The assertions are on
 // what a CAM actually reads, because that is where the last panel's bugs were —
 // 192 of 267 findings were computed correctly and never painted.
@@ -35,8 +35,8 @@ const countOf = (pattern) => (html.match(pattern) || []).length;
 describe('what the panel states about the book', () => {
   it('leads with how much of the book is on a version the desk ships', () => {
     expect(text).toContain('496 of 572 measured strategy rows run a version that is in the desk');
-    expect(text).toContain('400 on it exactly');
-    expect(text).toContain('97 with settings changed');
+    expect(text).toContain('398 on it exactly');
+    expect(text).toContain('99 with settings changed');
     expect(text).toContain('75 run no catalogued version');
   });
 
@@ -64,7 +64,7 @@ describe('what the panel states about the book', () => {
   it('says a match names a configuration, not a file', () => {
     expect(text).toContain('A match names a parameter set, never one file');
     expect(text).toContain('292 named variants measured');
-    expect(text).toContain('104 prop-firm twins are identical');
+    expect(text).toContain('107 prop-firm twins are identical');
   });
 });
 

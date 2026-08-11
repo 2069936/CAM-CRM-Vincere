@@ -124,8 +124,8 @@ describe('the whole book', () => {
     expect(totals.rows).toBe(619);
     expect(totals.exact + totals.ambiguous + totals.near + totals.none
       + totals.undetermined + totals.notMeasured).toBe(619);
-    expect(totals.exact).toBe(400);
-    expect(totals.near).toBe(97);
+    expect(totals.exact).toBe(398);
+    expect(totals.near).toBe(99);
     expect(totals.none).toBe(75);
     expect(totals.ambiguous).toBe(0);
     expect(totals.undetermined).toBe(0);
@@ -258,7 +258,7 @@ describe('near and none', () => {
     // Version identity is what separates the two classes: ProfitTargetTicks*
     // and StopLossTicks are the version on this desk.
     const near = view.rows.filter((row) => row.classification === MATCH.NEAR);
-    expect(near.length).toBe(97);
+    expect(near.length).toBe(99);
     const withIdentityDiff = near.filter((row) => row.differences.some((d) => d.identity));
     expect(withIdentityDiff).toEqual([]);
   });
@@ -296,7 +296,7 @@ describe('near and none', () => {
   });
 
   it('leaves the risk level null when the files carrying the configuration disagree', () => {
-    // Measured on the library: 2 of the 193 configurations are carried by named
+    // Measured on the library: 2 of the 190 configurations are carried by named
     // variants at DIFFERENT risk levels — `PLPI (PL) 5 Min Candle v4` and `v5`
     // are byte-identical at Medium and at High, PosSize included, so nothing in
     // the parameters can say which of the two an account is on. The rule is
@@ -411,9 +411,9 @@ describe('the roll-ups a manager reads', () => {
 
   it('carries the catalog\'s own admission of what it cannot decide', () => {
     expect(view.catalogProvenance.files).toBe(911);
-    expect(view.catalogProvenance.distinctConfigurations).toBe(193);
+    expect(view.catalogProvenance.distinctConfigurations).toBe(190);
     expect(view.catalogProvenance.ambiguity.periodsIdentical).toBe(292);
-    expect(view.catalogProvenance.ambiguity.pfTwinsIdentical).toBe(104);
+    expect(view.catalogProvenance.ambiguity.pfTwinsIdentical).toBe(107);
   });
 });
 

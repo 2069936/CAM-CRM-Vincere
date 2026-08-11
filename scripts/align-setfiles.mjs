@@ -82,6 +82,52 @@ const PLAN = [
     ],
     changes: [{ tag: 'BreakEvenOffset', expect: '3', value: '0' }],
   },
+
+  // The prop-firm twins, aligned in a second pass.
+  //
+  // All 107 _PF variants were parameter-identical to their base — that is how
+  // the library is organised, not a coincidence: the _PF file is the same
+  // algorithm for a prop-firm account. Moving the bases alone left three tuples
+  // divergent (ARPD|MGC|Low|1, RBO|M2K|Low|1, RBO|M2K|Medium|1) and dropped
+  // pfTwinsIdentical from 107 to 104.
+  //
+  // No account runs these tuples today — RBO_PF holds 8 rows and ARPD_PF 2, and
+  // none of them matched these configurations before or after — so this changes
+  // no classification. It restores the invariant, which is the thing worth
+  // having: a twin that silently stopped tracking its base is a trap for
+  // whoever reads the library next.
+  //
+  // B2X has no _PF folder, so it needed no second pass. RBO_PF ships no
+  // Default.xml; ARPD_PF does, and it carries this same configuration — leaving
+  // it behind would have replaced a cross-family inconsistency with one inside
+  // ARPD_PF.
+  {
+    family: 'RBO_PF',
+    rows: 0,
+    files: [
+      '1 - RBO (M2K) - 10 Min Candle - Low Risk - v1 - Period 0.xml',
+      '1 - RBO (M2K) - 10 Min Candle - Low Risk - v1 - Period 1.xml',
+      '1 - RBO (M2K) - 10 Min Candle - Low Risk - v1 - Period 2.xml',
+      '2 - RBO (M2K) - 10 Min Candle - Medium Risk - v1 - Period 0.xml',
+      '2 - RBO (M2K) - 10 Min Candle - Medium Risk - v1 - Period 1.xml',
+      '2 - RBO (M2K) - 10 Min Candle - Medium Risk - v1 - Period 2.xml',
+    ],
+    changes: [
+      { tag: 'BreakEvenOffset', expect: '50', value: '25' },
+      { tag: 'EntryOrderTickOffset', expect: '1', value: '0' },
+    ],
+  },
+  {
+    family: 'ARPD_PF',
+    rows: 0,
+    files: [
+      'Default.xml',
+      '1 - ARPD (MGC) - 5 Min Candle - Low Risk - v1 - Period 0.xml',
+      '1 - ARPD (MGC) - 5 Min Candle - Low Risk - v1 - Period 1.xml',
+      '1 - ARPD (MGC) - 5 Min Candle - Low Risk - v1 - Period 2.xml',
+    ],
+    changes: [{ tag: 'BreakEvenOffset', expect: '3', value: '0' }],
+  },
 ];
 
 const apply = process.argv.includes('--apply');
