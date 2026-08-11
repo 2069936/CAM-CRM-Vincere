@@ -16,7 +16,7 @@
 // in the 19 tables. "What came in" is not recorded, so it is returned as null and
 // said so, never as 0.
 
-import { SEGMENTS, EXCLUDED_FROM_TOTAL, segmentFor } from './operationsSegments';
+import { EXCLUDED_FROM_TOTAL, segmentForAccount } from './operationsSegments';
 
 /**
  * Field separator for the account key.
@@ -116,7 +116,7 @@ function collectAccounts(clients, bound) {
         clientName,
         accountName,
         meta,
-        segment: segmentFor(meta),
+        segment: segmentForAccount(meta, accountName),
         series: [],
       });
     }
@@ -127,7 +127,17 @@ function collectAccounts(clients, bound) {
       if (bound && date > bound) continue;
       closes.add(date);
 
-      for (const snapshot of entry?.snapshots || []) {
+      // Simulated and undetermined closes are read here too, so their balances
+      // appear as their own segment blocks rather than as 11 accounts that "have
+      // no balance". They land in SEGMENTS.SIMULATION / SEGMENTS.UNDETERMINED,
+      // both of which EXCLUDED_FROM_TOTAL keeps out of `desk` — the sim capital
+      // is shown and never rolled into the $32,244,234.16 held figure.
+      const snapshotsOfEveryNature = [
+        ...(entry?.snapshots || []),
+        ...(entry?.simulation?.snapshots || []),
+        ...(entry?.simulation?.undetermined?.snapshots || []),
+      ];
+      for (const snapshot of snapshotsOfEveryNature) {
         const accountName = snapshot?.accountName || '';
         const key = accountKey(clientId, accountName);
         if (!accounts.has(key)) {
@@ -136,13 +146,21 @@ function collectAccounts(clients, bound) {
           // between them. They are segmented as ORPHAN and counted, never
           // dropped: a snapshot with no account behind it means a row was
           // deleted or renamed under the closes, which is worth seeing.
+          //
+          // None of the 33 is a simulation account — every one carries a real
+          // prop-firm connection (Legends / Lucid / BluSky / MFF) and a balance
+          // between 29,482.31 and 146,061.92, none at 100,000 and none with the
+          // Sim signature of tmd = 0 on six figures. segmentForAccount is still
+          // used rather than a hard ORPHAN so that an unregistered Sim101 close
+          // is labelled simulated instead of being filed as lost real capital.
+          const orphanMeta = snapshot?.meta && Object.keys(snapshot.meta).length ? snapshot.meta : null;
           accounts.set(key, {
             key,
             clientId,
             clientName,
             accountName,
-            meta: snapshot?.meta && Object.keys(snapshot.meta).length ? snapshot.meta : null,
-            segment: SEGMENTS.ORPHAN,
+            meta: orphanMeta,
+            segment: segmentForAccount(orphanMeta, accountName),
             series: [],
           });
         }

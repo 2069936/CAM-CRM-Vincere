@@ -39,6 +39,14 @@ const DROP_TABLES = new Set(['app_users', 'audit_logs', 'client_credentials']);
 const KEEP_FIELDS = new Set([
   // Classifications the app branches on.
   'status', 'stage', 'account_type', 'payout_state', 'risk_level', 'severity',
+  // simulation_mode is a two-value enum ('simulation' | 'live') and the whole
+  // point of the redacted book is that classification behaviour can be checked
+  // against it. Note the standing trap this file creates for that check:
+  // maskAccount below pseudonymises account_name, so a simulation account
+  // CANNOT be found by name in the output — searching it for "Sim" returns 0,
+  // and that is an artefact, not evidence. Use this column, or a balance
+  // fingerprint, instead.
+  'simulation_mode',
   'type', 'kind', 'state', 'action', 'entity_type', 'role', 'role_title',
   'preferred_channel', 'language', 'country', 'timezone', 'connection',
   'bullet_bot_pass_type', 'bullet_bot_direction', 'direction', 'side',

@@ -20,7 +20,7 @@
 // side. The chain is accountLifecycle -> reconcile -> tradingDayScope; both
 // extension-less specifiers in it are now explicit, and node --input-type=module
 // can load this file.
-import { ACCOUNT_STATUSES, isCashType } from './reconcile.js';
+import { ACCOUNT_STATUSES, isCashType, isSimulationAccountType } from './reconcile.js';
 
 function toDate(value) {
   return value ? new Date(`${value}T00:00:00Z`) : null;
@@ -80,7 +80,14 @@ export function buildLifecycleByAlgo(clients = [], { asOf = '' } = {}) {
   const byCombo = {};
   for (const client of clients || []) {
     for (const meta of Object.values(client.accountRegistry || {})) {
-      if (isCashType(meta.accountType) || meta.accountType === 'Inactive / Ignore') continue;
+      // A simulator is never funded and never fails, so counting one here would
+      // push every algo's funded rate down by a denominator that can never
+      // convert. 11 of the clients in the real exports carry one.
+      if (
+        isCashType(meta.accountType)
+        || isSimulationAccountType(meta.accountType)
+        || meta.accountType === 'Inactive / Ignore'
+      ) continue;
       const combo = meta.algoStack || 'Unassigned';
       if (!byCombo[combo]) {
         byCombo[combo] = { combo, accounts: 0, funded: 0, failed: 0, active: 0, lifespans: [], daysToFund: [] };
@@ -439,6 +446,12 @@ export function buildAccountLifecycleStates(clients = [], {
     const registry = client?.accountRegistry || {};
     const byKey = new Map();
     for (const [accountName, meta] of Object.entries(registry)) {
+      // Simulation accounts are not lifecycle subjects: there is no funding to
+      // reach, no drawdown rule to breach and nothing to retire. Left in, each
+      // would sit here permanently as an account that "never reported" — its
+      // closes live in dailyImport.simulation, which this module deliberately
+      // does not read — and would be suggested for retirement every run.
+      if (isSimulationAccountType((meta || {}).accountType)) continue;
       byKey.set(nameKey(accountName), blankRecord(client, accountName, meta || {}, true));
     }
 

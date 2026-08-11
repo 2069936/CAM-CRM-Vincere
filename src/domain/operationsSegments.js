@@ -11,6 +11,7 @@
 // of that total, 56% of the day, which is invisible in a single tile.
 
 import { ACCOUNT_TYPES, isCashType } from './reconcile';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
 
 export const SEGMENTS = {
   EVAL_STANDARD: 'Evaluations - standard',
@@ -20,6 +21,10 @@ export const SEGMENTS = {
   UNCLASSIFIED: 'Unclassified',
   IGNORED: 'Ignored',
   ORPHAN: 'No account on record',
+  // Not money. The label says so on every surface that renders a segment name,
+  // because a currency-formatted figure alone reads as dollars.
+  SIMULATION: 'Simulated (not real money)',
+  UNDETERMINED: 'Nature undetermined',
 };
 
 /**
@@ -28,12 +33,25 @@ export const SEGMENTS = {
  * Excluding them without saying so replaces one wrong total with another and
  * hides the data problem. An orphan snapshot means an account was deleted or
  * renamed while its closes stayed behind, which is worth seeing.
+ *
+ * SIMULATION and UNDETERMINED are here for a different reason: they are counted
+ * and shown, but they are not the desk's money. The 11 simulation accounts in
+ * the real exports hold $1,099,590 between them — 4.7% of the 427-account,
+ * $23,604,729.21 desk balance — and letting that into the headline would be the
+ * exact defect this feature exists to prevent. Anything added to SEGMENTS that
+ * is not real desk capital MUST be added here in the same commit.
  */
-export const EXCLUDED_FROM_TOTAL = new Set([SEGMENTS.IGNORED, SEGMENTS.ORPHAN]);
+export const EXCLUDED_FROM_TOTAL = new Set([
+  SEGMENTS.IGNORED,
+  SEGMENTS.ORPHAN,
+  SEGMENTS.SIMULATION,
+  SEGMENTS.UNDETERMINED,
+]);
 
 export function segmentFor(meta) {
   if (!meta) return SEGMENTS.ORPHAN;
   const type = String(meta.accountType || '').trim();
+  if (type === ACCOUNT_TYPES.SIMULATION) return SEGMENTS.SIMULATION;
   if (!type || type === ACCOUNT_TYPES.UNASSIGNED) return SEGMENTS.UNCLASSIFIED;
   if (type === ACCOUNT_TYPES.IGNORE) return SEGMENTS.IGNORED;
   if (isCashType(type)) return SEGMENTS.CASH;
@@ -44,6 +62,30 @@ export function segmentFor(meta) {
   // rather than folded into Unclassified, which would hide a new account type
   // behind a label that means the opposite.
   return type;
+}
+
+/**
+ * Segment an account by what its money IS before segmenting it by what it is
+ * FOR.
+ *
+ * The second line of defence. `reconcile.js` already routes simulated rows into
+ * their own container, so nothing simulated should ever reach a segment total —
+ * but an account whose stored type is still 'Unassigned' while its name is
+ * Sim101 would land in Unclassified, which IS counted in the desk total
+ * (51 accounts / $3,010,573.30 on the real book). Eleven Sim101s would have
+ * added $1,099,590 to it. Take the account name wherever it is available.
+ */
+export function segmentForAccount(meta, accountName = '') {
+  const name = accountName || meta?.accountName || '';
+  // Nature is decided BEFORE the orphan check on purpose: a Sim101 close whose
+  // registry row was never created is simulated capital, not "capital belonging
+  // to an account we lost". Both are excluded from the total, but only one of
+  // the two labels is true.
+  const nature = classifyAccountNature(meta || {}, { accountName: name }).nature;
+  if (nature === ACCOUNT_NATURES.SIMULATION) return SEGMENTS.SIMULATION;
+  if (nature === ACCOUNT_NATURES.UNDETERMINED) return SEGMENTS.UNDETERMINED;
+  if (!meta) return SEGMENTS.ORPHAN;
+  return segmentFor(meta);
 }
 
 function emptyRow(segment) {
@@ -72,8 +114,20 @@ export function buildSegmentTotals(imports = []) {
 
   for (const entry of imports) {
     const registry = entry?.client?.accountRegistry || {};
-    for (const snapshot of entry?.dailyImport?.snapshots || []) {
-      const row = add(segmentFor(registry[snapshot.accountName]));
+    const sim = entry?.dailyImport?.simulation;
+    // `dailyImport.snapshots` is live-money-only by construction (reconcile.js
+    // and buildCrmStateFromTables both split before anyone reads it). The
+    // simulated and undetermined closes are appended explicitly so they are
+    // COUNTED and visible as their own rows — dropping them would hide the sim
+    // engagement the desk is being paid to run — while EXCLUDED_FROM_TOTAL keeps
+    // them out of `total`.
+    const rows = [
+      ...(entry?.dailyImport?.snapshots || []),
+      ...(sim?.snapshots || []),
+      ...(sim?.undetermined?.snapshots || []),
+    ];
+    for (const snapshot of rows) {
+      const row = add(segmentForAccount(registry[snapshot.accountName], snapshot.accountName));
       row.accounts += 1;
       row.dailyPnl += Number(snapshot.grossRealizedPnl || 0);
       row.weeklyPnl += Number(snapshot.weeklyPnl || 0);
@@ -94,6 +148,14 @@ export function buildSegmentTotals(imports = []) {
       balance: counted.reduce((sum, row) => sum + row.balance, 0),
     },
     excluded: segments.filter((row) => !row.countedInTotal),
+    // Surfaced by name rather than left for a caller to find inside `excluded`
+    // by string-matching a label. A tile that has to guess which excluded row is
+    // the simulated one is a tile that will eventually add it back in.
+    simulated: rows.get(SEGMENTS.SIMULATION) || emptyRow(SEGMENTS.SIMULATION),
+    undetermined: rows.get(SEGMENTS.UNDETERMINED) || emptyRow(SEGMENTS.UNDETERMINED),
+    // Denominator for every count above: how many account closes were read in
+    // total, real and simulated together.
+    accountsSeen: segments.reduce((sum, row) => sum + row.accounts, 0),
   };
 }
 
@@ -109,5 +171,13 @@ export function rollUpByBusiness(totals) {
       balance: acc.balance + row.balance,
     }), { accounts: 0, dailyPnl: 0, weeklyPnl: 0, balance: 0 });
 
-  return { prop: pick(propSegments), cash: pick([SEGMENTS.CASH]) };
+  return {
+    prop: pick(propSegments),
+    cash: pick([SEGMENTS.CASH]),
+    // Returned alongside, never added to either. A caller that wants one number
+    // for "the desk" adds prop + cash; simulation is here so it can be shown, in
+    // its own tile, with its own label.
+    simulation: pick([SEGMENTS.SIMULATION]),
+    undetermined: pick([SEGMENTS.UNDETERMINED]),
+  };
 }

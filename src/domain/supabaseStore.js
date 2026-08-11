@@ -5,6 +5,7 @@ import {
   withLegacyDailyImportId,
 } from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
+import { splitSimulationRows } from './simulationAccounts';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -31,6 +32,9 @@ function accountMetaFromRow(row) {
     startBalance: row.start_balance ?? '',
     maxDrawdownLimit: row.max_drawdown_limit ?? '',
     propFirmPlan: row.prop_firm_plan || '',
+    // '' means no opinion recorded (the automatic signals decide), NOT "live".
+    // See simulationAccounts.js SIMULATION_MODES.
+    simulationMode: row.simulation_mode || '',
     riskLevel: row.risk_level || '',
     bulletBotPassType: row.bullet_bot_pass_type || '',
     bulletBotDirection: row.bullet_bot_direction || '',
@@ -461,21 +465,41 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
 
     const credential = credentialsByClient[client.id] || {};
     const dailyImports = (importsByClient[client.id] || [])
-      .map((dailyImport) => ({
-        id: dailyImport.legacy_key || dailyImport.id,
-        uuid: dailyImport.id,
-        clientId: pickId(client),
-        date: dailyImport.trading_date,
-        importedAt: dailyImport.imported_at,
-        status: dailyImport.status,
-        sourceSummary: dailyImport.source_summary || {},
-        accounts: accountRegistry,
-        snapshots: snapshotsByImport[dailyImport.id] || [],
-        strategies: strategiesByImport[dailyImport.id] || [],
-        orders: ordersByImport[dailyImport.id] || [],
-        executions: executionsByImport[dailyImport.id] || [],
-        flags: flagsByImport[dailyImport.id] || [],
-      }))
+      .map((dailyImport) => {
+        // account_snapshots stores one row per account per close whatever its
+        // nature; the live/simulated/undetermined split is recomputed HERE, from
+        // each account's current record. That is deliberate: a CAM who corrects
+        // a misclassification fixes every close the client ever had, not only
+        // the ones imported after the fix.
+        //
+        // Everything downstream reads `snapshots` and assumes real money, so
+        // this must run before the object is handed out. It is the load-side
+        // twin of the split in reconcile.js — the two ingestion directions, one
+        // rule.
+        const split = splitSimulationRows({
+          accounts: accountRegistry,
+          snapshots: snapshotsByImport[dailyImport.id] || [],
+          strategies: strategiesByImport[dailyImport.id] || [],
+          orders: ordersByImport[dailyImport.id] || [],
+          executions: executionsByImport[dailyImport.id] || [],
+        });
+        return {
+          id: dailyImport.legacy_key || dailyImport.id,
+          uuid: dailyImport.id,
+          clientId: pickId(client),
+          date: dailyImport.trading_date,
+          importedAt: dailyImport.imported_at,
+          status: dailyImport.status,
+          sourceSummary: dailyImport.source_summary || {},
+          accounts: accountRegistry,
+          snapshots: split.live.snapshots,
+          strategies: split.live.strategies,
+          orders: split.live.orders,
+          executions: split.live.executions,
+          simulation: split.simulation,
+          flags: flagsByImport[dailyImport.id] || [],
+        };
+      })
       .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
     return {
@@ -576,11 +600,35 @@ export function mergeSupabaseTradeHistory(state, { orders = [], executions = [] 
     ...state,
     clients: (state.clients || []).map((client) => ({
       ...client,
-      dailyImports: (client.dailyImports || []).map((dailyImport) => ({
-        ...dailyImport,
-        orders: ordersByImport[dailyImport.uuid || dailyImport.id] || [],
-        executions: executionsByImport[dailyImport.uuid || dailyImport.id] || [],
-      })),
+      dailyImports: (client.dailyImports || []).map((dailyImport) => {
+        // Trade history arrives AFTER the dashboard shell, so it lands on a
+        // dailyImport whose simulation split has already been made. Assigning
+        // the raw arrays here would put Craig's 40 simulated orders and 15
+        // simulated executions straight back into the live arrays, undoing the
+        // split for every surface that reads them. Re-split instead.
+        const split = splitSimulationRows({
+          accounts: client.accountRegistry || {},
+          snapshots: dailyImport.snapshots || [],
+          strategies: dailyImport.strategies || [],
+          orders: ordersByImport[dailyImport.uuid || dailyImport.id] || [],
+          executions: executionsByImport[dailyImport.uuid || dailyImport.id] || [],
+        });
+        return {
+          ...dailyImport,
+          orders: split.live.orders,
+          executions: split.live.executions,
+          simulation: {
+            ...(dailyImport.simulation || split.simulation),
+            orders: split.simulation.orders,
+            executions: split.simulation.executions,
+            undetermined: {
+              ...(dailyImport.simulation?.undetermined || split.simulation.undetermined),
+              orders: split.simulation.undetermined.orders,
+              executions: split.simulation.undetermined.executions,
+            },
+          },
+        };
+      }),
     })),
   };
 }
@@ -654,6 +702,7 @@ function accountPatchToDb(patch = {}) {
     alias: 'alias',
     connection: 'connection',
     accountType: 'account_type',
+    simulationMode: 'simulation_mode',
     status: 'status',
     payoutState: 'payout_state',
     riskLevel: 'risk_level',
@@ -1184,6 +1233,7 @@ export async function upsertSupabaseTradingAccount(clientId, accountName, meta =
     alias: meta.alias || accountName,
     connection: meta.connection || '',
     account_type: meta.accountType || 'Unassigned',
+    simulation_mode: String(meta.simulationMode || '') || null,
     tradovate_account_id: meta.tradovateAccountId || null,
     status: meta.status || 'Active',
     payout_state: meta.payoutState || 'Not requested',

@@ -15,6 +15,12 @@ export const REPORT_FIELDS = [
   { key: 'showStrategies', label: 'Strategies column', advanced: true },
   { key: 'showTrailing', label: 'Drawdown / trailing column', advanced: true },
   { key: 'showWeeklyColumn', label: 'Weekly P&L column', advanced: true },
+  // Off by default and opt-in per client through the same scope radio every
+  // other toggle uses. Most clients have a Sim101 sitting untouched at
+  // NinjaTrader's stock $100,000 — 10 of the 11 in the real exports — and
+  // printing that for them would be noise; the one client mid-SIM-test is the
+  // one whose CAM turns this on.
+  { key: 'showSimulation', label: 'Simulation section (not real money)', advanced: false },
   { key: 'showFlags', label: 'Open flags section', advanced: false },
   { key: 'showCumulativeChart', label: 'Cumulative P&L chart', advanced: false },
   { key: 'showDailyChart', label: 'Daily P&L chart', advanced: false },
@@ -34,6 +40,9 @@ export const DEFAULT_REPORT_CONFIG = {
   showStrategies: true,
   showTrailing: true,
   showWeeklyColumn: true,
+  // Anything new ships false: an existing client's report must not change shape
+  // without someone choosing it.
+  showSimulation: false,
   showFlags: true,
   // Charts are new, so they stay off until a CAM turns them on. An existing
   // client's report must not change shape without someone choosing it.
@@ -53,6 +62,7 @@ export const SIMPLIFIED_REPORT_CONFIG = {
   showStrategies: false,
   showTrailing: false,
   showWeeklyColumn: false,
+  showSimulation: false,
   showFlags: false,
   // A client who wants the essentials is usually the one who reads a picture
   // faster than a table, so the simplified report keeps the two charts.

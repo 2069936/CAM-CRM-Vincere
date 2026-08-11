@@ -1,5 +1,6 @@
 import { buildClientSegments } from './clientSegments';
 import { ACCOUNT_TYPES, isCashType } from './reconcile';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
 
 function ciLookup(registry, accountName) {
   if (!registry || !accountName) return {};
@@ -147,6 +148,90 @@ export function buildClientMessageReport(client, dailyImport) {
   return lines.join('\n');
 }
 
+/**
+ * The simulation block of a client report: its own accounts, its own balance,
+ * its own performance, and the words that say it is not money.
+ *
+ * Written because the report the desk actually sent Craig Weschke on 2026-08-06
+ * read `ACCOUNTS 2 · DAILY REALIZED PNL $0 · WEEKLY PNL $0` while his Sim101 —
+ * the only account of his that traded that day — ran 40 orders and 15 executions
+ * for a realized -$1,297.9999999 on two enabled strategies, and his CAM had
+ * hand-written a note to him about exactly that session. The desk could not show
+ * the thing it was being paid to run.
+ *
+ * @param {number} liveAccountCount how many real-money accounts the report shows,
+ *   so every simulated count can be printed against its denominator.
+ * @returns {null|object} null when there is nothing simulated and nothing
+ *   undetermined — absence of a section, not a section full of zeros.
+ */
+export function buildSimulationSection(client, dailyImport, liveAccountCount = 0) {
+  const sim = dailyImport?.simulation;
+  const simSnapshots = sim?.snapshots || [];
+  const undeterminedSnapshots = sim?.undetermined?.snapshots || [];
+  if (!simSnapshots.length && !undeterminedSnapshots.length) return null;
+
+  const registry = {
+    ...(dailyImport?.accounts || {}),
+    ...(client?.accountRegistry || {}),
+  };
+
+  const rowsFor = (snapshots, nature) => snapshots.map((snapshot) => {
+    const meta = ciLookup(registry, snapshot.accountName) || {};
+    const classification = classifyAccountNature(meta, { accountName: snapshot.accountName });
+    const strategies = (snapshot.strategies || []).filter((strategy) => strategy.enabled);
+    return {
+      ...snapshot,
+      meta,
+      nature,
+      // The sentence a CAM can check. "Treated as simulation because the account
+      // is named Sim101" is auditable; a silent bucket change is not.
+      natureReason: classification.reason,
+      natureSource: classification.source,
+      heuristic: classification.heuristic,
+      enabledStrategies: strategies.map((strategy) => strategy.strategyName || strategy.strategyFamily || 'Strategy'),
+    };
+  });
+
+  const simRows = rowsFor(simSnapshots, ACCOUNT_NATURES.SIMULATION);
+  const undeterminedRows = rowsFor(undeterminedSnapshots, ACCOUNT_NATURES.UNDETERMINED);
+
+  const orders = (sim?.orders || []).length;
+  const executions = (sim?.executions || []).length;
+  const enabledStrategies = (sim?.strategies || []).filter((strategy) => strategy.enabled).length;
+
+  return {
+    // Every label that will sit next to a number. Currency formatting alone does
+    // not carry "this is not money", so the words do.
+    label: 'Simulation (not real money)',
+    note: 'These accounts trade simulated funds. Their balances and results are shown separately and are not included in any figure above.',
+    accounts: simRows,
+    totals: summarizeAccountRows(simRows).totals,
+    counts: {
+      accounts: simRows.length,
+      // Every count carries its denominator.
+      ofAccountsReported: simRows.length + undeterminedRows.length + liveAccountCount,
+      liveAccounts: liveAccountCount,
+      orders,
+      executions,
+      enabledStrategies,
+      // 10 of the 11 simulation accounts in the real exports were idle on
+      // 2026-08-06 — no strategies, no orders, no executions, balance still at
+      // NinjaTrader's stock $100,000. "Idle" and "flat" are different facts.
+      traded: orders > 0 || executions > 0,
+    },
+    // Reported, never bucketed. These accounts are in neither the real totals
+    // above nor the simulated totals here.
+    undetermined: undeterminedRows.length
+      ? {
+        label: 'Nature undetermined - counted as neither',
+        accounts: undeterminedRows,
+        totals: summarizeAccountRows(undeterminedRows).totals,
+        counts: { accounts: undeterminedRows.length },
+      }
+      : null,
+  };
+}
+
 export function buildDailyReportSummary(client, dailyImport) {
   const snapshots = dailyImport?.snapshots || [];
   const registry = {
@@ -181,7 +266,12 @@ export function buildDailyReportSummary(client, dailyImport) {
   }
 
   const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash];
+  // `totals` is REAL MONEY ONLY and always has been. `snapshots` above never
+  // contains a simulated close (reconcile.js and buildCrmStateFromTables both
+  // split first), and `simulation` below is built from its own arrays, so the
+  // two can never be summed by accident.
   const { totals } = summarizeAccountRows(allVisible);
+  const simulation = buildSimulationSection(client, dailyImport, allVisible.length);
 
   const openFlags = (dailyImport?.flags || []).filter((f) => f.status !== 'Resolved' && f.status !== 'Acknowledged');
   const criticalFlags = openFlags.filter((f) => f.severity === 'Critical');
@@ -208,6 +298,12 @@ export function buildDailyReportSummary(client, dailyImport) {
     // bullet-bot eval is tracked by pass/fail, not by balance. Cash PnL is net
     // of fees (the NinjaTrader "Realized PnL" column already subtracts them).
     segments: buildClientSegments(client, dailyImport),
+    // Its own block, its own totals, never folded into `totals` or `counts`.
+    // Null when the client has no simulation and nothing undetermined, so a
+    // renderer can tell "no sim engagement" apart from "a sim engagement that
+    // made $0" — Craig's Sim101 lost $1,297.9999999 on a day the report printed
+    // $0, and the two must never look the same again.
+    simulation,
     priorDailyPnl,
     flags: dailyImport?.flags || [],
     openFlags,

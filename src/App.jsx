@@ -135,6 +135,7 @@ import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
+import SimulationReportSection from "./components/SimulationReportSection";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
 import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
@@ -7428,6 +7429,20 @@ function ReportPanel({
           showDaily={Boolean(cfg.showDailyChart)}
           asPercent={Boolean(cfg.chartAsPercent)}
         />
+
+        {/*
+          After the money, never inside it. The simulation block sits below the
+          accounts, the totals and the charts so nothing above it can be read as
+          including simulated dollars.
+
+          Off by default (reportConfig.js showSimulation: false). Most clients
+          carry an untouched Sim101 from the NinjaTrader install and printing it
+          for them is noise; the client actually running a SIM test is the one
+          who turns it on.
+        */}
+        {cfg.showSimulation ? (
+          <SimulationReportSection simulation={report.simulation} />
+        ) : null}
 
         {cfg.showFlags && report.openFlags.length ? (
           <section className="report-section">

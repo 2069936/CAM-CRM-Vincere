@@ -191,10 +191,16 @@ export function classifyAccountNature(meta = {}, context = {}) {
   const named = nameSignal(accountName);
   const namedDecisive = named && named.nature !== ACCOUNT_NATURES.UNDETERMINED ? named.nature : null;
 
+  // The name is only consulted when the platform has said nothing. Provider ==
+  // Simulator is the platform's statement about its own account, so a name that
+  // disagrees with it is a naming choice, not a contradiction worth reporting.
+  // The account RECORD is a different matter: that is a human determination, and
+  // a human record disagreeing with the machine is exactly the kind of
+  // contradiction that must not be resolved by whichever branch runs first.
   const votes = [
     declared ? { nature: declared, source: 'accountType', heuristic: false, reason: `the account record says its type is ${accountType}` } : null,
     observed ? { nature: observed, source: 'platform', heuristic: false, reason: isSimulated ? 'the trading platform reported this account as a simulator account' : 'the trading platform reported this account as a live account' } : null,
-    namedDecisive ? { nature: namedDecisive, source: 'name', heuristic: true, reason: named.reason } : null,
+    !observed && namedDecisive ? { nature: namedDecisive, source: 'name', heuristic: true, reason: named.reason } : null,
   ].filter(Boolean);
 
   if (!votes.length) {

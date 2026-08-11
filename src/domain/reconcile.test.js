@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeAccountAlias, recalculateDailyImport, reconcileDailyImport } from './reconcile';
+import { ACCOUNT_TYPES, makeAccountAlias, recalculateDailyImport, reconcileDailyImport } from './reconcile';
 
 describe('reconcileDailyImport', () => {
   it('preserves explicit null snapshot values but defaults missing legacy fields to zero', () => {
@@ -92,10 +92,17 @@ describe('reconcileDailyImport', () => {
     }));
   });
 
-  it('ignores simulator accounts that start with SIM', () => {
+  // REPLACES 'ignores simulator accounts that start with SIM'.
+  //
+  // That test asserted the old behaviour: any account whose name began with
+  // "sim" was deleted, rows and all. It passed while the CRM told Craig Weschke
+  // his 2026-08-06 was $0 on 2 idle accounts, when in fact his Sim101 had run 40
+  // orders and 15 executions for a realized -$1,297.9999999 and was the only
+  // account of his that traded. The rule now is separation, not deletion.
+  it('separates simulated rows from live rows instead of deleting them', () => {
     const parsed = {
       accounts: [
-        { accountName: 'Sim101', connection: 'Simulated Data Feed', grossRealizedPnl: 999, accountBalance: 100000, weeklyPnl: 999 },
+        { accountName: 'Sim101', connection: 'Legends', grossRealizedPnl: -1298, accountBalance: 99590, weeklyPnl: -1298 },
         { accountName: 'SIM-Amanda-Test', connection: 'Simulated', grossRealizedPnl: 999, accountBalance: 100000, weeklyPnl: 999 },
         { accountName: 'LIVE1234', connection: 'Live', grossRealizedPnl: 10, accountBalance: 50100, weeklyPnl: 20 },
       ],
@@ -109,9 +116,115 @@ describe('reconcileDailyImport', () => {
 
     const result = reconcileDailyImport({ clientId: 'client-1', date: '2026-06-08', registry: {}, parsed });
 
-    expect(Object.keys(result.accounts)).toEqual(['LIVE1234']);
+    // Every account is on the record — none was thrown away.
+    expect(Object.keys(result.accounts).sort()).toEqual(['LIVE1234', 'SIM-Amanda-Test', 'Sim101']);
+
+    // The live arrays hold live money ONLY, which is what every downstream
+    // total assumes it is reading.
     expect(result.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['LIVE1234']);
     expect(result.strategies.map((strategy) => strategy.accountName)).toEqual(['LIVE1234']);
+
+    // Sim101 matches NinjaTrader's Sim<number> naming: simulated, and its
+    // $99,590 is in the simulated total, not the desk's.
+    expect(result.simulation.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['Sim101']);
+    expect(result.simulation.totals).toMatchObject({ accounts: 1, balance: 99590, dailyPnl: -1298 });
+    expect(result.simulation.strategies.map((strategy) => strategy.accountName)).toEqual(['Sim101']);
+    expect(result.accounts.Sim101.accountType).toBe(ACCOUNT_TYPES.SIMULATION);
+
+    // SIM-Amanda-Test does NOT match that naming. It is reported as
+    // undetermined and counted as neither — never guessed into a bucket.
+    expect(result.simulation.undetermined.snapshots.map((s) => s.accountName)).toEqual(['SIM-Amanda-Test']);
+    expect(result.simulation.undetermined.totals.balance).toBe(100000);
+    expect(result.accounts['SIM-Amanda-Test'].accountType).toBe(ACCOUNT_TYPES.UNASSIGNED);
+
+    // Both automatic decisions are visible to the CAM, with their reason.
+    const simFlag = result.flags.find((flag) => flag.type === 'New simulation account');
+    expect(simFlag.accountName).toBe('Sim101');
+    expect(simFlag.message).toContain("named Sim101");
+    expect(result.flags).toContainEqual(expect.objectContaining({
+      type: 'Account nature undetermined',
+      accountName: 'SIM-Amanda-Test',
+    }));
+
+    // Denominators, always.
+    expect(result.simulation.denominator.accountsInClose).toBe(3);
+  });
+
+  it('does not flag a registered simulation account as missing when it stays idle', () => {
+    // The old filter dropped sim accounts before `seen.add()`, so the registry
+    // sweep fired on a registered Sim101 EVERY close and dragged the whole
+    // import to Needs review forever. There was no way to register a simulation
+    // account without permanently poisoning the client's flag queue.
+    const registry = {
+      Sim101: { accountName: 'Sim101', alias: 'Sim', accountType: ACCOUNT_TYPES.SIMULATION, status: 'Active' },
+      ACC1: { accountName: 'ACC1', alias: 'Legends - CC1', accountType: 'Funded', status: 'Active' },
+    };
+    const parsed = {
+      accounts: [{ accountName: 'ACC1', connection: 'Legends', grossRealizedPnl: 0, accountBalance: 50000, weeklyPnl: 0, trailingMaxDrawdown: 2000 }],
+      strategies: [{ accountName: 'ACC1', strategyName: '0 - RBO-1.8', enabled: true }],
+      orders: [],
+      executions: [],
+    };
+
+    const result = reconcileDailyImport({ clientId: 'client-1', date: '2026-06-08', registry, parsed });
+
+    expect(result.flags.filter((flag) => flag.type === 'Missing account')).toEqual([]);
+    // And an account already declared Simulation raises no heuristic flag: the
+    // classification came from the record, not from a guess.
+    expect(result.flags.filter((flag) => flag.type === 'New simulation account')).toEqual([]);
+  });
+
+  it('raises no drawdown, payout or unassigned flag against simulated money', () => {
+    const parsed = {
+      accounts: [
+        // Balance over the 100k evaluation target, and a trailing buffer that
+        // would read as "breached" on a real prop account.
+        { accountName: 'Sim101', connection: 'Live', grossRealizedPnl: 0, accountBalance: 107500, weeklyPnl: 0, trailingMaxDrawdown: -5000 },
+      ],
+      strategies: [],
+      orders: [],
+      executions: [],
+    };
+    const registry = {
+      Sim101: {
+        accountName: 'Sim101', alias: 'Sim', accountType: ACCOUNT_TYPES.SIMULATION,
+        status: 'Active', maxDrawdownLimit: 2500, targetProfit: 107300, payoutState: 'Not requested',
+      },
+    };
+
+    const result = reconcileDailyImport({ clientId: 'client-1', date: '2026-06-08', registry, parsed });
+
+    const types = result.flags.map((flag) => flag.type);
+    expect(types).not.toContain('Drawdown breached');
+    expect(types).not.toContain('Drawdown near limit');
+    expect(types).not.toContain('Payout eligible');
+    expect(types).not.toContain('Evaluation target reached');
+    expect(types).not.toContain('Unassigned account');
+    expect(types).not.toContain('Expected strategy missing');
+  });
+
+  it('lets an explicit registry setting override the name heuristic in both directions', () => {
+    const parsed = {
+      accounts: [
+        // Named like a simulator, declared live money by the CAM.
+        { accountName: 'Sim101', connection: 'Legends', grossRealizedPnl: 25, accountBalance: 50000, weeklyPnl: 25 },
+        // Named like nothing in particular, declared a simulation by the CAM.
+        { accountName: 'LTATALEST500004585512', connection: 'Legends', grossRealizedPnl: 99, accountBalance: 100000, weeklyPnl: 99 },
+      ],
+      strategies: [],
+      orders: [],
+      executions: [],
+    };
+    const registry = {
+      Sim101: { accountName: 'Sim101', alias: 'Real - 101', accountType: 'Funded', simulationMode: 'live', status: 'Active' },
+      LTATALEST500004585512: { accountName: 'LTATALEST500004585512', alias: 'Legends - 5512', accountType: 'Funded', simulationMode: 'simulation', status: 'Active' },
+    };
+
+    const result = reconcileDailyImport({ clientId: 'client-1', date: '2026-06-08', registry, parsed });
+
+    expect(result.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['Sim101']);
+    expect(result.simulation.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['LTATALEST500004585512']);
+    expect(result.simulation.totals.balance).toBe(100000);
   });
 
   it('attributes executions to strategies through matching order ids', () => {

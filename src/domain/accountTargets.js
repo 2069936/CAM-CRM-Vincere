@@ -6,7 +6,7 @@
 // be inferred from the current balance. Cash (live) accounts have no standard
 // size and no target — only their cash balance matters.
 
-import { ACCOUNT_TYPES, isCashType } from './reconcile';
+import { ACCOUNT_TYPES, isCashType, isSimulationAccountType } from './reconcile';
 
 export const STANDARD_ACCOUNT_SIZES = [50000, 100000, 150000];
 
@@ -37,6 +37,12 @@ export function inferStartingBalance(currentBalance) {
 // Cash accounts have no target. Sizes/types without a known rule return null.
 export function targetForAccount(accountType, startingBalance) {
   if (isCashType(accountType)) return null;
+  // A simulation account has no evaluation to pass and no payout to reach.
+  // Without this it would fall to the 'standard' table and — because 10 of the
+  // 11 real Sim101s sit at exactly NinjaTrader's stock $100,000 — silently
+  // acquire the real 100k evaluation target of $107,300, then queue a
+  // "target reached" flag against play money.
+  if (isSimulationAccountType(accountType)) return null;
   const table = accountType === ACCOUNT_TYPES.EVALUATION_BULLET ? 'bulletBot' : 'standard';
   return TARGET_TABLE[table][Number(startingBalance)] ?? null;
 }
@@ -45,7 +51,7 @@ export function targetForAccount(accountType, startingBalance) {
 // Cash accounts get neither (balance is all that matters). Returns only the
 // fields we can infer; a null field means "leave for the user to set".
 export function suggestAccountDefaults(accountType, currentBalance) {
-  if (isCashType(accountType)) {
+  if (isCashType(accountType) || isSimulationAccountType(accountType)) {
     return { startingBalance: null, target: null };
   }
   const startingBalance = inferStartingBalance(currentBalance);

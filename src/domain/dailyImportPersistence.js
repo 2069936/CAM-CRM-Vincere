@@ -1,4 +1,5 @@
 import { summarizePnlSources } from './pnlSourceSummary.js';
+import { mergeSimulationRows, summarizeSimulationSplit } from './simulationAccounts.js';
 
 export const DAILY_IMPORT_CLOSED_CODE = 'daily_import_closed';
 
@@ -75,6 +76,10 @@ function mapTradingAccount(meta, clientUuid) {
     target_profit: numberOrNull(meta.targetProfit),
     max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
     prop_firm_plan: String(meta.propFirmPlan || '') || null,
+    // The CAM's explicit override of the automatic simulation detection. '' is
+    // stored as null: the column means "an opinion was recorded", and an empty
+    // string would read as a recorded opinion that says nothing.
+    simulation_mode: String(meta.simulationMode || '') || null,
     risk_level: meta.riskLevel || '',
     bullet_bot_pass_type: meta.bulletBotPassType || '',
     bullet_bot_direction: meta.bulletBotDirection || '',
@@ -192,6 +197,9 @@ export function withLegacyDailyImportId(clientId, importResult) {
 }
 
 function makeDailyImportRow({ clientUuid, importResult, sourceBatchId, supportsSourceColumns }) {
+  // Counts of REAL rows, unchanged. The simulated rows get their own key rather
+  // than being added in, so a stored summary can never be read as a bigger real
+  // day than it was.
   const sourceSummary = {
     accounts: (importResult.snapshots || []).length,
     strategies: (importResult.strategies || []).length,
@@ -199,6 +207,10 @@ function makeDailyImportRow({ clientUuid, importResult, sourceBatchId, supportsS
     executions: (importResult.executions || []).length,
     flags: (importResult.flags || []).length,
   };
+  const simulation = summarizeSimulationSplit(importResult.simulation);
+  if (simulation && (simulation.simulatedAccounts || simulation.undeterminedAccounts)) {
+    sourceSummary.simulation = simulation;
+  }
   if (sourceBatchId) {
     sourceSummary.source_type = 'automatic';
     sourceSummary.source_batch_id = sourceBatchId;
@@ -239,7 +251,23 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
 
   if (typeof db?.persistDailyImportAtomic === 'function') {
     if (db.isAtomic !== true) throw new Error('Automatic daily import persistence must be atomic.');
-    return db.persistDailyImportAtomic({ clientUuid, importResult, sourceBatchId });
+    // The atomic path hands the whole importResult to persist_auto_daily_import_v3,
+    // which reads `snapshots` / `strategies` / `orders` / `executions` in SQL and
+    // knows nothing about the simulation container. Flattened here so the
+    // automatic collector stores the simulated closes too — without this, auto-
+    // collected clients would keep losing exactly what the old name filter lost,
+    // and the split would only work for manual uploads.
+    //
+    // The `simulation` key travels along untouched, so the payload still carries
+    // the split for anything that inspects it. NOTE: the v3 RPC's own
+    // source_summary.accounts counts every close it stored, of every nature; the
+    // per-nature counts are in `simulation` on the same payload. Nothing there is
+    // a money total.
+    return db.persistDailyImportAtomic({
+      clientUuid,
+      importResult: { ...importResult, ...mergeSimulationRows(importResult) },
+      sourceBatchId,
+    });
   }
 
   return db.transaction(async (tx) => {
@@ -248,6 +276,15 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
     const accountRows = Object.values(importResult.accounts || {})
       .map((meta) => mapTradingAccount(meta, clientUuid));
     if (accountRows.length) await tx.upsertTradingAccounts(accountRows);
+
+    // Live, simulated and undetermined rows all go to the same tables.
+    //
+    // The split is an APPLICATION concern, recomputed on load from each
+    // account's own record (buildCrmStateFromTables). Storing it would freeze a
+    // classification into every historical close, so a CAM correcting one
+    // account would fix only the closes imported after the correction — and the
+    // 2026-08-06 close that reported Craig's day as $0 would stay wrong forever.
+    const persisted = mergeSimulationRows(importResult);
 
     const accounts = await tx.listTradingAccounts(clientUuid);
     const accountByName = indexByAccountName(accounts);
@@ -259,31 +296,31 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
     }));
 
     const sections = [
-      ['strategy_snapshots', importResult.strategies || []],
-      ['orders', importResult.orders || []],
-      ['executions', importResult.executions || []],
+      ['strategy_snapshots', persisted.strategies],
+      ['orders', persisted.orders],
+      ['executions', persisted.executions],
     ];
     for (const [table, rows] of sections) {
       if (rows.length) await tx.deleteDailyImportRows(table, dailyImport.id);
     }
     await tx.deleteDailyImportRows('operational_flags', dailyImport.id);
 
-    const snapshotRows = (importResult.snapshots || [])
+    const snapshotRows = persisted.snapshots
       .map((snapshot) => mapAccountSnapshot(snapshot, dailyImport.id, accountByName));
     const savedSnapshots = snapshotRows.length
       ? await tx.upsertAccountSnapshots(snapshotRows)
       : [];
     const snapshotByName = indexByAccountName(savedSnapshots);
 
-    const strategyRows = (importResult.strategies || [])
+    const strategyRows = persisted.strategies
       .map((strategy) => mapStrategy(strategy, dailyImport.id, accountByName, snapshotByName));
     if (strategyRows.length) await tx.insertRows('strategy_snapshots', strategyRows);
 
-    const orderRows = (importResult.orders || [])
+    const orderRows = persisted.orders
       .map((order) => mapOrder(order, dailyImport.id, accountByName));
     if (orderRows.length) await tx.insertRows('orders', orderRows);
 
-    const executionRows = (importResult.executions || [])
+    const executionRows = persisted.executions
       .map((execution) => mapExecution(execution, dailyImport.id, accountByName));
     if (executionRows.length) await tx.insertRows('executions', executionRows);
 

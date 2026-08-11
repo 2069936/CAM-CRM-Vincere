@@ -3,6 +3,12 @@ const ROW_SCHEMAS = {
     required: ['accountName'],
     strings: ['connectionName', 'displayName', 'currency', 'status'],
     numbers: ['netLiquidation', 'cashValue', 'realizedPnl', 'grossRealizedPnl', 'unrealizedPnl', 'totalPnl', 'weeklyPnl', 'trailingMaxDrawdown', 'buyingPower', 'excessIntradayMargin', 'initialMargin', 'maintenanceMargin'],
+    // The platform's own simulator flag. NinjaTrader exposes
+    // Options.Provider == Provider.Simulator and NinjaTraderFacade.cs:318 reads
+    // only Connection.Options.Name, so no collector sends this yet — which is
+    // why it is OPTIONAL rather than in `booleans`, where a missing key is an
+    // error and every deployed collector would start failing validation.
+    optionalBooleans: ['isSimulated'],
   },
   strategies: {
     required: ['strategyId', 'strategyName', 'accountName', 'instrument', 'state', 'parameterCaptureStatus'],
@@ -98,6 +104,15 @@ function validateRows(snapshot, section, errors) {
     }
     for (const key of schema.booleans || []) {
       if (!hasOwn(row, key) || (row[key] !== null && typeof row[key] !== 'boolean')) errors.push(`${path}.${key} must be a boolean or null`);
+    }
+    // Absent is allowed and means "the collector has no opinion" — which is not
+    // the same as false. Downstream, undefined leaves the classifier to fall
+    // back to the account name; false is a positive assertion that the account
+    // is live and outranks the name.
+    for (const key of schema.optionalBooleans || []) {
+      if (hasOwn(row, key) && row[key] !== null && typeof row[key] !== 'boolean') {
+        errors.push(`${path}.${key} must be a boolean or null when present`);
+      }
     }
     for (const key of schema.timestamps || []) {
       if (!hasOwn(row, key) || (row[key] !== null && !isIsoTimestamp(row[key]))) errors.push(`${path}.${key} must be an ISO-8601 timestamp with an offset or null`);
