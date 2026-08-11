@@ -1091,6 +1091,123 @@ small {
 .confirm-dialog-footer {
   gap: 8px;
 }
+
+/* Export dialog: scope, range and the row preview shown before downloading. */
+.export-dialog {
+  max-width: min(560px, calc(100vw - 2rem)) !important;
+}
+
+.export-dialog-body {
+  display: grid;
+  gap: 14px;
+}
+
+.export-dialog-field {
+  display: grid;
+  gap: 6px;
+}
+
+.export-dialog-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.export-dialog-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.export-dialog-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 11px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.export-dialog-choices label.is-active {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.export-dialog-choices label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.export-dialog-dates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-dialog-dates input[type="date"] {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.export-dialog-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.export-dialog-toggle small {
+  display: block;
+  font-size: 11.5px;
+}
+
+.export-dialog-preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 11px;
+  font-size: 13px;
+}
+
+.export-dialog-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.export-dialog-rows b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.export-dialog-preview p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.export-dialog-warning {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--error);
+  font-size: 12.5px;
+}
+
 .link-button {
   background: none;
   border: none;

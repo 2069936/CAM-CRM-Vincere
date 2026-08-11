@@ -60,6 +60,7 @@ import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
 import AutoCollectionManager from "./components/AutoCollectionManager";
+import ClientExportDialog from "./components/ClientExportDialog";
 import {
   Dialog,
   DialogContent,
@@ -168,6 +169,7 @@ import {
 } from "./domain/supabaseUserAdmin";
 import { isSupabaseConfigured } from "./lib/supabaseClient";
 import {
+  loadClientScopedExport,
   loadSupabaseDataExport,
   loadSupabaseIntakeSheet,
 } from "./domain/supabaseDataPortability";
@@ -11929,6 +11931,44 @@ export default function App() {
   const [logoutConfirmAction, setLogoutConfirmAction] = useState(null);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [workspaceConfirmAction, setWorkspaceConfirmAction] = useState(null);
+  // CAM-scoped export: scope + range picker, and the envelope the server
+  // returned so the applied range and any truncation stay visible after the
+  // download rather than only inside the file.
+  const [clientExport, setClientExport] = useState({
+    open: false,
+    focusClientId: "",
+    busy: false,
+    error: "",
+    result: null,
+  });
+  function openClientExport(focusClientId = "") {
+    setClientExport({ open: true, focusClientId, busy: false, error: "", result: null });
+  }
+  async function runClientExport(request) {
+    setClientExport((prev) => ({ ...prev, busy: true, error: "", result: null }));
+    try {
+      const payload = await loadClientScopedExport(request);
+      const stamp = `${payload.range.from}_${payload.range.to}`;
+      const label = payload.scope.includedClientCount === 1
+        ? (payload.scope.includedClients[0]?.name || "client")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+        : `${payload.scope.includedClientCount}-clients`;
+      downloadTextFile(
+        `cam-crm-export-${label}-${stamp}.json`,
+        JSON.stringify(payload, null, 2),
+      );
+      setClientExport((prev) => ({ ...prev, busy: false, result: payload }));
+    } catch (error) {
+      console.error("[CRM] Client export failed:", error);
+      setClientExport((prev) => ({
+        ...prev,
+        busy: false,
+        error: error.message || "Could not export client data.",
+      }));
+    }
+  }
   function persistSession(user) {
     setSession(user);
     try {
@@ -13574,6 +13614,20 @@ export default function App() {
                     <Users size={14} /> Team
                   </button>
                 ) : null}
+                {/* The "all my clients" ask. This block was empty for a CAM and
+                    the Data Tools panel that holds the Manager export lives
+                    inside ManagerOverview, which a CAM cannot reach at all. */}
+                <button
+                  className="ghost-button"
+                  disabled={!accessibleClients.length}
+                  title="Export sessions, accounts, flags and per-day P&L as JSON for outside analysis"
+                  onClick={() => {
+                    closeMobileSidebar();
+                    openClientExport("");
+                  }}
+                >
+                  <Download size={14} /> Export data
+                </button>
               </div>
             </div>
             {canCreateDeleteClients ? (
@@ -14296,6 +14350,16 @@ export default function App() {
 
                   <div className="operations-toolbar client-toolbar" aria-label="Client tools">
                     <span className="operations-toolbar-label">Tools</span>
+                      {/* The "one client over a range" ask, next to the date
+                          navigation the CAM is already using to pick days. */}
+                      <button
+                        className="ghost-button"
+                        disabled={!selectedClient}
+                        title="Export this client's sessions over a date range as JSON"
+                        onClick={() => openClientExport(selectedClient?.id || "")}
+                      >
+                        <Download size={16} /> Export data
+                      </button>
                       <button
                         className={showQuickLog ? "secondary-button" : "ghost-button"}
                         disabled={!selectedClient}
@@ -15015,6 +15079,17 @@ export default function App() {
           action={workspaceConfirmAction}
           onCancel={() => setWorkspaceConfirmAction(null)}
           onConfirm={runWorkspaceConfirmAction}
+        />
+        <ClientExportDialog
+          open={clientExport.open}
+          onOpenChange={(open) => setClientExport((prev) => ({ ...prev, open }))}
+          clients={accessibleClients}
+          namedScopeForAll={isManagerSession}
+          focusClientId={clientExport.focusClientId}
+          busy={clientExport.busy}
+          error={clientExport.error}
+          result={clientExport.result}
+          onExport={runClientExport}
         />
         <ConfirmActionDialog
           action={logoutConfirmAction}
