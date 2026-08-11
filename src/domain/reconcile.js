@@ -1,5 +1,9 @@
 import { summarizePnlSources } from './pnlSourceSummary.js';
-import { scopeExecutionsToDay, scopeOrdersToDay } from './tradingDayScope';
+// Extension explicit: this module is now on the import chain of a Vercel
+// serverless function (server/export/absentAccounts.js -> accountLifecycle ->
+// here), and plain Node ESM does not resolve './tradingDayScope'. The other two
+// specifiers on this line's neighbours already carried it.
+import { scopeExecutionsToDay, scopeOrdersToDay } from './tradingDayScope.js';
 import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './derivedAccountMetrics.js';
 
 export const ACCOUNT_TYPES = {

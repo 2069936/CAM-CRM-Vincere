@@ -13,7 +13,14 @@
 // is the reason buildAccountLifecycleStates below never reads `dateFailed` as
 // evidence of anything.
 
-import { ACCOUNT_STATUSES, isCashType } from './reconcile';
+// './reconcile.js', not './reconcile'. Vite resolves the extension-less form and
+// plain Node ESM does not — server/export/ runs as a Vercel function, which is
+// plain Node ESM, and importing this module from there threw ERR_MODULE_NOT_FOUND
+// on this line. clientExportSeries.js:88 documents the same trap from the other
+// side. The chain is accountLifecycle -> reconcile -> tradingDayScope; both
+// extension-less specifiers in it are now explicit, and node --input-type=module
+// can load this file.
+import { ACCOUNT_STATUSES, isCashType } from './reconcile.js';
 
 function toDate(value) {
   return value ? new Date(`${value}T00:00:00Z`) : null;

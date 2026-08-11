@@ -25,6 +25,7 @@ import {
   requireClientAssignments,
 } from '../apiLib/apiAuth.js';
 import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../apiLib/http.js';
+import { ABSENCE_REASON_TEXT } from './absentAccounts.js';
 import { PNL_BASIS, PNL_BASIS_NOTE, buildClientSeries } from './clientExportSeries.js';
 
 /**
@@ -134,6 +135,55 @@ const MAX_TOTAL_ROWS = 25000;
  * that names the measured size and what to narrow, because a payload this
  * export cannot deliver must fail loudly — the same reason an over-long range
  * is a 400 rather than a silent clamp.
+ *
+ * MEASURED AGAIN AFTER THE ABSENT-ACCOUNT COVERAGE LANDED, because that figure
+ * left almost no room. Per-day absence adds 0.25 MB to the busiest CAM's
+ * default pull, which takes it from 3.82 MB (95.5% of this ceiling) to 4.06 MB
+ * — a 413 on the endpoint's own headline case. The next-busiest CAM (18
+ * clients) lands at 3.81 MB and still fits. Two things are true and both should
+ * be said: this feature is what tipped it, and 3.82 MB was one trading week
+ * from tipping on its own.
+ *
+ * WHERE THE HEADROOM ACTUALLY IS, re-measured end to end through this handler
+ * against public/local-snapshot.json rather than estimated, because the first
+ * answer was both too small and pointed at the wrong table.
+ *
+ * The whole 4.12 MiB breaks down as 3.35 MiB of `tables` and 0.75 MiB of
+ * `series`, and ONE table is half the response: strategy_snapshots is 2,111.8 KB
+ * over 1,033 rows — 2,094 bytes a row, against 379 for account_snapshots. Two
+ * columns are 77% of it, and both are the same fact written twice:
+ *
+ *   params_parsed   1,042.0 KB across 1,033 rows, 36 distinct values
+ *   parameters_raw    580.6 KB across 1,033 rows, 43 distinct values
+ *
+ * 1,622.6 KB — 39.6% of this entire ceiling — to say the same three dozen
+ * strategy configurations once per account per day. That is the same shape as
+ * the reports.content.summary redaction above (13.92 MB of 14.25 MB), and it is
+ * an order of magnitude more than anything in `series`. Neither column can
+ * simply be dropped: src/domain/strategyRiskProfile.js and
+ * src/domain/setFileMatch.js both parse parameters_raw. Hoisting the distinct
+ * values into one dictionary and referencing them per row is the fix, and it is
+ * a shape change to a raw-table mirror, so it wants a decision rather than a
+ * quiet edit.
+ *
+ * The trim this comment used to prescribe does NOT work. series[].days[].accounts
+ * repeated six static registry attributes (accountType, accountStatus, riskLevel,
+ * startBalance, targetProfit, maxDrawdownLimit) on every reported account on
+ * every day, joinable on the tradingAccountId each row already carries. Measured
+ * on that CAM it is 130.8 KB for all six and 77.4 KB for the four numeric ones,
+ * not the 142 KB claimed here before. Getting under the ceiling needs ~123 KB, so
+ * removing all six lands at 3.985 MiB: 0.4% of headroom. A cliff, not a fix.
+ *
+ * Five of the six were removed anyway, and NOT for size. They are current
+ * registry values with no history, so stamping them on a row dated 2026-07-13
+ * asserted they held that day when they did not — see the comment at the account
+ * row in clientExportSeries.js. That returned about 100 KB, which does not change
+ * the paragraph below.
+ *
+ * The real reading is that this endpoint was structurally at its ceiling before
+ * per-day absence was added: the next-busiest CAM (18 clients) is at 95.6% of it
+ * with the feature and 83.9% without, and the shave that would pay for the
+ * feature is worth less than one week of ordinary growth.
  */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
@@ -736,6 +786,10 @@ export function createHandler({
           ],
           reason,
         })),
+        // The legend for series[].days[].absentAccounts[].reason, emitted once.
+        // Carrying the sentence on every row instead cost 67 KB on the busiest
+        // CAM's default pull for five constant strings.
+        absenceReasons: ABSENCE_REASON_TEXT,
         skippedTables: loaded.skipped,
         rowCounts,
         totalRows,
@@ -762,6 +816,16 @@ export function createHandler({
             field: 'series[].days[].totals / week / cumulative / summary',
             affects: ['series'],
             note: 'Derived aggregates are rounded to cents. Per-account figures in series[].days[].accounts[] are passed through exactly as stored, so the series reconciles row by row against tables.account_snapshots.',
+          },
+          {
+            field: 'series[].days[].absentAccounts',
+            affects: ['series[].days[].coverage', 'series[].summary.coverage'],
+            note: 'series[].days[].accounts is only the accounts that FILED a snapshot that day. absentAccounts is every registered account that existed and did not file, with the reason: never-reported-in-range, not-yet-reporting, absent-still-live (it exists and it did not work today), or absent-finished (its last trailing-drawdown reading on or before that day is a breach, per src/domain/accountLifecycle.js asked as of that day). "Did not report" is never rendered as a zero — an absent account carries no P&L field at all, only a dated lastReported block. Collection failures are kept out of the account counts: coverage.clientFiledNothing marks a day whose import carried no account rows at all, and summary.coverage.uncollected counts the trading dates this client produced no import for. On the real book those are 4,667 account-days against 1,209 that were absent while their siblings filed.',
+          },
+          {
+            field: 'trading_accounts.date_added',
+            affects: ['series[].days[].notYetRegisteredAccountIds', 'series[].summary.coverage.accountStarts', 'series[].days[].coverage.existedOnDay'],
+            note: 'An account is only counted as absent from a day it could have filed on. The start date used is min(date_added, the first day the account was actually observed filing), because neither column is trustworthy alone: on the real book 229 of the 720 accounts that ever appear in a close carry a date_added LATER than the first close they appear in, and created_at is the CRM migration timestamp (all 764 values fall in one month, 573 of them on three days) and is later than the first observed close for 246 of them. created_at is not used. The two fields are not interchangeable: series[].days[].notYetRegisteredAccountIds is a bare array of trading_accounts.id for that one day, and the decided start date and its provenance live once per client in series[].summary.coverage.accountStarts, as { tradingAccountId, accountName, dateAdded, existsFrom, existsFromBasis }. Join the day\'s ids to that block. Accounts with no usable start date carry existsFromBasis "unknown" there and are never counted as absent; on the real book that case is 0 accounts.',
           },
           {
             field: 'daily_imports.status',

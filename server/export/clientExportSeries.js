@@ -19,6 +19,7 @@
 // Every consumer re-deriving that gets it wrong quietly. Once, here, is better.
 
 import { buildPerformanceSeries, summarizePerformance } from '../../src/domain/performanceSeries.js';
+import { buildAbsenceIndex } from './absentAccounts.js';
 
 /**
  * The realized-P&L caveat, carried in the payload rather than assumed known.
@@ -38,6 +39,9 @@ import { buildPerformanceSeries, summarizePerformance } from '../../src/domain/p
 export const PNL_BASIS = 'mixed-gross-and-net';
 
 export const PNL_BASIS_NOTE = 'account_snapshots.gross_realized_pnl is net of commissions on rows whose source CSV carried a non-zero "Realized PnL", and gross of commissions on every other row (src/domain/csvImport.js:244). It is not consistently gross despite the column name. Totals derived from it in this payload inherit the same mixture.';
+
+/** A trading date this payload can actually key a day on. See buildDays below. */
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -126,8 +130,26 @@ function countBy(rows, key) {
  * trading_accounts in the payload at all: "-1,240 on Tuesday" reads completely
  * differently on a funded account than on an evaluation, and the snapshot rows
  * do not say which they are.
+ *
+ * UNDATED IMPORTS ARE DROPPED, and that is not tidiness. Every absence figure is
+ * keyed on the trading date: absenceFor() resolves it through isoDay(), an
+ * unparseable value comes back null, and `existsFrom > null` is false for every
+ * account — so the whole registry clears the existence gate and none of it can
+ * match a reported name. Feeding one dateless import to the 41-account client on
+ * this book produced a day literally called "null" carrying 41 invented
+ * absences, and pulled that client's reportRatePct from 51.2 to 43.9. That is
+ * the failure this file exists to prevent, arriving through the calendar instead
+ * of through the registry. adaptForLifecycle() in absentAccounts.js already
+ * drops the same rows (`.filter((close) => close.date)`), so until now the two
+ * halves of one day disagreed about whether the close existed at all.
+ *
+ * daily_imports.trading_date is `date not null` (supabase/cam_crm_schema.sql:101),
+ * so this is defence and not a live count — 0 of the 535 imports on the real book
+ * are undated. It is one filter, and what it guards against is a desk-wide false
+ * alarm.
  */
 function buildDays({
+  clientId,
   imports,
   snapshotsByImport,
   strategyCountByImport,
@@ -137,8 +159,11 @@ function buildDays({
   accountsById,
   includeTradeHistory,
   rangeFrom,
+  absenceFor,
 }) {
-  const ordered = [...imports].sort((a, b) => String(a.trading_date).localeCompare(String(b.trading_date)));
+  const ordered = imports
+    .filter((dailyImport) => ISO_DAY.test(String(dailyImport?.trading_date ?? '').slice(0, 10)))
+    .sort((a, b) => String(a.trading_date).localeCompare(String(b.trading_date)));
   const derivedByWeek = new Map();
 
   return ordered.map((dailyImport) => {
@@ -152,12 +177,33 @@ function buildDays({
         // would attach their P&L to whatever account shares the name.
         tradingAccountId: snapshot.trading_account_id || null,
         accountName: snapshot.account_name || null,
+        // accountType stays and the rest of the registry does not, and the
+        // reason is correctness rather than payload size.
+        //
+        // accountStatus, riskLevel, startBalance, targetProfit and
+        // maxDrawdownLimit are CURRENT registry values with no history behind
+        // them. Stamping them onto a row dated 2026-07-13 asserts they held on
+        // that date, and they did not: an account marked Failed today was very
+        // likely Active in July, and 143 accounts on this book are past their
+        // drawdown limit while still carrying status Active, so the column and
+        // the day disagree in both directions. A reader summing "funded balance
+        // in July" off these rows would be reading August's registry.
+        //
+        // accountType survives because it is what makes a figure legible at all
+        // — "-1,240 on Tuesday" reads completely differently on a funded account
+        // than on an evaluation — and because it is the most stable of the six.
+        // It carries the same caveat in principle, stated in the export's
+        // caveats block.
+        //
+        // The other five already travel whole and un-range-filtered in
+        // tables.trading_accounts, joinable on the tradingAccountId every row
+        // here carries, so nothing is lost — only the false implication that
+        // they were the values of that day.
+        //
+        // This is NOT the fix for the response ceiling. It returns roughly 100
+        // KB on the busiest CAM, and MAX_RESPONSE_BYTES in clientExport.js
+        // explains why that is a rounding error against a structural problem.
         accountType: account?.account_type || null,
-        accountStatus: account?.status || null,
-        riskLevel: account?.risk_level || null,
-        startBalance: numberOrNull(account?.start_balance),
-        targetProfit: numberOrNull(account?.target_profit),
-        maxDrawdownLimit: numberOrNull(account?.max_drawdown_limit),
         realizedPnl: numberOrNull(snapshot.gross_realized_pnl),
         unrealizedPnl: numberOrNull(snapshot.unrealized_pnl),
         accountBalance: numberOrNull(snapshot.account_balance),
@@ -187,6 +233,13 @@ function buildDays({
       ? dailyImport.source_summary
       : {};
 
+    // The other half of the day. `accounts` above is whoever filed; this is every
+    // registered account that did not, with the reason. Without it a live account
+    // that simply did not trade is byte-for-byte identical in this payload to an
+    // account that does not exist — 1,209 of 4,276 (client, day, account) slots on
+    // the real book were in that state.
+    const absence = absenceFor(clientId, date);
+
     return {
       date,
       dailyImportId: dailyImport.id,
@@ -197,10 +250,16 @@ function buildDays({
       importedAt: dailyImport.imported_at || null,
       sourceType: dailyImport.source_type || null,
       accounts,
+      absentAccounts: absence.absentAccounts,
+      notYetRegisteredAccountIds: absence.notYetRegisteredAccountIds,
+      coverage: absence.coverage,
       totals: {
         realizedPnl,
         unrealizedPnl: sumOrNull(accounts.map((row) => row.unrealizedPnl)),
         accountBalance: sumOrNull(accounts.map((row) => row.accountBalance)),
+        // Snapshot rows filed this day, which is NOT the size of the book. The
+        // book's size on this day is coverage.existedOnDay, and the gap between
+        // the two is coverage.absent.
         accounts: accounts.length,
       },
       week: {
@@ -231,6 +290,66 @@ function buildDays({
 }
 
 /**
+ * The range's filing record, as account-days rather than as days.
+ *
+ * A per-day `absent` count answers "was today thin"; nothing in the payload
+ * answered "how much of this month did we actually see". The denominator is
+ * account-days that COULD have been filed — every day summed over the accounts
+ * that existed on it — so a client who added five accounts mid-range is not
+ * charged for the days before they existed.
+ *
+ * `daysClientFiledNothing` is separated from the account counts on purpose: on
+ * those days the absence is one fact about the collector, and rolling it into
+ * `absentStillLive` would let a handful of missed imports read as a fleet that
+ * stopped trading.
+ */
+function summarizeCoverage(days, uncollected, accountStarts) {
+  const sum = (pick) => days.reduce((total, day) => total + pick(day.coverage), 0);
+  const expected = sum((coverage) => coverage.existedOnDay);
+  const reported = sum((coverage) => coverage.reported.count);
+  const absent = sum((coverage) => coverage.absent.count);
+  return {
+    accountDaysExpected: expected,
+    accountDaysReported: { count: reported, of: expected },
+    accountDaysAbsent: { count: absent, of: expected },
+    accountDaysAbsentMarkedIgnore: { count: sum((c) => c.absentMarkedIgnore.count), of: absent },
+    accountDaysNotYetRegistered: sum((coverage) => coverage.notYetRegistered.count),
+    // Every account whose start date had to be decided, once, each with the
+    // date its absences begin counting from and where that date came from.
+    // days[].notYetRegisteredAccountIds indexes into this. Named for what it
+    // holds rather than for the count above it: it also carries the accounts
+    // that existed all range but whose date_added contradicted a close they
+    // appear in (existsFromBasis 'first-observed-report'), which is not a
+    // not-yet-registered fact but is the same decision.
+    accountStarts,
+    reportedWithoutRegistryRow: sum((coverage) => coverage.reportedWithoutRegistryRow),
+    // Same shape as days[].coverage.absentByReason — one `of` for the four
+    // counts beside it — so a reader parses the key once, not twice.
+    absentByReason: {
+      of: expected,
+      neverReportedInRange: sum((c) => c.absentByReason.neverReportedInRange),
+      notYetReporting: sum((c) => c.absentByReason.notYetReporting),
+      absentStillLive: sum((c) => c.absentByReason.absentStillLive),
+      absentFinished: sum((c) => c.absentByReason.absentFinished),
+    },
+    // Two different collection failures, kept apart. `daysClientFiledNothing`
+    // is an import that arrived carrying no account rows at all — 12 of the 535
+    // imports on the real book, and every one of them belongs to a client whose
+    // registry was still empty on that date, which is why they contribute 0
+    // absences rather than 23 invented ones. `uncollected` is the heavier one:
+    // dates the desk was filing and this client produced no import whatsoever.
+    daysClientFiledNothing: {
+      count: days.filter((day) => day.coverage.clientFiledNothing).length,
+      of: days.length,
+    },
+    uncollected,
+    // Null, never 0: with no day carrying a denominator there is no rate to
+    // report, and 0% would read as "this client filed nothing".
+    reportRatePct: expected ? Math.round((reported / expected) * 1000) / 10 : null,
+  };
+}
+
+/**
  * Chain-linked return and drawdown, from the shared implementation.
  *
  * src/domain/performanceSeries.js is what the client report already draws, so
@@ -239,7 +358,7 @@ function buildDays({
  * with no determinable P&L enters it as flat; `daysWithoutPnl` below counts
  * those so the flat days are not mistaken for measured ones.
  */
-function summarize(days) {
+function summarize(days, uncollected, accountStarts) {
   if (!days.length) return null;
   const points = buildPerformanceSeries(days.map((day) => ({
     date: day.date,
@@ -277,6 +396,7 @@ function summarize(days) {
   );
   return {
     sessions: days.length,
+    coverage: summarizeCoverage(days, uncollected, accountStarts),
     firstSession: days[0].date,
     lastSession: days[days.length - 1].date,
     positiveSessions: determined.filter((day) => day.totals.realizedPnl > 0).length,
@@ -321,8 +441,22 @@ export function buildClientSeries({
   const orderCountByImport = countBy(orders, 'daily_import_id');
   const executionCountByImport = countBy(executions, 'daily_import_id');
 
+  // Built once for the whole payload rather than per client: it runs the shared
+  // lifecycle classifier one pass per distinct trading date, and the dates are
+  // shared across clients (21 of them on the whole real book).
+  const { absenceFor, uncollectedFor, startsFor } = buildAbsenceIndex({
+    clients: clients || [],
+    tradingAccounts: tradingAccounts || [],
+    dailyImports: dailyImports || [],
+    accountSnapshots: accountSnapshots || [],
+    strategySnapshots: strategySnapshots || [],
+    orders: orders || [],
+    executions: executions || [],
+  });
+
   return (clients || []).map((client) => {
     const days = buildDays({
+      clientId: client.id,
       imports: importsByClient.get(client.id) || [],
       snapshotsByImport,
       strategyCountByImport,
@@ -332,13 +466,18 @@ export function buildClientSeries({
       accountsById,
       includeTradeHistory,
       rangeFrom,
+      absenceFor,
     });
     return {
       clientId: client.id,
       clientName: client.name || null,
       clientStatus: client.status || null,
       days,
-      summary: summarize(days),
+      summary: summarize(
+        days,
+        uncollectedFor(client.id, days.map((day) => day.date)),
+        startsFor(client.id),
+      ),
     };
   });
 }
