@@ -7148,6 +7148,95 @@ tr:nth-child(2) .rank-badge {
   .report-design-drawer { display: none !important; }
 }
 
+/* "What shaped this close" — the reasons section. */
+.report-reasons-lead {
+  margin: 2px 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.report-reasons-list { margin: 0; padding: 0; list-style: none; }
+.report-reason {
+  border-left: 3px solid var(--line);
+  padding: 6px 0 6px 12px;
+  margin: 0 0 10px;
+}
+.report-reason-orders-rejected,
+.report-reason-account-stopped { border-left-color: var(--error); }
+.report-reason-strategies-all-off,
+.report-reason-accounts-absent,
+.report-reason-nothing-collected { border-left-color: var(--warning, #d08700); }
+.report-reason-headline { margin: 0; font-size: 13px; font-weight: 600; }
+.report-reason-detail {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.report-reason-quote {
+  margin: 5px 0 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.report-reason-quote-label { color: var(--text-muted); }
+.report-reasons-unstated {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.report-reasons-unstated h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.report-reasons-unstated ul { margin: 0; padding-left: 18px; }
+.report-reasons-unstated li { font-size: 12px; color: var(--text-muted); margin: 2px 0; }
+
+/* The CAM's note: an editor on screen, plain text in the PDF. */
+.report-note-editor { display: flex; flex-direction: column; gap: 8px; }
+.report-note-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.report-note-input {
+  width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.report-note-warning {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
+}
+/*
+  The printed copy. Hidden on screen (the textarea above is the screen view) and
+  the only thing that reaches the PDF, because a <textarea> prints its own border
+  and clips to its scroll height. `pre-wrap` keeps the CAM's line breaks.
+*/
+.report-note-print { display: none; }
+@media print {
+  .report-note-print {
+    display: block;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  /*
+    No note written means no heading in the client's PDF. `.no-print` on the
+    editor already removes the controls; without this the client would get an
+    empty "Note from your account manager" block on every report nobody wrote on.
+  */
+  .report-note-section:not(.has-note) { display: none !important; }
+}
+
 /* Draggable client rows in the sidebar. */
 .client-link[draggable="true"] { cursor: grab; }
 .client-link-dragging { opacity: 0.5; }

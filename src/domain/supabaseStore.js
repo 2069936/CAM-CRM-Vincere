@@ -1617,6 +1617,54 @@ export async function createSupabaseReport(clientId, dailyImportId, reportType, 
   return reportFromRow(data);
 }
 
+/**
+ * Every report row stored for ONE (client, close), newest first.
+ *
+ * Needed because `reports` has no unique key on (client_id, daily_import_id,
+ * report_type) — neither cam_crm_schema.sql:282 nor step_11_report_history.sql
+ * declares one — and ReportPanel INSERTS on every mount. Measured on the 610
+ * rows in public/local-snapshot.json: 610 rows over 440 distinct (client,
+ * import) pairs, 93 pairs duplicated, one pair holding 9 copies. So anything
+ * that has to find what a CAM wrote on a day has to look across the whole
+ * stack of rows for that day, not at the newest one.
+ */
+export async function loadSupabaseReportsForImport(clientId, dailyImportId, { reportType = 'daily_close', limit = 50 } = {}) {
+  if (!isSupabaseConfigured || !supabase || !dailyImportId) return [];
+  const clientUuid = await getClientUuid(clientId);
+  const importUuid = await getDailyImportUuid(dailyImportId);
+  let query = supabase
+    .from('reports')
+    .select('*')
+    .eq('client_id', clientUuid)
+    .eq('daily_import_id', importUuid);
+  if (reportType) query = query.eq('report_type', reportType);
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(limit);
+  if (error) throw new Error(error.message);
+  return (data || []).map(reportFromRow);
+}
+
+/**
+ * Replace one report row's `content` jsonb.
+ *
+ * The first UPDATE anywhere against this table: until now the only write was the
+ * insert on panel mount, which is why nothing a CAM typed could ever survive.
+ * `content` is `jsonb default '{}'` with no CHECK, so writing back a spread of
+ * the row's own content plus one new key breaks no constraint and leaves the 610
+ * existing rows readable — reportFromRow spreads content wholesale and only ever
+ * looks at `content.title` / `content.summary?.clientName`.
+ */
+export async function updateSupabaseReportContent(reportId, content) {
+  if (!isSupabaseConfigured || !supabase || !reportId) return null;
+  const { data, error } = await supabase
+    .from('reports')
+    .update({ content })
+    .eq('id', reportId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return reportFromRow(data);
+}
+
 export async function loadSupabaseReports(clientId, { limit = 10 } = {}) {
   if (!isSupabaseConfigured || !supabase) return [];
   const clientUuid = await getClientUuid(clientId);

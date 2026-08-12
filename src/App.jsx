@@ -136,6 +136,8 @@ import CollapsiblePanel from "./components/CollapsiblePanel";
 import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
+import ReportReasonsSection from "./components/ReportReasonsSection";
+import ReportNoteSection from "./components/ReportNoteSection";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
 import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
@@ -156,6 +158,7 @@ import {
 } from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
+import { buildReportReasons } from "./domain/reportReasons";
 import ClientKindBadge from "./components/ClientKindBadge";
 import {
   USER_ROLES,
@@ -7034,6 +7037,10 @@ function ReportPanel({
   onClose,
 }) {
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
+  // Same two inputs as the summary above: everything this needs is already on
+  // the reconciled import (orders, executions, the import-level strategies) and
+  // on the client's own closes. Nothing extra is fetched to render it.
+  const reasons = useMemo(() => buildReportReasons(client, dailyImport), [client, dailyImport]);
   // Bounded at the report's own date. A report re-opened for last Tuesday must
   // show the client the shape of the book as it stood that day, not a curve
   // that runs past the figures printed beside it.
@@ -7427,6 +7434,8 @@ function ReportPanel({
           ) : null,
         ) : null}
 
+        {cfg.showReasons ? <ReportReasonsSection reasons={reasons} /> : null}
+
         <PerformanceCharts
           history={performanceHistory}
           showCumulative={Boolean(cfg.showCumulativeChart)}
@@ -7460,6 +7469,24 @@ function ReportPanel({
             </ul>
           </section>
         ) : null}
+
+        <ReportNoteSection
+          clientId={client?.id}
+          dailyImportId={dailyImport?.id}
+          authorName={camName}
+          suggestedText={whatsappMessage}
+          fallbackContent={{
+            title: `Daily close report - ${client?.name || report.clientName} - ${report.date}`,
+            reportDate: report.date,
+            source: {
+              clientId: client?.id,
+              clientName: client?.name || report.clientName,
+              dailyImportId: dailyImport?.id,
+              dailyImportDate: dailyImport?.date,
+              status: dailyImport?.status,
+            },
+          }}
+        />
 
         <footer className="report-footer">
           <span>

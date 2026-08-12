@@ -21,6 +21,13 @@ export const REPORT_FIELDS = [
   // printing that for them would be noise; the one client mid-SIM-test is the
   // one whose CAM turns this on.
   { key: 'showSimulation', label: 'Simulation section (not real money)', advanced: false },
+  // Off by default like every other addition. Measured over the 485 imports the
+  // local snapshot rebuilds: the section prints nothing at all on 159 of them
+  // (33%), and where it does print the median is 2 lines. The four reasons fire
+  // on 40% (accounts absent), 32% (past drawdown), 26% (strategies all off) and
+  // 18% (orders refused) of imports respectively — see src/domain/reportReasons.js
+  // for what was measured and dropped for firing too often to mean anything.
+  { key: 'showReasons', label: 'What shaped this close (reasons)', advanced: false },
   { key: 'showFlags', label: 'Open flags section', advanced: false },
   { key: 'showCumulativeChart', label: 'Cumulative P&L chart', advanced: false },
   { key: 'showDailyChart', label: 'Daily P&L chart', advanced: false },
@@ -43,6 +50,7 @@ export const DEFAULT_REPORT_CONFIG = {
   // Anything new ships false: an existing client's report must not change shape
   // without someone choosing it.
   showSimulation: false,
+  showReasons: false,
   showFlags: true,
   // Charts are new, so they stay off until a CAM turns them on. An existing
   // client's report must not change shape without someone choosing it.
@@ -63,6 +71,13 @@ export const SIMPLIFIED_REPORT_CONFIG = {
   showTrailing: false,
   showWeeklyColumn: false,
   showSimulation: false,
+  // The simplified report is for the client who reads a picture faster than a
+  // table, and this section is prose about their own accounts — it is the part
+  // of a stripped-down report that still says something. Explicit rather than
+  // omitted: clean() only copies keys present in DEFAULT_REPORT_CONFIG, so a key
+  // left out of this preset silently falls back to the default instead of to the
+  // preset's intent.
+  showReasons: true,
   showFlags: false,
   // A client who wants the essentials is usually the one who reads a picture
   // faster than a table, so the simplified report keeps the two charts.

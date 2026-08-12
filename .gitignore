@@ -60,3 +60,4 @@ release-upload/
 # Local CRM snapshot: real client data, never committed.
 public/local-snapshot.json
 *.export.json
+.report-verify/
