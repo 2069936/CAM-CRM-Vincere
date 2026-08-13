@@ -60,6 +60,7 @@ import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
 import AutoCollectionManager from "./components/AutoCollectionManager";
+import ClientExportDialog from "./components/ClientExportDialog";
 import {
   Dialog,
   DialogContent,
@@ -123,13 +124,41 @@ import {
   buildCamRecord,
   coverageForClient,
   effectiveClientIds,
+  pendingTimeOffAlert,
 } from "./domain/camCoverage";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
-import TimeOffPanel, { TimeOffRequestForm } from "./components/TimeOffPanel";
+import TimeOffPanel, {
+  PendingTimeOffNotice,
+  TimeOffRequestForm,
+} from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
+import ConfigDriftPanel from "./components/ConfigDriftPanel";
+import SimulationReportSection from "./components/SimulationReportSection";
+import ReportReasonsSection from "./components/ReportReasonsSection";
+import ReportNoteSection from "./components/ReportNoteSection";
+import SetFileMatchPanel from "./components/SetFileMatchPanel";
+import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
+import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
+import LiveAccountsPanel from "./components/LiveAccountsPanel";
+import CamFlagQueue from "./components/CamFlagQueue";
+import { buildCamFlagQueue, createCamFlagResolver } from "./domain/camFlagQueue";
+import BulletBotDeskPanel from "./components/BulletBotDeskPanel";
+import CapitalDetailPanel from "./components/CapitalDetailPanel";
+import StrategyRiskScatter from "./components/StrategyRiskScatter";
+import { buildStrategyRiskProfile } from "./domain/strategyRiskProfile";
+import {
+  AlgoContributionChart,
+  BookMixBar,
+  CoverageLoadChart,
+  FlagAgingChart,
+  TrailingBufferChart,
+  UploadCoverageGrid,
+} from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
+import { buildReportReasons } from "./domain/reportReasons";
 import ClientKindBadge from "./components/ClientKindBadge";
 import {
   USER_ROLES,
@@ -149,9 +178,11 @@ import {
 } from "./domain/supabaseUserAdmin";
 import { isSupabaseConfigured } from "./lib/supabaseClient";
 import {
+  loadClientScopedExport,
   loadSupabaseDataExport,
   loadSupabaseIntakeSheet,
 } from "./domain/supabaseDataPortability";
+import { isLocalSnapshotEnabled, loadLocalSnapshotState } from "./domain/localSnapshot";
 import {
   createSupabaseSopItem,
   createSupabaseSopSection,
@@ -3763,6 +3794,118 @@ function SopBuilderPanel() {
   );
 }
 
+/**
+ * What the headline figure is made of.
+ *
+ * A cash account and a prop evaluation are different businesses, and Bullet Bot
+ * evaluations alone were 58% of one day's trading loss — invisible in a single
+ * number. The split also shows what the headline leaves out: accounts marked
+ * Inactive / Ignore, and snapshots whose account no longer resolves at all.
+ * Those are excluded from the total but shown, because hiding them replaces one
+ * wrong figure with another and buries the data problem behind it.
+ */
+// Short labels for a narrow tile. The domain names stay long because they have
+// to be unambiguous in data; the tile has about eleven characters before the
+// column collapses and a figure gets clipped.
+const SEGMENT_LABELS = {
+  "Evaluations - Bullet Bot": "Bullet Bot",
+  "Evaluations - standard": "Evals",
+  "No account on record": "Orphaned",
+  Unclassified: "Unclassed",
+};
+
+// The id of the panel a segment row opens, so aria-expanded has something to
+// point at: the detail cannot render inside the tile and lands further down the
+// document, which a screen reader cannot associate on its own.
+const CAPITAL_DETAIL_ID = "manager-capital-detail";
+
+/**
+ * One segment row.
+ *
+ * Declared at module scope, NOT inside SegmentBreakdown. A component defined in
+ * a render body gets a new function identity every render, React treats that as
+ * a different element type, and the whole <li> subtree is unmounted and
+ * remounted — so the button the user just pressed is destroyed, focus falls back
+ * to <body>, and a keyboard user loses their place in the list on every toggle.
+ *
+ * The key handed back is `row.segment`, the long domain name, never
+ * `SEGMENT_LABELS[row.segment]`. buildCapitalDetail keys its blocks off
+ * segmentFor(), the same function buildSegmentTotals uses, so
+ * "Evaluations - Bullet Bot" matches and "Bullet Bot" (what the tile prints)
+ * would match nothing and silently open a segment reading $0.
+ */
+function SegmentRow({ row, excluded = false, open = false, onToggleSegment = null }) {
+  const cells = (
+    <>
+      <span title={row.segment}>{SEGMENT_LABELS[row.segment] || row.segment}</span>
+      <span className={excluded ? undefined : row.dailyPnl >= 0 ? "positive" : "negative"}>
+        {formatCurrency(row.dailyPnl)}
+      </span>
+      <em>{row.accounts}</em>
+    </>
+  );
+  if (!onToggleSegment) {
+    return <li className={excluded ? "segment-excluded" : undefined}>{cells}</li>;
+  }
+  return (
+    <li className={excluded ? "segment-clickable segment-excluded" : "segment-clickable"}>
+      <button
+        type="button"
+        className={open ? "segment-row open" : "segment-row"}
+        aria-expanded={open}
+        aria-controls={open ? CAPITAL_DETAIL_ID : undefined}
+        title={open ? `Hide capital detail for ${row.segment}` : `Capital detail for ${row.segment}`}
+        onClick={() => onToggleSegment(open ? null : row.segment)}
+      >
+        <ChevronDown className={open ? "chevron open" : "chevron"} size={11} />
+        {cells}
+      </button>
+    </li>
+  );
+}
+
+function SegmentBreakdown({ segments, openSegment = null, onToggleSegment = null }) {
+  const rows = segments?.segments || [];
+  if (!rows.length) return null;
+  const business = rollUpByBusiness(segments);
+
+  return (
+    <div className="segment-breakdown">
+      <div className="segment-split">
+        <span>
+          prop <strong className={business.prop.dailyPnl >= 0 ? "positive" : "negative"}>
+            {formatCurrency(business.prop.dailyPnl)}
+          </strong> <em>{business.prop.accounts}</em>
+        </span>
+        <span>
+          cash <strong className={business.cash.dailyPnl >= 0 ? "positive" : "negative"}>
+            {formatCurrency(business.cash.dailyPnl)}
+          </strong> <em>{business.cash.accounts}</em>
+        </span>
+      </div>
+      <ul className="segment-list">
+        {rows.filter((row) => row.countedInTotal).map((row) => (
+          <SegmentRow
+            key={row.segment}
+            row={row}
+            open={openSegment === row.segment}
+            onToggleSegment={onToggleSegment}
+          />
+        ))}
+        {rows.filter((row) => EXCLUDED_FROM_TOTAL.has(row.segment)).map((row) => (
+          <SegmentRow
+            key={row.segment}
+            row={row}
+            excluded
+            open={openSegment === row.segment}
+            onToggleSegment={onToggleSegment}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ManagerOverview({
   clients,
   camProfiles = [],
@@ -3771,6 +3914,7 @@ function ManagerOverview({
   onApproveTimeOff,
   onDenyTimeOff,
   onEndCoverage,
+  onEditCoverage,
   onOpenCam,
   onCreateCam,
   onUpdateCamProfile,
@@ -3875,6 +4019,12 @@ function ManagerOverview({
   const [managerConfirmAction, setManagerConfirmAction] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managerRenderedAt] = useState(() => Date.now());
+  // Which segment tile has its capital detail open. Held here rather than in
+  // SegmentBreakdown because the detail cannot render inside the tile: the tile
+  // is one cell of a repeat(4, minmax(160px, 1fr)) grid and CapitalDetailPanel
+  // carries four tables. The tile is the control; the panel opens full width
+  // directly under the grid.
+  const [openCapitalSegment, setOpenCapitalSegment] = useState(null);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
   const teamHistory = useMemo(
     () => buildTeamHistory(clients).slice(-10),
@@ -3891,6 +4041,33 @@ function ManagerOverview({
         return { ...profile, ...summary, flags: summary.openFlags };
       }),
     [clients, activeCamProfiles, asOfDate, coverage],
+  );
+  // The headline tiles summed every snapshot together, so one figure quietly
+  // carried cash accounts, accounts marked Inactive / Ignore, and snapshots
+  // whose account no longer resolves. A cash account and a prop evaluation are
+  // not the same business.
+  const segments = useMemo(
+    () => buildSegmentTotals(latestImports(clients, asOfDate)),
+    [clients, asOfDate],
+  );
+  // The tile row behind the open capital panel, so the panel can say what the
+  // tile counted. Null when the open segment has no snapshot on anybody's
+  // latest close — which happens as soon as the as-of picker moves — and the
+  // sentence is then withheld rather than printed with a 0 in it.
+  const openCapitalTileRow = openCapitalSegment
+    ? segments.segments.find((row) => row.segment === openCapitalSegment) || null
+    : null;
+  // Same reason, for the desk-level Bullet Bot panel further down: it reports
+  // 240 accounts where the tile reports 168, and the two are counted from
+  // different cohorts rather than in disagreement.
+  const bulletBotTileRow = segments.segments.find(
+    (row) => row.segment === SEGMENTS.EVAL_BULLET,
+  ) || null;
+  // Firm-wide rather than one CAM's book: the manager's question is which
+  // configurations carry exposure across everyone, not what a single client runs.
+  const riskProfile = useMemo(
+    () => buildStrategyRiskProfile(clients, { asOfDate }),
+    [clients, asOfDate],
   );
   const totals = useMemo(
     () =>
@@ -3975,6 +4152,19 @@ function ManagerOverview({
     return (clients || []).filter((client) => !assignedClientIds.has(client.id));
   }, [clients, activeCamProfiles]);
 
+  // Time-off requests nobody has decided yet. Lives in ManagerOverview and
+  // nowhere else on purpose: this screen only renders for a manager session
+  // (platformView === "manager" && isManagerSession), and a CAM being told
+  // "1 request pending" that only a manager can action is noise.
+  //
+  // pendingTimeOffAlert counts status === 'Pending' rows against the day on
+  // screen — never timeOff.length, which on a desk that has been running is
+  // mostly decided rows, and would only ever climb.
+  const timeOffAlert = useMemo(
+    () => pendingTimeOffAlert(timeOff, asOfDate || todayIsoDate()),
+    [timeOff, asOfDate],
+  );
+
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthlyKpis = useMemo(() => {
     let monthlyPnl = 0,
@@ -4021,6 +4211,34 @@ function ManagerOverview({
       withUploadToday,
     };
   }, [clients, currentMonth]);
+
+  // Built here, not only inside the panel, so the reconciliation line the panel
+  // renders is computed from the same classifier the panel renders — with the
+  // same asOfDate and the same 5-close staleness default, which is what makes
+  // "178" on the tile and "178" in the panel the same 178 rather than two
+  // numbers that happen to match today. 5 ms per call on the real book (718
+  // accounts, 3,100 snapshot rows), memoised on the same keys as the tile.
+  const lifecycleStates = useMemo(
+    () => buildAccountLifecycleStates(clients, { asOf: asOfDate }),
+    [clients, asOfDate],
+  );
+  // The exact filter the "Funded accounts active" tile above uses: registry
+  // type Funded, status neither Failed nor Inactive. Repeated rather than
+  // shared because the point is to state the tile's own population and then say
+  // what the closes make of it.
+  const fundedActiveLifecycle = useMemo(() => {
+    const inTile = lifecycleStates.accounts.filter(
+      (account) =>
+        account.accountType === "Funded" &&
+        account.status !== "Failed" &&
+        account.status !== "Inactive",
+    );
+    return {
+      total: inTile.length,
+      finished: inTile.filter((account) => account.state === "finished").length,
+      stale: inTile.filter((account) => account.state === "stale").length,
+    };
+  }, [lifecycleStates]);
 
   function submitCam(event) {
     event.preventDefault();
@@ -4325,6 +4543,12 @@ function ManagerOverview({
                   {totals.flags} open flag{totals.flags !== 1 ? "s" : ""}
                 </span>
               )}
+              {timeOffAlert.pending > 0 && (
+                <span className="badge warning">
+                  {timeOffAlert.pending} time-off request
+                  {timeOffAlert.pending !== 1 ? "s" : ""} pending
+                </span>
+              )}
             </div>
             {/* Pins the whole page to one trading day: metrics, flags, rosters
                 and every client's numbers come from that day's close. */}
@@ -4452,6 +4676,8 @@ function ManagerOverview({
             {teamCopyDone ? "Copied!" : "Copy Team Report"}
           </button>
         </div>
+
+        <PendingTimeOffNotice alert={timeOffAlert} camProfiles={camProfiles} />
 
         {unassignedClients.length > 0 && (
           <div className="notice warning">
@@ -4851,19 +5077,24 @@ function ManagerOverview({
           <div className="metric">
             <span>Team daily P&L</span>
             <strong
-              className={totals.dailyPnl >= 0 ? "positive" : "negative"}
+              className={segments.total.dailyPnl >= 0 ? "positive" : "negative"}
               style={{ fontSize: 22 }}
             >
-              {formatCurrency(totals.dailyPnl)}
+              {formatCurrency(segments.total.dailyPnl)}
             </strong>
+            <SegmentBreakdown
+              segments={segments}
+              openSegment={openCapitalSegment}
+              onToggleSegment={setOpenCapitalSegment}
+            />
           </div>
           <div className="metric">
             <span>Team weekly P&L</span>
             <strong
-              className={totals.weeklyPnl >= 0 ? "positive" : "negative"}
+              className={segments.total.weeklyPnl >= 0 ? "positive" : "negative"}
               style={{ fontSize: 22 }}
             >
-              {formatCurrency(totals.weeklyPnl)}
+              {formatCurrency(segments.total.weeklyPnl)}
             </strong>
           </div>
           <div className="metric">
@@ -4926,6 +5157,43 @@ function ManagerOverview({
             </div>
           )}
         </div>
+
+        {/* The capital behind whichever segment tile is open.
+            The tile's account count and this panel's are two different counts
+            and both are right: the tile counts snapshots on each client's most
+            recent close (168 Bullet Bot accounts, 9 Ignored ones), while this
+            panel counts every account that has a balance on record on any of
+            the imported closes (236 and 72). The gap is 8x on Ignored, so the
+            bridge is RENDERED, not left in this comment — a manager reading
+            "9" on the tile and "72 accounts" in the panel it opens has no way
+            to reach that reconciliation from a source file. */}
+        {openCapitalSegment ? (
+          <section className="panel capital-detail-panel" id={CAPITAL_DETAIL_ID}>
+            <div className="panel-heading">
+              <h3>Capital · {openCapitalSegment}</h3>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setOpenCapitalSegment(null)}
+              >
+                Close
+              </button>
+            </div>
+            {openCapitalTileRow ? (
+              <p className="muted capital-note">
+                The tile above counts the {openCapitalTileRow.accounts} accounts in this segment
+                that reported on their client&apos;s most recent close. Everything below counts
+                every account with a balance on any imported close, so where the two account
+                counts differ, neither is wrong.
+              </p>
+            ) : null}
+            <CapitalDetailPanel
+              clients={clients}
+              segment={openCapitalSegment}
+              asOfDate={asOfDate}
+            />
+          </section>
+        ) : null}
 
         <InsightFeedPanel
           insights={managerInsights}
@@ -5071,6 +5339,119 @@ function ManagerOverview({
             </CollapsiblePanel>
           );
         })()}
+
+        {/* Bullet Bot across the whole desk.
+            The Stack Playbook tab already ran buildBulletBotStats over ALL
+            clients, so the desk answer existed — it was just filed inside one
+            client's tab and computed differently (236 accounts, 22 passes, a 9%
+            rate whose denominator held 86 accounts with no target at all).
+            StackPlaybook now renders this same component, so there is one
+            Bullet Bot answer in the app rather than two.
+
+            The 240 here and the Bullet Bot tile's 168 above are different
+            counts, not a discrepancy: this counts every account the registry
+            types as a Bullet Bot evaluation, the tile counts the ones that
+            reported on their client's most recent close, and 236 of the 240
+            have ever been seen in a snapshot. That reconciliation is rendered
+            below, not left here — a comment reconciles nothing for a manager
+            looking at 168 and 240 on one screen. */}
+        <CollapsiblePanel title="Bullet Bot across the desk" tone="ops-charts-panel">
+          {bulletBotTileRow ? (
+            <p className="muted chart-empty">
+              The Bullet Bot tile above reads {bulletBotTileRow.accounts} accounts: the ones that
+              reported on their client&apos;s most recent close. This panel scores every account
+              the registry types as a Bullet Bot evaluation, reported or not, so the two counts
+              answer different questions.
+            </p>
+          ) : null}
+          <BulletBotDeskPanel clients={clients} />
+        </CollapsiblePanel>
+
+        <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
+          <div className="ov-pair">
+            <div>
+              <h4>Settings against the cohort</h4>
+              <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
+            </div>
+            <div>
+              <h4>Exposure by algorithm</h4>
+              <StrategyRiskScatter rows={riskProfile} limit={10} />
+            </div>
+          </div>
+        </CollapsiblePanel>
+
+        {/*
+          Its own panel rather than a third column in the pair above, because it
+          carries two roll-up tables and .ov-pair can be handed 320px.
+
+          The panel above answers "who is the odd one out" by comparing accounts
+          to each other; it cannot say what an account SHOULD run, because the
+          cohort is its only reference. This one compares against the 911 set
+          files, so it names the version — and finds what the cohort view
+          structurally cannot: a difference the whole cohort shares. RBO, B2X
+          and ARPD have no exact match at all, yet 34 to 53 rows each sit on one
+          version with the same settings changed to the same values, which the
+          cohort comparison reads as unanimity.
+        */}
+        <CollapsiblePanel title="Against the set-file library" tone="ops-charts-panel">
+          <SetFileMatchPanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Third review panel on this screen, same promise as the two above: it
+          proposes, a human decides. Nothing here writes, and the word "delete"
+          appears nowhere in it.
+
+          It sits after them rather than beside them because it is the one that
+          reads the registry's own Failed column and disagrees with it in both
+          directions on this book: 143 accounts are past their drawdown limit
+          and were never marked Failed, while 6 of the 47 visible Failed
+          accounts are still reporting with a positive buffer (four of them
+          still filling orders) and are deliberately NOT suggested. The panel
+          prints both sides, so a manager reading "181 finished" next to the
+          registry's "48 Failed" can see why the two numbers differ instead of
+          assuming one of them is broken.
+        */}
+        <CollapsiblePanel title="Accounts to review for retirement" tone="ops-charts-panel">
+          {/* Rendered, not left in a comment: the KPI strip at the top of this
+              same screen says "Funded accounts active 178" and this panel says
+              "181 breached / finished", and a manager reading both needs the
+              bridge on screen. Same lesson as the Bullet Bot 168-vs-240 line
+              above. The three numbers are read off the same classifier the
+              panel below renders, so they cannot drift from it. */}
+          <p className="muted chart-empty">
+            The &ldquo;Funded accounts active&rdquo; tile at the top of this page reads{" "}
+            {monthlyKpis.fundedActive} — registry type Funded, status neither Failed nor
+            Inactive. This panel holds {fundedActiveLifecycle.total} accounts under that same
+            filter, and the closes put {fundedActiveLifecycle.finished} of them past their
+            trailing drawdown limit and {fundedActiveLifecycle.stale} silent for five closes or
+            more. The tile counts what the registry says; this counts what the book shows.
+          </p>
+          <AccountLifecyclePanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">
+          <div className="ov-pair">
+            <div>
+              <h4>Open flags by CAM, by age</h4>
+              <FlagAgingChart
+                clients={clients}
+                camProfiles={camProfiles}
+                today={asOfDate || todayIsoDate()}
+              />
+            </div>
+            <div>
+              <h4>Clients carried today</h4>
+              <CoverageLoadChart
+                camProfiles={camProfiles}
+                clients={clients}
+                coverage={coverage}
+                timeOff={timeOff}
+                date={asOfDate || todayIsoDate()}
+              />
+            </div>
+          </div>
+        </CollapsiblePanel>
 
         <section className="panel">
           <div className="panel-heading">
@@ -5732,6 +6113,7 @@ function ManagerOverview({
           onApprove={onApproveTimeOff}
           onDeny={onDenyTimeOff}
           onEndCoverage={onEndCoverage}
+          onEditCoverage={onEditCoverage}
         />
 
         <LifecycleRollupPanel
@@ -6655,6 +7037,10 @@ function ReportPanel({
   onClose,
 }) {
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
+  // Same two inputs as the summary above: everything this needs is already on
+  // the reconciled import (orders, executions, the import-level strategies) and
+  // on the client's own closes. Nothing extra is fetched to render it.
+  const reasons = useMemo(() => buildReportReasons(client, dailyImport), [client, dailyImport]);
   // Bounded at the report's own date. A report re-opened for last Tuesday must
   // show the client the shape of the book as it stood that day, not a curve
   // that runs past the figures printed beside it.
@@ -6776,6 +7162,10 @@ function ReportPanel({
     cashIra: "Cash Accounts - IRA",
     cashStraight: "Cash Accounts - Straight",
     cashLegacy: "Cash Accounts (unclassified)",
+    // These are counted in the totals above (see report.js buildDailyReportSummary),
+    // so they need a table like every other counted pool. Without one the report
+    // would state a balance it never itemises.
+    unclassified: "Accounts Awaiting Classification",
   };
 
   return (
@@ -6967,7 +7357,7 @@ function ReportPanel({
           </section>
         ) : null}
 
-        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy"].map((group) =>
+        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy", "unclassified"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
               <h2>{GROUP_LABELS[group]}</h2>
@@ -7044,12 +7434,28 @@ function ReportPanel({
           ) : null,
         ) : null}
 
+        {cfg.showReasons ? <ReportReasonsSection reasons={reasons} /> : null}
+
         <PerformanceCharts
           history={performanceHistory}
           showCumulative={Boolean(cfg.showCumulativeChart)}
           showDaily={Boolean(cfg.showDailyChart)}
           asPercent={Boolean(cfg.chartAsPercent)}
         />
+
+        {/*
+          After the money, never inside it. The simulation block sits below the
+          accounts, the totals and the charts so nothing above it can be read as
+          including simulated dollars.
+
+          Off by default (reportConfig.js showSimulation: false). Most clients
+          carry an untouched Sim101 from the NinjaTrader install and printing it
+          for them is noise; the client actually running a SIM test is the one
+          who turns it on.
+        */}
+        {cfg.showSimulation ? (
+          <SimulationReportSection simulation={report.simulation} />
+        ) : null}
 
         {cfg.showFlags && report.openFlags.length ? (
           <section className="report-section">
@@ -7063,6 +7469,24 @@ function ReportPanel({
             </ul>
           </section>
         ) : null}
+
+        <ReportNoteSection
+          clientId={client?.id}
+          dailyImportId={dailyImport?.id}
+          authorName={camName}
+          suggestedText={whatsappMessage}
+          fallbackContent={{
+            title: `Daily close report - ${client?.name || report.clientName} - ${report.date}`,
+            reportDate: report.date,
+            source: {
+              clientId: client?.id,
+              clientName: client?.name || report.clientName,
+              dailyImportId: dailyImport?.id,
+              dailyImportDate: dailyImport?.date,
+              status: dailyImport?.status,
+            },
+          }}
+        />
 
         <footer className="report-footer">
           <span>
@@ -7511,6 +7935,10 @@ function ClientOverview({
 }) {
   const [monthlyExpanded, setMonthlyExpanded] = useState("");
   const overview = buildClientOverview(client, dailyImport);
+  // Same expression buildClientOverview resolves `latest` from, so the badge
+  // cannot name a different close from the one the list was counted on.
+  const distributionCloseDate =
+    dailyImport?.date || client?.dailyImports?.at(-1)?.date || null;
   const lifetime = buildLifetimeStats(client);
   const maxDistribution = Math.max(
     ...overview.distribution.map((item) => item.count),
@@ -7753,6 +8181,19 @@ function ClientOverview({
         )}
       </div>
 
+      <section className="panel">
+        <div className="ov-pair">
+          <div>
+            <div className="panel-heading"><h3>Room before trailing limit</h3></div>
+            <TrailingBufferChart client={client} />
+          </div>
+          <div>
+            <div className="panel-heading"><h3>Result by algorithm</h3></div>
+            <AlgoContributionChart client={client} />
+          </div>
+        </div>
+      </section>
+
       <section className="panel client-overview-hero">
         <div>
           <div className="panel-heading">
@@ -7830,7 +8271,21 @@ function ClientOverview({
         <div className="panel">
           <div className="panel-heading">
             <h3>Strategy distribution</h3>
-            <span className="badge muted">Latest close</span>
+            {/* The badge used to read just "Latest close", which named no date
+                and hid a fallback: buildClientOverview uses the picked import
+                when there is one and silently drops to dailyImports.at(-1) when
+                there is not — and on this book the picker opens on today, which
+                has no close for any of the 96 clients, so this list is always
+                the fallback. It also counts strategy ROWS on that ONE close,
+                while "What is running right now" below walks each account back
+                to its own last close: Gray Elm reads 4 here and 8 strategy rows
+                there, across 8 different dates. Naming the date is what lets a
+                reader tell the two apart instead of calling one of them wrong. */}
+            <span className="badge muted">
+              {distributionCloseDate
+                ? `Strategy rows on ${distributionCloseDate}`
+                : "No close on file"}
+            </span>
           </div>
           <div className="distribution-list">
             {overview.distribution.map((item) => (
@@ -8771,6 +9226,7 @@ function CamOverview({
   onSelectClient,
   onAddClientTask,
   onLogClientActivity,
+  onResolveFlag,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -8829,6 +9285,14 @@ function CamOverview({
   });
 
   const today = todayIsoDate();
+  // Exposure is frequency divided by reward:risk — a family that fires ten times
+  // a day for less than it risks carries more than one that fires twice for
+  // three times its stop.
+  const riskProfile = useMemo(
+    () => buildStrategyRiskProfile(clients, { asOfDate: today }),
+    [clients, today],
+  );
+
   const closeStats = (() => {
     const withUpload = clients.filter((c) => getClientImportByDate(c, today));
     const closed = withUpload.filter(
@@ -8865,22 +9329,22 @@ function CamOverview({
         .length,
     0,
   );
-  const criticalFlagsOpen = clients.reduce((n, c) => {
-    return (
-      n +
-      (c.dailyImports || []).reduce(
-        (m, di) =>
-          m +
-          (di.flags || []).filter(
-            (f) =>
-              f.severity === "Critical" &&
-              f.status !== "Resolved" &&
-              f.status !== "Acknowledged",
-          ).length,
-        0,
-      )
-    );
-  }, 0);
+  // One flag model for this whole screen: the tile below and the queue further
+  // down are the same object, so they cannot drift apart.
+  //
+  // This tile used to run its own reduce over every import in history and count
+  // database rows. That is not the number a CAM can act on: a problem still open
+  // on eleven closes has eleven rows in operational_flags, so the tile read
+  // Ellis Glen 134 where there are 59 distinct critical problems, and Marlow
+  // Cedar's book is 1,952 open records for 1,055 problems. Counting records as
+  // if they were problems is the 1,900-against-a-header-reading-253 defect; the
+  // queue reports `occurrences` separately so the historical copies stay
+  // visible and closable rather than being summed into the headline.
+  const flagQueue = useMemo(
+    () => buildCamFlagQueue(clients, { today }),
+    [clients, today],
+  );
+  const criticalFlagsOpen = flagQueue.totals.critical;
   const staleContactClients = clients.filter((c) => {
     const d = lastContactDaysAgo(c);
     return d === null || d >= 7;
@@ -8945,7 +9409,10 @@ function CamOverview({
           </div>
           {criticalFlagsOpen > 0 && (
             <div className="metric" style={{ textAlign: "right" }}>
-              <span>Critical flags</span>
+              {/* "problems" is load-bearing: this is distinct problems, which is
+                  what the queue below lists and what a CAM closes. The flag
+                  records behind them are counted there, not here. */}
+              <span>Critical flag problems</span>
               <strong className="negative" style={{ fontSize: 20 }}>
                 {criticalFlagsOpen}
               </strong>
@@ -9072,6 +9539,47 @@ function CamOverview({
           </div>
         </div>
       </div>
+
+      {/*
+        The queue, directly under the tile that counts it — and handed the SAME
+        `flagQueue` object the tile read, not a second build, so the two cannot
+        disagree by construction.
+
+        This is the first place in the app a CAM can actually close a flag. The
+        client Dashboard has Resolve buttons, but its handler takes only a
+        flagId and reads the client and the import off `selectedClient` /
+        `dailyImport`, so it can only close flags on the day the date picker is
+        pinned to; on this book that day (today) has no import for any of the 96
+        clients, so it returns on its first line and the button does nothing.
+        Every button below sends (clientId, importId, flagId) read off its own
+        row — firing all 149 of one CAM's Resolve buttons produces 315 write
+        calls, one per open occurrence, none of them naming a latest import.
+      */}
+      <CamFlagQueue
+        clients={clients}
+        today={today}
+        queue={flagQueue}
+        onResolveFlag={onResolveFlag}
+        onLogClientActivity={onLogClientActivity}
+        onSelectClient={onSelectClient}
+      />
+
+      <CollapsiblePanel title="Algorithm risk profile" tone="cam-charts-panel">
+        <StrategyRiskScatter rows={riskProfile} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="Book coverage and mix" tone="cam-charts-panel">
+        <div className="ov-pair">
+          <div>
+            <h4>Uploads over the last 10 trading days</h4>
+            <UploadCoverageGrid clients={clients} today={today} />
+          </div>
+          <div>
+            <h4>Accounts by type</h4>
+            <BookMixBar clients={clients} />
+          </div>
+        </div>
+      </CollapsiblePanel>
 
       <InsightFeedPanel insights={insights} onSelectClient={onSelectClient} />
 
@@ -9305,9 +9813,14 @@ function CamOverview({
             />
             <h3>Today's briefing</h3>
             <div style={{ display: "flex", gap: 8 }}>
+              {/* These count CLIENTS, not flags: buildTodayBriefing returns one
+                  entry per client and `urgency` is that client's worst thing.
+                  Worth saying out loud now that the flag queue on the same
+                  screen prints a count of flag problems. */}
               {urgencyCounts.critical ? (
                 <span className="badge danger">
-                  {urgencyCounts.critical} critical
+                  {urgencyCounts.critical} client
+                  {urgencyCounts.critical === 1 ? "" : "s"} critical
                 </span>
               ) : null}
               {urgencyCounts.warning ? (
@@ -9320,8 +9833,33 @@ function CamOverview({
                   {urgencyCounts.pending} not uploaded
                 </span>
               ) : null}
+              {/*
+                "All clear" was a claim this section cannot make. Every flag it
+                reads comes from `client.dailyImports.at(-1)` — the client's most
+                recent close and nothing else — while the queue below holds every
+                open flag on every close. On the real book that gap is the whole
+                story for two CAMs: Ellis Glen carries 149 open problems (59
+                critical) and Oakley Ash 250 (53 critical), and NOT ONE of them
+                is on a latest close, so this badge rendered "All clear"
+                directly under a header tile reading 59. It now says clear only
+                when the queue is empty too, and otherwise states exactly what
+                it did measure.
+
+                The replacement text does NOT say "older": Quinn Glen's 12 open
+                flags and Avery Birch's 4 are all ON their clients' latest
+                closes and are simply not Critical, so calling them older would
+                be a second wrong claim in place of the first.
+              */}
               {!urgencyCounts.critical && !urgencyCounts.warning ? (
-                <span className="badge success">All clear</span>
+                flagQueue.totals.rows ? (
+                  <span className="badge muted">
+                    No critical flag on any latest close ·{" "}
+                    {flagQueue.totals.rows} open flag
+                    {flagQueue.totals.rows === 1 ? "" : "s"} in the queue below
+                  </span>
+                ) : (
+                  <span className="badge success">All clear</span>
+                )
               ) : null}
             </div>
           </button>
@@ -11564,6 +12102,13 @@ export default function App() {
       },
   );
   const [session, setSession] = useState(() => {
+    // Local snapshot mode signs itself in as a Manager. There is nothing to
+    // authenticate against — app_users is dropped from the snapshot on purpose,
+    // and the data is already redacted and read-only. A login form with no
+    // backing store would just be a door with no wall around it.
+    if (isLocalSnapshotEnabled()) {
+      return { id: "local-snapshot", name: "Local snapshot", role: USER_ROLES.MANAGER };
+    }
     try {
       const raw = sessionStorage.getItem("cam_crm_session");
       return raw ? JSON.parse(raw) : null;
@@ -11574,6 +12119,44 @@ export default function App() {
   const [logoutConfirmAction, setLogoutConfirmAction] = useState(null);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [workspaceConfirmAction, setWorkspaceConfirmAction] = useState(null);
+  // CAM-scoped export: scope + range picker, and the envelope the server
+  // returned so the applied range and any truncation stay visible after the
+  // download rather than only inside the file.
+  const [clientExport, setClientExport] = useState({
+    open: false,
+    focusClientId: "",
+    busy: false,
+    error: "",
+    result: null,
+  });
+  function openClientExport(focusClientId = "") {
+    setClientExport({ open: true, focusClientId, busy: false, error: "", result: null });
+  }
+  async function runClientExport(request) {
+    setClientExport((prev) => ({ ...prev, busy: true, error: "", result: null }));
+    try {
+      const payload = await loadClientScopedExport(request);
+      const stamp = `${payload.range.from}_${payload.range.to}`;
+      const label = payload.scope.includedClientCount === 1
+        ? (payload.scope.includedClients[0]?.name || "client")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+        : `${payload.scope.includedClientCount}-clients`;
+      downloadTextFile(
+        `cam-crm-export-${label}-${stamp}.json`,
+        JSON.stringify(payload, null, 2),
+      );
+      setClientExport((prev) => ({ ...prev, busy: false, result: payload }));
+    } catch (error) {
+      console.error("[CRM] Client export failed:", error);
+      setClientExport((prev) => ({
+        ...prev,
+        busy: false,
+        error: error.message || "Could not export client data.",
+      }));
+    }
+  }
   function persistSession(user) {
     setSession(user);
     try {
@@ -11616,6 +12199,11 @@ export default function App() {
   const [platformView, setPlatformView] = useState("manager");
   // On mount: if session was restored, re-validate and restore workspace
   useEffect(() => {
+    // Local snapshot mode has its own session and no Supabase to revalidate
+    // against. Without this guard the "no Supabase, so sign out" branch below
+    // clears it on mount and the app falls back to a login form that cannot
+    // authenticate anyone.
+    if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) {
       persistSession(null);
       return;
@@ -11697,7 +12285,39 @@ export default function App() {
       });
   }
 
+  // Local snapshot mode. Read-only, and it takes precedence over Supabase so a
+  // developer with production credentials in .env cannot accidentally point a
+  // testing session at the live book.
   useEffect(() => {
+    if (!isLocalSnapshotEnabled()) return;
+    let cancelled = false;
+    loadLocalSnapshotState({
+      preferredCamProfileId: session?.camProfileId || null,
+    })
+      .then(({ state: localState, missing }) => {
+        if (cancelled) return;
+        setState(localState);
+        setRemoteStatus({
+          source: "local-snapshot",
+          status: "connected",
+          message: missing.length
+            ? `Local snapshot (read-only) - ${missing.length} table(s) absent: ${missing.join(", ")}`
+            : "Local snapshot (read-only)",
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRemoteStatus({
+          source: "local-snapshot",
+          status: "error",
+          message: error.message,
+        });
+      });
+    return () => { cancelled = true; };
+  }, [session?.camProfileId]);
+
+  useEffect(() => {
+    if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) return;
     let cancelled = false;
     beginDashboardLoad();
@@ -12125,13 +12745,67 @@ export default function App() {
           entityType: "cam_time_off",
           entityId: request.id,
           action: "cam_time_off.approve",
-          afterData: { camId: request.camProfileId, covered: assignments.length },
+          // The assignments themselves, not just how many. This used to store
+          // `covered: 3` and nothing else, so who covered whom could not be
+          // reconstructed from history — the one place it would still exist
+          // after the coverage rows expire.
+          afterData: {
+            camId: request.camProfileId,
+            covered: assignments.length,
+            startDate: request.startDate,
+            endDate: request.endDate || request.startDate,
+            assignments: assignments.map((row) => ({
+              clientId: row.clientId,
+              coveringCamId: row.coveringCamId,
+            })),
+          },
         });
         return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
       })
       .catch((error) => {
         console.error("[CRM] Failed to approve time off:", error);
         window.alert(`Could not approve: ${error.message}`);
+      });
+  }
+
+  /**
+   * Change who covers what on an already-approved request, without denying and
+   * re-approving it.
+   *
+   * Reuses replaceSupabaseCoverage — the same write the approval makes. It
+   * deletes every client_coverage row carrying this time_off_id and re-inserts
+   * the new set, so a reassignment replaces rather than accumulates; passing an
+   * empty list is how a cover is removed outright.
+   */
+  function handleEditCoverage(request, assignments = []) {
+    if (!isSupabaseConfigured) return;
+    replaceSupabaseCoverage(assignments, {
+      timeOffId: request.id,
+      absentCamId: request.camProfileId,
+      startDate: request.startDate,
+      endDate: request.endDate,
+    })
+      .then(() => {
+        auditSilently({
+          entityType: "client_coverage",
+          entityId: request.id,
+          action: "client_coverage.reassign",
+          afterData: {
+            camId: request.camProfileId,
+            covered: assignments.length,
+            startDate: request.startDate,
+            endDate: request.endDate || request.startDate,
+            assignments: assignments.map((row) => ({
+              clientId: row.clientId,
+              coveringCamId: row.coveringCamId,
+            })),
+          },
+        });
+        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
+      })
+      .catch((error) => {
+        console.error("[CRM] Failed to reassign coverage:", error);
+        window.alert(`Could not save the cover: ${error.message}`);
       });
   }
 
@@ -12148,7 +12822,25 @@ export default function App() {
   function handleEndCoverage(entry) {
     if (!isSupabaseConfigured) return;
     deleteSupabaseCoverage(entry.id)
-      .then(() => reloadSupabaseState(state.accountManager?.id, state.selectedClientId))
+      .then(() => {
+        // Ending a cover is a hard delete of the row; without this the only
+        // record that the client was ever watched by someone else disappears
+        // with it. Audited like the approval and the reassign.
+        auditSilently({
+          entityType: "client_coverage",
+          entityId: entry.id,
+          action: "client_coverage.end",
+          afterData: {
+            clientId: entry.clientId,
+            coveringCamId: entry.coveringCamId,
+            absentCamId: entry.absentCamId,
+            timeOffId: entry.timeOffId || null,
+            startDate: entry.startDate,
+            endDate: entry.endDate || entry.startDate,
+          },
+        });
+        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
+      })
       .catch((error) => {
         console.error("[CRM] Failed to end coverage:", error);
         window.alert(`Could not end the cover: ${error.message}`);
@@ -12458,6 +13150,28 @@ export default function App() {
         console.error("[CRM] Failed to save flag activity:", error),
       );
   }
+
+  // The same write, with the three ids passed in instead of read off the screen.
+  //
+  // handleResolveFlag above closes whatever flag belongs to `selectedClient` on
+  // `dailyImport`, which is fine for the client Dashboard — the row being
+  // clicked IS on that import — and useless anywhere else: on this book the
+  // date picker opens on today (2026-08-11) and the last close is 2026-07-30, so
+  // `dailyImport` is null and the handler returns before doing anything. The CAM
+  // flag queue lists flags from 51 different imports at once, so it has to name
+  // the import per row. This is modelled on the manager's onResolveFlag, which
+  // already took (clientId, importId, flagId, status); createCamFlagResolver
+  // refuses a call missing any of the three rather than silently no-opping,
+  // because a silent no-op looks exactly like a resolution that worked — the row
+  // leaves the queue and is back on the next load.
+  const resolveFlagByIds = createCamFlagResolver({
+    setState,
+    audit: auditSilently,
+    onError: (error) => {
+      console.error("[CRM] Failed to update flag from the CAM queue:", error);
+      window.alert(`Could not update flag in Supabase: ${error.message}`);
+    },
+  });
 
   function handleBulkResolveFlags(status = "Acknowledged") {
     if (!selectedClient || !dailyImport) return;
@@ -12871,6 +13585,7 @@ export default function App() {
             onApproveTimeOff={handleApproveTimeOff}
             onDenyTimeOff={handleDenyTimeOff}
             onEndCoverage={handleEndCoverage}
+            onEditCoverage={handleEditCoverage}
             onOpenCam={openCamWorkspace}
             onCreateCam={(name) => {
               createSupabaseCamProfile(name)
@@ -13109,6 +13824,20 @@ export default function App() {
                     <Users size={14} /> Team
                   </button>
                 ) : null}
+                {/* The "all my clients" ask. This block was empty for a CAM and
+                    the Data Tools panel that holds the Manager export lives
+                    inside ManagerOverview, which a CAM cannot reach at all. */}
+                <button
+                  className="ghost-button"
+                  disabled={!accessibleClients.length}
+                  title="Export sessions, accounts, flags and per-day P&L as JSON for outside analysis"
+                  onClick={() => {
+                    closeMobileSidebar();
+                    openClientExport("");
+                  }}
+                >
+                  <Download size={14} /> Export data
+                </button>
               </div>
             </div>
             {canCreateDeleteClients ? (
@@ -13623,6 +14352,7 @@ export default function App() {
                 }}
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
+                onResolveFlag={resolveFlagByIds}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
@@ -13831,6 +14561,16 @@ export default function App() {
 
                   <div className="operations-toolbar client-toolbar" aria-label="Client tools">
                     <span className="operations-toolbar-label">Tools</span>
+                      {/* The "one client over a range" ask, next to the date
+                          navigation the CAM is already using to pick days. */}
+                      <button
+                        className="ghost-button"
+                        disabled={!selectedClient}
+                        title="Export this client's sessions over a date range as JSON"
+                        onClick={() => openClientExport(selectedClient?.id || "")}
+                      >
+                        <Download size={16} /> Export data
+                      </button>
                       <button
                         className={showQuickLog ? "secondary-button" : "ghost-button"}
                         disabled={!selectedClient}
@@ -14112,16 +14852,54 @@ export default function App() {
                     aria-label={effectiveActiveTab}
                   >
                     {effectiveActiveTab === "Overview" ? (
-                      <ClientOverview
-                        client={selectedClient}
-                        dailyImport={dailyImport}
-                        allClients={state.clients || []}
-                        camName={currentCamProfile?.name || ""}
-                        onRequestMonthlyReport={(month) =>
-                          setMonthlyReportMonth(month)
-                        }
-                        onLogPayout={handleLogPayout}
-                      />
+                      <>
+                        <ClientOverview
+                          client={selectedClient}
+                          dailyImport={dailyImport}
+                          allClients={state.clients || []}
+                          camName={currentCamProfile?.name || ""}
+                          onRequestMonthlyReport={(month) =>
+                            setMonthlyReportMonth(month)
+                          }
+                          onLogPayout={handleLogPayout}
+                        />
+                        {/*
+                          "What is running" for this client, and the only place
+                          on the client workspace where the date is per account
+                          rather than per screen.
+
+                          Everything above this line is rendered from
+                          `dailyImport`, which is the ONE day the date picker is
+                          pinned to — seeded from the wall clock, and on this
+                          book today (2026-08-11) has a close for 0 of 96
+                          clients, so the whole tab reads "nothing uploaded"
+                          twelve days after the last real close. This panel
+                          never consults the clock: it walks each account back
+                          to the most recent close that account actually appears
+                          in. That matters because the closes disagree per
+                          account — 158 of 595 live accounts last reported
+                          before their own client's latest close, up to 17 days
+                          behind, and Gray Elm's 18 accounts sit on 8 different
+                          dates. Every row therefore prints its own "as of", and
+                          `asOfDate` is deliberately NOT passed: the panel takes
+                          it as an upper bound, so handing it the pinned day
+                          would re-introduce the bug it exists to fix.
+
+                          `clients` is the whole book, not this CAM's slice, so
+                          the "N days behind the desk" yardstick is measured
+                          against the desk's real latest close.
+                        */}
+                        <CollapsiblePanel
+                          title="What is running right now"
+                          tone="cam-charts-panel"
+                          defaultOpen
+                        >
+                          <LiveAccountsPanel
+                            client={selectedClient}
+                            clients={state.clients || []}
+                          />
+                        </CollapsiblePanel>
+                      </>
                     ) : null}
                     {effectiveActiveTab === "Activity" ? (
                       <ActivityLog
@@ -14206,6 +14984,7 @@ export default function App() {
                             <AccountManager
                               {...currentTabData}
                               mode={tabMode(effectiveActiveTab)}
+                              dailyImports={selectedClient?.dailyImports || []}
                               onUpdateAccount={handleAccountUpdate}
                               onAddAccount={(accountName, meta) => {
                                 if (!selectedClient || !accountName.trim())
@@ -14549,6 +15328,17 @@ export default function App() {
           action={workspaceConfirmAction}
           onCancel={() => setWorkspaceConfirmAction(null)}
           onConfirm={runWorkspaceConfirmAction}
+        />
+        <ClientExportDialog
+          open={clientExport.open}
+          onOpenChange={(open) => setClientExport((prev) => ({ ...prev, open }))}
+          clients={accessibleClients}
+          namedScopeForAll={isManagerSession}
+          focusClientId={clientExport.focusClientId}
+          busy={clientExport.busy}
+          error={clientExport.error}
+          result={clientExport.result}
+          onExport={runClientExport}
         />
         <ConfirmActionDialog
           action={logoutConfirmAction}

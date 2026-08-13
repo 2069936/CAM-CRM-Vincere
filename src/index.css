@@ -1091,6 +1091,123 @@ small {
 .confirm-dialog-footer {
   gap: 8px;
 }
+
+/* Export dialog: scope, range and the row preview shown before downloading. */
+.export-dialog {
+  max-width: min(560px, calc(100vw - 2rem)) !important;
+}
+
+.export-dialog-body {
+  display: grid;
+  gap: 14px;
+}
+
+.export-dialog-field {
+  display: grid;
+  gap: 6px;
+}
+
+.export-dialog-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.export-dialog-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.export-dialog-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 11px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.export-dialog-choices label.is-active {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.export-dialog-choices label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.export-dialog-dates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-dialog-dates input[type="date"] {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.export-dialog-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.export-dialog-toggle small {
+  display: block;
+  font-size: 11.5px;
+}
+
+.export-dialog-preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 11px;
+  font-size: 13px;
+}
+
+.export-dialog-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.export-dialog-rows b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.export-dialog-preview p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.export-dialog-warning {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--error);
+  font-size: 12.5px;
+}
+
 .link-button {
   background: none;
   border: none;
@@ -6776,6 +6893,40 @@ tr:nth-child(2) .rank-badge {
 .bb-stats { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 @media (max-width: 720px) { .bb-grid { grid-template-columns: 1fr; } }
 
+/* Bullet Bot desk statistics (BulletBotDeskPanel).
+   Long and Short get the two big cards because direction is the first question
+   asked; Unknown and Ambiguous get the same layout at lower contrast so the 64
+   accounts that hold 16 of the 37 passes stay visible without competing with the
+   comparison. Bars are --accent, never --success: the old card painted a 3.8%
+   pass rate green, which reads as "good" at a glance. */
+.bbdesk-panel { display: flex; flex-direction: column; gap: 12px; }
+.bbdesk-panel h5 { margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.bbdesk-versus { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.bbdesk-versus-secondary { opacity: 0.78; }
+.bbdesk-card { background: var(--surface-2); border-radius: 8px; padding: 12px; }
+.bbdesk-card-primary { border: 1px solid var(--line); }
+.bbdesk-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.bbdesk-rate { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.bbdesk-rate .combo-bar-track { flex: 1; }
+.bbdesk-rate-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bbdesk-facts { display: grid; grid-template-columns: 1fr; gap: 2px; margin: 0; font-size: 12px; }
+.bbdesk-facts > div { display: flex; justify-content: space-between; gap: 10px; }
+.bbdesk-facts dt { color: var(--muted); }
+.bbdesk-facts dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.bbdesk-note { font-size: 11px; margin: 8px 0 0; }
+.bbdesk-ranks { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; align-items: start; }
+.bbdesk-rank h5 { margin-bottom: 4px; }
+.bbdesk-streaks { display: flex; gap: 24px; }
+.bbdesk-streak { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.bbdesk-streak dt { color: var(--muted); }
+.bbdesk-streak dd { margin: 0; font-size: 18px; }
+.bbdesk-days-head { display: flex; align-items: baseline; gap: 10px; font-size: 12px; margin-bottom: 6px; }
+.bbdesk-hist { display: flex; flex-direction: column; gap: 3px; }
+.bbdesk-hist-row { display: grid; grid-template-columns: 34px 1fr 24px; gap: 8px; align-items: center; font-size: 11px; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .bbdesk-versus, .bbdesk-ranks { grid-template-columns: 1fr; }
+}
+
 /* Stack Playbook - consistency strip (Q5) */
 .ahc-consistency { display: flex; flex-wrap: wrap; gap: 3px; }
 .ahc-cell { width: 12px; height: 12px; border-radius: 3px; }
@@ -6997,6 +7148,95 @@ tr:nth-child(2) .rank-badge {
   .report-design-drawer { display: none !important; }
 }
 
+/* "What shaped this close" — the reasons section. */
+.report-reasons-lead {
+  margin: 2px 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.report-reasons-list { margin: 0; padding: 0; list-style: none; }
+.report-reason {
+  border-left: 3px solid var(--line);
+  padding: 6px 0 6px 12px;
+  margin: 0 0 10px;
+}
+.report-reason-orders-rejected,
+.report-reason-account-stopped { border-left-color: var(--error); }
+.report-reason-strategies-all-off,
+.report-reason-accounts-absent,
+.report-reason-nothing-collected { border-left-color: var(--warning, #d08700); }
+.report-reason-headline { margin: 0; font-size: 13px; font-weight: 600; }
+.report-reason-detail {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.report-reason-quote {
+  margin: 5px 0 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.report-reason-quote-label { color: var(--text-muted); }
+.report-reasons-unstated {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.report-reasons-unstated h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.report-reasons-unstated ul { margin: 0; padding-left: 18px; }
+.report-reasons-unstated li { font-size: 12px; color: var(--text-muted); margin: 2px 0; }
+
+/* The CAM's note: an editor on screen, plain text in the PDF. */
+.report-note-editor { display: flex; flex-direction: column; gap: 8px; }
+.report-note-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.report-note-input {
+  width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.report-note-warning {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
+}
+/*
+  The printed copy. Hidden on screen (the textarea above is the screen view) and
+  the only thing that reaches the PDF, because a <textarea> prints its own border
+  and clips to its scroll height. `pre-wrap` keeps the CAM's line breaks.
+*/
+.report-note-print { display: none; }
+@media print {
+  .report-note-print {
+    display: block;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  /*
+    No note written means no heading in the client's PDF. `.no-print` on the
+    editor already removes the controls; without this the client would get an
+    empty "Note from your account manager" block on every report nobody wrote on.
+  */
+  .report-note-section:not(.has-note) { display: none !important; }
+}
+
 /* Draggable client rows in the sidebar. */
 .client-link[draggable="true"] { cursor: grab; }
 .client-link-dragging { opacity: 0.5; }
@@ -7050,8 +7290,76 @@ tr:nth-child(2) .rank-badge {
   gap: 10px;
   margin-bottom: 6px;
 }
-.timeoff-cover-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.timeoff-cover-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 .timeoff-subhead { margin: 16px 0 6px; font-size: 13px; }
+
+/* The committed distribution for an approved request. Open by default: it is
+   the confirmation that the approval did anything, so hiding it behind a click
+   recreates the problem it exists to fix. */
+.timeoff-approved {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.timeoff-approved > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.timeoff-approved > summary::-webkit-details-marker { display: none; }
+.timeoff-approved > summary::before {
+  content: "▾";
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.timeoff-approved:not([open]) > summary::before { content: "▸"; }
+
+/* base → after, per CAM, in clients and accounts. */
+.coverage-load-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+.coverage-load-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  /* --surface, not --surface-1: nothing in this file ever defined --surface-1,
+     so the chip rendered with no background at all against .timeoff-approved's
+     --surface-2 panel. */
+  background: var(--surface);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.coverage-load-chip.is-loaded { border-color: var(--accent, var(--line)); }
+.coverage-load-chip.is-blocked { opacity: 0.6; }
+.coverage-load-figure { color: var(--text-muted); }
+.coverage-load-chip.is-loaded .coverage-load-figure:not(.muted) { color: inherit; font-weight: 600; }
+
+.coverage-blocked {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--danger, #c0392b);
+}
+.coverage-refusal { margin: 8px 0; font-size: 12px; }
 .timeoff-form {
   display: flex;
   gap: 10px;
@@ -7104,3 +7412,386 @@ tr:nth-child(2) .rank-badge {
   margin-bottom: 5px;
 }
 .chart-empty { font-size: 12px; margin: 6px 0; }
+
+/* Overview charts. Bars are CSS, not SVG: they wrap and reflow with the panel,
+   and every one of them is a single proportion — a viewBox would buy nothing. */
+.ov-chart { display: flex; flex-direction: column; gap: 7px; }
+.ov-row { display: grid; grid-template-columns: 130px 1fr 92px; gap: 10px; align-items: center; }
+.ov-label {
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ov-track {
+  position: relative; display: flex; height: 14px; border-radius: 7px; overflow: hidden;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.14));
+}
+.ov-track.diverging::before {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+  background: var(--border); z-index: 1;
+}
+.ov-fill { height: 100%; border-radius: 7px; min-width: 2px; }
+.ov-seg { height: 100%; }
+.ov-seg + .ov-seg { border-left: 2px solid var(--surface, #fff); }
+.ov-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.ov-value.critical, .ov-value.negative { color: var(--error); }
+.ov-value.warning { color: var(--warning); }
+.ov-value em { font-style: normal; opacity: 0.7; }
+.ov-cells { display: flex; gap: 3px; }
+.ov-cell { width: 12px; height: 14px; border-radius: 3px; display: block; }
+.ov-cell.on { background: var(--success); }
+.ov-cell.off { background: var(--error); opacity: 0.35; }
+.ov-legend {
+  display: flex; flex-wrap: wrap; gap: 12px; list-style: none;
+  padding: 0; margin: 4px 0 8px; font-size: 11px; color: var(--muted);
+}
+.ov-legend li { display: flex; align-items: center; gap: 5px; }
+.ov-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.ov-away { margin-left: 6px; font-size: 10px; }
+.seg-0, .ov-dot.seg-0 { background: #2a78d6; }
+.seg-1, .ov-dot.seg-1 { background: #1baf7a; }
+.seg-2, .ov-dot.seg-2 { background: #eda100; }
+.seg-3, .ov-dot.seg-3 { background: #eb6834; }
+.seg-4, .ov-dot.seg-4 { background: #4a3aa7; }
+.age-0, .ov-dot.age-0 { background: #1baf7a; }
+.age-1, .ov-dot.age-1 { background: #eda100; }
+.age-2, .ov-dot.age-2 { background: #eb6834; }
+.age-3, .ov-dot.age-3 { background: #e34948; }
+.ov-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; }
+.ov-pair h4 { margin: 0 0 8px; font-size: 13px; }
+
+/* Plan picker. The fallback note is amber, not red: an unnamed plan is a gap to
+   close, not a fault — the account is running on the tightest rule meanwhile. */
+.plan-picker { display: flex; flex-direction: column; gap: 2px; min-width: 128px; }
+.plan-picker select { width: 100%; }
+.plan-picker small { font-size: 10px; line-height: 1.3; }
+.plan-fallback { color: var(--warning); }
+
+/* Breakdown under the headline P&L tile. Excluded rows are struck through and
+   dimmed: present so the data problem is visible, clearly not part of the sum. */
+.segment-breakdown { margin-top: 8px; font-size: 11px; }
+.segment-split {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin-bottom: 6px; font-size: 12px;
+}
+.segment-split > span { display: flex; flex-direction: column; }
+/* The 22px comes from .metric strong, which this sits inside. Inheriting it
+   clipped the second column: 105px of text in a 105px cell. */
+.segment-split strong { white-space: nowrap; font-size: 13px; font-weight: 600; }
+.segment-split > span > span:first-child { color: var(--muted); font-size: 10px; }
+.segment-split em { font-style: normal; color: var(--muted); }
+.segment-list { list-style: none; margin: 0; padding: 0; }
+.segment-list li {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 24px; gap: 6px;
+  padding: 1px 0; color: var(--muted); white-space: nowrap;
+}
+.segment-list li > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.segment-list li span:nth-child(2) { font-variant-numeric: tabular-nums; }
+.segment-list em { font-style: normal; text-align: right; opacity: 0.65; }
+.segment-excluded { opacity: 0.45; text-decoration: line-through; }
+
+/* A segment row that opens its capital detail.
+   The li hands its grid over to the button so the row keeps reading as three
+   aligned columns — label, P&L, account count — with one 11px chevron column
+   in front. The chevron is the whole reason this is legible as a control at
+   11px: a hover tint alone is invisible until the pointer is already on it,
+   and this list sits inside a 160px-wide metric tile where there is no room
+   for the word "open". */
+.segment-list li.segment-clickable { display: block; padding: 0; }
+.segment-list .segment-row {
+  display: grid; grid-template-columns: 11px minmax(0, 1fr) auto 24px; gap: 6px;
+  align-items: center; width: 100%; padding: 1px 3px 1px 0;
+  background: none; border: 0; border-radius: 4px;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.segment-list .segment-row .chevron { margin-right: 0; vertical-align: 0; }
+.segment-list .segment-row > span:nth-of-type(1) { overflow: hidden; text-overflow: ellipsis; }
+.segment-list .segment-row > span:nth-of-type(2) { font-variant-numeric: tabular-nums; }
+.segment-list .segment-row:hover { background: rgba(var(--info-rgb), 0.1); color: var(--text); }
+.segment-list .segment-row.open { background: rgba(var(--info-rgb), 0.16); color: var(--text); }
+.segment-list .segment-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The panel the tiles open. Full width under the metric grid, because the tile
+   it belongs to is one cell of a repeat(4, minmax(160px, 1fr)) grid and this
+   panel carries four tables. */
+.capital-detail-panel { padding: 14px; margin-bottom: 14px; }
+.capital-detail-panel .panel-heading h3 { margin: 0; }
+
+/* Configuration review. Reads as a question, not an alarm: amber for the count,
+   never red, because a minority configuration is often deliberate.
+
+   Everything below .drift-head used to be one undifferentiated 11px grey block:
+   the cohort line and every finding line were the same size, the same colour and
+   — .drift-outliers had padding 0 and the li no padding — the same left edge, so
+   there was no nesting on screen at all. The panel mounts inside .ov-pair, whose
+   auto-fit minmax(320px, 1fr) can hand it a 320px column, and a single chip
+   reading `CloseAllOpenTradeTime 1/1/2020 4:45:00 PM → 1/1/2020 4:30:00 PM` is
+   63 characters. Every wide element here scrolls inside its own box instead. */
+.drift-panel { display: flex; flex-direction: column; gap: 14px; }
+.drift-intro { font-size: 12px; margin: 0; }
+.drift-ask {
+  font-size: 11px; color: var(--muted); margin: -8px 0 0; line-height: 1.45;
+}
+.drift-recurring {
+  font-size: 11px; line-height: 1.5; margin: 0; padding: 7px 9px;
+  border-radius: 6px; border-left: 2px solid var(--warning);
+  background: var(--surface-alt, rgba(127, 127, 127, 0.1));
+}
+.drift-row { border-left: 2px solid var(--border); padding-left: 10px; }
+.drift-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.drift-count { margin-left: auto; color: var(--warning); font-size: 12px; white-space: nowrap; }
+.drift-majority {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 11px; margin: 3px 0 0;
+}
+.drift-panel code {
+  font-size: 11px; padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.12));
+}
+
+/* The findings. Indented and rule-marked so the eye can tell a group from the
+   cohort line above it, which flat 11px grey never allowed. */
+.drift-groups { list-style: none; margin: 6px 0 0; padding: 0 0 0 10px; border-left: 1px solid var(--border); }
+.drift-group + .drift-group { margin-top: 2px; }
+.drift-group > details { border-radius: 5px; }
+.drift-group > details[open] { background: var(--surface-alt, rgba(127, 127, 127, 0.07)); }
+/* The triangle is drawn, not inherited: `display: flex` on a <summary> removes
+   the native disclosure marker in Chrome and Safari, and with 267 of 267
+   findings living behind these rows, an expander with no affordance would be
+   the previous panel's inert "+N more" all over again. */
+.drift-group summary {
+  display: flex; align-items: flex-start; gap: 6px; list-style: none;
+  padding: 4px 6px 4px 4px; cursor: pointer; border-radius: 5px;
+}
+.drift-group summary::-webkit-details-marker { display: none; }
+.drift-group summary::before {
+  content: "▸"; color: var(--muted); font-size: 10px; line-height: 1.6;
+  flex: 0 0 auto; transition: transform 0.12s ease;
+}
+.drift-group details[open] > summary::before { transform: rotate(90deg); }
+.drift-summary-body {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto;
+}
+.drift-group summary:hover { background: var(--surface-alt, rgba(127, 127, 127, 0.12)); }
+.drift-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+/* The only number in the old panel was the row-level amber count. outlier.count
+   was computed and never rendered, so a 9-account 15-minute close-time
+   difference and a 1-account 22-parameter one looked identical. */
+.drift-group-count { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.drift-same, .drift-more { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.drift-headline { font-size: 12px; line-height: 1.4; }
+/* A build difference is a second fact, not a competing headline: IFSP-PF NG
+   SEP26's top-ranked value change is a stop of 33 against 30, while the thing
+   worth reading is that the account's build carries Martingale fields the
+   cohort's has not. */
+.drift-build { font-size: 11px; line-height: 1.4; color: var(--muted); }
+.drift-who { font-size: 10px; }
+
+.drift-detail { padding: 2px 6px 8px; }
+.drift-table-wrap { overflow-x: auto; }
+.drift-table { border-collapse: collapse; font-size: 11px; width: 100%; }
+/* Column headers, not an arrow. `from` is the cohort and `to` is this account,
+   and no arrow could carry that: CloseAllOpenTradeTime runs 16:45 -> 16:30 on
+   URGO and 15:45 -> 16:30 on ARPD, EdgeLeverage runs False -> True on OGX and
+   True -> False on RBO, so neither "the right side is later" nor "the right side
+   is riskier" was learnable from a screenful. */
+.drift-table th, .drift-table td {
+  text-align: left; padding: 3px 8px 3px 0; vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.drift-table thead th {
+  font-size: 10px; color: var(--muted); font-weight: 600; white-space: nowrap;
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.drift-table thead th em {
+  display: block; font-style: normal; font-weight: 400; text-transform: none;
+  letter-spacing: 0; opacity: 0.75;
+}
+.drift-table tbody th { font-weight: 400; white-space: nowrap; }
+.drift-table tbody th em {
+  font-style: normal; color: var(--muted); font-size: 10px; margin-left: 4px;
+}
+.drift-table td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.drift-here { font-weight: 600; }
+/* "absent" read as "someone deleted this setting". 94 of 267 changes on the real
+   book are one side missing, and every one of them is a build that does not
+   carry the parameter — both sides reported the same version string. */
+.drift-absent { color: var(--muted); font-style: italic; font-weight: 400; }
+
+/* Account numbers grouped under their client. A CAM works client-by-client:
+   15 of 29 groups on the book belong to one client, and Harper Juniper appears
+   in 7 of the 10 rows. Full numbers, never truncated — they are what the CAM
+   copies when they go to fix something. */
+.drift-accounts { list-style: none; margin: 7px 0 0; padding: 0; font-size: 11px; }
+.drift-accounts li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 1px 0;
+}
+.drift-accounts strong { font-weight: 600; }
+.drift-account-numbers {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+  color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.drift-rest > summary {
+  font-size: 11px; color: var(--muted); cursor: pointer; line-height: 1.45;
+}
+.drift-rest-body { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+
+/* Observed references — the families the library does not hold, checked against
+   themselves.
+
+   Everything here is dashed and boxed, and the word "observed" is repeated on
+   the section, on every cohort head and on the reference table's own summary.
+   That is not decoration. Every row above this box is an account measured
+   against a file the desk WROTE; every row inside it is an account measured
+   against what its neighbours HAPPEN to do, and the second kind fails silently —
+   a cohort that all moved together produces a reference that moved with it and a
+   section that reports agreement. A reader who cannot tell the two apart at a
+   glance has been handed the authority of the first for the price of the second.
+
+   Solid borders and the amber accent are the catalogued sections' language, so
+   this one gets neither: dashed rule, info-coloured badge, and the section's
+   caveat is a full paragraph rather than a title attribute — 47 rows of this
+   book land here today and a tooltip nobody hovers is not a caveat. */
+.drift-observed {
+  display: flex; flex-direction: column; gap: 12px;
+  border: 1px dashed var(--border); border-radius: 6px; padding: 11px 12px;
+}
+.drift-observed-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.drift-observed-warn {
+  font-size: 11px; line-height: 1.5; margin: 0; padding: 7px 9px;
+  border-radius: 6px; border-left: 2px dashed var(--info);
+  background: var(--surface-alt, rgba(127, 127, 127, 0.1));
+}
+.drift-observed-row { border-left-style: dashed; }
+.drift-observed-fact { font-size: 11px; line-height: 1.45; margin: 4px 0 0; color: var(--muted); }
+/* A cohort with no norm is a finding with its own box, not an empty section.
+   Dashed left rule like everything here, and never the amber of a to-verify
+   count: "we could not establish a reference" is not a list of accounts. */
+.drift-observed-none { border-left: 2px dashed var(--muted); }
+.badge.observed {
+  color: var(--info); background: transparent;
+  border: 1px dashed var(--info-border);
+}
+
+/* Capital detail. The caveats are not decoration here: on the real book one
+   capital movement is nameable across 36 days and 584 accounts, held capital is
+   summed over 13 different as-of dates, and no account in view carries a
+   recorded payout. Every figure therefore ships with the account count it rests
+   on (.capital-rests) and, where it is a derivation rather than a record, the
+   reason sits directly under it (.capital-caveat) — never in a footnote a
+   reader can scroll past.
+
+   Mounts full width under the manager metric grid, but every table still
+   scrolls inside its own box: the same panel has to survive a 320px column if
+   it is ever dropped into .ov-pair, and the close-by-close and largest-accounts
+   tables are wider than a phone either way. */
+.capital-panel { display: flex; flex-direction: column; gap: 16px; font-size: 12px; }
+.capital-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.capital-head h4 { margin: 0; font-size: 14px; }
+.capital-head .muted { font-size: 11px; }
+.capital-section { display: flex; flex-direction: column; gap: 8px; }
+.capital-section h5 {
+  margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); font-weight: 600;
+}
+.capital-note { font-size: 11px; line-height: 1.5; margin: 0; }
+.capital-note code {
+  font-size: 10px; padding: 1px 4px; border-radius: 4px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.12));
+}
+
+/* One figure per cell, and the cell is a column so the account count can never
+   be separated from the number it qualifies. */
+.capital-figures {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px;
+}
+.capital-figure { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.capital-figure-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.capital-figure-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.capital-rests { font-size: 10px; color: var(--muted); }
+.capital-caveat {
+  font-size: 10px; line-height: 1.45; margin-top: 3px; padding-left: 6px;
+  border-left: 2px solid var(--border); color: var(--muted);
+}
+.capital-negative { color: var(--error); }
+.capital-positive { color: var(--success); }
+.capital-warn { color: var(--warning); }
+/* Derived, not recorded. Dotted rather than coloured: the number is trustworthy
+   arithmetic, it simply is not a transaction anybody wrote down. */
+.capital-derived { border-bottom: 1px dotted var(--muted); cursor: help; font-weight: 600; }
+
+.capital-staleness {
+  list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px;
+  margin: 0; padding: 0; font-size: 10px; color: var(--muted);
+}
+.capital-staleness em { font-style: normal; font-weight: 700; color: var(--text, inherit); }
+.capital-staleness .capital-warn em { color: var(--warning); }
+
+.capital-bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.capital-bars li { display: grid; grid-template-columns: 110px 1fr 150px; gap: 8px; align-items: center; }
+.capital-bar-label { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capital-bar-track {
+  height: 10px; border-radius: 5px; overflow: hidden;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.14));
+}
+.capital-bar-fill { display: block; height: 100%; border-radius: 5px; background: var(--info, #2a78d6); }
+.capital-bar-value { font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+.capital-bar-value em { font-style: normal; color: var(--muted); font-size: 10px; }
+
+.capital-found, .capital-unexplained {
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: 11px; line-height: 1.5; padding: 8px 10px; border-radius: 6px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.1));
+}
+/* Amber, not red. An unexplained movement is a question for a manager, not a
+   fault — and the panel must never look like it has decided what happened. */
+.capital-unexplained { border-left: 2px solid var(--warning); }
+.capital-found { border-left: 2px solid var(--info, #2a78d6); }
+.capital-events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.capital-events li { display: flex; flex-direction: column; gap: 2px; font-size: 11px; line-height: 1.5; }
+.capital-events .muted { font-size: 10px; }
+.capital-event-date { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.capital-events code, .capital-table code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+  padding: 1px 4px; border-radius: 4px; background: var(--surface-alt, rgba(127, 127, 127, 0.12));
+  overflow-wrap: anywhere;
+}
+
+.capital-coverage { font-size: 10px; line-height: 1.5; color: var(--muted); margin: 0; }
+.capital-coverage span[title] { border-bottom: 1px dotted var(--border); cursor: help; }
+
+.capital-table-wrap { overflow-x: auto; }
+.capital-table { border-collapse: collapse; font-size: 11px; width: 100%; }
+.capital-table th, .capital-table td {
+  text-align: left; padding: 3px 8px 3px 0; vertical-align: top;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.capital-table thead th {
+  font-size: 10px; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.capital-table thead th em {
+  display: block; font-style: normal; font-weight: 400; text-transform: none;
+  letter-spacing: 0; opacity: 0.75;
+}
+.capital-table tbody th { font-weight: 400; }
+.capital-table tbody th em {
+  display: block; font-style: normal; color: var(--muted); font-size: 10px;
+}
+.capital-table td { font-variant-numeric: tabular-nums; }
+.capital-table td em { font-style: normal; color: var(--muted); font-size: 10px; }
+/* A close nothing reconciled on is struck through rather than hidden: the row is
+   the evidence that the import, not the desk, is what changed that day. */
+.capital-distrusted { opacity: 0.5; text-decoration: line-through; }
+
+.capital-rest > summary { font-size: 11px; color: var(--muted); cursor: pointer; line-height: 1.45; }
+.capital-rest[open] > summary { margin-bottom: 8px; }
+.capital-declined > summary { color: var(--warning); }
+
+.capital-chart { display: flex; flex-direction: column; gap: 3px; }
+.capital-chart svg { width: 100%; height: 64px; display: block; }
+.capital-line { fill: none; stroke: var(--info, #2a78d6); stroke-width: 1.5; }
+.capital-zero { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+.capital-chart-ends {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.capital-chart-ends span:nth-child(2) { font-size: 12px; font-weight: 600; }

@@ -66,8 +66,16 @@ describe('persistDailyImportWithClient', () => {
       sourceBatchId: 'batch-1',
     });
     expect(result).toEqual({ id: 'daily-atomic' });
+    // The atomic RPC reads snapshots/strategies/orders/executions in SQL and
+    // knows nothing about the simulation container, so the whole close is
+    // flattened before it is handed over. Without this, automatically collected
+    // clients would keep losing their simulated rows entirely.
     expect(persistDailyImportAtomic).toHaveBeenCalledWith({
-      clientUuid: 'client-uuid', importResult: { date: '2026-07-23' }, sourceBatchId: 'batch-1',
+      clientUuid: 'client-uuid',
+      importResult: {
+        date: '2026-07-23', snapshots: [], strategies: [], orders: [], executions: [],
+      },
+      sourceBatchId: 'batch-1',
     });
   });
   it('rejects a missing import date before accessing the adapter', async () => {

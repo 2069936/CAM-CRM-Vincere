@@ -6,6 +6,7 @@
 // on so a CAM can see what to enable.
 
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType, isPropAccountType } from './reconcile';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
 
 function accountMetaFor(client, dailyImport, accountName) {
   const lower = String(accountName || '').toLowerCase();
@@ -43,8 +44,15 @@ export function buildClientSegments(client, dailyImport) {
     evalStandard: empty(),
     bulletBot: empty(),
     other: empty(),
+    // NOT money. These two are fed from dailyImport.simulation, never from
+    // dailyImport.snapshots, and nothing in this file ever adds them to another
+    // bucket — unlike cashIra/cashStraight, which deliberately roll into `cash`.
+    simulation: empty(),
+    undetermined: empty(),
   };
 
+  // Live closes first. `dailyImport.snapshots` carries live money only: both
+  // reconcile.js and buildCrmStateFromTables split before this is ever read.
   for (const snapshot of dailyImport?.snapshots || []) {
     const meta = accountMetaFor(client, dailyImport, snapshot.accountName);
     const key = segmentKey(meta.accountType);
@@ -73,6 +81,44 @@ export function buildClientSegments(client, dailyImport) {
       trailing,
       connection: snapshot.connection || '',
     });
+    }
+  }
+
+  // Then the closes that are not money, into buckets of their own. Each row
+  // carries its nature and the reason it was given, so a UI can print
+  // "simulated because the account is named Sim101" rather than a bare figure.
+  const notMoney = [
+    [segments.simulation, dailyImport?.simulation?.snapshots || [], ACCOUNT_NATURES.SIMULATION],
+    [segments.undetermined, dailyImport?.simulation?.undetermined?.snapshots || [], ACCOUNT_NATURES.UNDETERMINED],
+  ];
+  for (const [bucket, snapshots, nature] of notMoney) {
+    for (const snapshot of snapshots) {
+      const meta = accountMetaFor(client, dailyImport, snapshot.accountName);
+      const balance = Number(snapshot.accountBalance) || 0;
+      const dailyPnl = Number(snapshot.grossRealizedPnl) || 0;
+      const weeklyPnl = Number(snapshot.weeklyPnl) || 0;
+      const classification = classifyAccountNature(meta, { accountName: snapshot.accountName });
+      bucket.balance += balance;
+      bucket.dailyPnl += dailyPnl;
+      bucket.weeklyPnl += weeklyPnl;
+      bucket.count += 1;
+      bucket.accounts.push({
+        accountName: snapshot.accountName,
+        alias: meta.alias || snapshot.accountName,
+        accountType: meta.accountType || '',
+        balance,
+        dailyPnl,
+        weeklyPnl,
+        // A simulator has no prop-firm trailing rule behind it — every real
+        // Sim101 reports trailingMaxDrawdown = 0 on a six-figure balance — so
+        // the field is null here rather than a 0 that reads as "no buffer left".
+        trailing: null,
+        connection: snapshot.connection || '',
+        nature,
+        natureReason: classification.reason,
+        natureSource: classification.source,
+        heuristic: classification.heuristic,
+      });
     }
   }
 
@@ -107,10 +153,19 @@ export const CLIENT_KINDS = { CASH: 'cash', PROP: 'prop', MIXED: 'mixed', NONE: 
 export function clientAccountMix(client) {
   let cash = 0;
   let prop = 0;
-  for (const meta of Object.values(client?.accountRegistry || {})) {
+  // Counted, never mixed into cash or prop. A client running a SIM test is doing
+  // something the CAM has to report on — 1 of the 11 clients in the real exports
+  // was mid-engagement on 2026-08-06 — but a simulator is neither a cash pool nor
+  // a prop-firm contract, so it cannot change `kind`.
+  let simulation = 0;
+  let undetermined = 0;
+  for (const [accountName, meta] of Object.entries(client?.accountRegistry || {})) {
     if (!meta) continue;
     // Dead accounts do not define how a client is managed today.
     if (meta.status === ACCOUNT_STATUSES.INACTIVE || meta.status === ACCOUNT_STATUSES.FAILED) continue;
+    const nature = classifyAccountNature(meta, { accountName }).nature;
+    if (nature === ACCOUNT_NATURES.SIMULATION) { simulation += 1; continue; }
+    if (nature === ACCOUNT_NATURES.UNDETERMINED) { undetermined += 1; continue; }
     if (isCashType(meta.accountType)) cash += 1;
     else if (isPropAccountType(meta.accountType)) prop += 1;
   }
@@ -124,6 +179,9 @@ export function clientAccountMix(client) {
   return {
     cash,
     prop,
+    simulation,
+    undetermined,
+    hasSimulation: simulation > 0,
     kind,
     isCash: kind === CLIENT_KINDS.CASH || kind === CLIENT_KINDS.MIXED,
     label:

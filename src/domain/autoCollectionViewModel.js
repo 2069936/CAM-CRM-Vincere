@@ -1,10 +1,19 @@
 const OFFLINE_AFTER_MS = 5 * 60 * 1000;
 
 const STATE_COPY = Object.freeze({
-  unavailable: { label: 'Installer unavailable', tone: 'muted', detail: 'The Windows release has not been published yet.' },
-  not_installed: { label: 'Not installed', tone: 'muted', detail: 'Start by downloading the Windows installer on this client\'s VPS.' },
-  awaiting_pair: { label: 'Waiting for VPS', tone: 'info', detail: 'Enter the one-time code in the installer before it expires.' },
-  paired: { label: 'Paired', tone: 'info', detail: 'The VPS is linked. Open NinjaTrader to complete the first connection test.' },
+  // These headline the card, so they have to agree with the steps below them.
+  // "The Windows release has not been published yet" described an approval that
+  // does not exist; the real condition is two unset environment variables
+  // (collectorRelease.js:135), and it is desk-wide, not client-specific.
+  unavailable: { label: 'Installer unavailable', tone: 'muted', detail: 'No agent package is configured for the desk yet.' },
+  // Not "downloading the Windows installer": the documented path is pasting one
+  // PowerShell line, and the download link is the fallback.
+  not_installed: { label: 'Not installed', tone: 'muted', detail: 'Run the PowerShell line from step 1 on this client\'s VPS.' },
+  awaiting_pair: { label: 'Waiting for VPS', tone: 'info', detail: 'Paste the one-time code into the Setup window before it expires.' },
+  // "Open NinjaTrader" understates it: the AddOn is only picked up on a restart,
+  // which is why the Setup window says close it completely first
+  // (MainWindow.xaml:180).
+  paired: { label: 'Paired', tone: 'info', detail: 'The VPS is linked. Restart NinjaTrader there, then run the test.' },
   online: { label: 'Connected', tone: 'success', detail: 'The VPS and CRM connection are healthy.' },
   offline: { label: 'Offline', tone: 'warning', detail: 'The VPS has not checked in recently. Confirm it is running and connected.' },
   failed: { label: 'Needs attention', tone: 'danger', detail: 'The collector reported a problem. Check NinjaTrader and retry the connection test.' },

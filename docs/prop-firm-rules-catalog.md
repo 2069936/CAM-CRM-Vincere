@@ -1,81 +1,81 @@
-# Prop firm rules catalog — design note
+# Prop firm rules catalog
 
-Not built. Recorded so the reasoning is not lost, and so whoever picks it up
-knows what it has to solve and what it would replace.
+The limits that decide whether an account lives or dies — trailing drawdown,
+profit target — are firm rules. NinjaTrader reports how far down an account is;
+it has no idea how far down it is allowed to go. The auto-export will not fill
+these in, however many columns it brings.
 
-## The problem
+On the book as of 2026-07-31, `max_drawdown_limit` was set on **7 of 764**
+accounts. Everything that reads it — the drawdown flags, the trailing chart —
+was running on nothing.
 
-A prop firm today is whatever string NinjaTrader put in the connection column.
-There is no list of recognised firms and no record of their rules, so:
+## Why this is a short list, not a research project
 
-**The same firm counts as several.** The Operations insight feed shows both
-`Blusky - 4077` and `BlueSky - 0193`. The client lifecycle groups funded accounts
-by that raw string (`clientLifecycle.js`, `propFirms` keyed by
-`meta.connection`), so one firm is reported as two.
+Firm and account size are both derivable from data already stored:
 
-**Account rules live in people's heads.** Start balance, profit target, drawdown
-limit and payout rules are typed in per account. `accountTargets.js` hardcodes
-one set of assumptions (50k→54,100, 100k→107,300, 150k→159,000, Bullet Bot
-50k→53,000) that happens to match some firms and silently does not match others.
+- **Firm** from `connection`, folded across spellings. The book held Legends
+  under four spellings and Bluesky under five.
+- **Size** from the earliest balance on record, snapped to a standard size.
+  This resolves 667 of 721 accounts, against 211 that have `start_balance` set.
 
-**Trailing drawdown cannot be computed exactly.** `derivedAccountMetrics.js`
-reconstructs it from stored closes, but only as a lower bound, because it does
-not know whether a firm trails from the intraday high or from the daily close. It
-compensates by widening the alert thresholds — correct, but a workaround for a
-missing fact rather than an answer.
+That leaves 563 prop accounts resolved to a firm and a size, across these pairs:
 
-## What the catalog would hold
+| Rule key | Accounts | Cumulative | Trailing drawdown | Profit target | Basis |
+|---|---:|---:|---|---|---|
+| `Legends\|50000` | 226 | 40% | | | |
+| `Bluesky\|50000` | 122 | 62% | | | |
+| `Lucid\|50000` | 71 | 74% | | | |
+| `Lucid\|150000` | 34 | 80% | | | |
+| `MFF\|50000` | 24 | 85% | | | |
+| `Apex\|50000` | 17 | 88% | | | |
+| `Tradeify\|50000` | 15 | 90% | | | |
+| `Tradeify\|100000` | 11 | 92% | | | |
+| `Bulenox\|50000` | 7 | 94% | | | |
+| `Tradeify\|150000` | 6 | 95% | | | |
+| `TOF\|100000` | 6 | 96% | | | |
 
-Per firm: the names it appears under, and per account type, the rules.
+**The first six rows cover 88% of the book.**
 
+## Filling it
+
+Add to `PROP_FIRM_RULES` in `src/domain/propFirmRules.js`:
+
+```js
+export const PROP_FIRM_RULES = {
+  'Legends|50000': { trailingDrawdown: 2500, profitTarget: 3000, basis: 'end-of-day' },
+};
 ```
-BlueSky
-  aliases: BlueSky, Blusky, BSKELAUNCH*
-  account types:
-    Evaluation 50k
-      startBalance: 50,000
-      target: 54,100
-      trailing: from peak, 2,000
-      trailingBasis: intraday | end-of-day        <- the unknown
-      trailingStopsAtBreakeven: yes | no
-      dailyLossLimit: ...
-    Funded 50k
-      ...
-```
 
-`trailingBasis` is the field that matters most. With it, the drawdown becomes an
-exact figure instead of a lower bound, or the catalog states plainly that this
-firm cannot be reconstructed from daily closes — which is also a real answer,
-better than a number nobody should trust.
+Record the source — the firm's published rules page, dated — beside each row
+here. A limit nobody can trace is a limit nobody should trade against.
 
-## What it would replace
+### basis
 
-- `accountTargets.js` — its hardcoded bands become one firm's entry.
-- The manual start-balance and target entry per account, once the firm and size
-  are known.
-- The widened thresholds in `derivedAccountMetrics.js`, wherever a firm's basis
-  is known to be end-of-day.
+`intraday` or `end-of-day`. The two give different answers on the same account:
+an intraday trail follows the peak equity touched during the session, an
+end-of-day trail only moves on the close.
 
-## Why it is worth waiting for the local capture test
+We do not yet know which each firm uses. The NinjaTrader capture was set up to
+answer this — compare a firm-reported trailing figure against the peak we
+derive from stored closes — but it needs a capture taken during market hours
+with the Trailing column enabled in the Accounts grid.
 
-`collector/docs/local-capture-test.md` produces a snapshot with the trailing
-figure the Accounts grid reports. Comparing that against
-`deriveTrailingDrawdown` for the same account and day answers the
-`trailingBasis` question by measurement:
+Leave `basis` unset until it is confirmed. It is recorded per rule rather than
+per firm because firms have been known to differ by account size.
 
-- The two agree → that firm trails on the daily close, and the derivation is
-  exact for it.
-- The reported figure is consistently larger → it trails intraday, and daily
-  closes can only ever under-report it.
+## What stays unresolved
 
-That is the first catalog entry established from evidence rather than assumption.
-Writing the catalog first would mean guessing at the field that the whole thing
-exists to answer.
+- **11 accounts** whose connection names no firm pattern recognises. They pass
+  through under their raw name rather than being dropped, so they appear in the
+  coverage summary and can be added to `FIRM_PATTERNS`.
+- **53 accounts** whose earliest balance is not within 15% of any standard size.
+  These need `start_balance` set by hand; guessing would put an account under
+  rules that were never its own.
 
-## Note on where the firm name comes from
+## Never derive silently
 
-The connection name is the trading connection, not necessarily the firm's own
-name, and a client can reach one firm through different connections. Alias
-matching therefore belongs in the catalog rather than being imposed on the
-imported data — the raw connection string should keep arriving unchanged so a
-mis-mapping is always recoverable.
+`resolveAccountLimits` labels every number with where it came from —
+`stored`, `firm-rule`, or `inferred`. A stored value always wins, because
+someone typed it deliberately. A derived one must stay visibly derived, the same
+way a derived trailing figure is kept distinct from a reported one: the CRM
+should never present a lookup as though a human confirmed it.

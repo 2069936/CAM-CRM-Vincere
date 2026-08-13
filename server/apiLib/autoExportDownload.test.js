@@ -192,6 +192,9 @@ describe('auto-export CSV and ZIP reconstruction', () => {
       .toThrow(expect.objectContaining({ status: 413, message: 'download_too_large' }));
   });
 
+  // Builds and compresses a >16 MiB payload for real. That takes longer than
+  // the 5s default whenever the suite runs it alongside enough other files, so
+  // the budget is stated rather than left to chance.
   it('generates a ZIP for a snapshot accepted under a raised shared cap above 16 MiB', () => {
     const changed = structuredClone(snapshot);
     changed.orders[0].name = 'x'.repeat(DEFAULT_MAX_UNCOMPRESSED_BYTES + 1);
@@ -205,7 +208,7 @@ describe('auto-export CSV and ZIP reconstruction', () => {
       ...limits,
     });
     expect(unzipSync(archive)['Orders.csv'].length).toBeGreaterThan(DEFAULT_MAX_UNCOMPRESSED_BYTES);
-  });
+  }, 30000);
 
   it('records the zero-realized Gross PnL fallback per account in the manifest', () => {
     const changed = structuredClone(snapshot);

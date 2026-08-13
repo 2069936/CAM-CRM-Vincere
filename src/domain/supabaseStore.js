@@ -5,6 +5,7 @@ import {
   withLegacyDailyImportId,
 } from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
+import { splitSimulationRows } from './simulationAccounts';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -30,6 +31,10 @@ function accountMetaFromRow(row) {
     targetProfit: row.target_profit ?? '',
     startBalance: row.start_balance ?? '',
     maxDrawdownLimit: row.max_drawdown_limit ?? '',
+    propFirmPlan: row.prop_firm_plan || '',
+    // '' means no opinion recorded (the automatic signals decide), NOT "live".
+    // See simulationAccounts.js SIMULATION_MODES.
+    simulationMode: row.simulation_mode || '',
     riskLevel: row.risk_level || '',
     bulletBotPassType: row.bullet_bot_pass_type || '',
     bulletBotDirection: row.bullet_bot_direction || '',
@@ -46,13 +51,18 @@ function accountMetaFromRow(row) {
   };
 }
 
-function strategyFromRow(row) {
+function strategyFromRow(row, accountById = {}) {
   const params = row.params_parsed && typeof row.params_parsed === 'object'
     ? row.params_parsed
     : {};
   return {
     id: row.id,
     strategyName: row.strategy_name || '',
+    // The row points at an account and the mapped object dropped it, so
+    // anything reading dailyImport.strategies saw rows belonging to nobody.
+    // Per-account grouping — which family runs where, how many accounts a
+    // configuration is on — came out empty against real data.
+    accountName: accountById[row.trading_account_id]?.account_name || '',
     strategyFamily: row.strategy_family || '',
     strategyVersion: row.strategy_version || '',
     instrument: row.instrument || '',
@@ -263,11 +273,49 @@ async function loadTable(table, columns = '*') {
   return all;
 }
 
+/**
+ * Table names the CRM state is built from, in the order buildCrmStateFromTables
+ * destructures them. A local snapshot must supply the same set.
+ */
+export const CRM_STATE_TABLES = [
+  'cam_profiles', 'clients', 'client_assignments', 'trading_accounts',
+  'payout_events', 'client_credentials', 'client_prop_firms', 'daily_imports',
+  'account_snapshots', 'strategy_snapshots', 'orders', 'executions',
+  'operational_flags', 'tasks', 'activity_logs', 'price_checks',
+  'cam_time_off', 'client_coverage',
+];
+
+/**
+ * The two heaviest tables, skipped unless trade history is asked for. On a real
+ * book they are 16,000 and 8,000 rows against a few hundred everywhere else.
+ */
+const TRADE_HISTORY_TABLES = new Set(['orders', 'executions']);
+
 export async function loadSupabaseCrmState({ preferredCamProfileId = null, includeTradeHistory = false } = {}) {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY.');
   }
 
+  const rows = await Promise.all(CRM_STATE_TABLES.map((table) => (
+    !includeTradeHistory && TRADE_HISTORY_TABLES.has(table)
+      ? Promise.resolve([])
+      : loadTable(table)
+  )));
+  return buildCrmStateFromTables(
+    Object.fromEntries(CRM_STATE_TABLES.map((table, index) => [table, rows[index]])),
+    { preferredCamProfileId },
+  );
+}
+
+/**
+ * Builds the CRM state from raw table rows.
+ *
+ * Split out from the fetch so the same mapping serves a local snapshot. Running
+ * the app against a saved export otherwise means a second, parallel mapping
+ * that drifts from this one — and a local view that quietly disagrees with
+ * production is worse than no local view at all.
+ */
+export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = null } = {}) {
   const [
     camRows,
     clientRows,
@@ -287,26 +335,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null, inclu
     priceCheckRows,
     timeOffRows,
     coverageRows,
-  ] = await Promise.all([
-    loadTable('cam_profiles'),
-    loadTable('clients'),
-    loadTable('client_assignments'),
-    loadTable('trading_accounts'),
-    loadTable('payout_events'),
-    loadTable('client_credentials'),
-    loadTable('client_prop_firms'),
-    loadTable('daily_imports'),
-    loadTable('account_snapshots'),
-    loadTable('strategy_snapshots'),
-    includeTradeHistory ? loadTable('orders') : Promise.resolve([]),
-    includeTradeHistory ? loadTable('executions') : Promise.resolve([]),
-    loadTable('operational_flags'),
-    loadTable('tasks'),
-    loadTable('activity_logs'),
-    loadTable('price_checks'),
-    loadTable('cam_time_off'),
-    loadTable('client_coverage'),
-  ]);
+  ] = CRM_STATE_TABLES.map((table) => tables[table] || []);
 
   const visibleClientRows = (clientRows || []).filter((client) => (
     !client.deleted_at && client.status !== 'Inactive'
@@ -353,7 +382,7 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null, inclu
   }
 
   for (const strategy of strategyRows) {
-    const mapped = strategyFromRow(strategy);
+    const mapped = strategyFromRow(strategy, accountByUuid);
     if (strategy.account_snapshot_id) {
       if (!strategiesBySnapshot[strategy.account_snapshot_id]) strategiesBySnapshot[strategy.account_snapshot_id] = [];
       strategiesBySnapshot[strategy.account_snapshot_id].push(mapped);
@@ -436,21 +465,41 @@ export async function loadSupabaseCrmState({ preferredCamProfileId = null, inclu
 
     const credential = credentialsByClient[client.id] || {};
     const dailyImports = (importsByClient[client.id] || [])
-      .map((dailyImport) => ({
-        id: dailyImport.legacy_key || dailyImport.id,
-        uuid: dailyImport.id,
-        clientId: pickId(client),
-        date: dailyImport.trading_date,
-        importedAt: dailyImport.imported_at,
-        status: dailyImport.status,
-        sourceSummary: dailyImport.source_summary || {},
-        accounts: accountRegistry,
-        snapshots: snapshotsByImport[dailyImport.id] || [],
-        strategies: strategiesByImport[dailyImport.id] || [],
-        orders: ordersByImport[dailyImport.id] || [],
-        executions: executionsByImport[dailyImport.id] || [],
-        flags: flagsByImport[dailyImport.id] || [],
-      }))
+      .map((dailyImport) => {
+        // account_snapshots stores one row per account per close whatever its
+        // nature; the live/simulated/undetermined split is recomputed HERE, from
+        // each account's current record. That is deliberate: a CAM who corrects
+        // a misclassification fixes every close the client ever had, not only
+        // the ones imported after the fix.
+        //
+        // Everything downstream reads `snapshots` and assumes real money, so
+        // this must run before the object is handed out. It is the load-side
+        // twin of the split in reconcile.js — the two ingestion directions, one
+        // rule.
+        const split = splitSimulationRows({
+          accounts: accountRegistry,
+          snapshots: snapshotsByImport[dailyImport.id] || [],
+          strategies: strategiesByImport[dailyImport.id] || [],
+          orders: ordersByImport[dailyImport.id] || [],
+          executions: executionsByImport[dailyImport.id] || [],
+        });
+        return {
+          id: dailyImport.legacy_key || dailyImport.id,
+          uuid: dailyImport.id,
+          clientId: pickId(client),
+          date: dailyImport.trading_date,
+          importedAt: dailyImport.imported_at,
+          status: dailyImport.status,
+          sourceSummary: dailyImport.source_summary || {},
+          accounts: accountRegistry,
+          snapshots: split.live.snapshots,
+          strategies: split.live.strategies,
+          orders: split.live.orders,
+          executions: split.live.executions,
+          simulation: split.simulation,
+          flags: flagsByImport[dailyImport.id] || [],
+        };
+      })
       .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
     return {
@@ -551,11 +600,35 @@ export function mergeSupabaseTradeHistory(state, { orders = [], executions = [] 
     ...state,
     clients: (state.clients || []).map((client) => ({
       ...client,
-      dailyImports: (client.dailyImports || []).map((dailyImport) => ({
-        ...dailyImport,
-        orders: ordersByImport[dailyImport.uuid || dailyImport.id] || [],
-        executions: executionsByImport[dailyImport.uuid || dailyImport.id] || [],
-      })),
+      dailyImports: (client.dailyImports || []).map((dailyImport) => {
+        // Trade history arrives AFTER the dashboard shell, so it lands on a
+        // dailyImport whose simulation split has already been made. Assigning
+        // the raw arrays here would put Craig's 40 simulated orders and 15
+        // simulated executions straight back into the live arrays, undoing the
+        // split for every surface that reads them. Re-split instead.
+        const split = splitSimulationRows({
+          accounts: client.accountRegistry || {},
+          snapshots: dailyImport.snapshots || [],
+          strategies: dailyImport.strategies || [],
+          orders: ordersByImport[dailyImport.uuid || dailyImport.id] || [],
+          executions: executionsByImport[dailyImport.uuid || dailyImport.id] || [],
+        });
+        return {
+          ...dailyImport,
+          orders: split.live.orders,
+          executions: split.live.executions,
+          simulation: {
+            ...(dailyImport.simulation || split.simulation),
+            orders: split.simulation.orders,
+            executions: split.simulation.executions,
+            undetermined: {
+              ...(dailyImport.simulation?.undetermined || split.simulation.undetermined),
+              orders: split.simulation.undetermined.orders,
+              executions: split.simulation.undetermined.executions,
+            },
+          },
+        };
+      }),
     })),
   };
 }
@@ -629,6 +702,7 @@ function accountPatchToDb(patch = {}) {
     alias: 'alias',
     connection: 'connection',
     accountType: 'account_type',
+    simulationMode: 'simulation_mode',
     status: 'status',
     payoutState: 'payout_state',
     riskLevel: 'risk_level',
@@ -647,6 +721,7 @@ function accountPatchToDb(patch = {}) {
   if ('startBalance' in patch) mapped.start_balance = numberOrNull(patch.startBalance);
   if ('targetProfit' in patch) mapped.target_profit = numberOrNull(patch.targetProfit);
   if ('maxDrawdownLimit' in patch) mapped.max_drawdown_limit = numberOrNull(patch.maxDrawdownLimit);
+  if ('propFirmPlan' in patch) mapped.prop_firm_plan = String(patch.propFirmPlan || '') || null;
   if ('payoutCount' in patch) mapped.payout_count = numberOrNull(patch.payoutCount) || 0;
   if ('dateAdded' in patch) mapped.date_added = emptyToNull(patch.dateAdded);
   if ('dateFunded' in patch) mapped.date_funded = emptyToNull(patch.dateFunded);
@@ -1158,12 +1233,14 @@ export async function upsertSupabaseTradingAccount(clientId, accountName, meta =
     alias: meta.alias || accountName,
     connection: meta.connection || '',
     account_type: meta.accountType || 'Unassigned',
+    simulation_mode: String(meta.simulationMode || '') || null,
     tradovate_account_id: meta.tradovateAccountId || null,
     status: meta.status || 'Active',
     payout_state: meta.payoutState || 'Not requested',
     start_balance: numberOrNull(meta.startBalance),
     target_profit: numberOrNull(meta.targetProfit),
     max_drawdown_limit: numberOrNull(meta.maxDrawdownLimit),
+    prop_firm_plan: String(meta.propFirmPlan || '') || null,
     risk_level: meta.riskLevel || '',
     bullet_bot_pass_type: meta.bulletBotPassType || '',
     bullet_bot_direction: meta.bulletBotDirection || '',
@@ -1534,6 +1611,54 @@ export async function createSupabaseReport(clientId, dailyImportId, reportType, 
       content,
       generated_by_user_id: generatedByUserId,
     })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return reportFromRow(data);
+}
+
+/**
+ * Every report row stored for ONE (client, close), newest first.
+ *
+ * Needed because `reports` has no unique key on (client_id, daily_import_id,
+ * report_type) — neither cam_crm_schema.sql:282 nor step_11_report_history.sql
+ * declares one — and ReportPanel INSERTS on every mount. Measured on the 610
+ * rows in public/local-snapshot.json: 610 rows over 440 distinct (client,
+ * import) pairs, 93 pairs duplicated, one pair holding 9 copies. So anything
+ * that has to find what a CAM wrote on a day has to look across the whole
+ * stack of rows for that day, not at the newest one.
+ */
+export async function loadSupabaseReportsForImport(clientId, dailyImportId, { reportType = 'daily_close', limit = 50 } = {}) {
+  if (!isSupabaseConfigured || !supabase || !dailyImportId) return [];
+  const clientUuid = await getClientUuid(clientId);
+  const importUuid = await getDailyImportUuid(dailyImportId);
+  let query = supabase
+    .from('reports')
+    .select('*')
+    .eq('client_id', clientUuid)
+    .eq('daily_import_id', importUuid);
+  if (reportType) query = query.eq('report_type', reportType);
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(limit);
+  if (error) throw new Error(error.message);
+  return (data || []).map(reportFromRow);
+}
+
+/**
+ * Replace one report row's `content` jsonb.
+ *
+ * The first UPDATE anywhere against this table: until now the only write was the
+ * insert on panel mount, which is why nothing a CAM typed could ever survive.
+ * `content` is `jsonb default '{}'` with no CHECK, so writing back a spread of
+ * the row's own content plus one new key breaks no constraint and leaves the 610
+ * existing rows readable — reportFromRow spreads content wholesale and only ever
+ * looks at `content.title` / `content.summary?.clientName`.
+ */
+export async function updateSupabaseReportContent(reportId, content) {
+  if (!isSupabaseConfigured || !supabase || !reportId) return null;
+  const { data, error } = await supabase
+    .from('reports')
+    .update({ content })
+    .eq('id', reportId)
     .select()
     .single();
   if (error) throw new Error(error.message);

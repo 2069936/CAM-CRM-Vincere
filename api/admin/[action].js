@@ -1,3 +1,4 @@
+import clientExport from '../../server/export/clientExport.js';
 import batches from '../../server/autoCollection/admin/ingest-batches.js';
 import download from '../../server/autoCollection/admin/ingest-download.js';
 import enrollment from '../../server/autoCollection/admin/ingest-enrollment.js';
@@ -8,7 +9,14 @@ import verify from '../../server/autoCollection/admin/ingest-verify.js';
 
 // Static routes (users, data-export and intake-sheet) keep precedence. This
 // dispatcher preserves each existing ingest-* URL in one Vercel function.
+//
+// client-export rides here for the same reason rather than becoming
+// api/admin/client-export.js: Vercel Hobby caps the project at 12 serverless
+// functions and api/ holds 5 files today, so a new file would be 6 of 12 while
+// this costs nothing. The map key is free-form — nothing here requires the
+// ingest-* prefix.
 const handlers = Object.freeze({
+  'client-export': clientExport,
   'ingest-batches': batches,
   'ingest-download': download,
   'ingest-enrollment': enrollment,

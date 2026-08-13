@@ -127,6 +127,11 @@ function mapAccount(row) {
     rawGrossRealizedPnl: row.grossRealizedPnl,
     pnlSource: pnl.source,
     trailingMaxDrawdown: row.trailingMaxDrawdown,
+    // Left undefined when the collector did not report it. Do NOT default this
+    // to false: false asserts "this is live money" and would outrank the Sim<n>
+    // name test, putting simulated balances back into the desk total on every
+    // automatically collected client.
+    isSimulated: typeof row.isSimulated === 'boolean' ? row.isSimulated : undefined,
     accountBalance: row.cashValue,
     weeklyPnl: row.weeklyPnl,
     unrealizedPnl: row.unrealizedPnl,

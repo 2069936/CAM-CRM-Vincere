@@ -1,5 +1,17 @@
 import { summarizePnlSources } from './pnlSourceSummary.js';
+// Extension explicit: this module is now on the import chain of a Vercel
+// serverless function (server/export/absentAccounts.js -> accountLifecycle ->
+// here), and plain Node ESM does not resolve './tradingDayScope'. The other two
+// specifiers on this line's neighbours already carried it.
+import { scopeExecutionsToDay, scopeOrdersToDay } from './tradingDayScope.js';
 import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './derivedAccountMetrics.js';
+import {
+  ACCOUNT_NATURES,
+  SIMULATION_ACCOUNT_TYPE,
+  classifyAccountNature,
+  mergeSimulationRows,
+  splitSimulationRows,
+} from './simulationAccounts.js';
 
 export const ACCOUNT_TYPES = {
   UNASSIGNED: 'Unassigned',
@@ -14,6 +26,13 @@ export const ACCOUNT_TYPES = {
   // through to Unassigned behaviour.
   CASH: 'Cash',
   IGNORE: 'Inactive / Ignore',
+  // ADDED, never assigned to an existing row by migration. Every one of the 764
+  // trading_accounts on the real book carries one of the six values above, so no
+  // stored row changes behaviour because this exists. It is only written when a
+  // brand-new account arrives already recognised as a simulator, or when a CAM
+  // picks it — see simulationAccounts.js for why the money in it is never summed
+  // with the rest.
+  SIMULATION: SIMULATION_ACCOUNT_TYPE,
 };
 
 // Every value that must behave like cash: no profit target, no drawdown limit,
@@ -32,11 +51,21 @@ export function isLegacyCashType(accountType) {
   return accountType === ACCOUNT_TYPES.CASH;
 }
 
-// Prop-firm family: funded plus any evaluation. Unassigned and Inactive / Ignore
-// deliberately match neither this nor isCashType.
+// Prop-firm family: funded plus any evaluation. Unassigned, Inactive / Ignore
+// and Simulation deliberately match neither this nor isCashType — a simulation
+// account has no prop-firm contract to breach and no cash to report, so every
+// consumer that branches on these two leaves it alone.
 export function isPropAccountType(accountType) {
   const value = String(accountType || '').trim();
   return value === ACCOUNT_TYPES.FUNDED || value.startsWith('Evaluation');
+}
+
+// Simulated money. Kept as a predicate rather than a bare string comparison for
+// the same reason isCashType exists: the branches that must not fire on it
+// (drawdown ladder, profit targets, payout eligibility, desk capital) are spread
+// across eight modules.
+export function isSimulationAccountType(accountType) {
+  return String(accountType || '').trim() === ACCOUNT_TYPES.SIMULATION;
 }
 
 export const ACCOUNT_STATUSES = {
@@ -63,9 +92,53 @@ function nowIso() {
 }
 
 export function makeAccountAlias(accountName, connection = '') {
-  const suffix = String(accountName || '').slice(-4);
+  const name = String(accountName || '');
   const label = String(connection || 'Account').trim() || 'Account';
-  return suffix ? `${label} - ${suffix}` : label;
+  if (!name) return label;
+  // Last four, like the tail of a card number: LTATAGREH506107949826 becomes
+  // "Legends Trading - 9826", which is short enough to say out loud and does not
+  // put a full prop-firm account number in front of whoever is looking.
+  //
+  // Short names are shown whole instead. A 6-character name has nothing to mask
+  // — the tail reveals as much as the name does — and truncating it reads as
+  // breakage rather than discretion: Sim101 became "Live - m101" in a
+  // client-facing report, which looks like a bug to the client and to the CAM.
+  if (name.length <= 8) return `${label} - ${name}`;
+  // A nickname somebody typed is shown whole too. `Craig - Sub 1` was printed to
+  // the client as `Live - ub 1`: the same "looks like breakage" the length rule
+  // was added to stop, on a live funded account, four rows above a simulated one
+  // that renders correctly.
+  //
+  // A space alone is NOT enough to call something a nickname, though. The masking
+  // exists so a full prop-firm account number does not sit in front of whoever is
+  // looking, and a CAM who types the firm in beside the number — `Apex 12345678`,
+  // `Topstep Eval 50285301` — produces a name with both a space and the whole
+  // number in it. Keyed off the number instead: a run of 5+ digits is an issued
+  // identifier, never a nickname, so it keeps the last-four treatment however it
+  // is spaced. `Craig - Sub 1` has no such run and is shown whole.
+  if (/\s/.test(name) && !/\d{5}/.test(name)) return `${label} - ${name}`;
+  return `${label} - ${name.slice(-4)}`;
+}
+
+/**
+ * The type a never-before-seen account starts life with.
+ *
+ * Only a BRAND-NEW account can be seeded as Simulation, and only when the
+ * classifier already recognises it (name matches NinjaTrader's Sim<number>, or
+ * the platform said so). An account that already has a stored type keeps it —
+ * `existing.accountType` wins in createDefaultAccount — so this can never
+ * reclassify a row a CAM has touched, and the seeding is announced with a
+ * `New simulation account` flag rather than happening silently.
+ */
+function defaultAccountTypeFor(account, existing) {
+  if (existing?.accountType) return existing.accountType;
+  const nature = classifyAccountNature(
+    { ...existing, accountName: account.accountName },
+    { accountName: account.accountName, isSimulated: account.isSimulated },
+  ).nature;
+  return nature === ACCOUNT_NATURES.SIMULATION
+    ? ACCOUNT_TYPES.SIMULATION
+    : ACCOUNT_TYPES.UNASSIGNED;
 }
 
 function createDefaultAccount(account, existing = {}) {
@@ -73,12 +146,20 @@ function createDefaultAccount(account, existing = {}) {
     accountName: account.accountName,
     alias: existing.alias || makeAccountAlias(account.accountName, account.connection),
     connection: account.connection || existing.connection || '',
-    accountType: existing.accountType || ACCOUNT_TYPES.UNASSIGNED,
+    accountType: defaultAccountTypeFor(account, existing),
+    // The CAM's explicit override of the automatic simulation detection.
+    // '' means "no opinion recorded, let the signals decide" — it is NOT a vote
+    // for live money, which is why it is empty rather than 'live'.
+    simulationMode: existing.simulationMode || '',
     status: existing.status || ACCOUNT_STATUSES.ACTIVE,
     payoutState: existing.payoutState || PAYOUT_STATES.NOT_REQUESTED,
     startBalance: existing.startBalance ?? '',
     targetProfit: existing.targetProfit ?? '',
     maxDrawdownLimit: existing.maxDrawdownLimit ?? '',
+    // Which plan the client bought. Not derivable from anything the platform
+    // reports, and it is what sets the drawdown: Legends 50k is 2,000 on
+    // Apprentice and 2,200 on Elite.
+    propFirmPlan: existing.propFirmPlan || '',
     riskLevel: existing.riskLevel || '',
     algoStack: existing.algoStack || '',
     dailyLossLimit: existing.dailyLossLimit || '',
@@ -142,6 +223,11 @@ function groupStrategiesByAccount(strategies = []) {
 function shouldExpectStrategy(meta) {
   if (!meta) return false;
   if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
+  // A simulation account is run when the desk wants to test something and left
+  // idle the rest of the time. 10 of the 11 Sim101s on the real book carried no
+  // strategy at all on 2026-08-06; flagging each of those Critical every close
+  // would bury the one client whose sim was actually running.
+  if (meta.accountType === ACCOUNT_TYPES.SIMULATION) return false;
   if ([ACCOUNT_STATUSES.INACTIVE, ACCOUNT_STATUSES.RESERVE, ACCOUNT_STATUSES.FAILED, ACCOUNT_STATUSES.PAYOUT_HOLD].includes(meta.status)) {
     return false;
   }
@@ -150,10 +236,6 @@ function shouldExpectStrategy(meta) {
 
 function hasActiveStrategy(strategies = []) {
   return strategies.some((strategy) => strategy.enabled);
-}
-
-function isSimulatorAccount(accountName) {
-  return String(accountName || '').trim().toLowerCase().startsWith('sim');
 }
 
 // A source that says null means "I have no value for this" — preserved as null
@@ -220,16 +302,37 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   const flags = [];
   // Build case-insensitive registry lookup so CSV names always find their metadata
   const registryByLower = Object.fromEntries(Object.entries(registry || {}).map(([k, v]) => [k.toLowerCase(), v]));
-  const sourceAccounts = (parsed.accounts || []).filter((account) => !isSimulatorAccount(account.accountName));
-  const strategies = (parsed.strategies || []).filter((strategy) => !isSimulatorAccount(strategy.accountName));
-  const orders = (parsed.orders || []).filter((order) => !isSimulatorAccount(order.accountName));
+  // NOTHING is filtered out here any more.
+  //
+  // This used to drop every account, strategy, order and execution whose name
+  // started with "sim". It did keep simulated money out of desk capital, but it
+  // also deleted the desk's work: on 2026-08-06 Craig Weschke's only trading
+  // account was his Sim101 and `orders=40 -> kept 0, execs=15 -> kept 0`, so the
+  // report the CRM generated for him read $0 on a day his CAM wrote a paragraph
+  // about how the SIM session went. Simulated rows are now carried through and
+  // separated at the end by splitSimulationRows.
+  const sourceAccounts = parsed.accounts || [];
+  const strategies = parsed.strategies || [];
+  // Scoped to the day before anything else reads them. The AddOn hands over
+  // whatever NinjaTrader has loaded, which on a first capture is months of
+  // history, and every row of it arrives stamped with today's trading date.
+  const orders = scopeOrdersToDay(parsed.orders || [], date);
   const orderStrategyById = Object.fromEntries(orders.map((order) => [order.id, order.strategyName || '']));
-  const executions = (parsed.executions || [])
-    .filter((execution) => !isSimulatorAccount(execution.accountName))
+  const executions = scopeExecutionsToDay(parsed.executions || [], date)
     .map((execution) => ({
       ...execution,
       strategyName: orderStrategyById[execution.orderId] || '',
     }));
+  // The platform's own simulator flag, keyed by lower-cased account name.
+  // NinjaTrader exposes Options.Provider == Provider.Simulator and the collector
+  // does not read it yet (NinjaTraderFacade.cs:318 takes only the connection
+  // name), so this is empty on every path today and the classifier falls back to
+  // the account name. Wired now so shipping the flag needs no change here.
+  const platformFlags = Object.fromEntries(
+    sourceAccounts
+      .filter((account) => typeof account.isSimulated === 'boolean')
+      .map((account) => [String(account.accountName || '').toLowerCase(), account.isSimulated]),
+  );
   const strategiesByAccount = groupStrategiesByAccount(strategies);
   const seen = new Set();
 
@@ -237,6 +340,20 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     const existing = registry[account.accountName] || registryByLower[account.accountName.toLowerCase()];
     const meta = createDefaultAccount(account, existing);
     const strategies = strategiesByAccount[account.accountName] || [];
+    // Classified from the STORED record, not from `meta`. createDefaultAccount
+    // seeds a brand-new Sim101 with accountType 'Simulation', and classifying
+    // that would report source 'accountType' — i.e. the code would cite its own
+    // guess back as if a human had made it, and the `New simulation account`
+    // flag below would never fire. `existing` is what the CAM actually recorded.
+    const nature = classifyAccountNature(
+      { ...(existing || {}), accountName: account.accountName },
+      { accountName: account.accountName, isSimulated: account.isSimulated },
+    );
+    // Everything below that measures a prop-firm rule, a payout or a target is
+    // about real money under contract. Simulated money is under no contract, and
+    // an account whose nature is undetermined must not be told it breached a
+    // limit we are not sure applies to it.
+    const isRealMoney = nature.nature === ACCOUNT_NATURES.LIVE;
 
     accountsByName[account.accountName] = meta;
 
@@ -248,8 +365,11 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     const derived = {
       // Trailing drawdown is a prop-firm constraint. A cash account has no
       // trailing rule to measure against, so deriving a distance-from-peak for
-      // one would invent a number that means nothing.
-      trailing: isCashType(meta.accountType)
+      // one would invent a number that means nothing. Neither does a simulator:
+      // every real Sim101 on the book reports trailingMaxDrawdown = 0 on a
+      // six-figure balance because there is no rule behind it.
+      trailing: !isRealMoney
+        || isCashType(meta.accountType)
         || account.trailingMaxDrawdown !== undefined && account.trailingMaxDrawdown !== null
         ? null
         : deriveTrailingDrawdown(closes, account.accountName, date, { startBalance: meta.startBalance }),
@@ -260,7 +380,26 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     snapshots.push(createSnapshot(account, strategies, derived));
     seen.add(account.accountName.toLowerCase());
 
-    if (!existing) {
+    if (nature.nature === ACCOUNT_NATURES.UNDETERMINED) {
+      // Reported, never bucketed. This account's balance is in neither the desk
+      // total nor the simulated total until someone says which it is.
+      flags.push(makeFlag({
+        type: 'Account nature undetermined',
+        severity: 'Warning',
+        accountName: account.accountName,
+        message: `${meta.alias} is counted as neither real nor simulated because ${nature.reason}`,
+      }));
+    } else if (nature.nature === ACCOUNT_NATURES.SIMULATION && nature.heuristic) {
+      // The heuristic announces itself. A reclassification a CAM cannot see is
+      // exactly what the old silent name filter was, and it cost a client his
+      // whole trading day on the report.
+      flags.push(makeFlag({
+        type: 'New simulation account',
+        severity: 'Warning',
+        accountName: account.accountName,
+        message: `${meta.alias} is being reported as simulated because ${nature.reason}. Its balance and P&L are kept out of every real total. Confirm it on the account record, or mark it as live money if that is wrong.`,
+      }));
+    } else if (!existing) {
       flags.push(makeFlag({
         type: 'New account',
         severity: 'Warning',
@@ -269,7 +408,11 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }));
     }
 
-    if (meta.accountType === ACCOUNT_TYPES.UNASSIGNED && meta.status !== ACCOUNT_STATUSES.RESERVE) {
+    if (
+      isRealMoney &&
+      meta.accountType === ACCOUNT_TYPES.UNASSIGNED &&
+      meta.status !== ACCOUNT_STATUSES.RESERVE
+    ) {
       flags.push(makeFlag({
         type: 'Unassigned account',
         severity: 'Warning',
@@ -278,7 +421,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }));
     }
 
-    if (shouldExpectStrategy(meta) && !hasActiveStrategy(strategies)) {
+    if (isRealMoney && shouldExpectStrategy(meta) && !hasActiveStrategy(strategies)) {
       flags.push(makeFlag({
         type: 'Expected strategy missing',
         severity: 'Critical',
@@ -289,8 +432,13 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
 
     // Same reason: a cash account cannot breach a trailing limit it does not
     // have. Without this, a stale maxDrawdownLimit left on an account that was
-    // later reclassified as cash keeps raising drawdown flags forever.
-    const ddLimit = isCashType(meta.accountType) ? Number.NaN : Number(meta.maxDrawdownLimit);
+    // later reclassified as cash keeps raising drawdown flags forever. A
+    // simulation account is in the same position and one step worse — nobody
+    // terminates a simulator, so "Account may be terminated" on one is a false
+    // alarm that trains the desk to ignore the real ones.
+    const ddLimit = !isRealMoney || isCashType(meta.accountType)
+      ? Number.NaN
+      : Number(meta.maxDrawdownLimit);
     // Use the snapshot's value, which may have been reconstructed above.
     const snapshot = snapshots[snapshots.length - 1];
     const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
@@ -329,7 +477,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
           }));
         }
       }
-    } else if (rawDD !== 0 && !isCashType(meta.accountType)) {
+    } else if (isRealMoney && rawDD !== 0 && !isCashType(meta.accountType)) {
       // Model 2: no configured limit - trailingMaxDrawdown IS the remaining buffer (sign-based)
       // NT exports this as positive (buffer remaining); account dies when it hits 0 or goes negative
       if (rawDD <= 0) {
@@ -356,7 +504,11 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }
     }
 
-    const targetProfit = Number(meta.targetProfit);
+    // A simulator cannot pay out and cannot pass an evaluation, so a target
+    // reached in one is not an event. Guarded by nature rather than by type
+    // because a stale 'Funded' type left on an account the platform now reports
+    // as simulated would otherwise queue a payout request against play money.
+    const targetProfit = isRealMoney ? Number(meta.targetProfit) : Number.NaN;
     if (
       meta.accountType === ACCOUNT_TYPES.FUNDED &&
       Number.isFinite(targetProfit) && targetProfit > 0 &&
@@ -418,7 +570,14 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   for (const [accountName, meta] of Object.entries(registry || {})) {
     if (seen.has(accountName.toLowerCase())) continue;
     accountsByName[accountName] = meta;
-    if (meta.accountType !== ACCOUNT_TYPES.IGNORE && meta.status !== ACCOUNT_STATUSES.INACTIVE) {
+    // A registered simulation account that did not report is not an operational
+    // problem: a sim only appears in the grid while someone has it loaded. Before
+    // this exemption a registered Sim101 could never stop flagging — the old name
+    // filter dropped it before `seen.add()`, so this sweep fired on it every
+    // single close and dragged the whole import to Needs review, forever. There
+    // was no way to register a sim without permanently poisoning the flag queue.
+    const isSimulated = classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION;
+    if (!isSimulated && meta.accountType !== ACCOUNT_TYPES.IGNORE && meta.status !== ACCOUNT_STATUSES.INACTIVE) {
       flags.push(makeFlag({
         type: 'Missing account',
         severity: 'Warning',
@@ -428,6 +587,19 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     }
   }
 
+  // The separation, done once, at the boundary. `snapshots` / `strategies` /
+  // `orders` / `executions` on the returned object hold LIVE-MONEY ROWS ONLY —
+  // exactly what every existing consumer already assumed it was getting — and
+  // everything else travels in `simulation`, which no money total reads.
+  const split = splitSimulationRows({
+    accounts: accountsByName,
+    snapshots,
+    strategies,
+    orders,
+    executions,
+    platformFlags,
+  });
+
   return {
     id: `${clientId}-${date}-${Date.now()}`,
     clientId,
@@ -435,25 +607,32 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     importedAt: nowIso(),
     status: flags.some((flag) => flag.severity === 'Critical' || flag.severity === 'Warning') ? 'Needs review' : 'Ready to close',
     accounts: accountsByName,
-    snapshots,
-    strategies,
-    orders,
-    executions,
+    snapshots: split.live.snapshots,
+    strategies: split.live.strategies,
+    orders: split.live.orders,
+    executions: split.live.executions,
+    simulation: split.simulation,
     flags,
-    pnlSourceSummary: summarizePnlSources(snapshots),
+    pnlSourceSummary: summarizePnlSources(split.live.snapshots),
   };
 }
 
 export function recalculateDailyImport({ dailyImport, registry = {} }) {
+  // Feed the WHOLE close back in, simulated rows included. Passing only
+  // `dailyImport.snapshots` would hand reconcile a close its simulation accounts
+  // had vanished from, and the registry sweep would then report each of them as
+  // a Missing account — the recalculation would invent flags out of the split it
+  // is supposed to reproduce.
+  const whole = mergeSimulationRows(dailyImport);
   const recalculated = reconcileDailyImport({
     clientId: dailyImport.clientId,
     date: dailyImport.date,
     registry,
     parsed: {
-      accounts: (dailyImport.snapshots || []).map(snapshotToAccount),
-      strategies: dailyImport.strategies || [],
-      orders: dailyImport.orders || [],
-      executions: dailyImport.executions || [],
+      accounts: whole.snapshots.map(snapshotToAccount),
+      strategies: whole.strategies,
+      orders: whole.orders,
+      executions: whole.executions,
     },
   });
 
