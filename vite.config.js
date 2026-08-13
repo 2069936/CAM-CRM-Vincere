@@ -4,8 +4,25 @@ import { fileURLToPath } from "url"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
+import { configDefaults } from "vitest/config"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const hasLocalSnapshot = fs.existsSync(path.resolve(__dirname, "public/local-snapshot.json"))
+const localSnapshotTests = [
+  "src/components/AccountLifecyclePanel.test.jsx",
+  "src/components/BulletBotDeskPanel.test.jsx",
+  "src/components/CamFlagQueue.test.jsx",
+  "src/components/CapitalDetailPanel.test.jsx",
+  "src/components/ConfigDriftPanel.test.jsx",
+  "src/components/LiveAccountsPanel.test.jsx",
+  "src/components/SetFileMatchPanel.test.jsx",
+  "src/components/TimeOffPanel.test.jsx",
+  "src/domain/accountLifecycle.test.js",
+  "src/domain/camFlagQueue.test.js",
+  "src/domain/liveAccounts.test.js",
+  "src/domain/setFileMatch.test.js",
+  "src/domain/synthesizedReference.test.js",
+]
 
 /**
  * Keeps the local snapshot out of the deploy output.
@@ -41,6 +58,15 @@ function excludeLocalSnapshot() {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), excludeLocalSnapshot()],
+  test: {
+    // These suites intentionally assert aggregate values from the untracked,
+    // redacted production book. Keep ordinary clones and CI green without
+    // weakening those assertions when the local fixture is present.
+    exclude: [
+      ...configDefaults.exclude,
+      ...(hasLocalSnapshot ? [] : localSnapshotTests),
+    ],
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
