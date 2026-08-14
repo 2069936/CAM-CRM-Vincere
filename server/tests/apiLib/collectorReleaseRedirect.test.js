@@ -10,6 +10,7 @@
 // whoever holds the storage credentials. These pin the controls that replaced
 // it. Each one fails if the corresponding guard is removed.
 
+import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 import { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 import { createHash } from 'node:crypto';

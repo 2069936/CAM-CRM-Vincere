@@ -7671,6 +7671,47 @@ tr:nth-child(2) .rank-badge {
   border: 1px dashed var(--info-border);
 }
 
+/* Accounts that went quiet, and the simulation accounts beside them.
+
+   Built on the .drift-* language above because it is the same promise — a review
+   list, never a verdict — with one addition it genuinely needs: the two shapes a
+   CAM confuses have to be one GLANCE apart, not one sentence apart. 122 accounts
+   on the real book went quiet for two or more of their client's closes; 80 were
+   inside their trailing drawdown on the last close they filed and 42 were past
+   it, and reading those two as the same thing is what makes "missing means
+   failed" feel true when it is wrong 143 times out of 195.
+
+   So colour carries the shape and nothing else does: red rule and red chip for a
+   reading that was already negative, amber for a reading that was healthy, a
+   dashed muted rule for a buffer that was never measured. The chip repeats the
+   shape in words on every row, because colour alone is not a label — a red left
+   border says "look" and only the words say what was seen. Nothing here is
+   green: no row on this list is a clean bill. */
+.quiet-shape-past { border-left-color: var(--danger, #ef4444); }
+.quiet-shape-healthy { border-left-color: var(--warning, #f59e0b); }
+.quiet-shape-unmeasured { border-left: 2px dashed var(--muted); }
+.quiet-chip {
+  font-size: 10px; line-height: 1.5; padding: 0 6px; border-radius: 999px;
+  white-space: nowrap; border: 1px solid var(--border); color: var(--muted);
+}
+.quiet-chip-past { color: var(--danger, #ef4444); border-color: var(--danger, #ef4444); }
+.quiet-chip-healthy { color: var(--warning, #f59e0b); border-color: var(--warning, #f59e0b); }
+.quiet-chip-unmeasured { border-style: dashed; font-style: italic; }
+/* Collection sits above the accounts and is deliberately NOT one of the shape
+   colours: "nobody collected this client" is a different kind of fact from
+   anything a reading can say, and 24 of the 96 clients here are in it. */
+.quiet-collection { border-left: 2px solid var(--info, #3b82f6); }
+.quiet-cohorts { border-left: 2px dashed var(--warning, #f59e0b); }
+.quiet-simulation { border-left: 2px dashed var(--border); }
+.quiet-simulation .drift-count { color: var(--muted); }
+
+/* Flag rows that carry read-back evidence. The queue's own row prints the flag's
+   stored message; this is the line the message never had, indented under it so
+   nothing suggests the CRM rewrote what was written at the time. */
+.flag-evidence { display: block; font-size: 11px; line-height: 1.45; margin-top: 3px; }
+.flag-evidence-past { color: var(--danger, #ef4444); }
+.flag-evidence-noop { color: var(--muted); font-style: italic; }
+
 /* Capital detail. The caveats are not decoration here: on the real book one
    capital movement is nameable across 36 days and 584 accounts, held capital is
    summed over 13 different as-of dates, and no account in view carries a

@@ -140,6 +140,7 @@ import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
+import QuietAccountsPanel from "./components/QuietAccountsPanel";
 import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
 import LiveAccountsPanel from "./components/LiveAccountsPanel";
 import CamFlagQueue from "./components/CamFlagQueue";
@@ -5428,6 +5429,23 @@ function ManagerOverview({
             more. The tile counts what the registry says; this counts what the book shows.
           </p>
           <AccountLifecyclePanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Directly after the retirement panel, because the two answer opposite
+          halves of the same question and are read one after the other. That one
+          asks "is this account finished"; this one asks "why has this account
+          stopped talking to us", and refuses to let the second be answered with
+          the first. Of the accounts that stopped reporting for two or more of
+          their client's closes, roughly seven in ten were inside their trailing
+          drawdown on the last close they filed.
+
+          It is also the only place in the app where a simulation account appears
+          in an account view at all — SimulationReportSection renders them into a
+          client-facing report behind an opt-in toggle and nothing else does.
+        */}
+        <CollapsiblePanel title="Accounts that have gone quiet" tone="ops-charts-panel">
+          <QuietAccountsPanel clients={clients} asOfDate={asOfDate} />
         </CollapsiblePanel>
 
         <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">

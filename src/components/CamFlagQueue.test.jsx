@@ -395,3 +395,94 @@ describe('rendered against the real book', () => {
     expect(calls).toHaveLength(widest.occurrences);
   });
 });
+
+/* ── The evidence read back onto a Missing account row ─────────────────────── */
+
+/**
+ * The flag says "<alias> existed before but did not appear in this close" and
+ * nothing else, which is why 106 of them are open on this book across 19 clients
+ * in 309 records and nobody works them. Everything needed to separate them is in
+ * account_snapshots; these assertions are about it reaching the row.
+ */
+describe('Missing account evidence', () => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('../../public/local-snapshot.json', import.meta.url), 'utf8'),
+  );
+  const { clients } = buildCrmStateFromTables(snapshot.tables);
+  const only = (name, minAccounts) => clients.filter(
+    (client) => client.name === name
+      && Object.keys(client.accountRegistry || {}).length >= minAccounts,
+  );
+
+  // 14 problems on one client, the largest Missing account group on the book.
+  const oakley = only('Oakley Larch', 10);
+  const html = renderToStaticMarkup(
+    <CamFlagQueue clients={oakley} today={TODAY} onResolveFlag={() => {}} defaultOpenGroups={999} />,
+  );
+
+  it('puts the last close, the reading then, the balance then and the gap on the row', () => {
+    expect(strip(html)).toContain(
+      'Healthy when it went quiet. Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance — absent for the 7 closes since.',
+    );
+    expect(strip(html)).toContain(
+      'Past its drawdown when it went quiet. Last seen 2026-07-22 already $20 past its trailing drawdown on a $47,980 balance — absent for the 6 closes since.',
+    );
+  });
+
+  it('renders the two shapes as visually different rows', () => {
+    expect(countOf(html, /class="flag-evidence flag-evidence-past"/g)).toBe(2);
+    expect(countOf(html, /class="flag-evidence flag-evidence-healthy"/g)).toBe(12);
+    // And never as a verdict.
+    expect(strip(html).toLowerCase()).not.toContain('failed account');
+    for (const line of html.match(/<span class="flag-evidence[^"]*"[^>]*>.*?<\/span>/g) || []) {
+      expect(line.toLowerCase()).not.toMatch(/\bfail(ed|s|ure)?\b/);
+    }
+  });
+
+  it('leaves the flag’s own stored message on the row rather than replacing it', () => {
+    // The redacted book stores every message as `[redacted <length>]`. The point
+    // is that it is still there: the evidence is a second line under what was
+    // written at the time, never a rewrite of it.
+    expect(countOf(html, /class="flag-evidence/g)).toBe(14);
+    expect(countOf(html, /\[redacted \d+\]<span class="flag-evidence/g)).toBe(14);
+  });
+
+  /**
+   * A third of the queue is flags with nothing behind them, and this is the one
+   * that would be hardest to believe without the read-back: reconcile.js sweeps
+   * the registry AS IT STANDS TODAY against a close from weeks ago and applies
+   * no existence rule, so a row added on 2026-07-16 raises a Missing account
+   * flag on the 2026-07-13 close.
+   */
+  it('says when a flag stands on a close its account did not exist on', () => {
+    const reese = only('Reese North', 5);
+    const text = strip(renderToStaticMarkup(
+      <CamFlagQueue clients={reese} today={TODAY} onResolveFlag={() => {}} defaultOpenGroups={999} />,
+    ));
+    expect(text).toContain(
+      "Did not exist on that close. This account's earliest provable existence date is 2026-07-16 (date_added), after the 2026-07-13 close the flag stands on. It could not have appeared in it.",
+    );
+    // The collection fact travels beside it, never instead of it.
+    expect(text).toContain('The 2026-07-13 close for this client carried no account rows at all.');
+  });
+
+  it('says when the account the flag names is reporting again', () => {
+    const jordan = only('Jordan Cedar', 5);
+    const text = strip(renderToStaticMarkup(
+      <CamFlagQueue clients={jordan} today={TODAY} onResolveFlag={() => {}} defaultOpenGroups={999} />,
+    ));
+    expect(text).toContain(
+      "Reporting again. Reported again on 2026-07-30, this client's latest close. Nothing is missing now.",
+    );
+    expect(text).toContain('Never seen in any close.');
+  });
+
+  it('adds nothing to a flag type it has no evidence for', () => {
+    const other = renderToStaticMarkup(
+      <CamFlagQueue clients={oakley} today={TODAY} onResolveFlag={() => {}} defaultOpenGroups={999} />,
+    );
+    // Every evidence line sits inside a Missing account group and nowhere else.
+    const missingGroupRows = countOf(other, /<tr data-row-key=/g);
+    expect(countOf(other, /class="flag-evidence/g)).toBeLessThan(missingGroupRows);
+  });
+});
