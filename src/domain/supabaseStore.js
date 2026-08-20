@@ -71,8 +71,25 @@ function strategyFromRow(row, accountById = {}) {
     params,
     direction: row.direction || params.direction || '',
     enabled: Boolean(row.enabled),
-    realized: Number(row.realized || 0),
-    unrealized: Number(row.unrealized || 0),
+    // `Number(row.realized || 0)` collapsed NULL into 0 on the way back, which
+    // undid the whole reported/absent distinction on a reload: a strategy the
+    // export said nothing about came back claiming it had made nothing. Absence
+    // has to survive the round trip or the parse fix only holds until the page
+    // is refreshed. A stored 0 is still a 0 — rows written before the
+    // distinction existed carry one and cannot be told apart after the fact.
+    realized: numberOrNull(row.realized),
+    unrealized: numberOrNull(row.unrealized),
+    // What the fills say, kept separate from what the export said, forever.
+    // Null on every close stored before step 37 added the column, which reads as
+    // "not derived" and makes the UI refuse a derived split rather than invent
+    // one — the safe direction.
+    // Why this row does or does not carry a figure is NOT read back per row,
+    // because it is not stored per row: the account-day's verdict and its join
+    // report live once on `account_snapshots.derivation`, which
+    // `snapshotFromRow` below returns beside these strategies. A reader wanting
+    // the per-row reason recovers it from the two together — see the ROW_JOIN
+    // comment in joinDerivedStrategies.js for the mapping.
+    derivedRealized: numberOrNull(row.derived_realized),
   };
 }
 
@@ -87,6 +104,12 @@ function snapshotFromRow(row, strategiesBySnapshot, accountById) {
     accountBalance: Number(row.account_balance || 0),
     weeklyPnl: Number(row.weekly_pnl || 0),
     unrealizedPnl: Number(row.unrealized_pnl || 0),
+    // The derivation report for this account-day, as reconcile produced it.
+    // buildAlgoAccountHistory will not show a per-algo split without it: the
+    // per-row figures alone cannot be checked, and an unverifiable figure that
+    // looks like a measurement is the failure this whole feature exists to
+    // avoid. Null on every close stored before step 37.
+    derivation: row.derivation || null,
     meta: account ? accountMetaFromRow(account) : {},
     strategies: strategiesBySnapshot[row.id] || [],
   };

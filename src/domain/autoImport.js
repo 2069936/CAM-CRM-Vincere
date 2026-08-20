@@ -125,6 +125,12 @@ function mapAccount(row) {
     realizedPnl: row.realizedPnl,
     rawRealizedPnl: row.realizedPnl,
     rawGrossRealizedPnl: row.grossRealizedPnl,
+    // The gross figure under the name the derivation looks for, so an
+    // automatically collected close reconciles the same way a manually uploaded
+    // one does. `grossRealizedPnl` above is selectDailyPnl's blend and prefers
+    // the commission-NETTED realized figure; FIFO reproduces gross, so gating on
+    // the blend would reject nearly every account on this path only.
+    grossRealizedPnlReported: row.grossRealizedPnl ?? null,
     pnlSource: pnl.source,
     trailingMaxDrawdown: row.trailingMaxDrawdown,
     // Left undefined when the collector did not report it. Do NOT default this

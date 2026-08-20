@@ -37,6 +37,16 @@ export function buildBatchImportPlan({ parsedFiles = [], clients = [], fallbackD
   const registeredNamesLower = new Set(clients.flatMap((client) =>
     Object.keys(client.accountRegistry || {}).map((name) => name.toLowerCase())));
 
+  // A batch is imported oldest-first, and each client's already-reconciled days
+  // inside THIS batch become the carry-in history for the days after them. That
+  // is the only way a multi-day upload can price a position opened on one of its
+  // own days and closed on another; without it every such book is refused. The
+  // client's previously stored closes are folded in too, so a batch that starts
+  // mid-history is not treated as though the world began with it.
+  const priorByClient = new Map(
+    clients.map((client) => [client.id, [...(client.dailyImports || [])]]),
+  );
+
   const groups = dates.map((date) => {
     const grouped = byDate[date];
     const accountNamesLower = new Set(
@@ -62,7 +72,15 @@ export function buildBatchImportPlan({ parsedFiles = [], clients = [], fallbackD
             date,
             registry: client.accountRegistry,
             parsed: filtered,
+            priorImports: priorByClient.get(client.id) || [],
           });
+          // Pushed whatever its status was, on purpose. The replay in
+          // carryForwardLots is arithmetic over the fills themselves and does not
+          // read a day's verdict, so a day that could not be priced surfaces as a
+          // null-priced lot there and marks the account's carry-in unavailable.
+          // Filtering on `result.status` here would be a second, weaker copy of
+          // that check, and the two would drift.
+          priorByClient.get(client.id)?.push(result);
           return { clientId: client.id, clientName: client.name, result, accountCount: myAccounts.length };
         } catch {
           return null;

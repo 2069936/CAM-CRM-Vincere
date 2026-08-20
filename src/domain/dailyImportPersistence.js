@@ -106,6 +106,14 @@ function mapAccountSnapshot(snapshot, dailyImportId, accountByName) {
     account_balance: numberOrLegacyZero(snapshot.accountBalance),
     weekly_pnl: numberOrLegacyZero(snapshot.weeklyPnl),
     unrealized_pnl: numberOrLegacyZero(snapshot.unrealizedPnl),
+    // What the fills said about this account-day, including what they could not
+    // say: the residual and its reasons, and the join report naming any derived
+    // strategy that is on no row of the Strategies grid. Without this stored,
+    // the CRM shows a per-algo split before a reload and none after one — the
+    // split is refused rather than shown from `derived_realized` alone, because
+    // a figure whose provenance was not stored cannot be judged. Null on every
+    // close imported before the derivation existed (step 37).
+    derivation: snapshot.derivation || null,
   };
 }
 
@@ -126,6 +134,23 @@ function mapStrategy(strategy, dailyImportId, accountByName, snapshotByName) {
     enabled: Boolean(strategy.enabled),
     realized: numberOrLegacyZero(strategy.realized),
     unrealized: numberOrLegacyZero(strategy.unrealized),
+    // Stored beside `realized`, never over it. NULL where the fills could not
+    // name this row — which includes the row the derivation simply never
+    // mentioned. It is written as a null rather than a 0 for the same reason
+    // `realized` is: 0 is a claim, absence is not. See step 37.
+    //
+    // THE ONLY DERIVED COLUMN ON THIS TABLE, and deliberately so. The row also
+    // carries `derivedRealizedJoin` in memory, and step 37 briefly had a column
+    // for it and one for the account-day verdict as well. Both were the SAME
+    // ANSWER repeated on every roster row of one account — the verdict verbatim,
+    // the join reason constant for all but the matched/unmatched split that
+    // `derived_realized` already draws — and both are answerable from
+    // `account_snapshots.derivation`, which stores them once. Measured through
+    // this mapper on the real export they were 35.4 B and 37.1 B a row against
+    // 23.9 B for this one: 72.5 of 96.4 bytes, ~73 KiB on the busiest CAM's
+    // 1,033-row export pull, against a 4 MiB ceiling that pull is already over.
+    // See src/domain/joinDerivedStrategies.js ROW_JOIN for the recovery table.
+    derived_realized: numberOrNull(strategy.derivedRealized),
   };
 }
 

@@ -577,6 +577,12 @@ textarea {
 
 .manager-sidebar-main {
   display: grid;
+  /* An implicit `auto` column is max-content sized and never shrinks, so one
+     long client name made every row in here as wide as that name: a 29-char
+     name plus its kind chip measured 366px of row inside a 251px column, and
+     the sidebar's own overflow did the cutting. minmax(0, 1fr) lets the track
+     shrink so `width: 100%` on the rows below actually means the sidebar. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   width: 100%;
   padding: 0 8px;
@@ -592,14 +598,29 @@ textarea {
   font-size: 12px;
 }
 
-/* Global search results */
+/* Global search results.
+   `display: flex` is load-bearing, not decoration: .client-link is a 3-column
+   grid (16px | 1fr | auto) sized for the close dot, and the four declarations
+   below were all flex properties being applied to a grid, so they did nothing.
+   A search row has no close dot, so its first child — the client name plus the
+   kind chip — was landing in the 16px column and rendering as an empty sliver.
+   The manager search result for a 29-character client read as "( Oakley Ash":
+   the CAM name, and nothing else. */
 .client-link-search {
+  display: flex !important;
   flex-direction: column !important;
   align-items: flex-start !important;
   gap: 3px !important;
   height: auto !important;
   min-height: 36px;
   padding: 7px 12px !important;
+}
+
+/* align-items: flex-start sizes each row of a search result to fit-content, and
+   a 29-character client name is 261px of fit-content in a 239px row. Capping at
+   the row width is what lets `.client-link span`'s ellipsis actually fire. */
+.client-link-search > * {
+  max-width: 100%;
 }
 
 .search-matches {
@@ -670,6 +691,89 @@ textarea {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+}
+
+/* Client row label: the NAME truncates, the chips beside it never do.
+   The rule above (`.client-link span`) makes every span in the row an ellipsing
+   box. When the name and the chips shared one such span, the ellipsis measured
+   them as a single run of text and ate the chips off the end — rows showed
+   "Ca..." and "...". These three rules override it for the label only: the
+   label is a flex line that does not ellipse, the name is the one flexible item
+   in it, and everything else (kind chip, Covering pill, last-contact dot, task
+   count) is fixed width.
+
+   Numbers this has to hold at: 280px sidebar -> 201.5px name column; the widest
+   real chip set is ~163px ("Cash + Prop" 72 + "Covering" 62 + dot 11 + task
+   count 18), which leaves the name ~38px rather than leaving the chip 0. */
+.client-link .client-row-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  /* In the sidebar list the label is a grid item in a minmax(0, 1fr) column and
+     is capped already. In .client-link-search it is a flex-column item sized to
+     fit-content, which a 29-character name would push past the sidebar edge. */
+  max-width: 100%;
+  /* Kept hidden so a pathological narrow row clips instead of spilling over the
+     IP column, but `clip` rather than `ellipsis`: no "..." is ever painted at
+     this level, which is what made the chips look truncated. */
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.client-link .client-row-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-link .client-row-label > :not(.client-row-name) {
+  flex: 0 0 auto;
+  /* `.client-link span` lands on the chips too. It was inert while they were
+     inline boxes — overflow does not apply to a non-replaced inline — but a flex
+     item is blockified, so without this the chips would inherit an ellipsis of
+     their own the moment they became flex children. They are never the part of
+     the row that should be cut. */
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* The NEW badge sits inside the label rather than beside it, so it no longer
+   gets the row grid's 8px gap and has to carry its own separation from the name.
+   6px, not 8px, because the badge already has 4px of its own padding. */
+.client-link .client-row-label > .new-data-badge {
+  margin-right: 6px;
+}
+
+/* Former clients (stage "Inactive"), parked under a disclosure below the working
+   list. It carries .nav-label as well so it picks up whatever the sidebar
+   section headings are themed to; this rule only adds the layout and the hit
+   target. When nobody is Inactive — which is the whole real book today, Active
+   132 / Onboarding 3 / Paused 1 / Inactive 0 — none of this renders. */
+.former-clients-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.former-clients-toggle:hover {
+  color: var(--text);
+}
+
+.former-clients-count {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+/* Dimmed, not hidden: a former client is still one click from their history. */
+.client-link-former .client-row-name {
+  opacity: 0.7;
 }
 
 .client-link em {
@@ -7836,3 +7940,14 @@ tr:nth-child(2) .rank-badge {
   font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .capital-chart-ends span:nth-child(2) { font-size: 12px; font-weight: 600; }
+
+/* Stack Playbook - per-algo contribution */
+.algo-contrib { margin-top: 10px; }
+.algo-contrib-toggle { background: none; border: none; padding: 0; font-size: 12px; color: var(--muted); cursor: pointer; }
+.algo-contrib-toggle:hover { color: var(--text); }
+.algo-contrib-body { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.algo-contrib-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.algo-contrib-table th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); padding: 3px 8px 3px 0; }
+.algo-contrib-table td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); }
+.algo-contrib-table .nums { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.algo-contrib-note { font-size: 11px; }

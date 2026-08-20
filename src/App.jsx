@@ -118,7 +118,12 @@ import {
   formatCurrency,
 } from "./domain/report";
 import { buildClientSegments } from "./domain/clientSegments";
-import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
+import {
+  buildClientLifecycle,
+  buildLifecycleRollup,
+  isChurnedClient,
+  partitionSidebarClients,
+} from "./domain/clientLifecycle";
 import {
   TIME_OFF_KINDS,
   buildCamRecord,
@@ -161,6 +166,7 @@ import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovate
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import { buildReportReasons } from "./domain/reportReasons";
 import ClientKindBadge from "./components/ClientKindBadge";
+import ClientRowLabel from "./components/ClientRowLabel";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -668,9 +674,13 @@ export function buildClientOverview(client, dailyImport) {
           days: 0,
           lastThree: [],
         };
-        current.realized += Number(strategy.realized || 0);
+        // Derived where the fills could say, reported otherwise. Absent stays 0
+        // here, as it always did — this roll-up counts days, so a missing figure
+        // must not shift the total.
+        const contribution = Number(strategy.derivedRealized ?? strategy.realized ?? 0);
+        current.realized += contribution;
         current.days += 1;
-        current.lastThree.push(Number(strategy.realized || 0));
+        current.lastThree.push(contribution);
         if (current.lastThree.length > 3) current.lastThree.shift();
         strategyTotals.set(key, current);
       }
@@ -868,7 +878,9 @@ export function buildStrategyAnalyzer(clients = []) {
           accountSet: new Set(),
         };
         entry.count += 1;
-        entry.totalRealized += Number(strategy.realized || 0);
+        // Derived where the fills could say, reported otherwise. Both are real
+        // measurements of the same quantity; neither is invented here.
+        entry.totalRealized += Number(strategy.derivedRealized ?? strategy.realized ?? 0);
         entry.totalWeekly += Number(snapshot.weeklyPnl || 0) / enabledCount;
         entry.accountSet.add(snapshot.accountName);
         stratMap.set(key, entry);
@@ -901,15 +913,10 @@ export function buildStrategyEffectiveness(clients = []) {
   for (const client of clients) {
     for (const di of client.dailyImports || []) {
       for (const snapshot of di.snapshots || []) {
-        const enabledCount =
-          (snapshot.strategies || []).filter((s) => s.enabled).length || 1;
         for (const strategy of snapshot.strategies || []) {
           if (!strategy.enabled) continue;
           const key =
             strategy.strategyFamily || strategy.strategyName || "Unknown";
-          const realized = Number(strategy.realized || 0);
-          const accountContrib =
-            Number(snapshot.grossRealizedPnl || 0) / enabledCount;
           if (!stratMap.has(key)) {
             stratMap.set(key, {
               name: key,
@@ -917,16 +924,61 @@ export function buildStrategyEffectiveness(clients = []) {
               contributions: [],
               winDays: 0,
               lossDays: 0,
+              noEvidenceDays: 0,
               accountSet: new Set(),
               clientSet: new Set(),
             });
           }
           const entry = stratMap.get(key);
-          const pnl = strategy.realized != null ? realized : accountContrib;
-          entry.totalPnl += pnl;
-          entry.contributions.push({ date: di.date, pnl });
-          if (pnl > 0) entry.winDays += 1;
-          else if (pnl < 0) entry.lossDays += 1;
+          // Order of preference, best evidence first. `derivedRealized` is
+          // worked out from this account's own fills and is only ever set on a
+          // day that reconciled with nothing left unattributed, so it outranks
+          // everything. `realized` is what NinjaTrader's Strategies grid said.
+          //
+          // AND THERE IS NO THIRD SOURCE. This used to fall through to
+          // `accountContrib` — the account's whole day divided evenly across
+          // whatever was enabled — which its own comment called a genuine
+          // fabrication. It is gone, for a reason narrower and harder to argue
+          // with than taste:
+          //
+          // It made the SAME state roll up two different ways. A grid that
+          // reported 0 for every strategy on a day the account moved (1,824 of
+          // 2,241 stored account-days) contributed 0 here. A grid with no
+          // Realized column at all — the same statement, "this export does not
+          // say" — contributed an invented share of the account's P&L instead.
+          // Which branch a row took depended on whether NinjaTrader emitted the
+          // column, which is not a fact about the strategy.
+          //
+          // That the second branch was reachable at all after a reload is
+          // recent: supabaseStore now reads `realized` back as NULL instead of
+          // collapsing it to 0, so absence survives the round trip. 0 of the
+          // 3,805 stored rows carry NULL today and the 2026-08-18 export has 7
+          // rows with no Realized column, so this changes nothing on the current
+          // book and everything on the next import of one.
+          //
+          // What is lost is real and is not hidden: on a day nothing measured,
+          // the account's money is in no strategy's total. `noEvidenceDays`
+          // counts those days and the leaderboard prints the count, because a
+          // total that quietly omits days reads as a total over all of them.
+          const derived =
+            strategy.derivedRealized != null
+              ? Number(strategy.derivedRealized)
+              : null;
+          const reported =
+            derived == null && strategy.realized != null
+              ? Number(strategy.realized)
+              : null;
+          const pnl = derived != null ? derived : reported;
+          if (pnl == null) {
+            entry.noEvidenceDays += 1;
+          } else {
+            entry.totalPnl += pnl;
+            entry.contributions.push({ date: di.date, pnl });
+            if (pnl > 0) entry.winDays += 1;
+            else if (pnl < 0) entry.lossDays += 1;
+          }
+          // Counted either way: which accounts a strategy RAN on is roster
+          // information, and the roster is exact even where the P&L is unknown.
           entry.accountSet.add(snapshot.accountName);
           entry.clientSet.add(client.name);
         }
@@ -967,6 +1019,10 @@ export function buildStrategyEffectiveness(clients = []) {
         accounts: e.accountSet.size,
         clients: e.clientSet.size,
         days: total,
+        // Account-days this strategy ran on where neither the fills nor the
+        // grid said what it made. They are in no figure above — not in
+        // `totalPnl`, not in `days`, not in `winRate`.
+        noEvidenceDays: e.noEvidenceDays,
       };
     })
     .sort((a, b) => b.totalPnl - a.totalPnl);
@@ -1075,7 +1131,7 @@ export function buildPnlVarianceAnalysis(client, allClients = []) {
           if (!strat.enabled) continue;
           const key = strat.strategyFamily || strat.strategyName || "Unknown";
           if (!stratAvg[key]) stratAvg[key] = { total: 0, count: 0 };
-          stratAvg[key].total += Number(strat.realized || 0);
+          stratAvg[key].total += Number(strat.derivedRealized ?? strat.realized ?? 0);
           stratAvg[key].count += 1;
         }
       }
@@ -4392,10 +4448,9 @@ function ManagerOverview({
                         closeMobileSidebar();
                       }}
                     >
-                      <span>
-                        {client.name}
+                      <ClientRowLabel name={client.name}>
                         <ClientKindBadge client={client} />
-                      </span>
+                      </ClientRowLabel>
                       <small className="muted">{cam?.name || "-"}</small>
                     </button>
                   ))
@@ -5965,7 +6020,17 @@ function ManagerOverview({
                       >
                         {s.winRate}%
                       </td>
-                      <td>{s.days}</td>
+                      <td>
+                        {s.days}
+                        {/* The days behind the P&L, and the days there is no
+                            P&L for. Without the second number the first reads
+                            as this strategy's whole history. */}
+                        {s.noEvidenceDays ? (
+                          <small className="muted">
+                            +{s.noEvidenceDays} unmeasured
+                          </small>
+                        ) : null}
+                      </td>
                       <td>{s.accounts}</td>
                       <td className={s.last7Pnl >= 0 ? "positive" : "negative"}>
                         {s.last7Pnl >= 0 ? "+" : ""}
@@ -9311,13 +9376,29 @@ function CamOverview({
     [clients, today],
   );
 
+  // The two per-client counters on this page count the CAM's WORKING book, the
+  // same set the sidebar lists above the "Former clients" disclosure. Counting
+  // churned clients here produced the header-disagrees-with-the-list defect this
+  // codebase keeps re-growing: on Oakley Ash's book with two Inactive clients the
+  // page read "0/12 clients closed today" over a sidebar showing 10 rows. It is
+  // also a target nobody can hit — a churned client never uploads a close, so the
+  // completion bar caps at 10/12 forever — and "no contact 7d+" nags about people
+  // who are not coming back. formerCount keeps the other two on screen rather
+  // than silently shrinking the book.
+  const workingClients = useMemo(
+    () => clients.filter((c) => !isChurnedClient(c)),
+    [clients],
+  );
+  const formerCount = clients.length - workingClients.length;
   const closeStats = (() => {
-    const withUpload = clients.filter((c) => getClientImportByDate(c, today));
+    const withUpload = workingClients.filter((c) =>
+      getClientImportByDate(c, today),
+    );
     const closed = withUpload.filter(
       (c) => getClientImportByDate(c, today)?.status === "Closed",
     );
     return {
-      total: clients.length,
+      total: workingClients.length,
       withUpload: withUpload.length,
       closed: closed.length,
     };
@@ -9363,7 +9444,7 @@ function CamOverview({
     [clients, today],
   );
   const criticalFlagsOpen = flagQueue.totals.critical;
-  const staleContactClients = clients.filter((c) => {
+  const staleContactClients = workingClients.filter((c) => {
     const d = lastContactDaysAgo(c);
     return d === null || d >= 7;
   }).length;
@@ -9388,6 +9469,14 @@ function CamOverview({
             {closeStats.total > closeStats.withUpload && (
               <span className="negative">
                 · {closeStats.total - closeStats.withUpload} no upload
+              </span>
+            )}
+            {formerCount > 0 && (
+              <span
+                className="muted"
+                title="Stage Inactive. Listed under Former clients in the sidebar and left out of the counts above."
+              >
+                · {formerCount} former
               </span>
             )}
           </div>
@@ -12280,6 +12369,9 @@ export default function App() {
   const [quickLogAccount, setQuickLogAccount] = useState("");
   const [reportImport, setReportImport] = useState(null);
   const [draggingClientId, setDraggingClientId] = useState(null);
+  // Collapsed by default: the point of moving Inactive clients out of the
+  // working list is that the CAM stops scrolling past them every morning.
+  const [showFormerClients, setShowFormerClients] = useState(false);
   const [showCamDayReport, setShowCamDayReport] = useState(false);
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
@@ -12536,6 +12628,245 @@ export default function App() {
       return critOpen(b) - critOpen(a);
     });
   })();
+  // Inactive clients are not part of the daily working list, but they are not
+  // gone either — a CAM still has to open a former client to pull their history.
+  // So they move under a collapsed "Former clients (N)" heading below the list
+  // rather than being deleted, hidden, or left sitting among the live ones.
+  const { working: workingSidebarClients, former: formerSidebarClients } =
+    partitionSidebarClients(orderedSidebarClients);
+
+  // One client row in the sidebar. Pulled out of the JSX so the working list
+  // and the "Former clients" disclosure below it render the SAME row: a CAM
+  // opening a former client to pull their history needs the row they already
+  // know (close dot, kind chip, P&L, badge), not a thinner second widget.
+  function renderSidebarClientRow(client) {
+    // Stage "Inactive" only. partitionSidebarClients says why At Risk, Paused
+    // and Onboarding stay in the working list.
+    const isFormer = isChurnedClient(client);
+    const badge = deriveClientBadge(client);
+    const todayClose = getClientImportByDate(
+      client,
+      todayIsoDate(),
+    );
+    const closeStatus = !todayClose
+      ? "no-close"
+      : todayClose.status === "Closed"
+        ? "closed"
+        : "uploaded";
+    return (
+      <button
+        className={
+          (!showOverview && selectedClient?.id === client.id
+            ? "client-link active"
+            : "client-link") +
+          (draggingClientId === client.id
+            ? " client-link-dragging"
+            : "") +
+          (isFormer ? " client-link-former" : "")
+        }
+        key={client.id}
+        // Former clients sit under their own heading. Dragging one into the
+        // working list order would move a row the order cannot place.
+        draggable={!isFormer}
+        onDragStart={(e) => {
+          setDraggingClientId(client.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (!isFormer) handleReorderClients(draggingClientId, client.id);
+          setDraggingClientId(null);
+        }}
+        onDragEnd={() => setDraggingClientId(null)}
+        onClick={() => {
+          setState((current) =>
+            selectClient(current, client.id),
+          );
+          setShowProfile(false);
+          setShowOverview(false);
+          setShowSOP(false);
+          markClientViewed(client.id);
+          closeMobileSidebar();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            e.currentTarget.nextElementSibling?.focus();
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            (
+              e.currentTarget.previousElementSibling ||
+              e.currentTarget
+                .closest("aside")
+                ?.querySelector(".client-search")
+            )?.focus();
+          }
+        }}
+      >
+        <span
+          className={`close-dot close-dot-${closeStatus}`}
+          title={
+            closeStatus === "no-close"
+              ? "No files today"
+              : closeStatus === "closed"
+                ? "Closed today"
+                : "Uploaded · not closed"
+          }
+        />
+        <ClientRowLabel
+          name={client.name}
+          // Inside the label, not beside it: as a direct child of the row this
+          // badge took the row's 1fr grid column and pushed the label into the
+          // `auto` one, which starves the 1fr track. See ClientRowLabel.
+          leading={
+            closeStatus === "uploaded" && !viewedClientIds.has(client.id) ? (
+              <span
+                className="new-data-badge"
+                title="New data uploaded - not yet reviewed"
+              >
+                NEW
+              </span>
+            ) : null
+          }
+        >
+          <ClientKindBadge client={client} />
+          {(() => {
+            // Borrowed while their own CAM is away. Marked so
+            // it never reads as part of this CAM's own book.
+            const cover = coverageForClient(
+              state.coverage || [],
+              client.id,
+              todayIsoDate(),
+            );
+            if (!cover || cover.coveringCamId !== currentCamProfile?.id) return null;
+            const absent = (state.camProfiles || []).find(
+              (profile) => profile.id === cover.absentCamId,
+            );
+            return (
+              <span
+                className="client-kind client-kind-covering"
+                title={`Covering for ${absent?.name || "another CAM"} until ${cover.endDate || cover.startDate}`}
+              >
+                Covering
+              </span>
+            );
+          })()}
+          {(() => {
+            const d = lastContactDaysAgo(client);
+            return d !== null && d > 3 ? (
+              <span
+                className="last-contact-dot"
+                title={`Last contact ${d}d ago`}
+                style={{
+                  background:
+                    d > 7 ? "var(--error)" : "var(--warning)",
+                }}
+              />
+            ) : null;
+          })()}
+          {(() => {
+            const td = todayIsoDate();
+            const tasks = (client.tasks || []).filter(
+              (t) => !t.done,
+            );
+            const overdue = tasks.filter(
+              (t) => t.dueDate && t.dueDate < td,
+            ).length;
+            const dueToday = tasks.filter(
+              (t) => t.dueDate === td,
+            ).length;
+            if (overdue)
+              return (
+                <span
+                  style={{
+                    marginLeft: 3,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: "var(--negative)",
+                    background: "rgba(239,68,68,0.15)",
+                    borderRadius: 3,
+                    padding: "1px 3px",
+                  }}
+                  title={`${overdue} overdue task${overdue !== 1 ? "s" : ""}`}
+                >
+                  {overdue}
+                </span>
+              );
+            if (dueToday)
+              return (
+                <span
+                  style={{
+                    marginLeft: 3,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: "var(--warning)",
+                    background: "rgba(245,158,11,0.15)",
+                    borderRadius: 3,
+                    padding: "1px 3px",
+                  }}
+                  title={`${dueToday} task${dueToday !== 1 ? "s" : ""} due today`}
+                >
+                  {dueToday}
+                </span>
+              );
+            return null;
+          })()}
+        </ClientRowLabel>
+        {client.credentials?.ip ? (
+          <small className="sidebar-ip" title="VPS IP">
+            {client.credentials.ip}
+          </small>
+        ) : null}
+        {(() => {
+          const latest = importAsOf(client, selectedDate);
+          if (!latest) return null;
+          const pnl = (latest.snapshots || []).reduce(
+            (s, snap) =>
+              s + Number(snap.grossRealizedPnl || 0),
+            0,
+          );
+          return (
+            <small
+              className={
+                pnl >= 0
+                  ? "sidebar-pnl positive"
+                  : "sidebar-pnl negative"
+              }
+            >
+              {pnl >= 0 ? "+" : ""}
+              {formatCurrency(pnl)}
+            </small>
+          );
+        })()}
+        <span
+          className={`pin-btn${client.pinned ? " pinned" : ""}`}
+          title={
+            client.pinned ? "Unpin client" : "Pin to top"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            setState((s) => togglePinClient(s, client.id));
+            updateSupabaseClient(client.id, { pinned: !client.pinned }).then(() => {
+              auditSilently({
+                entityType: "client",
+                entityId: client.id,
+                action: client.pinned ? "client.unpin" : "client.pin",
+                beforeData: { pinned: Boolean(client.pinned) },
+                afterData: { clientId: client.id, clientName: client.name, pinned: !client.pinned },
+              });
+            }).catch((error) => {
+              console.error("[CRM] Failed to pin client:", error);
+              window.alert(`Could not update pin for "${client.name}" in Supabase: ${error.message}`);
+            });
+          }}
+        >
+          ★
+        </span>
+        <em className={badge.tone}>{badge.label}</em>
+      </button>
+    );
+  }
   const isManagerSession = session?.role === USER_ROLES.MANAGER;
   const canCreateDeleteClients =
     isManagerSession || Boolean(currentCamProfile?.canManageClients);
@@ -12552,6 +12883,25 @@ export default function App() {
     currentCamClients.find((client) => client.id === state.selectedClientId) ||
     (state.selectedClientId ? null : currentCamClients[0]) ||
     null;
+
+  // A former client can be opened without going through the disclosure — the
+  // manager's global search calls openCamWorkspace(camId, clientId) directly.
+  // Expand the section when that happens, or the workspace shows a client whose
+  // row is nowhere in the sidebar, which reads as "the sidebar lost them".
+  //
+  // Keyed on the client's ID, not on a "is the selection former" boolean: with a
+  // boolean, a former -> former change never flips it, so the effect never
+  // re-runs. Measured against the real book with two Inactive clients: open Lane
+  // Hollow from search (expands), collapse the section by hand, then search
+  // Parker Birch — the workspace read "Parker Birch · Inactive" while the
+  // sidebar showed aria-expanded="false", zero former rows and no active row
+  // anywhere. Null rather than 0/false so the dependency is the identity of the
+  // client we need a row for, and absent means absent.
+  const selectedFormerClientId =
+    selectedClient && isChurnedClient(selectedClient) ? selectedClient.id : null;
+  useEffect(() => {
+    if (selectedFormerClientId) setShowFormerClients(true);
+  }, [selectedFormerClientId]);
 
   // When switching clients, keep the date on local-today if that's where we are —
   // the CAM opens a client precisely to upload today's close, which doesn't exist
@@ -12672,6 +13022,11 @@ export default function App() {
       date: selectedDate,
       registry: selectedClient.accountRegistry,
       parsed,
+      // Yesterday's fills, so a lot opened then and closed today can be priced.
+      // Without them every carried-in book is refused and the account publishes
+      // no per-algo split — safe, but needlessly blind on the one caller that
+      // actually holds the history. See carryForwardLots.js.
+      priorImports: selectedClient.dailyImports || [],
     });
     persistDailyImport(selectedClient.id, result);
     setShowUpload(false);
@@ -13912,7 +14267,11 @@ export default function App() {
                 <>
                   {(() => {
                     const today = todayIsoDate();
-                    const urgentCount = currentCamClients.reduce((total, c) => {
+                    // Working list only. This badge sits directly above that
+                    // list, so an overdue task on a churned client would make it
+                    // count something the CAM cannot see a row for without
+                    // opening "Former clients".
+                    const urgentCount = workingSidebarClients.reduce((total, c) => {
                       const critFlags = (
                         c.dailyImports?.at(-1)?.flags || []
                       ).filter(
@@ -14090,224 +14449,33 @@ export default function App() {
                       to add your first client.
                     </div>
                   )}
-                  {orderedSidebarClients
-                    .map((client) => {
-                      const badge = deriveClientBadge(client);
-                      const todayClose = getClientImportByDate(
-                        client,
-                        todayIsoDate(),
-                      );
-                      const closeStatus = !todayClose
-                        ? "no-close"
-                        : todayClose.status === "Closed"
-                          ? "closed"
-                          : "uploaded";
-                      return (
-                        <button
-                          className={
-                            (!showOverview && selectedClient?.id === client.id
-                              ? "client-link active"
-                              : "client-link") +
-                            (draggingClientId === client.id
-                              ? " client-link-dragging"
-                              : "")
-                          }
-                          key={client.id}
-                          draggable
-                          onDragStart={(e) => {
-                            setDraggingClientId(client.id);
-                            e.dataTransfer.effectAllowed = "move";
-                          }}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            handleReorderClients(draggingClientId, client.id);
-                            setDraggingClientId(null);
-                          }}
-                          onDragEnd={() => setDraggingClientId(null)}
-                          onClick={() => {
-                            setState((current) =>
-                              selectClient(current, client.id),
-                            );
-                            setShowProfile(false);
-                            setShowOverview(false);
-                            setShowSOP(false);
-                            markClientViewed(client.id);
-                            closeMobileSidebar();
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "ArrowDown") {
-                              e.preventDefault();
-                              e.currentTarget.nextElementSibling?.focus();
-                            } else if (e.key === "ArrowUp") {
-                              e.preventDefault();
-                              (
-                                e.currentTarget.previousElementSibling ||
-                                e.currentTarget
-                                  .closest("aside")
-                                  ?.querySelector(".client-search")
-                              )?.focus();
-                            }
-                          }}
-                        >
-                          <span
-                            className={`close-dot close-dot-${closeStatus}`}
-                            title={
-                              closeStatus === "no-close"
-                                ? "No files today"
-                                : closeStatus === "closed"
-                                  ? "Closed today"
-                                  : "Uploaded · not closed"
-                            }
-                          />
-                          {closeStatus === "uploaded" &&
-                            !viewedClientIds.has(client.id) && (
-                              <span
-                                className="new-data-badge"
-                                title="New data uploaded - not yet reviewed"
-                              >
-                                NEW
-                              </span>
-                            )}
-                          <span>
-                            {client.name}
-                            <ClientKindBadge client={client} />
-                            {(() => {
-                              // Borrowed while their own CAM is away. Marked so
-                              // it never reads as part of this CAM's own book.
-                              const cover = coverageForClient(
-                                state.coverage || [],
-                                client.id,
-                                todayIsoDate(),
-                              );
-                              if (!cover || cover.coveringCamId !== currentCamProfile?.id) return null;
-                              const absent = (state.camProfiles || []).find(
-                                (profile) => profile.id === cover.absentCamId,
-                              );
-                              return (
-                                <span
-                                  className="client-kind client-kind-covering"
-                                  title={`Covering for ${absent?.name || "another CAM"} until ${cover.endDate || cover.startDate}`}
-                                >
-                                  Covering
-                                </span>
-                              );
-                            })()}
-                            {(() => {
-                              const d = lastContactDaysAgo(client);
-                              return d !== null && d > 3 ? (
-                                <span
-                                  className="last-contact-dot"
-                                  title={`Last contact ${d}d ago`}
-                                  style={{
-                                    background:
-                                      d > 7 ? "var(--error)" : "var(--warning)",
-                                  }}
-                                />
-                              ) : null;
-                            })()}
-                            {(() => {
-                              const td = todayIsoDate();
-                              const tasks = (client.tasks || []).filter(
-                                (t) => !t.done,
-                              );
-                              const overdue = tasks.filter(
-                                (t) => t.dueDate && t.dueDate < td,
-                              ).length;
-                              const dueToday = tasks.filter(
-                                (t) => t.dueDate === td,
-                              ).length;
-                              if (overdue)
-                                return (
-                                  <span
-                                    style={{
-                                      marginLeft: 3,
-                                      fontSize: 9,
-                                      fontWeight: 700,
-                                      color: "var(--negative)",
-                                      background: "rgba(239,68,68,0.15)",
-                                      borderRadius: 3,
-                                      padding: "1px 3px",
-                                    }}
-                                    title={`${overdue} overdue task${overdue !== 1 ? "s" : ""}`}
-                                  >
-                                    {overdue}
-                                  </span>
-                                );
-                              if (dueToday)
-                                return (
-                                  <span
-                                    style={{
-                                      marginLeft: 3,
-                                      fontSize: 9,
-                                      fontWeight: 700,
-                                      color: "var(--warning)",
-                                      background: "rgba(245,158,11,0.15)",
-                                      borderRadius: 3,
-                                      padding: "1px 3px",
-                                    }}
-                                    title={`${dueToday} task${dueToday !== 1 ? "s" : ""} due today`}
-                                  >
-                                    {dueToday}
-                                  </span>
-                                );
-                              return null;
-                            })()}
-                          </span>
-                          {client.credentials?.ip ? (
-                            <small className="sidebar-ip" title="VPS IP">
-                              {client.credentials.ip}
-                            </small>
-                          ) : null}
-                          {(() => {
-                            const latest = importAsOf(client, selectedDate);
-                            if (!latest) return null;
-                            const pnl = (latest.snapshots || []).reduce(
-                              (s, snap) =>
-                                s + Number(snap.grossRealizedPnl || 0),
-                              0,
-                            );
-                            return (
-                              <small
-                                className={
-                                  pnl >= 0
-                                    ? "sidebar-pnl positive"
-                                    : "sidebar-pnl negative"
-                                }
-                              >
-                                {pnl >= 0 ? "+" : ""}
-                                {formatCurrency(pnl)}
-                              </small>
-                            );
-                          })()}
-                          <span
-                            className={`pin-btn${client.pinned ? " pinned" : ""}`}
-                            title={
-                              client.pinned ? "Unpin client" : "Pin to top"
-                            }
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setState((s) => togglePinClient(s, client.id));
-                              updateSupabaseClient(client.id, { pinned: !client.pinned }).then(() => {
-                                auditSilently({
-                                  entityType: "client",
-                                  entityId: client.id,
-                                  action: client.pinned ? "client.unpin" : "client.pin",
-                                  beforeData: { pinned: Boolean(client.pinned) },
-                                  afterData: { clientId: client.id, clientName: client.name, pinned: !client.pinned },
-                                });
-                              }).catch((error) => {
-                                console.error("[CRM] Failed to pin client:", error);
-                                window.alert(`Could not update pin for "${client.name}" in Supabase: ${error.message}`);
-                              });
-                            }}
-                          >
-                            ★
-                          </span>
-                          <em className={badge.tone}>{badge.label}</em>
-                        </button>
-                      );
-                    })}
+                  {workingSidebarClients.map(renderSidebarClientRow)}
+                  {formerSidebarClients.length ? (
+                    <>
+                      <button
+                        type="button"
+                        className="nav-label former-clients-toggle"
+                        aria-expanded={showFormerClients}
+                        title="Clients whose stage is Inactive. Kept here so their history stays reachable."
+                        onClick={() =>
+                          setShowFormerClients((open) => !open)
+                        }
+                      >
+                        {showFormerClients ? (
+                          <ChevronDown size={13} />
+                        ) : (
+                          <ChevronRight size={13} />
+                        )}
+                        Former clients
+                        <span className="former-clients-count">
+                          {formerSidebarClients.length}
+                        </span>
+                      </button>
+                      {showFormerClients
+                        ? formerSidebarClients.map(renderSidebarClientRow)
+                        : null}
+                    </>
+                  ) : null}
                 </>
               )}
             </nav>

@@ -46,6 +46,38 @@ export function isChurnedClient(client) {
   return client?.profile?.stage === CLIENT_STAGE_INACTIVE;
 }
 
+/**
+ * Splits a client list into the ones a CAM still works and the ones they only
+ * need for history.
+ *
+ * ONLY 'Inactive' leaves the working list, and it leaves it by the same
+ * definition the churn panels already use (isChurnedClient), so the sidebar and
+ * the retention numbers cannot disagree about who is still a client.
+ *
+ * The other four stages deliberately stay put:
+ *  - At Risk is the stage that means "needs MORE attention". Moving it out of
+ *    sight would invert the sidebar's whole urgency sort, which already floats
+ *    trouble to the top.
+ *  - Paused is a client who is coming back and still has a restart date to
+ *    chase. On the real book (public/local-snapshot.json) that is 1 client out
+ *    of 133 in the sidebar — burying 1 row saves no scrolling and costs a
+ *    lookup every time the CAM wonders where they went.
+ *  - Onboarding is the most active work there is (3 clients on the same book).
+ *  - Active is the working list by definition.
+ *
+ * Order is preserved on both sides, so whichever sort or manual drag order the
+ * caller applied still holds within each group.
+ */
+export function partitionSidebarClients(clients = []) {
+  const working = [];
+  const former = [];
+  for (const client of clients || []) {
+    if (isChurnedClient(client)) former.push(client);
+    else working.push(client);
+  }
+  return { working, former };
+}
+
 // Earliest date we can prove the client existed: their recorded start date, or
 // the first account they ever had, or their first uploaded close.
 export function clientStartDate(client) {

@@ -52,6 +52,9 @@ supabase/step_31_report_config.sql
 supabase/step_32_client_order.sql
 supabase/step_33_tradovate_account_id.sql
 supabase/step_34_cam_time_off_and_coverage.sql
+supabase/step_35_prop_firm_plan.sql
+supabase/step_36_simulation_accounts.sql
+supabase/step_37_derived_strategy_pnl.sql
 ```
 
 All are additive and idempotent. None drops or rewrites existing data, so
@@ -64,12 +67,33 @@ re-running is safe.
   upload fails with `snapshot_ingest_unavailable` and every pairing fails with
   `pairing_unavailable`. The rest of the CRM is unaffected — nothing else reads
   those tables.
-- **31–34 degrade gracefully.** Each feature reads its column as an empty
+- **31–37 degrade gracefully.** Each feature reads its column as an empty
   default when missing, so the code can deploy first and the feature simply
   stays dormant: no 31 → the report designer can't save; no 32 → the sidebar
   keeps its automatic sort; no 33 → the Tradovate ID field has nowhere to save;
   no 34 → time off and coverage are unavailable and everyone sees only their own
-  clients, exactly as before.
+  clients, exactly as before; no 35 → an account runs on the tightest drawdown
+  its firm sells at that size; no 36 → a CAM's simulation/live override has
+  nowhere to save and the heuristic decides alone.
+- **37 degrades gracefully but visibly, so run it.** The per-algo P&L split is
+  derived from the fills at import time and stored in the two columns this step
+  adds — `strategy_snapshots.derived_realized`, one figure per roster row, and
+  `account_snapshots.derivation`, the account-day's verdict and join report
+  stored once. Without them a CAM sees the split on the close they just imported
+  and nothing after a refresh: the panel falls back to the combination history,
+  which is exact, and shows no per-algo figures. Nothing wrong is displayed —
+  a figure that cannot be checked is refused rather than shown — but the feature
+  is invisible to everyone who did not run the import themselves.
+
+  Two further `strategy_snapshots` columns were drafted into this step and cut
+  before it ran, because both repeated the account-day verdict on every roster
+  row of that account: 72.5 of the 96.4 bytes a strategy row was about to grow
+  by, measured through the shipped write mapper on a real export, and ~73 KiB on
+  the busiest CAM's export pull against a ceiling that pull is already over. Both
+  are answerable from `account_snapshots.derivation`; nothing computed or shown
+  changed. If you ran an earlier draft of step 37 against a database, the two
+  extra columns are harmless — nothing reads or writes them any more — and can be
+  dropped at leisure.
 
 Reference: [`supabase/MIGRATIONS_TO_RUN.md`](../supabase/MIGRATIONS_TO_RUN.md)
 

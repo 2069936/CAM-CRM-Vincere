@@ -8,7 +8,16 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Dependencies
+# Keep this repo OUT of an iCloud-synced path (~/Desktop, ~/Documents with
+# Desktop & Documents sync on). iCloud evicts file contents on demand and leaves
+# a zero-block placeholder behind: the size is right, the bytes are gone, and
+# Node reads it as truncated. It cost a full day here — 540 evicted files in
+# node_modules broke the suite with "Class extends value #<Object> is not a
+# constructor", and 21 evicted files in the repo itself (DATABASE_TRACKER.md,
+# cam_crm_schema.sql) failed 5 migration tests that had nothing wrong with them.
+# git reports the tree clean throughout, because the content is in the index.
 node_modules
+node_modules.nosync/
 
 # Build
 dist

@@ -10,6 +10,7 @@ import { buildBulletBotDeskStats } from '../domain/bulletBotDeskStats';
 import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
+import AlgoContributionPanel from './AlgoContributionPanel';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
@@ -387,6 +388,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                       </small>
                     </div>
                     <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName)} />
+                    <AlgoContributionPanel client={client} accountName={account.accountName} />
                   </div>
                 );
               })}

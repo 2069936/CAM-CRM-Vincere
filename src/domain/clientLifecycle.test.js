@@ -7,6 +7,7 @@ import {
   clientCashMovement,
   clientStartDate,
   isChurnedClient,
+  partitionSidebarClients,
 } from './clientLifecycle';
 
 function client(overrides = {}) {
@@ -183,5 +184,77 @@ describe('buildLifecycleRollup', () => {
     expect(rollup.passRate).toBe(0.5);
     expect(rollup.churned).toBe(1);
     expect(rollup.retentionRate).toBe(0.5);
+  });
+});
+
+describe('partitionSidebarClients', () => {
+  // The bug this exists for: a client was marked Inactive in the CRM and stayed
+  // in the sidebar looking exactly like an active one, because the sidebar never
+  // read profile.stage at all.
+  const stages = ['Onboarding', 'Active', 'At Risk', 'Paused', 'Inactive'];
+  const book = stages.map((stage, i) => client({ id: `c${i}`, name: stage, profile: { stage } }));
+
+  it('moves Inactive out of the working list and leaves the other four in it', () => {
+    const { working, former } = partitionSidebarClients(book);
+    expect(working.map((c) => c.name)).toEqual(['Onboarding', 'Active', 'At Risk', 'Paused']);
+    expect(former.map((c) => c.name)).toEqual(['Inactive']);
+  });
+
+  it('keeps At Risk in the working list', () => {
+    // Asserted on its own because it is the one that would be tempting to sweep
+    // up with the other non-Active stages, and the one where doing so is worst:
+    // At Risk means the client needs MORE attention, so a CAM who stops seeing
+    // it every morning is the failure this whole split was meant to avoid.
+    const { working, former } = partitionSidebarClients([client({ profile: { stage: 'At Risk' } })]);
+    expect(working).toHaveLength(1);
+    expect(former).toHaveLength(0);
+  });
+
+  it('keeps Paused in the working list', () => {
+    // A paused client is coming back and still has a restart date to chase. On
+    // the real book that is 1 client out of 133 — burying one row saves no
+    // scrolling and costs a lookup every time the CAM wonders where they went.
+    const { working, former } = partitionSidebarClients([client({ profile: { stage: 'Paused' } })]);
+    expect(working).toHaveLength(1);
+    expect(former).toHaveLength(0);
+  });
+
+  it('treats a missing stage as working, never as former', () => {
+    // A client row with no profile at all is a data gap, not a churn signal.
+    // Defaulting the other way would delete people from the sidebar for having
+    // an unfilled field.
+    const { working, former } = partitionSidebarClients([
+      { id: 'x', name: 'No profile' },
+      client({ profile: {} }),
+    ]);
+    expect(working).toHaveLength(2);
+    expect(former).toHaveLength(0);
+  });
+
+  it('agrees with the churn count the retention panel reports', () => {
+    // One definition of "former client", not two. If these ever disagree the
+    // sidebar is hiding someone the retention rate still counts as active, or
+    // the other way round.
+    const { former } = partitionSidebarClients(book);
+    expect(former).toHaveLength(buildChurnRetention(book).churned);
+  });
+
+  it('preserves the order it was given on both sides', () => {
+    // The caller has already applied the CAM's manual drag order or the urgency
+    // sort. Partitioning must not quietly re-sort either group.
+    const ordered = [
+      client({ id: 'p1', profile: { stage: 'Active' } }),
+      client({ id: 'p2', profile: { stage: 'Inactive' } }),
+      client({ id: 'p3', profile: { stage: 'Active' } }),
+      client({ id: 'p4', profile: { stage: 'Inactive' } }),
+    ];
+    const { working, former } = partitionSidebarClients(ordered);
+    expect(working.map((c) => c.id)).toEqual(['p1', 'p3']);
+    expect(former.map((c) => c.id)).toEqual(['p2', 'p4']);
+  });
+
+  it('returns two empty lists for no clients at all', () => {
+    expect(partitionSidebarClients([])).toEqual({ working: [], former: [] });
+    expect(partitionSidebarClients()).toEqual({ working: [], former: [] });
   });
 });

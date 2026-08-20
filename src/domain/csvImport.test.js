@@ -316,4 +316,76 @@ describe('optional grid columns must not read as zero', () => {
     expect(populated.trailingMaxDrawdown).toBe(888.48);
     expect(populated.weeklyPnl).toBe(0);
   });
+
+  // The Strategies grid's Realized column is switchable too, and one client
+  // folder in a real export was captured without it. Read as 0 it became a
+  // CLAIM — "this strategy made nothing" — about a strategy that had lost
+  // $1,115, and a cross-check then scored the absence as a disagreement with the
+  // derivation that had it right. Absent has to stay absent.
+  it('reports an absent strategy Realized column as unknown, not as zero', () => {
+    const row = parseNinjaTraderCsvText(
+      'Enabled,Parameters,Account display name,Strategy,Instrument,Data series,Connection\nTrue,raw,MFF123,0 - Bullet Bot-1.1,NQ SEP26,20 Second,Lucid\n',
+      'strategies.csv',
+    ).rows[0];
+    expect(row.realized).toBeNull();
+    expect(row.unrealized).toBeNull();
+  });
+
+  it('keeps a strategy Realized of exactly zero as a reported zero', () => {
+    const row = parseNinjaTraderCsvText(
+      'Enabled,Parameters,Account display name,Strategy,Instrument,Realized,Unrealized,Data series,Connection\nTrue,raw,MFF123,0 - Bullet Bot-1.1,NQ SEP26,$0.00,$0.00,20 Second,Lucid\n',
+      'strategies.csv',
+    ).rows[0];
+    expect(row.realized).toBe(0);
+    expect(row.unrealized).toBe(0);
+  });
+});
+
+describe('gross realized PnL is kept apart from the net figure', () => {
+  // mapAccount prefers 'Realized PnL' when the grid exported both, and that
+  // column is NET of commissions — it differed from gross on 19 of 21 traded
+  // accounts on the export this was measured against. A FIFO derivation
+  // reproduces GROSS, so it needs the raw column, not the blend.
+  it('preserves the raw Gross realized PnL column alongside the blended field', () => {
+    const row = parseNinjaTraderCsvText(
+      'Display name,Cash value,Gross realized PnL,Realized PnL\nACC1,50000,-1115.00,-1128.36\n',
+      'accounts.csv',
+    ).rows[0];
+    expect(row.grossRealizedPnl).toBe(-1128.36);
+    expect(row.grossRealizedPnlReported).toBe(-1115);
+  });
+
+  it('reports an accounts grid with no gross column as unknown rather than zero', () => {
+    const row = parseNinjaTraderCsvText(
+      'Display name,Cash value,Realized PnL\nACC1,50000,-1128.36\n',
+      'accounts.csv',
+    ).rows[0];
+    expect(row.grossRealizedPnlReported).toBeNull();
+  });
+});
+
+describe('grids are classified by header, never by column count or filename', () => {
+  // The defect that produced the original "Bullet Bot" mystery. A throwaway
+  // probe sniffed orders as `'Strategy' in row && 'Avg. price' in row`; one
+  // client had the optional "Avg. price" column switched on in the STRATEGIES
+  // grid, that file sorted first alphabetically, and the id->strategy map
+  // collapsed to a single undefined key — every one of that client's fills fell
+  // through to "(manual)". detectNinjaTraderFileType is already header-truthful;
+  // this pins it so nothing re-sniffs headers ad hoc.
+  it('classifies a strategies grid that also carries Avg. price as strategies', () => {
+    const parsed = parseNinjaTraderCsvText(
+      'Strategy,Instrument,Account display name,Parameters,Avg. price,Realized,Unrealized,Enabled\n0 - Bullet Bot-1.1,NQ SEP26,ACC1,raw,23145.25,($100.00),$0.00,True\n',
+      'NinjaTrader Grid 2026-08-18 04-07 PM2.csv',
+    );
+    expect(parsed.type).toBe('strategies');
+  });
+
+  it('still classifies the orders grid in the same export as orders', () => {
+    const parsed = parseNinjaTraderCsvText(
+      'Instrument,Action,Type,Quantity,Avg. price,State,Filled,Remaining,Name,Strategy,Account display name,ID,Time\nNQ SEP26,Buy,Market,1,23145.25,Filled,1,0,Close,,ACC1,12345,8/18/2026 9:30:01 AM\n',
+      'NinjaTrader Grid 2026-08-18 04-07 PM3.csv',
+    );
+    expect(parsed.type).toBe('orders');
+    expect(parsed.rows[0]).toMatchObject({ id: '12345', name: 'Close', strategyName: '' });
+  });
 });

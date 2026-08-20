@@ -5,6 +5,9 @@ import { summarizePnlSources } from './pnlSourceSummary.js';
 // specifiers on this line's neighbours already carried it.
 import { scopeExecutionsToDay, scopeOrdersToDay } from './tradingDayScope.js';
 import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './derivedAccountMetrics.js';
+import { deriveStrategyPnlByAccount } from './deriveStrategyPnl.js';
+import { carryForwardLots } from './carryForwardLots.js';
+import { joinDerivedStrategies } from './joinDerivedStrategies.js';
 import {
   ACCOUNT_NATURES,
   SIMULATION_ACCOUNT_TYPE,
@@ -250,7 +253,121 @@ function withoutDerivation(value) {
   return value === undefined ? 0 : value;
 }
 
-function createSnapshot(account, strategies, derived = {}) {
+/**
+ * What of a derivation is worth keeping on the snapshot — and what is not.
+ *
+ * deriveStrategyPnl returns twenty fields, and `reconcileDailyImport` needs all
+ * of them: `byStrategy` is what the join carries onto the roster rows, and
+ * `reconciles`/`positionAgrees`/`unpricedPairs`/`unknownInstruments`/
+ * `refusedBooks` are what decide `status` in the first place. NONE of that has
+ * to be STORED, and storing it is not free. This object is written verbatim into
+ * account_snapshots.derivation (jsonb, step 37) and read back by two things that
+ * select '*': supabaseStore.loadTable on every CRM state load, and
+ * server/export/clientExport.js, whose own header records the busiest CAM's
+ * default pull at 4.06 MB against a 4 MiB ceiling enforced as a 413. It is over
+ * that line already. account_snapshots is ~322 B a row of scalars; the full
+ * derivation measured 606 B a row mean on a real ten-folder export — the blob
+ * was about to be two thirds of the row it hangs off.
+ *
+ * So this is a projection, and it is drawn on one rule: keep what cannot be
+ * recovered from another stored column, drop what can.
+ *
+ *   status         Kept. Nothing else records the account-day's verdict, and
+ *                  algoContribution refuses to show a split without seeing
+ *                  'exact' here. It now also carries the two refusals —
+ *                  'refused' (a book that could not be priced) and
+ *                  'no-reported-gross' (no column to check the total against) —
+ *                  which is why the residual's REASONS below have to be kept
+ *                  whole: 'refused' says an account was declined, and only
+ *                  `residual.reasons` says whether that was a carried-in
+ *                  position or an instrument missing from the multiplier table,
+ *                  and those two have different fixes.
+ *   reportedGross  Kept, and load-bearing: mapAccountSnapshot does NOT store
+ *                  `grossRealizedPnlReported`, so this is the only surviving
+ *                  copy of the raw 'Gross realized PnL' column, and it is the
+ *                  basis the display re-checks the derived rows add up to.
+ *   residual       Kept whole — the realized amount, the pair count and the
+ *                  reasons. This is money the fills paired and could not credit
+ *                  to any one strategy; nothing else stores it, and the point of
+ *                  the feature is that it is surfaced rather than folded away.
+ *   join           Kept, trimmed to `status`, `published`, `offRoster`,
+ *                  `offRosterRealized` and — only when it is non-empty —
+ *                  `ambiguousNames`. Off-roster money is derived money that
+ *                  belongs to a strategy on no row of this account's grid, so no
+ *                  strategy_snapshots row can carry it — exactly the money the
+ *                  old one-directional join deleted in silence.
+ *
+ * WHY `ambiguousNames` IS HERE AND NOT PER ROW. It is the one per-row verdict
+ * this blob could not otherwise answer. Step 37 originally shipped a
+ * `strategy_snapshots.derived_realized_join` column carrying ROW_JOIN per roster
+ * row; measured through mapStrategy on the real ten-folder export that was
+ * 37.1 B on EVERY strategy row, and four of its five values are recoverable from
+ * `derived_realized` plus `status`/`published` here (the table is in the ROW_JOIN
+ * comment in joinDerivedStrategies.js). Only 'ambiguous-name' was not: a row
+ * refused because its name matched several roster rows looks exactly like a row
+ * refused for any other reason. So the names are kept ONCE per account-day, and
+ * only on a day that had any — 0 of 40 account-days on that export, so 0 bytes
+ * there — instead of a string on all 1,033 strategy rows of the busiest CAM's
+ * pull. Same fact, same recoverable per-row answer, ~37 KiB less.
+ *
+ * Dropped, with where to find them instead: `byStrategy` (per row, in
+ * strategy_snapshots.derived_realized — storing it here is the same figures a
+ * second time); `join.unmatchedRoster` (the published rows whose
+ * `derived_realized` is null), `join.matchedRows` (the published rows whose
+ * `derived_realized` is not), `join.rosterRows` (count the account's
+ * strategy_snapshots rows), `join.derivedRows` (`matchedRows` + `offRoster` on a
+ * published day); `attributedTotal`, `derivedTotal`, `difference`,
+ * `joinedTotal`, `balanced` (arithmetic over figures already stored); `pairs`,
+ * `unpricedPairs`, `detachedPairs`, `openContracts`, `carriedInContracts`,
+ * `unknownInstruments`, `refusedBooks`, `carryInBasis`, `orderingBasis`,
+ * `positionAgrees`, `reconciles` (inputs to `status`, which is stored — and
+ * re-derivable from the executions, which are stored too).
+ *
+ * `refusedBooks` is the one of those worth pausing on, because it names an
+ * instrument and looks like information nothing else holds. It is not: the
+ * instrument is on every execution row of the same close, and which KIND of
+ * refusal it was is in `residual.reasons`, which is kept. Storing the array
+ * would be a third copy of a fact already in two places.
+ *
+ * AND AN ACCOUNT THAT DID NOT TRADE STORES NOTHING AT ALL. A 'no-trades'
+ * derivation is sixteen fields of zero and one string; it makes exactly the
+ * claim a NULL makes, at 560 bytes a row instead of none. Nineteen of the forty
+ * account-days on that export were in this state. `algoContribution` reads an
+ * absent derivation and a 'no-trades' one identically — neither can produce a
+ * derived day — so this is invisible to the display and worth ~10.6 KB per forty
+ * snapshots stored.
+ *
+ * NOT A WEAKENING OF THE RECONCILIATION. Everything above is still computed, and
+ * every refusal still fires on the full result: the join sees `byStrategy`, the
+ * per-row columns are written from it, and `status` is decided before this
+ * function is reached. This only decides what survives the trip to the database.
+ */
+export function storableDerivation(derivation) {
+  if (!derivation) return null;
+  // Nothing happened. A null says that at no cost, and says it identically.
+  if (derivation.status === 'no-trades') return null;
+  const join = derivation.join || null;
+  return {
+    status: derivation.status,
+    reportedGross: derivation.reportedGross ?? null,
+    residual: derivation.residual || { realized: 0, pairs: 0, reasons: {} },
+    ...(join ? {
+      join: {
+        status: join.status,
+        published: Boolean(join.published),
+        offRoster: join.offRoster || [],
+        offRosterRealized: join.offRosterRealized || 0,
+        // Omitted entirely on the ordinary day, which is every day that had no
+        // duplicate-named roster row. An empty array here would be four more
+        // bytes on every stored account-day to say "nothing happened", which is
+        // the same mistake as storing a 'no-trades' derivation.
+        ...(join.ambiguousNames?.length ? { ambiguousNames: [...join.ambiguousNames] } : {}),
+      },
+    } : {}),
+  };
+}
+
+function createSnapshot(account, strategies, derived = {}, derivation = null) {
   const reportedTrailing = account.trailingMaxDrawdown;
   const reportedWeekly = account.weeklyPnl;
   // A number the grid reported always wins; we only fill a genuine hole.
@@ -276,6 +393,14 @@ function createSnapshot(account, strategies, derived = {}) {
       : withoutDerivation(reportedWeekly),
     weeklyPnlSource: useDerivedWeekly ? 'derived' : (isMissing(reportedWeekly) ? null : 'reported'),
     unrealizedPnl: account.unrealizedPnl === undefined ? 0 : account.unrealizedPnl,
+    // The raw 'Gross realized PnL' column, kept because grossRealizedPnl above
+    // prefers the NET 'Realized PnL' whenever the grid exported both. The
+    // derivation reconciles against gross; nothing else reads this.
+    grossRealizedPnlReported: account.grossRealizedPnlReported ?? null,
+    // What the fills say each strategy made, and — just as important — what they
+    // could not say. Null when the account had no fills in this close, and
+    // trimmed to the part that has to survive a reload: see storableDerivation.
+    derivation: storableDerivation(derivation),
     strategies,
   };
 }
@@ -285,6 +410,7 @@ function snapshotToAccount(snapshot) {
     accountName: snapshot.accountName,
     connection: snapshot.connection,
     grossRealizedPnl: snapshot.grossRealizedPnl,
+    grossRealizedPnlReported: snapshot.grossRealizedPnlReported ?? null,
     trailingMaxDrawdown: snapshot.trailingMaxDrawdown,
     accountBalance: snapshot.accountBalance,
     weeklyPnl: snapshot.weeklyPnl,
@@ -296,7 +422,15 @@ function snapshotToAccount(snapshot) {
 // neither weekly PnL nor trailing drawdown — they exist only as Accounts grid
 // columns — so an automatic capture arrives without them. Given the history we
 // reconstruct both rather than losing the drawdown flags on automatic closes.
-export function reconcileDailyImport({ clientId, date, registry = {}, parsed, history = [] }) {
+//
+// `priorImports` is the same client's stored daily_imports WITH their executions
+// and orders, and it is what separates this caller from the one-day verifier.
+// A position opened yesterday and closed today can only be priced by carrying
+// yesterday's open lots forward, and only a caller that holds yesterday can do
+// it — see carryForwardLots.js. Pass nothing and the derivation refuses every
+// carried-in book rather than guessing at a cost basis; that is a safe default,
+// not a correct one, so any path that CAN supply the history should.
+export function reconcileDailyImport({ clientId, date, registry = {}, parsed, history = [], priorImports = [] }) {
   const accountsByName = {};
   const snapshots = [];
   const flags = [];
@@ -312,7 +446,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   // about how the SIM session went. Simulated rows are now carried through and
   // separated at the end by splitSimulationRows.
   const sourceAccounts = parsed.accounts || [];
-  const strategies = parsed.strategies || [];
+  const reportedStrategies = parsed.strategies || [];
   // Scoped to the day before anything else reads them. The AddOn hands over
   // whatever NinjaTrader has loaded, which on a first capture is months of
   // history, and every row of it arrives stamped with today's trading date.
@@ -333,6 +467,73 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       .filter((account) => typeof account.isSimulated === 'boolean')
       .map((account) => [String(account.accountName || '').toLowerCase(), account.isSimulated]),
   );
+  // Per-account, per-strategy P&L derived from the fills themselves. The
+  // Strategies grid reports `realized` on only a minority of rows, so on most
+  // accounts this is the only thing that can answer "which algo did that".
+  //
+  // It is carried in `derivedRealized`, ALONGSIDE the reported `realized`, never
+  // over it. The two must stay distinguishable for good: one is what
+  // NinjaTrader said, the other is what we worked out, and a reader who cannot
+  // tell them apart cannot judge either. `derivedRealized` is populated only
+  // where the account's whole day reconciles to Gross realized PnL with nothing
+  // left unattributed AND the roster join itself balances — a partial split
+  // presented as a whole one is the failure this feature exists to avoid. The
+  // full picture, including the residual, the join report and why anything could
+  // not be attributed, travels on the snapshot as `derivation`.
+  //
+  // CARRY-IN. The CRM stores every day's executions and orders per daily_import,
+  // so a lot opened on one close and sold on the next CAN be paired here — the
+  // one thing scripts/verify-derived-pnl.mjs can never do from a single folder.
+  // The replay refuses rather than guesses when the chain is broken: an account
+  // whose stored closes do not explain the position it opens today (a client who
+  // skipped an upload) is marked unavailable and its carried-in books are then
+  // refused exactly as they would be with no history at all.
+  // Simulated rows are merged back in for the replay. A stored close keeps them
+  // in a separate `simulation` bucket, and an account whose fills were split out
+  // of `executions` would look to the replay as though it had traded nothing —
+  // which would report a phantom gap on the one kind of account whose carry-in
+  // nobody would think to check.
+  const carryIn = carryForwardLots({
+    dailyImports: (priorImports || []).map((entry) => ({ date: entry?.date, ...mergeSimulationRows(entry) })),
+    date,
+  });
+  const derivationByAccount = deriveStrategyPnlByAccount({
+    executions,
+    orders,
+    accounts: sourceAccounts,
+    carryInByAccount: carryIn.byAccount,
+  });
+  // The join is BIDIRECTIONAL and reconciliation-checked — see
+  // joinDerivedStrategies.js for the two failures the old one-directional
+  // `find(...)?.realized ?? 0` produced end-to-end: a fabricated zero that
+  // deleted an account's whole day, and one derived row copied onto two
+  // same-named grid rows for double the money. Every account that has either a
+  // roster or a derivation is joined, so a derived strategy with no grid row is
+  // reported rather than dropped.
+  const rosterByAccount = new Map();
+  reportedStrategies.forEach((strategy, index) => {
+    const key = String(strategy.accountName || '').trim();
+    if (!rosterByAccount.has(key)) rosterByAccount.set(key, []);
+    rosterByAccount.get(key).push({ strategy, index });
+  });
+  // Positions preserved: the joined array is the reported array, row for row.
+  const strategies = new Array(reportedStrategies.length);
+  const joinedDerivationByAccount = new Map();
+  for (const key of new Set([...rosterByAccount.keys(), ...derivationByAccount.keys()])) {
+    const derivation = derivationByAccount.get(key) || null;
+    const roster = rosterByAccount.get(key) || [];
+    const joined = joinDerivedStrategies({
+      strategies: roster.map((entry) => entry.strategy),
+      derivation,
+    });
+    joined.strategies.forEach((strategy, position) => {
+      strategies[roster[position].index] = strategy;
+    });
+    // The join report travels on the snapshot beside the derivation that
+    // produced it: `join.offRosterRealized` is money the fills attributed to a
+    // strategy this account's grid never listed, and it must stay visible.
+    if (derivation) joinedDerivationByAccount.set(key, { ...derivation, join: joined.join });
+  }
   const strategiesByAccount = groupStrategiesByAccount(strategies);
   const seen = new Set();
 
@@ -377,7 +578,12 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
         ? deriveWeeklyPnl(closes, account.accountName, date)
         : null,
     };
-    snapshots.push(createSnapshot(account, strategies, derived));
+    snapshots.push(createSnapshot(
+      account,
+      strategies,
+      derived,
+      joinedDerivationByAccount.get(String(account.accountName || '').trim()),
+    ));
     seen.add(account.accountName.toLowerCase());
 
     if (nature.nature === ACCOUNT_NATURES.UNDETERMINED) {
