@@ -54,6 +54,15 @@ const KEEP_FIELDS = new Set([
   // Strategy identity: the algo charts are the point of running this locally.
   'strategy_name', 'strategy_family', 'strategy_version', 'instrument',
   'data_series', 'algo_stack', 'name_on_chart',
+  // Fill mechanics. These are the fields per-strategy P&L is derived from, and
+  // redacting them is not a neutral loss: with time_text and entry_exit blanked,
+  // executions cannot be ordered or paired, and a measurement taken against such
+  // a book concluded that deriving the split was impossible. It is not. The book
+  // was censored in exactly the place the question lives.
+  //
+  // None of the three names anyone. time_text is a clock time, entry_exit is
+  // Entry/Exit, position is a contract count and side ("2 L", "-").
+  'time_text', 'entry_exit', 'position',
   // Dates and everything numeric pass through the type check below.
 ]);
 
@@ -113,8 +122,23 @@ function pseudonym(value) {
  * Character classes are preserved so a column that held eighteen characters
  * still holds eighteen and the tables lay out the same.
  */
-function maskAccount(value) {
-  const hash = digest(`account:${value}`);
+/**
+ * Every real account name and alias in the source, so a mask can be checked
+ * against them before it is emitted. Populated once the export is parsed.
+ *
+ * This exists because masking is character-wise and length-preserving: a purely
+ * numeric account name becomes another number of the same length, drawn from the
+ * same small space the real ones live in. On a 999-account book that collided —
+ * a masked account came out equal to a DIFFERENT account's real number, and
+ * verify() correctly refused to write. A masked value that happens to be a real
+ * prop-firm account number is a leak whether or not it belongs to the row it
+ * sits on, and retrying with a salt is cheaper than reasoning about how likely
+ * it is.
+ */
+const REAL_IDENTIFIERS = new Set();
+
+function maskOnce(value, salt) {
+  const hash = digest(salt ? `account:${salt}:${value}` : `account:${value}`);
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   let index = 0;
   return String(value).replace(/[A-Za-z0-9]/g, (char) => {
@@ -123,6 +147,16 @@ function maskAccount(value) {
     const replacement = letters[byte % letters.length];
     return char === char.toLowerCase() ? replacement.toLowerCase() : replacement;
   });
+}
+
+function maskAccount(value) {
+  // Deterministic: the same input always lands on the same salt, so the book
+  // stays joinable across runs.
+  for (let salt = 0; salt < 1000; salt += 1) {
+    const masked = maskOnce(value, salt);
+    if (!REAL_IDENTIFIERS.has(masked)) return masked;
+  }
+  throw new Error(`maskAccount could not find a non-colliding mask for a ${String(value).length}-character value`);
 }
 
 // Person-shaped fields get a readable pseudonym so the book stays navigable;
@@ -252,6 +286,18 @@ function redactString(key, value) {
 
 function walk(node, key = '') {
   if (typeof node === 'string') return redactString(key, node);
+  // A NUMBER in an identifying field is redacted too, because Postgres exports a
+  // numeric column as a JSON number and numbers never reached redactString at
+  // all. One account here stores its own account number in legacy_key as a
+  // number, and it shipped verbatim through every rule above it: the field was
+  // on the ID list, the value was on the leak list, and neither mattered because
+  // the type check upstream had already waved it through. Numeric account names
+  // are ordinary (Tradovate and cash accounts look like 1745458), so this is the
+  // normal case, not an exotic one.
+  if (typeof node === 'number' && Number.isFinite(node)
+      && (ID_FIELDS.has(key) || ACCOUNT_FIELDS.has(key) || PERSON_FIELDS.has(key))) {
+    return redactString(key, String(node));
+  }
   if (Array.isArray(node)) return node.map((item) => walk(item, key));
   if (node && typeof node === 'object') {
     const out = {};
@@ -263,6 +309,15 @@ function walk(node, key = '') {
 
 const parsed = JSON.parse(readFileSync(inputPath, 'utf8'));
 const source = parsed?.tables && typeof parsed.tables === 'object' ? parsed.tables : parsed;
+
+// Load the real identifiers before anything is masked, so maskAccount can avoid
+// landing on one. Same fields verify() checks, so the two cannot drift apart.
+for (const row of source.trading_accounts || []) {
+  for (const field of ['account_name', 'alias']) {
+    const value = row?.[field];
+    if (typeof value === 'string' && value.trim()) REAL_IDENTIFIERS.add(value);
+  }
+}
 
 const tables = {};
 let rows = 0;
@@ -282,8 +337,82 @@ for (const [table, value] of Object.entries(source)) {
  * grepping does not scale to the next schema change, so the check runs here and
  * refuses to write on a hit.
  */
+/**
+ * A generated id token: 'x' plus 14 hex characters, from token() above.
+ *
+ * These have to be excluded from the leak scan by shape, because the scan is a
+ * substring test and a hex digest is drawn from an alphabet that includes every
+ * digit. A seven-digit account number turned up inside the token
+ * "xcb1784047c2343" — which belongs to a different account, carries no identity,
+ * and cannot be reversed — and the scan refused to write on it. Left in, the
+ * check cries wolf on a book this size and the next real leak gets waved past
+ * by whoever is tired of it.
+ *
+ * The exclusion is deliberately narrow: only a whole string of exactly this
+ * shape. A token EMBEDDED in longer text is still scanned, and every other
+ * field, including masked account names, is scanned as before.
+ */
+const GENERATED_TOKEN = /^x[0-9a-f]{14}$/;
+
+/**
+ * Every string in the redacted output, paired with the path it sits at.
+ *
+ * The scan used to run against JSON.stringify(everything), which cannot tell a
+ * value that survived from a digest that happens to contain the same digits, and
+ * cannot say where it is. Walking gives both.
+ */
+function* strings(node, path = '') {
+  if (typeof node === 'string') { yield [path, node]; return; }
+  if (typeof node === 'number') { yield [path, String(node)]; return; }
+  if (Array.isArray(node)) { for (const item of node) yield* strings(item, path); return; }
+  if (node && typeof node === 'object') {
+    for (const [key, child] of Object.entries(node)) yield* strings(child, path ? `${path}.${key}` : key);
+  }
+}
+
+/**
+ * Index the redacted output ONCE, then answer every suspect against the index.
+ *
+ * Scanning the whole output per suspect is O(suspects x strings) and on this
+ * book that is hundreds of millions of substring tests. Two structures answer
+ * the same question in one pass:
+ *
+ *   exact  — a value that survived as a complete field value. This is the
+ *            ordinary leak: a name, an account number, an email.
+ *   free   — the long strings only. An identifier hidden INSIDE text (the
+ *            composite flag ids in reports.content embed an account number,
+ *            which embeds a client name) can only be found by containment, and
+ *            containment is only affordable over the few long blobs.
+ *
+ * Short strings are covered by `exact`, so nothing is lost by not scanning them
+ * for containment: a 7-character account number cannot hide inside a
+ * 7-character field without being equal to it.
+ */
+const FREE_TEXT_MIN = 40;
+
+function indexOutput(redacted) {
+  const exact = new Map();
+  const free = [];
+  for (const [path, text] of strings(redacted, '')) {
+    if (GENERATED_TOKEN.test(text)) continue;
+    if (!exact.has(text)) exact.set(text, path);
+    if (text.length >= FREE_TEXT_MIN) free.push([path, text]);
+  }
+  return { exact, free };
+}
+
+function findLeaks(index, value) {
+  const where = new Map();
+  const hit = index.exact.get(value);
+  if (hit !== undefined) where.set(hit, 1);
+  for (const [path, text] of index.free) {
+    if (text.includes(value)) where.set(path, (where.get(path) || 0) + 1);
+  }
+  return where;
+}
+
 function verify(source, redacted) {
-  const blob = JSON.stringify(redacted);
+  const index = indexOutput(redacted);
   const suspects = [];
   const collect = (rows, field) => {
     for (const row of rows || []) {
@@ -303,12 +432,19 @@ function verify(source, redacted) {
   collect(source.trading_accounts, 'alias');
   collect(source.trading_accounts, 'notes');
 
-  const leaks = suspects.filter(([, value]) => blob.includes(value));
+  const leaks = suspects
+    .map(([field, value]) => [field, value, findLeaks(index, value)])
+    .filter(([, , where]) => where.size > 0);
   if (!leaks.length) return;
 
   console.error(`\nREFUSING TO WRITE: ${leaks.length} identifying value(s) survived redaction.`);
-  for (const [field, value] of leaks.slice(0, 5)) {
+  for (const [field, value, where] of leaks.slice(0, 5)) {
     console.error(`  ${field}: ${value.slice(0, 40)}`);
+    // Naming the value without naming where it survived sends the reader back
+    // to grep the whole export. Say which column kept it.
+    for (const [path, count] of [...where.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
+      console.error(`      survives at ${path} x${count}`);
+    }
   }
   console.error('\nAdd the field to KEEP_FIELDS only if it is an enum. Otherwise it needs');
   console.error('a rule in redactString. Check both snake_case and camelCase spellings.');
