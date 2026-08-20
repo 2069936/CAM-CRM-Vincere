@@ -465,6 +465,10 @@ describe('a derived total that fails to reconcile', () => {
     // Position is the free integrity check on ordering: if the reconstructed
     // running position disagrees with what NinjaTrader stated, the fills are not
     // in the order we think they are and the split cannot be trusted.
+    //
+    // This used to end 'partial' with the pair priced and credited, kept off the
+    // screen by `positionAgrees` alone. It is now a NAMED book refusal — see
+    // rule 6 — so the money is countable instead of merely unpublished.
     seq = 0;
     const result = deriveStrategyPnl({
       executions: [
@@ -475,8 +479,126 @@ describe('a derived total that fails to reconcile', () => {
       reportedGross: 20,
     });
     expect(result.positionAgrees).toBe(false);
-    expect(result.reconciles).toBe(true);
-    expect(result.status).toBe('partial');
+    expect(result.status).toBe('refused');
+  });
+});
+
+describe('a book whose ordering the Position column contradicts', () => {
+  it('refuses a book whose ordering cannot reproduce the Position column', () => {
+    // The two fills are a clean round trip on the clock, but the Position column
+    // says the account was 4 long after the sell. No ordering of these fills
+    // produces that, so the sequence the pairing would run on is one the file
+    // itself contradicts. On the 2026-08-20 book this shape reaches 9 books
+    // across 6 account-days, 49 pairs.
+    //
+    // The old behaviour priced the pair, credited Alpha-1.0 with $20 and left
+    // `positionAgrees: false` as the only thing between that figure and a
+    // screen. A single boolean on the account said nothing about WHICH book was
+    // unreadable or how much money sat on it.
+    seq = 0;
+    const result = deriveStrategyPnl({
+      executions: [
+        fill({ action: 'Buy', price: 100, position: '1 L', orderId: 'O1' }),
+        fill({ action: 'Sell', price: 110, position: '4 L', orderId: 'O2' }),
+      ],
+      orders: ['O1', 'O2'].map((id) => order({ id, strategyName: 'Alpha-1.0' })),
+      reportedGross: 20,
+    });
+    expect(result.refusedBooks).toEqual([
+      { instrument: 'MNQ SEP26', reason: RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE, carriedInContracts: 0, carryInReason: '' },
+    ]);
+    expect(result.residual.reasons[RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE]).toBe(1);
+    expect(result.unpricedPairs).toBe(1);
+    // Counted, never valued. A zero would be a claim; this is the absence of one.
+    expect(result.byStrategy).toEqual([]);
+    expect(result.derivedTotal).toBe(0);
+    expect(result.status).toBe('refused');
+  });
+
+  it('leaves a book alone when the Position column does reproduce', () => {
+    // The guard must not fire on the ordinary case, and it must not fire on a
+    // same-second tie that resolveTiesByPosition has already repaired. Both
+    // fills here are stamped the same second and the file order is backwards;
+    // the Position column puts them right, so the book is priced as normal.
+    seq = 0;
+    const result = deriveStrategyPnl({
+      executions: [
+        fill({ id: '2_1', action: 'Sell', price: 110, position: '-', orderId: 'O2', time: '8/18/2026 9:30:01 AM' }),
+        fill({ id: '1_1', action: 'Buy', price: 100, position: '1 L', orderId: 'O1', time: '8/18/2026 9:30:01 AM' }),
+      ],
+      orders: ['O1', 'O2'].map((id) => order({ id, strategyName: 'Alpha-1.0' })),
+      reportedGross: 20,
+    });
+    expect(result.refusedBooks).toEqual([]);
+    expect(result.positionAgrees).toBe(true);
+    expect(result.byStrategy).toEqual([{ strategyName: 'Alpha-1.0', realized: 20, pairs: 1 }]);
+    expect(result.status).toBe('exact');
+  });
+
+  it('names an unknown instrument as unknown, never as a position failure', () => {
+    // Refusal ORDER, pinned. A grid that exported no Position column reads as
+    // flat after every fill and so contradicts the pairing — but on the
+    // 2026-08-20 book all 13 books in that state are also missing their
+    // instrument, and they already had the right name. The multiplier check runs
+    // first so rule 6 cannot rename an existing refusal.
+    seq = 0;
+    const result = deriveStrategyPnl({
+      executions: [
+        { ...fill({ action: 'Buy', price: 100, orderId: 'O1', instrument: 'ZZZ SEP26' }), position: '' },
+        { ...fill({ action: 'Sell', price: 110, orderId: 'O2', instrument: 'ZZZ SEP26' }), position: '' },
+      ],
+      orders: ['O1', 'O2'].map((id) => order({ id, strategyName: 'Alpha-1.0' })),
+      reportedGross: 0,
+    });
+    // (A blank Position cell parses as FLAT, which is also why this book looks
+    // as though it carried a contract in. Both readings are artefacts of the
+    // missing column; the refusal names the one a reader can act on.)
+    expect(result.refusedBooks).toEqual([
+      { instrument: 'ZZZ SEP26', reason: RESIDUAL_REASONS.UNKNOWN_INSTRUMENT, carriedInContracts: 1, carryInReason: '' },
+    ]);
+  });
+
+  it('refuses on the position column before it decides whether the book carried in', () => {
+    // Both carry-in witnesses — the first fill's E/X and the position it implies
+    // — are read off the ordering rule 6 has just rejected. An unreadable
+    // sequence cannot be asked whether it carried a contract in, so the answer
+    // must be the unreadable sequence and not a guess about yesterday.
+    seq = 0;
+    const result = deriveStrategyPnl({
+      executions: [
+        fill({ action: 'Sell', price: 110, position: '1 L', orderId: 'O1', time: '8/18/2026 9:30:01 AM' }),
+        fill({ action: 'Sell', price: 111, position: '9 S', orderId: 'O2', time: '8/18/2026 9:31:01 AM' }),
+      ],
+      orders: ['O1', 'O2'].map((id) => order({ id, strategyName: 'Alpha-1.0' })),
+      reportedGross: 0,
+    });
+    expect(result.refusedBooks.map((book) => book.reason))
+      .toEqual([RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE]);
+    expect(result.status).toBe('refused');
+  });
+
+  it('refuses only the book that is unreadable, and poisons its account', () => {
+    // Books are independent, so one bad sequence must not silently re-price
+    // another. It does, however, take the whole account off the screen: rule 5's
+    // refusal is at book level and it poisons the account.
+    seq = 0;
+    const result = deriveStrategyPnl({
+      executions: [
+        fill({ action: 'Buy', price: 100, position: '1 L', orderId: 'O1' }),
+        fill({ action: 'Sell', price: 110, position: '4 L', orderId: 'O2' }),
+        fill({ action: 'Buy', price: 200, position: '1 L', orderId: 'O3', instrument: 'MES SEP26' }),
+        fill({ action: 'Sell', price: 210, position: '-', orderId: 'O4', instrument: 'MES SEP26' }),
+      ],
+      orders: ['O1', 'O2', 'O3', 'O4'].map((id) => order({ id, strategyName: 'Alpha-1.0' })),
+      reportedGross: 70,
+    });
+    expect(result.refusedBooks).toEqual([
+      { instrument: 'MNQ SEP26', reason: RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE, carriedInContracts: 0, carryInReason: '' },
+    ]);
+    // The MES book still priced — $50 — and the MNQ pair is counted, not valued.
+    expect(result.derivedTotal).toBe(50);
+    expect(result.unpricedPairs).toBe(1);
+    expect(result.status).toBe('refused');
   });
 });
 

@@ -15,9 +15,33 @@
 //   node scripts/redact-export.mjs export.json public/local-snapshot.json
 //
 // Not reversible: no key, no mapping file.
+//
+// AND SAFE IS NOT THE SAME AS USABLE. Failing closed protects the client and
+// says nothing about whether the book that comes out can still answer a
+// question. It could not, and the gap cost three separate investigations and one
+// $76,283.25 phantom defect.
+//
+// `external_order_id` — the join key the whole fill pipeline resolves each leg's
+// Strategy through — was absent from ID_FIELDS and fell through to the generic
+// `[redacted N]` marker, which keeps a string's LENGTH and nothing else. 30,955
+// distinct order ids came out as FOUR values. The book still looked perfect:
+// every table, every row, every price, every timestamp. Replaying the shipped
+// per-strategy derivation over it produced 185 disagreements against the
+// Strategies grid, $77,876.25, 54 of them on accounts the derivation certifies
+// publishable ($22,899.25) — every one of which vanishes when the same module is
+// run over the same fills with the join intact (11 disagreements, $2,814.25,
+// none publishable). Nothing in the derivation was wrong. The evidence was.
+//
+// Two rules follow, and both are enforced below rather than remembered:
+//
+//   1. An id column joins something. It goes in ID_FIELDS, in the same commit
+//      that adds the column, so it becomes a stable 1:1 token.
+//   2. Before writing, PROVE the book still joins to itself — verifyJoins().
+//      A merged join key is not a censored book, it is a wrong one.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { collapsedJoins, summarizeJoins } from './lib/redactionJoins.mjs';
 
 const [, , inputPath, outputPath] = process.argv;
 if (!inputPath || !outputPath) {
@@ -80,6 +104,29 @@ const KEEP_FIELDS = new Set([
  * — which embeds an account name, which embeds a client name. No pattern scan
  * flags that, and keeping every field called "id" verbatim shipped it straight
  * through.
+ *
+ * MISSING A FIELD HERE IS NOT A COSMETIC LOSS, AND ONE OF THEM COST $22,899.25.
+ * The list below shipped without `external_order_id`, which is not one id among
+ * many: it is the join key of the entire fill pipeline. supabaseStore rehydrates
+ * `orderId: row.external_order_id` on every execution and `id:
+ * row.external_order_id` on every order, and deriveStrategyPnl reads each leg's
+ * Strategy through exactly that join. Falling through to `[redacted N]`
+ * collapsed 30,955 order ids to FOUR distinct length-bucket tokens and 14,958
+ * execution rows to five, so `strategyOf()` returned one arbitrary name for
+ * every leg of an account-day.
+ *
+ * Measured on the 2026-08-20 book (29 trading dates, 14,958 fills), replaying
+ * the shipped module per-strategy against strategy_snapshots.realized:
+ *
+ *   join key                       agree  disagree  |$| disagreement  wrong on 'exact'
+ *   collapsed (what shipped)         511       185       77,876.25    54 / $22,899.25
+ *   1:1 token (this list, fixed)   1,052        11        2,814.25     0 /      $0.00
+ *
+ * The module was never wrong; the book was. An export whose join keys have been
+ * merged looks completely intact — every row present, every number real — and
+ * silently answers "which algo made this" with a different algo. That is why
+ * verifyJoins() below now refuses to write one, and why a new id column must be
+ * added to this list in the same commit that adds the column.
  */
 const ID_FIELDS = new Set([
   'id', 'legacy_key', 'client_id', 'cam_profile_id', 'trading_account_id',
@@ -87,7 +134,19 @@ const ID_FIELDS = new Set([
   'covering_cam_id', 'sop_template_id', 'sop_section_id', 'sop_item_id',
   'batch_id', 'capture_id', 'device_id', 'order_id', 'parent_order_id',
   'strategy_id', 'oco',
+  // The fill pipeline's own keys. `external_order_id` joins executions to
+  // orders; `external_execution_id` is what orderExecutions prefers as its
+  // ordering basis. Neither names anybody — they are broker sequence numbers.
+  'external_order_id', 'external_execution_id',
 ]);
+
+// A token() id is stable and 1:1, so a join across two of these fields survives
+// redaction unchanged. That is a property worth ASSERTING rather than assuming
+// — the collapse described above went unnoticed for a whole book because
+// nothing checked, and verify() below only ever looked for identity getting
+// OUT. JOIN_KEYS names the columns a replay has to be able to join on, and
+// collapsedJoins() reports every one redaction merged; see that file for the
+// measurement and for the one question a redacted book still cannot answer.
 
 const token = (value) => `x${digest(`id:${value}`).slice(0, 14)}`;
 
@@ -451,7 +510,33 @@ function verify(source, redacted) {
   process.exit(1);
 }
 
+/**
+ * Refuses to write a book whose joins redaction has merged.
+ *
+ * `verify()` above asks "did any identity get out". This asks the opposite
+ * question, which nothing asked before and which a whole book failed silently:
+ * is what is left still able to answer anything. The rule and the measured cost
+ * of not having had it are in scripts/lib/redactionJoins.mjs.
+ */
+function verifyJoins(source, redacted) {
+  const failures = collapsedJoins(source, redacted);
+  if (failures.length) {
+    console.error('\nREFUSING TO WRITE: redaction merged a join key.');
+    for (const failure of failures) console.error(`  ${failure}`);
+    console.error('\nThe book would look intact and answer per-strategy questions with the');
+    console.error('wrong strategy. Add the field to ID_FIELDS so it becomes a stable 1:1');
+    console.error('token instead of a [redacted N] length bucket.');
+    process.exit(1);
+  }
+  // Said out loud on success, on purpose. A guard whose only output is silence
+  // is a guard whose removal nobody notices, and this one exists because a
+  // silent failure shipped a whole book.
+  const summary = summarizeJoins(redacted);
+  console.log(`joins verified: ${summary.orderIds} order ids, ${summary.executionIds} execution ids, ${summary.resolved} of ${summary.fills} fills resolve to an order`);
+}
+
 verify(source, tables);
+verifyJoins(source, tables);
 
 writeFileSync(outputPath, JSON.stringify({ tables }, null, 2));
 

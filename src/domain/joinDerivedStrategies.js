@@ -38,6 +38,39 @@
 //
 // Nothing here re-derives anything. It only decides which derived figures may be
 // carried onto which roster rows, and says why when the answer is none.
+//
+// WHAT THE 2026-08-20 BOOK SETTLED ABOUT THIS MODULE
+//
+// The rules above were written from two reproduced failures. A redacted export
+// covering 29 trading dates — 14,958 fills, 2,832 traded account-days, 1,176
+// places where the Strategies grid reports a non-zero `Realized` — is the first
+// evidence about how often they fire and what they are worth.
+//
+// THE HEADLINE IS THAT NOTHING PUBLISHED IS WRONG. Replaying the shipped
+// derivation over that book with its leg lookup sound, 1,049 of 1,053 derived
+// per-strategy figures match the grid to the cent, and every one of the four
+// that do not sits on an account `deriveStrategyPnl` refuses to certify — so
+// status gating alone keeps all four off the screen and $0.00 of wrong per-algo
+// money reaches a CAM. The four are visible gaps, not published numbers, which
+// is the outcome rule 1 above exists to produce.
+//
+// AND THE ONE NUMBER THAT LOOKED LIKE THE OPPOSITE WAS THE EVIDENCE, NOT THE
+// CODE. Three investigations of that book reported 54 published-wrong rows worth
+// $22,899.25 on accounts certified 'exact'. All three resolved each leg's
+// Strategy through `external_order_id`, which that export's redactor had
+// collapsed from 30,955 distinct values to four. Rebuilt from the fill's own
+// Strategy cell, the same 54 rows go to $0.00 with nothing in either module
+// changed. Read rule 0 in deriveStrategyPnl.js before replaying anything through
+// a redacted book, and never tune a join rule against a number produced that
+// way.
+//
+// WHAT IT DID NOT SETTLE. Only 613 of 2,832 account-days come back publishable
+// on that book at all, and that count is proxy-conditioned:
+// `account_snapshots.gross_realized_pnl` stores the NET figure, so the
+// arithmetic gate in rule 4 is being checked against a column it was not written
+// for. The per-strategy agreement counts above are against
+// strategy_snapshots.realized directly and are not affected; the publishable
+// COUNT is. Do not quote it as a coverage figure.
 
 import { DEFAULT_TOLERANCE } from './deriveStrategyPnl.js';
 

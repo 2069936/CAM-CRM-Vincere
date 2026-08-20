@@ -278,10 +278,12 @@ function withoutDerivation(value) {
  *                  'refused' (a book that could not be priced) and
  *                  'no-reported-gross' (no column to check the total against) —
  *                  which is why the residual's REASONS below have to be kept
- *                  whole: 'refused' says an account was declined, and only
+  *                  whole: 'refused' says an account was declined, and only
  *                  `residual.reasons` says whether that was a carried-in
- *                  position or an instrument missing from the multiplier table,
- *                  and those two have different fixes.
+ *                  position, an instrument missing from the multiplier table, or
+ *                  an ordering the Position column contradicts — and those three
+ *                  have three different fixes (upload yesterday, add a
+ *                  multiplier, look at the grid's Position column).
  *   reportedGross  Kept, and load-bearing: mapAccountSnapshot does NOT store
  *                  `grossRealizedPnlReported`, so this is the only surviving
  *                  copy of the raw 'Gross realized PnL' column, and it is the

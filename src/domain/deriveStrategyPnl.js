@@ -14,6 +14,28 @@
 //   FIFO per (account, instrument), chronological, closes each opening lot
 //   a book that cannot be priced is REFUSED whole; it is never valued at zero
 //
+// THE STATE OF THE EVIDENCE, IN ONE PLACE
+//
+// This header used to say that FIFO tie-breaking and rule 4b rested on two days
+// of data and had never been settled. That is no longer true, and the section
+// "WHAT THE 2026-08-20 BOOK SETTLED" below says what settled them, on how many
+// observations, and what it cost to get the wrong answer three times first.
+//
+//   ordering basis + tie-break   SETTLED. 743 tie-bearing books; 727 admit
+//                                exactly one ordering the Position column
+//                                allows, 8 admit several and the split is
+//                                identical on all 8. There is no freedom to get
+//                                wrong. Rule 1, and rule 6 for what is left.
+//   rule 4b (detached leg)       SETTLED. 1,051 pairs across 29 dates; every
+//                                alternative disposition is worse, and one of
+//                                them publishes wrong money. Rule 4b.
+//   rule 4b's FENCE              STILL UNSETTLED. One discriminating row in 29
+//                                dates. Unchanged, and still not evidence.
+//   carry-in                     STILL UNSETTLED, still synthetic-only. Rule 5.
+//   executionId ordering basis   UNTESTABLE against any redacted book. Rule 1.
+//
+// AND BEFORE YOU REPLAY ANYTHING AGAINST A REDACTED BOOK, READ RULE 0.
+//
 // WHAT TWO DAYS OF REAL EXPORTS ESTABLISHED, AND WHAT THEY DID NOT
 //
 // Read this before citing any number below, and before deciding a rule here is
@@ -55,7 +77,145 @@
 // ZERO carry a contract in. Order the fills before reading anything off their
 // sequence; the E/X column is not a substitute.
 //
-// THE FIVE RULES, each measured, each a place an earlier attempt went wrong.
+// WHAT THE 2026-08-20 BOOK SETTLED
+//
+// The two days above could not settle FIFO, the ordering basis or the
+// tie-breaking, because every book on both was flat at both ends under a single
+// strategy. A redacted export covering 2026-06-25 to 2026-08-19 finally could:
+// 29 trading dates, 1,296 imports, 14,958 fills, 2,832 traded account-days,
+// 3,818 (date x account x instrument) books, and 1,176 places where the
+// Strategies grid reports a non-zero `Realized` this module can be checked
+// against. Everything below is the per-strategy comparison against
+// strategy_snapshots.realized. It is NOT the account-level reconciliation,
+// which on that book is proxy-conditioned — see the note at the end.
+//
+// THE FIRST THING IT SETTLED WAS THAT THE FIRST THREE ANSWERS WERE WRONG. Three
+// separate investigations replayed this module over that book, all three joined
+// executions to orders on `external_order_id` because that is what the module
+// does, and all three reported the same defect: 182 per-strategy figures wrong,
+// $76,283.25, 54 of them on accounts this module certifies publishable, worth
+// $22,899.25 of per-algo money reaching a CAM screen wrong.
+//
+// There is no such defect. The export's redactor did not have
+// `external_order_id` on its identifier list, so the column fell through to a
+// marker that keeps only a string's LENGTH: 30,955 distinct order ids became
+// FOUR values. `strategyOf()` therefore returned one arbitrary name for every
+// leg of an account-day, and the derivation emitted exactly one strategy row per
+// account-day carrying the whole day's money — right whenever the day had one
+// strategy, wrong whenever it had several. 161 of the 185 disagreements sit on
+// multi-strategy account-days; 509 of the 511 "agreements" sit on
+// single-strategy ones, where a collapsed lookup cannot be wrong. Those
+// agreements were the 08-18 tautology, re-run 511 times.
+//
+// `reconcile` stamps the ORDER's Strategy onto every execution before
+// persistence (`strategyName: orderStrategyById[execution.orderId]`), so
+// `executions.strategy_name` IS what a sound join would return and it survived
+// redaction. Rebuilding the leg lookup from it, with nothing in this module
+// changed:
+//
+//   leg -> Strategy lookup                agree  disagree     |$|  wrong on 'exact'
+//   through the collapsed order id          511       185  77,876.25  54 / $22,899.25
+//   from the fill's own Strategy cell     1,052        11   2,814.25   0 /      $0.00
+//   ...and day-scoped, as reconcile does  1,049         8   2,381.25   0 /      $0.00
+//   ...and with rule 6 below              1,049         4   1,351.25   0 /      $0.00
+//
+// One convention throughout: every count above is over the same 1,176 grid rows,
+// one comparison per stored (import, account, strategy) row, nothing deduplicated
+// and nothing filtered. The rest is `no derived row` — a visible gap, never a
+// figure. The 'exact' subset is the only one that reaches a screen.
+//
+// The redactor is fixed (scripts/lib/redactionJoins.mjs now refuses to write a
+// book whose join keys were merged), and rule 0 below is the standing rule.
+//
+// FIFO TIE-BREAKING IS SETTLED, AND THERE WAS NEVER ANY FREEDOM IN IT. Fills
+// share a timestamp constantly: of the 3,805 books that order by timestamp,
+// 743 contain at least one same-second tie — 1,014 tie runs, 2,128 fills, run
+// lengths 2 x 935, 3 x 63, 4 x 11, 5 x 5. Enumerating every permutation inside
+// every tie run and keeping the orderings the Position column allows:
+//
+//   727 of 743 tie books admit EXACTLY ONE position-consistent ordering
+//     8 admit more than one — and the per-strategy split is IDENTICAL on all
+//       eight, so the tie-break is worth $0 on every book where it has a choice
+//     7 admit NONE, which is rule 6 below
+//     1 is too large to enumerate (this module's own 5,040 cap gives up too)
+//
+// Not one disagreeing row is rescued by any position-consistent ordering.
+// Scored against the Position column across the tie books, the shipped rule
+// reproduces it on 766 of 782; every alternative anyone proposed — file order,
+// file order reversed, smaller quantity first, entries before exits, exits
+// before entries, buys before sells — contradicts it on 691 to 773 of them.
+// The three that cut the wrong-count do it by DECLINING 25-35 more rows and
+// getting 25 fewer right, which is a loss, not a fix. There is no tie-break
+// change that can move any of this book's disagreements: the measured value of
+// any further tie-break work is $0.
+//
+// RULE 4b IS SETTLED, AND IT IS THE BEST DISPOSITION BY A WIDE MARGIN. On the
+// sound join it credits 1,051 pairs across 29 dates and reaches 229 of the 1,176
+// comparisons. Every alternative, same module, same ordering, same everything
+// else:
+//
+//   disposition of 4b       agree  disagree     |$|  publishable   published wrong
+//   shipped                 1,049         4  1,351.25         613   0 /    $0.00
+//   refuse the pair           906        70 21,411.25         427   0 /    $0.00
+//   drop the fence          1,050         3  1,336.25         613   0 /    $0.00
+//   drop the Name guard     1,015        39 13,144.75         665   5 /  $997.00
+//
+// Refusing costs 143 agreements and 186 publishable account-days. Dropping the
+// Name guard — crediting the NAMELESS blank-Strategy legs rule 4 refuses — is
+// the only disposition in the whole book that puts wrong money on a screen, and
+// it is pinned by "will not credit a NAMELESS blank-Strategy leg, whatever else
+// is on the book". The 08-19 promotion of 4b was correct and now rests on 1,051
+// pairs rather than five.
+//
+// WHAT THE BOOK DID NOT SETTLE, AND WHAT WAS LEFT ALONE BECAUSE OF IT.
+//
+//   4b's FENCE. "At most one named strategy on the book" is reached on 10 of
+//   3,818 books over 29 dates, fires on TWO pairs, and moves exactly ONE
+//   comparison row — dropping it scores 1,050 against 1,049. One observation is the
+//   same standard of evidence the 08-18 header declined to promote 4b on, and
+//   it is declined again here. The fence stays. It is not settled; it simply has
+//   almost nothing to settle it against.
+//
+//   CARRY-IN. 52 pairs refused as `carry-in-refused` across the whole book, on
+//   29 books that carried a contract in, none of them reaching a checkable row.
+//   Still synthetic-only, still a refusal.
+//
+//   FIFO ITSELF. 3,756 of the 3,818 books are flat at both ends AND worked by at
+//   most one named strategy, which makes their split pairing-independent — the
+//   same tautology as 08-18, 3,756 times. Only 62 books can discriminate a
+//   pairing rule at all: 46 end open, 29 carry in, 10 carry more than one named
+//   strategy. The whole residual over the book, for scale: no-strategy 652,
+//   manual-leg 307, carry-in-refused 52, position-unreproducible 49,
+//   unknown-instrument 13, cross-strategy 4, detached-exit 2.
+//
+//   THE executionId ORDERING BASIS. Redaction tokenises execution ids into a
+//   shape `execSequence` cannot read, so the basis falls to `time` on 2,819 of
+//   2,832 account-days and to `fileOrder` on 13. NO redacted book can test rule
+//   1's preferred basis. Every ordering statement above is about the time basis
+//   plus the Position-column repair. Say which one you measured.
+//
+//   THE ACCOUNT-LEVEL RECONCILIATION. `account_snapshots.gross_realized_pnl`
+//   stores the NET figure, so replaying rule 2 against it fails roughly 1,955
+//   account-days by a commission-shaped amount that is an artefact of the stored
+//   column and not of the pairing. Every number in this section is the
+//   per-strategy comparison against strategy_snapshots.realized, which is
+//   unaffected. Keep the two apart and say which one a figure comes from.
+//
+// THE SIX RULES, each measured, each a place an earlier attempt went wrong.
+//
+// 0. A RULE ABOUT MEASURING THIS MODULE, NOT ABOUT RUNNING IT. NEVER RESOLVE A
+//    LEG'S STRATEGY THROUGH A REDACTED BOOK'S ORDER IDS. Redaction may rename an
+//    id; if it ever merges two, this module's first step silently resolves every
+//    leg of an account-day to one arbitrary order and the whole day lands on one
+//    strategy. It looks exactly like an attribution defect, it is worth $76,283
+//    of phantom disagreement on the 2026-08-20 book, and it cost three
+//    investigations before anyone counted the distinct ids. A replay of a stored
+//    book must build the leg lookup from `executions.strategy_name` /
+//    `executions.name`, which reconcile writes from the order and which is the
+//    same value a sound join returns. If a replay must use the ids, count them
+//    first: `new Set(orders.map(o => o.external_order_id)).size` against
+//    `orders.length`. scripts/lib/redactionJoins.mjs now refuses to WRITE such a
+//    book, but books written before that fix still exist.
 //
 // 1. ORDER BY EXECUTION ID, not by file order and not by Time. The grid exports
 //    in whatever order the operator had it sorted — measured across ten client
@@ -64,6 +224,18 @@
 //    is monotonic; under it the Position column is reproducible from
 //    Action+Quantity on 100% of fills, which is the check `positionAgrees`
 //    performs on every leg.
+//
+//    THE POSITION COLUMN IS THE ARBITER, AND THE 2026-08-20 BOOK PROVED IT IS
+//    ALSO SUFFICIENT. Decoded (-/N L/N S) against the Buy/Sell sign it predicts
+//    the E/X column on 14,884 of 14,897 readable fills, and on the time basis it
+//    pins 727 of 743 tie-bearing books to a single ordering with no freedom left
+//    over. Two things follow for anyone tempted to re-open this. Sorting
+//    `time_text` as a STRING puts "10:00 AM" before "9:35 AM"; and that column
+//    carries two formats in one grid ("9:35 AM" and "7/13/2026 4:30:52 PM"), so
+//    a regex anchored on the first rejects 14,932 of 14,958 rows in silence.
+//    `parseExecutionTime` handles both. Whatever ordering you adopt, it has to
+//    reproduce the Position column; where it does not, the ordering is wrong and
+//    the data is not — and rule 6 now refuses the book rather than guessing.
 //
 // 2. RECONCILE AGAINST 'Gross realized PnL', never 'Realized PnL'. The latter is
 //    net of commissions and differs on 19 of 21 traded accounts. Note that
@@ -142,9 +314,28 @@
 //    WHAT 4b IS STILL FENCED AGAINST. It fires only when the book carries at
 //    most ONE named strategy, because then the strategy the detached leg belongs
 //    to is not in question — there is only one candidate on that book. On a book
-//    worked by two named strategies, which no export has yet shown, the pair
-//    stays refused as `detached-exit`: FIFO would pick an owner and nothing would
-//    check it. And it never fires on a nameless order, which is rule 4's case.
+//    worked by two named strategies the pair stays refused as `detached-exit`:
+//    FIFO would pick an owner and nothing would check it. And it never fires on
+//    a nameless order, which is rule 4's case.
+//
+//    BOTH HALVES ARE NOW MEASURED, AND THEY ARE NOT MEASURED EQUALLY WELL.
+//
+//    The NAME GUARD is settled and load-bearing. Dropping it credits the 4b way
+//    to every nameless blank-Strategy leg and is the ONLY change tested against
+//    the 2026-08-20 book that puts wrong money on a screen: 1,015 agreements
+//    against 1,049, 39 disagreements against 4, and five rows totalling $997.00
+//    published on accounts this module still certifies 'exact'. That is the
+//    level-3 outcome — crediting a strategy the evidence does not name — and it
+//    is pinned by name in the tests.
+//
+//    The FENCE is not settled and has not been changed. Over 29 trading dates it
+//    is reached on 10 of 3,818 books, fires on TWO pairs, and moves exactly ONE
+//    comparison row; removing it scores 1,050 agreements against 1,049. One is what
+//    the 08-18 header refused to promote 4b itself on, so it is refused here
+//    too. If a later book produces a real population of two-named-strategy books
+//    carrying a detached leg, measure it then — the pairs are all tagged
+//    `detached-exit` in the residual, exactly so that day needs no re-measuring
+//    from scratch.
 //
 //    ONE CASE 4b DOES NOT REACH, measured and left refused. On 08-19 one book
 //    had BOTH legs detached — entry and exit each blank-Strategy with a
@@ -182,6 +373,44 @@
 //    left the account's failure to reconcile as the only thing standing between
 //    a half-priced day and the screen. That is one arithmetic coincidence away
 //    from a wrong number, so the refusal is now explicit and named.
+//
+// 6. A BOOK WHOSE ORDERING DOES NOT REPRODUCE THE POSITION COLUMN IS REFUSED,
+//    for the same reason and by the same mechanism as rule 5.
+//
+//    `resolveTiesByPosition` permutes within each same-timestamp run and keeps
+//    the ordering with the fewest Position-column mismatches. On the 2026-08-20
+//    book that succeeds outright on 727 of the 743 tie books and is worth $0 on the
+//    8 where it has a choice. But it returns its BEST candidate even when the
+//    best candidate still contradicts the column — and there the fills are out
+//    of sequence across DISTINCT timestamps, not merely tied, so no tie-break
+//    can repair them. The clock and the Position column disagree, and the clock
+//    is the one this module sorted on.
+//
+//    That state used to be silent. The book was paired anyway, every pair was
+//    priced and credited to a strategy, and the only thing between those figures
+//    and a screen was the account-wide `positionAgrees` boolean — which says
+//    that SOMETHING on the account is unreadable and never which book or how
+//    much money. A boolean is not a refusal: it cannot be counted, it cannot be
+//    named in a residual, and one relaxation of the `complete` ladder would have
+//    published it.
+//
+//    Now the book is refused whole, its pairs are counted and never valued, and
+//    `position-unreproducible` names them in the residual. Measured on the
+//    2026-08-20 book, sound join, day-scoped: 9 books across 6 account-days, 49
+//    pairs. It moves NO account off the screen that was ever on it — 'exact'
+//    already required `positionAgrees` — and after it, zero non-refused
+//    account-days are left contradicting the column, where 19 of 2,832 did
+//    before. Four disagreeing comparison rows become named refusals: the
+//    residual goes from 8 rows / $2,381.25 to 4 rows / $1,351.25 with all 1,049
+//    agreements kept. That is the whole trade: refusals bought with wrong rows,
+//    never with right ones.
+//
+//    ORDER MATTERS INSIDE THE REFUSAL LADDER, TWICE. An unknown instrument is
+//    decided FIRST — a grid that exported no Position column at all reads as
+//    flat after every fill and so contradicts the pairing, and all 13 books in
+//    that state on this book are also missing their instrument, where the
+//    existing name is the better one. Carry-in is decided AFTER, because both of
+//    its witnesses are read off the very ordering rule 6 has just rejected.
 
 import { instrumentRoot, SPECS } from './instrumentSpecs.js';
 
@@ -196,6 +425,9 @@ export const RESIDUAL_REASONS = {
   // counted, never valued.
   CARRY_IN: 'carry-in-refused',
   UNKNOWN_INSTRUMENT: 'unknown-instrument',
+  // The ordered fills do not reproduce the Position column, so the sequence the
+  // pairing would run on is one the file itself contradicts. See rule 6.
+  POSITION_UNREPRODUCIBLE: 'position-unreproducible',
 };
 
 // Why a whole book was refused. Same strings as the residual reasons that carry
@@ -203,6 +435,7 @@ export const RESIDUAL_REASONS = {
 export const BOOK_REFUSALS = {
   CARRY_IN: RESIDUAL_REASONS.CARRY_IN,
   UNKNOWN_INSTRUMENT: RESIDUAL_REASONS.UNKNOWN_INSTRUMENT,
+  POSITION_UNREPRODUCIBLE: RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE,
 };
 
 // Reconciliation is asserted to the cent. Across the two real exports the
@@ -323,9 +556,24 @@ function permutations(items) {
  * second, and the wrong one first made the leg look as though it had carried a
  * contract in overnight. That invented an unpriced lot, dropped a real pair, and
  * left the account $13.75 short of its own gross — a plausible-looking wrong
- * number, which is the exact failure this module exists to prevent. Ties are
- * two rows long in practice; the search is capped so a pathological grid degrades
- * to "leave it alone" rather than hanging.
+ * number, which is the exact failure this module exists to prevent.
+ *
+ * HOW MUCH WORK THIS ACTUALLY DOES, MEASURED. On the 2026-08-20 book 743 of
+ * 3,805 timestamp-ordered books contain a same-second tie (1,014 runs, 2,128
+ * fills; runs of 2 x 935, 3 x 63, 4 x 11, 5 x 5), and the column pins 727 to
+ * exactly ONE admissible ordering. Eight admit several, and on all eight the
+ * per-strategy split is identical — so where this function has a choice, the
+ * choice is worth $0. Ties are two rows long in practice; the search is capped
+ * so a pathological grid degrades to "leave it alone" rather than hanging (one
+ * book on that export exceeds the cap).
+ *
+ * IT RETURNS ITS BEST CANDIDATE, WHICH IS NOT ALWAYS A GOOD ONE, AND THAT IS
+ * DELIBERATE. When no permutation inside the tie runs reproduces the column, the
+ * fills are out of sequence across DISTINCT timestamps and no tie-break can
+ * repair them. This function does not decide what to do about that; it hands
+ * back the least-bad ordering and rule 6 in planBooks REFUSES the book by name.
+ * Silently keeping the least-bad ordering and pairing on it is what happened
+ * before, and it left the money unnamed and unpriceable-but-priced.
  */
 function resolveTiesByPosition(executions, keys) {
   if (executions.length < 2 || positionMismatches(executions) === 0) return executions;
@@ -498,6 +746,22 @@ function planBooks(orderedByInstrument, { strategyOf, carryIn }) {
     if (multiplier == null) {
       refusal = BOOK_REFUSALS.UNKNOWN_INSTRUMENT;
       seedLots = phantom();
+    } else if (positionMismatches(fills) > 0) {
+      // RULE 6. The ordering does not reproduce the Position column, so the
+      // sequence every pair below would be built from is one the file itself
+      // contradicts. Refuse the book by name rather than pair it anyway.
+      //
+      // ORDER MATTERS HERE, TWICE OVER. An unknown instrument is checked FIRST
+      // because it is a fact about the multiplier table and nothing to do with
+      // sequence: on the 2026-08-20 book, 13 books whose grid exported no
+      // Position column at all are also missing their instrument, and calling
+      // those "position-unreproducible" would rename a refusal that already has
+      // the right name. Carry-in is checked AFTER, because both of its
+      // witnesses — the first fill's E/X and the position it implies — are read
+      // off the very ordering this test has just rejected. An unreadable
+      // sequence cannot be asked whether it carried a contract in.
+      refusal = BOOK_REFUSALS.POSITION_UNREPRODUCIBLE;
+      seedLots = phantom();
     } else if (carriesIn) {
       const lots = carryIn.available ? (carryIn.lotsByInstrument.get(instrument) || []) : [];
       const net = lots.reduce((total, lot) => total + lot.side * Math.abs(num(lot.qty)), 0);
@@ -552,8 +816,9 @@ function planBooks(orderedByInstrument, { strategyOf, carryIn }) {
  * may show them. `status` is the short answer:
  *   'no-trades'         the account did not trade
  *   'refused'           a book could not be priced at all — carry-in with no
- *                       basis, or an instrument with no multiplier. Nothing
- *                       about this account may be published.
+ *                       basis, an instrument with no multiplier, or an ordering
+ *                       the Position column contradicts. Nothing about this
+ *                       account may be published.
  *   'no-reported-gross' the Accounts grid carried no 'Gross realized PnL', so
  *                       nothing could check the total. Also unpublishable.
  *   'exact'             every closed pair is attributed AND the total matches gross

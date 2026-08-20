@@ -34,7 +34,7 @@
 // disagreements: 11 of 11 on the first day, 26 of 27 on the second — the 27th
 // declined outright rather than contradicted, because both of its legs were
 // blank-Strategy and nothing in the fills names an owner. It also recovers rows
-// the grid left at zero. See deriveStrategyPnl.js for the five rules.
+// the grid left at zero. See deriveStrategyPnl.js for the six rules.
 //
 // AND WHAT THAT DOES NOT SHOW, WHICH IS MORE THAN IT LOOKS. Every book on BOTH
 // days was flat at both ends and touched by at most one named strategy, which
@@ -43,6 +43,17 @@
 // days are real evidence about the fill set, the multipliers and the keying, and
 // NO evidence at all about FIFO, about the ordering basis, or about the
 // tie-breaking.
+//
+// A LATER BOOK DID SETTLE THE ORDERING AND THE TIE-BREAKING, and the paragraph
+// above is now about those two days only. A redacted export covering 29 trading
+// dates and 14,958 fills pinned 727 of its 743 tie-bearing books to a single
+// ordering the Position column allows, found the per-strategy split identical on
+// the 8 that admit more than one, and rescued none of its disagreements with any
+// admissible ordering. It also settled rule 4b at 1,051 credited pairs. It did
+// NOT settle FIFO's pairing order itself — 3,756 of its 3,818 books are flat at
+// both ends under one named strategy and so are pairing-independent too — nor
+// carry-in, nor 4b's fence. The section "WHAT THE 2026-08-20 BOOK SETTLED" in
+// deriveStrategyPnl.js has the counts and the four things it left open.
 //
 // NOR ABOUT CARRY-IN, AND THAT ONE COST SOMETHING. Not one book on either day
 // carried a position in, so neither run says anything whatever about a position

@@ -37,12 +37,53 @@ What it does:
   would change how the tables lay out.
 - Replaces notes with `[redacted N chars]`, keeping the length so text that
   wrapped in production still wraps locally.
+- Rewrites every identifier — including `external_order_id` and
+  `external_execution_id` — as a stable 1:1 token, and **refuses to write** if
+  any of them came out merged. See "Joins" below.
 
 **Balances, dates, P&L, drawdown, and account types are untouched.** The charts,
 the flags, and the totals read exactly as they do in production. That is the
 point: the numbers are the thing being tested, and the names never were.
 
 It is not reversible. No key, no mapping file.
+
+### Joins — read this before measuring anything against a redacted book
+
+A redacted book is only useful if it still joins to itself, and for one whole
+book it did not. `external_order_id` was missing from the redactor's identifier
+list, so it fell through to the generic `[redacted N]` marker, which keeps a
+string's length and nothing else: **30,955 distinct order ids became four
+values.** The book looked perfect — every table, every row, every price, every
+timestamp.
+
+`deriveStrategyPnl` resolves each fill's owning strategy through exactly that
+join, so it returned one arbitrary strategy for every leg of an account-day.
+Replaying it produced 185 per-strategy figures that disagreed with the Strategies
+grid, $77,876.25, 54 of them on accounts the module certifies publishable. Three
+separate investigations reported that as a defect in the derivation. It was not:
+rebuilt from `executions.strategy_name`, the same module over the same fills
+scores 1,052 agreements and 11 disagreements, none publishable.
+
+Two rules follow.
+
+- **Adding an id column means adding it to `ID_FIELDS` in the same commit.** An
+  id joins something; a length bucket joins everything to everything.
+- **A replay of a stored book must not resolve a leg's strategy through the
+  order ids.** Use `executions.strategy_name` / `executions.name`, which
+  `reconcile` writes from the order before persistence and which is the same
+  value a sound join returns. If you must use the ids, count them first:
+  `new Set(orders.map(o => o.external_order_id)).size` against `orders.length`.
+
+`scripts/lib/redactionJoins.mjs` now enforces the first of those at write time —
+the script exits non-zero and writes nothing if a join key was merged. Books
+written before that fix still exist, and it cannot fix them.
+
+**One thing a redacted book still cannot answer.** NinjaTrader execution ids are
+`"<seq>_<n>"` or a bare monotonic integer, and the derivation prefers to order
+fills by them. The redactor's tokens match neither shape, so ordering falls back
+to the timestamp on essentially every account. Any ordering result taken from a
+redacted book is about the time basis plus the Position-column repair, never
+about the execution-id basis. Say which one you measured.
 
 ## 3. Run
 
