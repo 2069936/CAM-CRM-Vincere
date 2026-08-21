@@ -456,6 +456,16 @@ h6 {
   display: block;
 }
 
+/* The sentence a stale or failed connection actually says. It is a full
+   sentence on purpose — "your change is safe" is the half of it the user needs
+   — so it wraps rather than being clipped to the width of a badge. */
+.sidebar-data-detail {
+  margin-top: 4px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .manager-sidebar-header {
   padding: 18px 16px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.07);
@@ -7569,49 +7579,84 @@ tr:nth-child(2) .rank-badge {
 .plan-picker small { font-size: 10px; line-height: 1.3; }
 .plan-fallback { color: var(--warning); }
 
-/* Breakdown under the headline P&L tile. Excluded rows are struck through and
-   dimmed: present so the data problem is visible, clearly not part of the sum. */
-.segment-breakdown { margin-top: 8px; font-size: 11px; }
-.segment-split {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-  margin-bottom: 6px; font-size: 12px;
-}
-.segment-split > span { display: flex; flex-direction: column; }
-/* The 22px comes from .metric strong, which this sits inside. Inheriting it
-   clipped the second column: 105px of text in a 105px cell. */
-.segment-split strong { white-space: nowrap; font-size: 13px; font-weight: 600; }
-.segment-split > span > span:first-child { color: var(--muted); font-size: 10px; }
-.segment-split em { font-style: normal; color: var(--muted); }
-.segment-list { list-style: none; margin: 0; padding: 0; }
-.segment-list li {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto 24px; gap: 6px;
-  padding: 1px 0; color: var(--muted); white-space: nowrap;
-}
-.segment-list li > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.segment-list li span:nth-child(2) { font-variant-numeric: tabular-nums; }
-.segment-list em { font-style: normal; text-align: right; opacity: 0.65; }
-.segment-excluded { opacity: 0.45; text-decoration: line-through; }
+/* The desk-money panel: four businesses, one row each, and no total anywhere.
 
-/* A segment row that opens its capital detail.
-   The li hands its grid over to the button so the row keeps reading as three
-   aligned columns — label, P&L, account count — with one 11px chevron column
-   in front. The chevron is the whole reason this is legible as a control at
-   11px: a hover tint alone is invisible until the pointer is already on it,
-   and this list sits inside a 160px-wide metric tile where there is no room
-   for the word "open". */
-.segment-list li.segment-clickable { display: block; padding: 0; }
-.segment-list .segment-row {
-  display: grid; grid-template-columns: 11px minmax(0, 1fr) auto 24px; gap: 6px;
-  align-items: center; width: 100%; padding: 1px 3px 1px 0;
-  background: none; border: 0; border-radius: 4px;
-  color: inherit; font: inherit; text-align: left; cursor: pointer;
+   There is deliberately no large single figure in this block. The panel it
+   replaced had one — "Team daily P&L" at 22px — and it was a cash desk's real
+   client money added to a prop desk's simulated plan size. The four rows are
+   given equal visual weight for the same reason: none of them is the headline. */
+.desk-money-panel { padding: 14px; margin-bottom: 14px; }
+.desk-money-panel .panel-heading h3 { margin: 0; }
+.desk-basis {
+  display: flex; align-items: center; gap: 6px;
+  margin: 6px 0 2px; color: var(--text); font-size: 12px; font-weight: 600;
 }
-.segment-list .segment-row .chevron { margin-right: 0; vertical-align: 0; }
-.segment-list .segment-row > span:nth-of-type(1) { overflow: hidden; text-overflow: ellipsis; }
-.segment-list .segment-row > span:nth-of-type(2) { font-variant-numeric: tabular-nums; }
-.segment-list .segment-row:hover { background: rgba(var(--info-rgb), 0.1); color: var(--text); }
-.segment-list .segment-row.open { background: rgba(var(--info-rgb), 0.16); color: var(--text); }
-.segment-list .segment-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.desk-basis-note { margin: 0 0 10px; font-size: 11px; line-height: 1.5; }
+.desk-reconciliation { margin: 10px 0 0; font-size: 11px; line-height: 1.5; }
+.desk-money-table td, .desk-history-table td { font-variant-numeric: tabular-nums; }
+.desk-money-table th[scope="row"] strong { display: block; }
+.desk-segment-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+/* The drill-down chip. It carries the long domain segment name because that is
+   what buildCapitalDetail keys on; a short label would open a segment reading
+   $0. */
+.desk-segment-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 6px 1px 3px; border: 1px solid var(--line); border-radius: 10px;
+  background: none; color: var(--muted); font: inherit; font-size: 10px;
+  cursor: pointer; white-space: nowrap;
+}
+.desk-segment-chip .chevron { vertical-align: 0; }
+.desk-segment-chip:hover { background: rgba(var(--info-rgb), 0.1); color: var(--text); }
+.desk-segment-chip.open {
+  background: rgba(var(--info-rgb), 0.16); color: var(--text); border-color: var(--accent);
+}
+.desk-segment-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A figure this panel refuses to produce. Dotted underline rather than a dash:
+   the reason is in the title attribute and the reader has to be able to see
+   there is one. */
+.desk-refusal {
+  color: var(--muted); font-size: 11px;
+  text-decoration: underline dotted; text-underline-offset: 2px; cursor: help;
+}
+.desk-month { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.desk-month h4 { margin: 0 0 2px; font-size: 13px; }
+.desk-history-table small { color: var(--muted); }
+
+/* The algorithm boards: one table per business, no headline, no score.
+
+   Each board is its own block with its own heading and its own coverage line,
+   and there is deliberately no visual device that reads across two of them —
+   no shared rank column, no continuing numbering, no summary row underneath.
+   The panel this replaced was a single fifteen-row table in which a cash
+   algorithm, a Bullet-Bot evaluation and a funded prop account were the same
+   row type. */
+.strategy-boards-panel { padding: 14px; margin-bottom: 14px; }
+.strategy-boards-panel .panel-heading h3 { margin: 0; }
+.board-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+.board-block:first-of-type { border-top: none; padding-top: 4px; }
+.board-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.board-head h4 { margin: 0; font-size: 13px; }
+.board-note { margin: 3px 0 8px; font-size: 11px; line-height: 1.5; }
+.board-table { font-variant-numeric: tabular-nums; }
+.board-table th[scope="row"] strong,
+.board-table th[scope="row"] small { display: block; }
+.board-table td small { display: block; }
+.board-rank { width: 1%; white-space: nowrap; }
+.board-mean strong { display: block; }
+.board-mean small { display: block; font-size: 10px; }
+.board-days { white-space: nowrap; }
+/* Exposure, not rank. Held back visually on purpose: it is the column the old
+   board sorted by, and giving it the same weight as the mean is what made a
+   reader treat it as the answer. */
+.board-exposure { color: var(--muted); font-size: 11px; }
+/* A row the evidence gate did not rank. Dimmed rather than hidden — the desk
+   still needs to see that the algorithm exists and how little is behind it. */
+.board-unranked { opacity: 0.72; }
+.board-unranked th[scope="row"] strong { font-weight: 500; }
+.board-coverage { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
+.board-refusals { margin-top: 16px; font-size: 11px; }
+.board-refusals summary { cursor: pointer; color: var(--muted); }
+.board-refusals > ul { margin-top: 8px; }
 
 /* The panel the tiles open. Full width under the metric grid, because the tile
    it belongs to is one cell of a repeat(4, minmax(160px, 1fr)) grid and this

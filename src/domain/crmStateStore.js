@@ -25,12 +25,22 @@ export function createInitialState() {
   };
 }
 
-export function addClient(state, name, camId = state.accountManager?.id) {
+/**
+ * @param {object} state
+ * @param {string} name
+ * @param {string} camId
+ * @param {{id?: string}} [options] `id` lets the caller name the row it is about
+ *        to create. A client is added optimistically and then replaced by the
+ *        saved row (see adoptSavedClient); without a known id the caller cannot
+ *        find its own placeholder again — which is why the old code re-read the
+ *        entire database after every client creation just to learn one uuid.
+ */
+export function addClient(state, name, camId = state.accountManager?.id, { id = null } = {}) {
   const trimmed = String(name || '').trim();
   if (!trimmed) return state;
 
   const client = {
-    id: createId('client'),
+    id: id || createId('client'),
     name: trimmed,
     status: 'Active',
     accountRegistry: {},
@@ -71,6 +81,125 @@ export function removeClient(state, clientId) {
       clientIds: (p.clientIds || []).filter(id => id !== clientId),
     })),
     selectedClientId: state.selectedClientId === clientId ? newSelectedId : state.selectedClientId,
+  };
+}
+
+/**
+ * Puts back everything removeClient took out.
+ *
+ * removeClient drops three things at once — the client, its entry in every
+ * CAM's clientIds, and the selection if it was the selected one — so undoing a
+ * refused deactivation has to put all three back or the client returns to the
+ * list belonging to nobody. The position is restored too: the sidebar falls
+ * back to `clients` order for anyone without a saved clientOrder, and a client
+ * that reappears at the bottom of the list reads as a different bug.
+ */
+export function restoreClient(state, client, { index = null, camProfileIds = [], selectedClientId = null } = {}) {
+  if (!client?.id) return state;
+  const others = (state.clients || []).filter((c) => c.id !== client.id);
+  const at = index === null || index < 0 ? others.length : Math.min(index, others.length);
+  const owners = new Set(camProfileIds);
+  return {
+    ...state,
+    clients: [...others.slice(0, at), client, ...others.slice(at)],
+    camProfiles: (state.camProfiles || []).map((profile) => (
+      owners.has(profile.id)
+        ? { ...profile, clientIds: [...new Set([...(profile.clientIds || []), client.id])] }
+        : profile
+    )),
+    selectedClientId: selectedClientId || state.selectedClientId,
+  };
+}
+
+/**
+ * Swaps an optimistically added client for the row the insert returned.
+ *
+ * The saved row carries the id every later write needs (the uuid, and the
+ * legacy_key the app uses as `id`), so this is the local half of "an edit is
+ * visible from the edit itself": the placeholder keeps whatever the user has
+ * already typed into it, the ids come from the server, and nothing has to be
+ * re-downloaded to learn them.
+ *
+ * Every reference to the placeholder id moves with it — the owning CAM's
+ * clientIds and clientOrder, and the selection — because a stale id in
+ * clientOrder silently drops the client out of the sidebar's ordered list.
+ */
+export function adoptSavedClient(state, localId, savedClient) {
+  if (!savedClient?.id || !localId) return state;
+  const swap = (id) => (id === localId ? savedClient.id : id);
+  return {
+    ...state,
+    clients: (state.clients || []).map((client) => (
+      client.id === localId ? { ...client, ...savedClient } : client
+    )),
+    camProfiles: (state.camProfiles || []).map((profile) => ({
+      ...profile,
+      clientIds: [...new Set((profile.clientIds || []).map(swap))],
+      ...(profile.clientOrder
+        ? { clientOrder: [...new Set(profile.clientOrder.map(swap))] }
+        : {}),
+    })),
+    selectedClientId: swap(state.selectedClientId),
+  };
+}
+
+export function addTimeOffRequest(state, entry) {
+  if (!entry?.id) return state;
+  return {
+    ...state,
+    timeOff: [...(state.timeOff || []).filter((row) => row.id !== entry.id), entry],
+  };
+}
+
+export function updateTimeOffRequest(state, timeOffId, patch) {
+  return {
+    ...state,
+    timeOff: (state.timeOff || []).map((row) => (
+      row.id === timeOffId ? { ...row, ...patch } : row
+    )),
+  };
+}
+
+export function removeTimeOffRequest(state, timeOffId) {
+  return {
+    ...state,
+    timeOff: (state.timeOff || []).filter((row) => row.id !== timeOffId),
+  };
+}
+
+/**
+ * Coverage is replaced per time-off request, never appended to — the write it
+ * mirrors (replaceSupabaseCoverage) deletes every row carrying the time_off_id
+ * and re-inserts, so re-distributing a cover must not accumulate here either.
+ * An empty list is how a cover is removed outright.
+ */
+export function replaceCoverageForRequest(state, timeOffId, entries = []) {
+  return {
+    ...state,
+    coverage: [
+      ...(state.coverage || []).filter((row) => row.timeOffId !== timeOffId),
+      ...entries,
+    ],
+  };
+}
+
+export function removeCoverageEntry(state, coverageId) {
+  return {
+    ...state,
+    coverage: (state.coverage || []).filter((row) => row.id !== coverageId),
+  };
+}
+
+/**
+ * The exact inverse of removeCoverageEntry, so ending a cover can be undone
+ * when the delete is refused. Upsert rather than push: rolling back twice must
+ * not leave the client covered twice.
+ */
+export function upsertCoverageEntry(state, entry) {
+  if (!entry?.id) return state;
+  return {
+    ...state,
+    coverage: [...(state.coverage || []).filter((row) => row.id !== entry.id), entry],
   };
 }
 
@@ -245,6 +374,40 @@ export function appendDailyImport(state, clientId, importResult) {
       ].sort((a, b) => String(a.date).localeCompare(String(b.date))).slice(-180),
     };
   });
+}
+
+/**
+ * Folds the daily_imports row the write RETURNED into the day already on screen.
+ *
+ * The day is complete from the upload itself — every account, every fill, every
+ * flag, all under ids the client generated. The one thing the client cannot
+ * know is the row's uuid, and `orders`/`executions` are keyed by it when trade
+ * history is merged in (see mergeSupabaseTradeHistory). Learning it from the
+ * write is a field copy; learning it from a refetch was a full dashboard load.
+ *
+ * Matched on `date`, not on id: appendDailyImport keys a client's days by date
+ * and a re-upload of the same day arrives with a fresh local id, so date is the
+ * identity that survives both.
+ *
+ * `status` is deliberately not adopted. The screen owns it — a user who closed
+ * the day in the milliseconds the write was out must not have it reopened by
+ * the row that write returned.
+ */
+export function adoptSavedDailyImport(state, clientId, date, savedRow) {
+  if (!savedRow?.id || !date) return state;
+  return updateClient(state, clientId, (client) => ({
+    ...client,
+    dailyImports: (client.dailyImports || []).map((item) => (
+      item.date === date
+        ? {
+          ...item,
+          id: savedRow.legacy_key || item.id,
+          uuid: savedRow.id,
+          ...(savedRow.source_summary ? { sourceSummary: savedRow.source_summary } : {}),
+        }
+        : item
+    )),
+  }));
 }
 
 export function updateClientDetails(state, clientId, patch) {

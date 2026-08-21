@@ -6,6 +6,7 @@ import {
 } from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
 import { splitSimulationRows } from './simulationAccounts';
+import { createRequestGate } from './supabaseRetry';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -260,6 +261,23 @@ function reportError(label, error) {
   if (error) throw new Error(`${label}: ${error.message}`);
 }
 
+/**
+ * How many Supabase reads this tab may have in flight at once.
+ *
+ * Four, not "as many as there are pages". The previous code fired one count per
+ * table and then every page of that table in a single Promise.all, so a load
+ * left the browser as one burst — on the current book 117 requests, of which 31
+ * were pages of `orders` and 16 pages of `operational_flags`. Twelve machines
+ * doing that in quick succession is what the project started refusing, and
+ * `orders` gains a page every trading day, so one tab reaches the same cliff on
+ * its own eventually.
+ *
+ * The gate is shared by every table in a load — see createRequestGate — because
+ * a per-table bound of four still leaves nineteen tables' worth in flight.
+ */
+export const READ_CONCURRENCY = 4;
+const readGate = createRequestGate(READ_CONCURRENCY);
+
 // Supabase/PostgREST caps an unbounded select at 1000 rows. Without pagination a
 // team with many accounts (including dead ones), snapshots, orders or executions
 // would silently load only the first 1000 rows of each table — dropping whole
@@ -267,25 +285,26 @@ function reportError(label, error) {
 // (id) so every table loads in full.
 async function loadTable(table, columns = '*') {
   const pageSize = 1000;
-  const { count, error: countError } = await supabase
+  const { count, error: countError } = await readGate(() => supabase
     .from(table)
-    .select('id', { count: 'exact', head: true });
+    .select('id', { count: 'exact', head: true }));
   reportError(`${table} count`, countError);
 
   const pageCount = Math.ceil(Number(count || 0) / pageSize);
   if (!pageCount) return [];
 
-  // Fetching every page one after another made large history tables wait for
-  // several network round trips. The result remains complete and ordered, but
-  // pages now load together.
+  // Pages still overlap — a large history table does not wait on one round trip
+  // per thousand rows — but no more than READ_CONCURRENCY of them are ever in
+  // flight, across all tables. Promise.all still resolves in page order, so the
+  // result is as complete and as ordered as it was before.
   const pages = await Promise.all(
     Array.from({ length: pageCount }, (_, page) => {
       const from = page * pageSize;
-      return supabase
+      return readGate(() => supabase
         .from(table)
         .select(columns)
         .order('id', { ascending: true })
-        .range(from, from + pageSize - 1);
+        .range(from, from + pageSize - 1));
     }),
   );
   const all = [];
@@ -1075,8 +1094,26 @@ export async function decideSupabaseTimeOff(timeOffId, status, { decidedBy = nul
   return data;
 }
 
+/**
+ * The row a time-off write returns, in the shape state.timeOff holds.
+ *
+ * The uuid->app-id map only exists inside a full load, and a single write has
+ * no reason to build one: the caller already knows whose request it is, because
+ * it just made it. Passing `camProfileId` in is what lets an approval show as
+ * approved without re-downloading cam_profiles to translate one uuid.
+ */
+export function timeOffEntryFromRow(row, camProfileId) {
+  return timeOffFromRow(row || {}, { [row?.cam_profile_id]: camProfileId });
+}
+
 // Hand a set of clients to covering CAMs for one window. Replaces whatever was
 // already arranged for that request, so re-distributing is not additive.
+//
+// Returns the saved rows already mapped into the shape state.coverage holds.
+// The mapping is free here and nowhere else: this function resolved every app
+// id to a uuid on the way in, so it is the one place that holds both halves
+// without a second round trip. Returning raw rows is what forced callers to
+// re-read the whole database to see a cover they had just arranged.
 export async function replaceSupabaseCoverage(assignments = [], { timeOffId = null, absentCamId = null, startDate, endDate } = {}) {
   if (!isSupabaseConfigured || !supabase) return null;
   if (timeOffId) {
@@ -1086,11 +1123,18 @@ export async function replaceSupabaseCoverage(assignments = [], { timeOffId = nu
   if (!assignments.length) return [];
 
   const absentUuid = absentCamId ? await getCamProfileUuid(absentCamId).catch(() => null) : null;
+  const camIdByUuid = {};
+  const clientIdByUuid = {};
+  if (absentUuid) camIdByUuid[absentUuid] = absentCamId;
   const rows = [];
   for (const assignment of assignments) {
+    const clientUuid = await getClientUuid(assignment.clientId);
+    const coveringUuid = await getCamProfileUuid(assignment.coveringCamId);
+    clientIdByUuid[clientUuid] = assignment.clientId;
+    camIdByUuid[coveringUuid] = assignment.coveringCamId;
     rows.push({
-      client_id: await getClientUuid(assignment.clientId),
-      covering_cam_profile_id: await getCamProfileUuid(assignment.coveringCamId),
+      client_id: clientUuid,
+      covering_cam_profile_id: coveringUuid,
       absent_cam_profile_id: absentUuid,
       time_off_id: timeOffId,
       start_date: startDate,
@@ -1103,7 +1147,7 @@ export async function replaceSupabaseCoverage(assignments = [], { timeOffId = nu
     .upsert(rows, { onConflict: 'client_id,covering_cam_profile_id,start_date,end_date' })
     .select();
   if (error) throw new Error(error.message);
-  return data;
+  return (data || []).map((row) => coverageFromRow(row, camIdByUuid, clientIdByUuid));
 }
 
 export async function deleteSupabaseCoverage(coverageId) {
@@ -1124,6 +1168,15 @@ export async function updateSupabaseCamProfile(camProfileId, patch = {}) {
   if ('live' in patch) mapped.live = Boolean(patch.live);
   if ('canManageClients' in patch) mapped.can_manage_clients = Boolean(patch.canManageClients);
   if ('reportConfig' in patch) mapped.report_config = patch.reportConfig && typeof patch.reportConfig === 'object' ? patch.reportConfig : {};
+  // cam_profiles.client_order (step_32_client_order.sql) is where the sidebar
+  // drag order lives, and camProfileFromRow above reads it back — but this
+  // mapping did not write it, so `updateSupabaseCamProfile(camId, { clientOrder })`
+  // sent nothing but an updated_at and reported success. The order survived
+  // until the next load and then vanished: the desk manager's "drags a client
+  // to reorder the sidebar -> the client snaps back". The identically named key
+  // in clientPatchToDb, which does map it, is on the CLIENTS table and is not
+  // this one.
+  if ('clientOrder' in patch) mapped.client_order = Array.isArray(patch.clientOrder) ? patch.clientOrder : [];
 
   const { data, error } = await supabase
     .from('cam_profiles')

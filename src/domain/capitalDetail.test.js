@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCapitalDetail } from './capitalDetail';
+import { MONEY_KINDS, buildCapitalDetail } from './capitalDetail';
 import { SEGMENTS } from './operationsSegments';
 
 // A client shaped the way buildCrmStateFromTables produces it: a registry keyed
@@ -83,7 +83,10 @@ describe('buildCapitalDetail — which arithmetic decides a movement', () => {
     const detail = buildCapitalDetail(clients);
 
     expect(detail.desk.movement.unexplained).toEqual([]);
-    expect(detail.desk.movement.tradingPnl.pairs).toBe(detail.desk.coverage.pairsCompared);
+    // Per segment, never netted: `desk.movement.tradingPnl` is null by design.
+    expect(detail.desk.movement.tradingPnl).toBeNull();
+    expect(detail.desk.movement.tradingPnlBySegment
+      .reduce((sum, row) => sum + row.pairs, 0)).toBe(detail.desk.coverage.pairsCompared);
   });
 
   it('does not compare two closes more than three days apart', () => {
@@ -337,19 +340,79 @@ describe('buildCapitalDetail — capital held', () => {
 
     expect(fundedBlock.held.accounts).toBe(1);
     expect(fundedBlock.held.accountsWithoutBalance).toBe(1);
-    expect(fundedBlock.held.capital).toBe(50000);
+    // A prop pool has no capital. The observed balance is its plan size.
+    expect(fundedBlock.held.capital).toBeNull();
+    expect(fundedBlock.held.planSize).toBe(50000);
+    expect(fundedBlock.held.balanceObserved).toBe(50000);
+  });
+
+  it('refuses to call a prop balance capital, and says why in the block', () => {
+    // The desk manager's whole point: a prop-firm account balance is a plan size
+    // the firm simulates. On the real book it was 93.93% of a $32,244,234.16
+    // figure the screen headed "Capital held".
+    const detail = buildCapitalDetail(clients);
+    const fundedBlock = detail.segments.find((block) => block.segment === SEGMENTS.FUNDED);
+    const cashBlock = detail.segments.find((block) => block.segment === SEGMENTS.CASH);
+
+    expect(fundedBlock.moneyKind).toBe(MONEY_KINDS.PROP_PLAN_SIZE);
+    expect(fundedBlock.held.capital).toBeNull();
+    expect(fundedBlock.held.capitalRefusal).toMatch(/plan size/i);
+    // What a prop pool IS entitled to: its movement.
+    expect(fundedBlock.movement.tradingPnl).not.toBeNull();
+
+    // Cash is the one kind that keeps a balance, and it keeps it as capital.
+    expect(cashBlock.moneyKind).toBe(MONEY_KINDS.CLIENT_CASH);
+    expect(cashBlock.held.capital).toBe(30000);
+    expect(cashBlock.held.capitalRefusal).toBeNull();
+    expect(cashBlock.held.planSize).toBeNull();
   });
 
   it('carries a stale balance forward and says how stale it is', () => {
     const detail = buildCapitalDetail(clients);
 
     expect(detail.asOfDate).toBe('2026-07-23');
-    expect(detail.desk.held.capital).toBe(80000);
-    expect(detail.desk.held.atLatestClose).toEqual({ capital: 50000, accounts: 1 });
+    // The desk holds no capital figure at all — see the guard below. Staleness
+    // and the per-close account counts survive, because those are counts.
+    expect(detail.desk.held.capital).toBeNull();
+    expect(detail.desk.held.atLatestClose.accounts).toBe(1);
     expect(detail.desk.held.staleness).toEqual({
       current: 1, withinThreeDays: 1, withinSevenDays: 0, older: 0,
     });
     expect(detail.desk.held.asOfDates).toHaveLength(2);
+    expect(detail.desk.held.asOfDates.every((row) => row.balance === undefined)).toBe(true);
+  });
+
+  it('produces no desk capital figure, in any field, under any name', () => {
+    // THE GUARD FOR ITEM 5. The desk used to publish $32,244,234.16 of "capital
+    // held" over 584 accounts, 93.93% of which was prop plan size and at most
+    // $1,956,551.34 of which was money anyone could withdraw. There is no
+    // defensible whole here, so there is no number: cash keeps a balance, prop
+    // gets its movement, and the two are never added.
+    const detail = buildCapitalDetail(clients);
+
+    expect(detail.desk.held.capital).toBeNull();
+    expect(detail.desk.held.planSize).toBeNull();
+    expect(detail.desk.held.atLatestClose.capital).toBeNull();
+    expect(detail.desk.held.balanceObserved).toBe(0);
+    expect(detail.desk.movement.tradingPnl).toBeNull();
+    expect(detail.desk.held.capitalRefusal).toMatch(/no defensible total|must not be added/i);
+    // And every timeline money column with it: one line for the desk would add
+    // the cash desk's result to the prop desk's.
+    for (const point of detail.desk.timeline) {
+      expect(point.netPnl).toBeNull();
+      expect(point.cumulativeNetPnl).toBeNull();
+      expect(point.balanceObserved).toBeNull();
+    }
+    expect(detail.desk.timelineRefusal).toMatch(/Open a segment/);
+  });
+
+  it('gives no segment a share of a desk total, because there is none', () => {
+    const detail = buildCapitalDetail(clients);
+
+    for (const block of detail.segments) {
+      expect(block.composition.shareOfDesk).toBeUndefined();
+      expect(Object.keys(block.composition)).not.toContain('shareOfDesk');
+    }
   });
 
   it('keeps ignored and orphan capital out of the desk total and gives them no share of it', () => {
@@ -357,12 +420,14 @@ describe('buildCapitalDetail — capital held', () => {
     const ignored = detail.segments.find((block) => block.segment === SEGMENTS.IGNORED);
     const orphan = detail.segments.find((block) => block.segment === SEGMENTS.ORPHAN);
 
-    expect(ignored.held.capital).toBe(9000);
-    expect(orphan.held.capital).toBe(7000);
+    // Still counted, still visible, still not capital and not in any roll-up.
+    expect(ignored.held.balanceObserved).toBe(9000);
+    expect(orphan.held.balanceObserved).toBe(7000);
+    expect(ignored.held.capital).toBeNull();
+    expect(orphan.held.capital).toBeNull();
     expect(ignored.countedInTotal).toBe(false);
-    expect(ignored.composition.shareOfDesk).toBeNull();
-    expect(orphan.composition.shareOfDesk).toBeNull();
-    expect(detail.desk.held.capital).toBe(80000);
+    expect(detail.desk.composition.bySegment.map((row) => row.segment))
+      .not.toContain(SEGMENTS.IGNORED);
   });
 
   it('does not merge two clients who use the same account name', () => {
@@ -384,7 +449,10 @@ describe('buildCapitalDetail — capital held', () => {
     const detail = buildCapitalDetail(shared);
 
     expect(detail.desk.held.accounts).toBe(2);
-    expect(detail.desk.held.capital).toBe(105040.48);
+    // Two accounts, two segments, and no one number across them.
+    expect(detail.desk.composition.bySegment
+      .reduce((sum, row) => sum + row.balance, 0)).toBe(105040.48);
+    expect(detail.desk.held.capital).toBeNull();
     expect(detail.desk.movement.unexplained).toEqual([]);
   });
 
@@ -488,13 +556,18 @@ describe('buildCapitalDetail — the timeline', () => {
     const detail = buildCapitalDetail(clients);
 
     expect(detail.desk.timeline).toHaveLength(2);
-    expect(detail.desk.timeline[0]).toMatchObject({
-      date: '2026-07-13', accounts: 2, capitalObserved: 30000, netPnl: 0, cumulativeNetPnl: 0,
-    });
-    expect(detail.desk.timeline[1]).toMatchObject({
-      date: '2026-07-14', accounts: 1, capitalObserved: 10500, netPnl: 500, cumulativeNetPnl: 500,
-    });
+    expect(detail.desk.timeline[0]).toMatchObject({ date: '2026-07-13', accounts: 2 });
+    expect(detail.desk.timeline[1]).toMatchObject({ date: '2026-07-14', accounts: 1 });
     expect(detail.desk.timeline[1].coverage).toBe(0.5);
+
+    // The money is on the SEGMENT's timeline, where it is one kind of money.
+    const cashBlock = detail.segments.find((block) => block.segment === SEGMENTS.CASH);
+    expect(cashBlock.timeline[0]).toMatchObject({
+      date: '2026-07-13', accounts: 2, balanceObserved: 30000, netPnl: 0, cumulativeNetPnl: 0,
+    });
+    expect(cashBlock.timeline[1]).toMatchObject({
+      date: '2026-07-14', accounts: 1, balanceObserved: 10500, netPnl: 500, cumulativeNetPnl: 500,
+    });
   });
 
   it('honours an as-of bound and reports the close it actually landed on', () => {
@@ -512,7 +585,8 @@ describe('buildCapitalDetail — the timeline', () => {
 
     expect(detail.asOfDate).toBe('2026-07-23');
     expect(detail.requestedAsOf).toBe('2026-07-23');
-    expect(detail.desk.held.capital).toBe(11000);
+    expect(detail.segments.find((block) => block.segment === SEGMENTS.CASH).held.capital)
+      .toBe(11000);
     expect(detail.desk.movement.unexplained).toEqual([]);
   });
 
@@ -527,11 +601,14 @@ describe('buildCapitalDetail — the timeline', () => {
     })];
 
     expect(buildCapitalDetail(clients, { segment: SEGMENTS.CASH }).selected.held.capital).toBe(10000);
-    expect(buildCapitalDetail(clients).selected.held.capital).toBe(60000);
+    // The desk is `selected` when no segment is asked for, and it has no capital
+    // figure — the $60,000 that used to be here was $10,000 of client cash added
+    // to $50,000 of a prop firm's simulated plan size.
+    expect(buildCapitalDetail(clients).selected.held.capital).toBeNull();
     // A segment nobody holds returns an empty block, not a crash and not a
     // borrowed total from another segment.
     const missing = buildCapitalDetail(clients, { segment: SEGMENTS.EVAL_BULLET });
-    expect(missing.selected.held.capital).toBe(0);
+    expect(missing.selected.held.balanceObserved).toBe(0);
     expect(missing.selected.held.accounts).toBe(0);
   });
 
@@ -540,7 +617,8 @@ describe('buildCapitalDetail — the timeline', () => {
 
     expect(detail.asOfDate).toBeNull();
     expect(detail.segments).toEqual([]);
-    expect(detail.desk.held.capital).toBe(0);
+    expect(detail.desk.held.capital).toBeNull();
+    expect(detail.desk.held.balanceObserved).toBe(0);
     expect(detail.desk.held.accounts).toBe(0);
     expect(detail.desk.movement.tradingPnl).toBeNull();
     expect(detail.desk.movement.payouts).toBeNull();

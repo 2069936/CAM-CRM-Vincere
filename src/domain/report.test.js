@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDailyReportSummary, buildClientMessageReport, buildTeamWeeklyReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport } from './report';
+import { buildDailyReportSummary, buildClientMessageReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport } from './report';
 
 describe('buildDailyReportSummary', () => {
   it('uses current account registry metadata over stale import metadata', () => {
@@ -259,46 +259,11 @@ describe('buildDailyReportSummary flag counts', () => {
   });
 });
 
-// ── buildTeamWeeklyReport ─────────────────────────────────────────────────────
-
-describe('buildTeamWeeklyReport', () => {
-  it('returns a string for empty inputs', () => {
-    expect(typeof buildTeamWeeklyReport([], [])).toBe('string');
-  });
-
-  it('excludes CAMs with no clients', () => {
-    const cam = { id: 'cam1', name: 'Maria', clientIds: [] };
-    const text = buildTeamWeeklyReport([], [cam]);
-    expect(text).not.toContain('Maria');
-  });
-
-  it('includes CAM name and Drive Insight footer when clients exist', () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const cam = { id: 'cam1', name: 'Maria', clientIds: ['c1'] };
-    const client = {
-      id: 'c1', name: 'Pedro', accountRegistry: {},
-      dailyImports: [{ date: today, status: 'Closed', accounts: {}, snapshots: [{ accountName: 'A1', grossRealizedPnl: 800 }], flags: [] }],
-    };
-    const text = buildTeamWeeklyReport([client], [cam]);
-    expect(text).toContain('Maria');
-    expect(text).toContain('Drive Insight');
-  });
-
-  it('counts funded accounts per CAM, excluding Failed status', () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const cam = { id: 'cam1', name: 'Ana', clientIds: ['c1'] };
-    const client = {
-      id: 'c1', name: 'Pedro',
-      accountRegistry: {
-        A1: { accountType: 'Funded', status: 'Active' },
-        A2: { accountType: 'Funded', status: 'Failed' },
-      },
-      dailyImports: [{ date: today, status: 'Closed', accounts: {}, snapshots: [], flags: [] }],
-    };
-    const text = buildTeamWeeklyReport([client], [cam]);
-    expect(text).toContain('1 funded');
-  });
-});
+// buildTeamWeeklyReport's tests used to be here. The function is gone: it was a
+// fourth independent computation of the desk's money, on a wall-clock week, with
+// no segment filter and one headline that added cash to prop. Its replacement is
+// formatDeskReport() in deskMoney.js, covered by deskMoney.test.js (synthetic,
+// ungated) and deskMoney.book.test.js (the real book).
 
 describe('buildCamDayReport', () => {
   it('collects each client that has a close on the date, sorted by daily PnL', () => {

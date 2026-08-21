@@ -45,10 +45,12 @@ export const localSnapshotTests = [
   "src/domain/accountLifecycle.book.test.js",
   "src/domain/algoContribution.book.test.js",
   "src/domain/camFlagQueue.book.test.js",
+  "src/domain/deskMoney.book.test.js",
   "src/domain/liveAccounts.book.test.js",
   "src/domain/quietAccounts.book.test.js",
   "src/domain/setFileMatch.test.js",
   "src/domain/sidebarClientList.test.js",
+  "src/domain/supabaseLoadCost.book.test.js",
   "src/domain/synthesizedReference.book.test.js",
 ]
 

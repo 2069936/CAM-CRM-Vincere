@@ -101,12 +101,21 @@ describe('desk capital never contains simulated dollars', () => {
     expect(simulated.balance).toBe(SIM101_BALANCE);
     expect(totals.excluded.map((row) => row.segment)).toContain(SEGMENTS.SIMULATION);
 
-    // The figure that goes on a tile is the two real accounts and nothing else.
-    expect(totals.total.accounts).toBe(2);
-    expect(totals.total.balance).toBeCloseTo(CRAIG_MAIN + CRAIG_SUB1, 2);
-    expect(totals.total.dailyPnl).toBe(0);
+    // What reaches a screen is the two real accounts and nothing else. There is
+    // no `totals.total` to check any more — the desk has no one figure — so the
+    // check is on the rows that are marked as counting.
+    const counted = totals.segments.filter((row) => row.countedInTotal);
+    expect(counted.reduce((sum, row) => sum + row.accounts, 0)).toBe(2);
+    expect(counted.reduce((sum, row) => sum + row.balance, 0))
+      .toBeCloseTo(CRAIG_MAIN + CRAIG_SUB1, 2);
+    expect(counted.reduce((sum, row) => sum + row.dailyPnl, 0)).toBe(0);
     expect(rollUpByBusiness(totals).cash.balance).toBeCloseTo(CRAIG_MAIN + CRAIG_SUB1, 2);
     expect(rollUpByBusiness(totals).simulation.balance).toBe(SIM101_BALANCE);
+    // And the simulated balance is in none of the four business rows.
+    const business = rollUpByBusiness(totals);
+    for (const key of ['bulletBot', 'propOther', 'cash', 'unclassified']) {
+      expect(business[key].balance).not.toBe(SIM101_BALANCE);
+    }
   });
 
   it('excludes the undetermined segment from the total too', () => {
@@ -134,9 +143,10 @@ describe('desk capital never contains simulated dollars', () => {
     expect(row).toBeTruthy();
     expect(row.countedInTotal).toBe(false);
     expect(row.balance).toBe(SIM101_BALANCE);
-    expect(totals.total.accounts).toBe(1);
-    expect(totals.total.balance).toBeCloseTo(CRAIG_MAIN, 2);
-    expect(totals.total.dailyPnl).toBe(0);
+    const counted = totals.segments.filter((seg) => seg.countedInTotal);
+    expect(counted.reduce((sum, seg) => sum + seg.accounts, 0)).toBe(1);
+    expect(counted.reduce((sum, seg) => sum + seg.balance, 0)).toBeCloseTo(CRAIG_MAIN, 2);
+    expect(counted.reduce((sum, seg) => sum + seg.dailyPnl, 0)).toBe(0);
   });
 
   it('segments a contradiction as undetermined rather than by its stored type', () => {
