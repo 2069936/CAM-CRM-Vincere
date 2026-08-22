@@ -12,7 +12,7 @@
 // difference — trains a CAM to dismiss the flag, which is worse than not having
 // one.
 
-import { strategyFamilyOf } from './strategyRiskProfile';
+import { strategyFamilyOf } from './strategyFamily';
 
 /**
  * NinjaTrader writes parameters as `v1/v2/.../vN (Name1/.../NameN)`, and the

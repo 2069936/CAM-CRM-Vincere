@@ -286,6 +286,26 @@ export function buildNoteFor(changes) {
 }
 
 /**
+ * The change the headline leads with, or null when the headline is not about a
+ * single change.
+ *
+ * Exported so the expanded table can mark the row the sentence above it is
+ * talking about. Pulled OUT of headlineFor rather than recomputed beside it: two
+ * copies of "which change leads" is a fork waiting to happen, and the failure
+ * would be silent — a table with the wrong row marked reads exactly like a table
+ * with the right one marked.
+ */
+export function leadChangeOf(changes = []) {
+  const rows = sortChanges(changes.map(describeChangeRow));
+  const { valued } = splitPresence(rows);
+  const top = valued[0];
+  // An unrecognised name can never be the lead, for the same reason it can never
+  // be the headline: `URGO2 2 → 4` is the strategy name plus a digit.
+  if (!top || top.rank === RANK.UNKNOWN) return null;
+  return top;
+}
+
+/**
  * The one line a CAM reads to know what this group is.
  *
  * Leads with the highest-ranked change that has a value on both sides, because a
@@ -324,6 +344,8 @@ export function headlineFor(changes, count) {
         + `${plural(valued.length, 'differs', 'differ')} from the cohort, `
         + 'none of them a named risk control — open the row for the raw parameters.';
     }
+    // The same change leadChangeOf returns, by construction: both take the first
+    // valued row of the same sorted list and both refuse an unknown name.
     const here = withUnit(top.here, top.unit);
     const cohort = top.cohort;
     return `${top.label}: ${here} on ${subject}, ${cohort} in the cohort.`;
@@ -426,16 +448,35 @@ function whoLineOf(clients) {
 }
 
 /**
+ * How many algorithm rows open on their own.
+ *
+ * One. Every algorithm is a row either way — the number only decides how many
+ * arrive already expanded, and one is enough to show what the panel is without
+ * burying the other nine under it.
+ *
+ * It used to be eight, from when a row past the limit was hidden inside a second
+ * disclosure and eight was how many the panel could afford to show. It could not
+ * afford eight: measured over the real book, the eight open rows and their 29
+ * always-visible group summaries put 1,241 words on screen before the reader
+ * touched anything, and the list of ten algorithms — the one thing a reader
+ * needs to pick from — was the one thing that could not be seen at once.
+ */
+export const DEFAULT_OPEN_ROWS = 1;
+
+/**
  * Everything the panel renders, derived once.
  *
- * `limit` no longer decides what exists, only what is open. The old panel
- * dropped rows past it entirely, and on the real book that hid IFSP-PF NG SEP26
- * — 1 account, 22 changes, running PT 43/53/73 · SL 33 against a cohort on
- * PT 200/400/500 · SL 30 with a build that carries Martingale settings the
- * cohort's has not. Sorting by account count put the largest configuration
- * distance on the book below the fold.
+ * `limit` decides how many rows open, and NOTHING else. There is no second fold:
+ * every algorithm is a row in one list, closed rows included, so the ten
+ * findings on this book are ten lines a reader can see together. The previous
+ * shape kept rows past the limit inside a `2 more algorithms` disclosure, which
+ * was itself the fix for an older version that dropped them outright — and that
+ * one had hidden IFSP-PF NG SEP26, 1 account with 22 changes running
+ * PT 43/53/73 · SL 33 against a cohort on PT 200/400/500 · SL 30, because
+ * sorting by account count put the largest configuration distance on the book
+ * below the fold. A closed row that states its own worst finding needs neither.
  */
-export function buildDriftView(rows = [], { limit = 8 } = {}) {
+export function buildDriftView(rows = [], { limit = DEFAULT_OPEN_ROWS } = {}) {
   const view = rows.map((row) => {
     const groups = row.outliers.map((outlier, index) => {
       const changes = sortChanges((outlier.changes || []).map(describeChangeRow));
@@ -452,7 +493,15 @@ export function buildDriftView(rows = [], { limit = 8 } = {}) {
         sameLabelAsCohort: outlier.label === row.dominant.label,
         headline: headlineFor(outlier.changes || [], tally.total),
         buildNote: buildNoteFor(outlier.changes || []),
+        /** Which change the headline is about, so the table can mark that row. */
+        leadName: leadChangeOf(outlier.changes || [])?.name || null,
         changes,
+        // Stated once above the block instead of as a tooltip on each name.
+        // These are the parameters with no safe plain-language reading — the
+        // rank-99 tail — and a reader who cannot see where the named settings
+        // stop is being asked to weigh `URGO4 2 → 4` against a stop loss.
+        namedChanges: changes.filter((change) => change.mapped),
+        unnamedChanges: changes.filter((change) => !change.mapped),
         topRank: changes.length ? changes[0].rank : RANK.UNKNOWN,
         clients,
         whoLine: whoLineOf(clients),
@@ -479,9 +528,18 @@ export function buildDriftView(rows = [], { limit = 8 } = {}) {
     };
   });
 
+  for (const row of view) {
+    // What a closed row says about itself. Without this a collapsed algorithm is
+    // a name and a number, and a reader has to open all ten to find out which
+    // one is worth opening.
+    row.worst = row.groups.length ? row.groups[0].headline : null;
+    row.findings = row.groups.length;
+  }
+
   return {
-    rows: view.slice(0, Math.max(0, limit)),
-    rest: view.slice(Math.max(0, limit)),
+    rows: view,
+    /** How many of `rows` arrive open. Never how many exist. */
+    openCount: Math.min(Math.max(0, limit), view.length),
     totals: totalsOf(rows),
     recurring: recurringChangeOf(view),
   };

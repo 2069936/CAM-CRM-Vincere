@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_OPEN_ROWS,
   buildDriftView,
   buildNoteFor,
   countAccounts,
@@ -418,17 +419,88 @@ describe('buildDriftView', () => {
     expect(view.rows[0].groups.map((group) => group.count)).toEqual([1, 9]);
   });
 
-  it('keeps the rows past the limit instead of dropping them', () => {
-    // limit 8 hid IFSP-PF NG SEP26 — 1 account, 22 changes, a build carrying
-    // martingale settings — behind a dead "2 more not shown." The largest
-    // configuration distance on the book was the row the panel discarded.
+  it('keeps every row in one list and lets the limit decide only what opens', () => {
+    // An older version dropped rows past the limit outright and hid IFSP-PF NG
+    // SEP26 — 1 account, 22 changes, a build carrying martingale settings —
+    // behind a dead "2 more not shown". The version after that kept them inside
+    // a second disclosure. Now there is one list: every row exists, `openCount`
+    // says how many arrive expanded, and nothing is behind a second fold.
     const rows = Array.from({ length: 10 }, (_, index) => row(`F${index}`, 'NG AUG26', [
       { label: 'PT 1/2/3 · SL 4', count: 1, changes: [change('StopLossTicks', '33', '25')], accounts: holders(1, `r${index}`) },
     ]));
     const view = buildDriftView(rows, { limit: 8 });
-    expect(view.rows).toHaveLength(8);
-    expect(view.rest).toHaveLength(2);
-    expect(view.rest[0].groups[0].changes).toHaveLength(1);
+    expect(view.rows).toHaveLength(10);
+    expect(view.openCount).toBe(8);
+    expect(view).not.toHaveProperty('rest');
+    expect(view.rows[9].groups[0].changes).toHaveLength(1);
+  });
+
+  it('clamps the open count to what exists, in both directions', () => {
+    // A limit past the end is not an error and is not that number either; a
+    // negative one opens nothing rather than slicing from the back.
+    const rows = Array.from({ length: 3 }, (_, index) => row(`F${index}`, 'NG AUG26', [
+      { label: 'PT 1/2/3 · SL 4', count: 1, changes: [change('StopLossTicks', '33', '25')], accounts: holders(1, `r${index}`) },
+    ]));
+    expect(buildDriftView(rows, { limit: 25 }).openCount).toBe(3);
+    expect(buildDriftView(rows, { limit: -4 }).openCount).toBe(0);
+    expect(buildDriftView(rows, { limit: -4 }).rows).toHaveLength(3);
+    expect(buildDriftView(rows).openCount).toBe(DEFAULT_OPEN_ROWS);
+  });
+
+  it('gives every row the worst of its own findings, so a closed one can be skipped', () => {
+    // A collapsed algorithm that states only its name makes a reader open all
+    // ten to find the one worth opening.
+    const view = buildDriftView([row('URGO', 'MNQ SEP26', [
+      { label: 'PT 1/2/3 · SL 4', count: 9, changes: [change('CloseAllOpenTradeTime', '16:45', '16:30')], accounts: holders(9, 'a') },
+      { label: 'PT 5/6/7 · SL 8', count: 1, changes: [change('StopLossTicks', '300', '315')], accounts: holders(1, 'b') },
+    ])]);
+    // Groups are ordered by rank, so the stop loss leads and the row's worst is
+    // that group's headline — not the biggest group's.
+    expect(view.rows[0].findings).toBe(2);
+    expect(view.rows[0].worst).toBe('Stop loss: 315 ticks on this account, 300 in the cohort.');
+  });
+
+  it('names the change its headline is about, and refuses to name an opaque one', () => {
+    // The table marks this row. `URGO2 2 → 4` can never be the headline, so it
+    // can never be the marked row either — the two rules have to be one rule.
+    const named = buildDriftView([row('URGO', 'MNQ SEP26', [
+      {
+        label: 'PT 1/2/3 · SL 4',
+        count: 1,
+        changes: [change('URGO2', '2', '4'), change('StopLossTicks', '300', '315')],
+        accounts: holders(1, 'b'),
+      },
+    ])]);
+    expect(named.rows[0].groups[0].leadName).toBe('StopLossTicks');
+    expect(named.rows[0].groups[0].namedChanges.map((c) => c.name)).toEqual(['StopLossTicks']);
+    expect(named.rows[0].groups[0].unnamedChanges.map((c) => c.name)).toEqual(['URGO2']);
+
+    const opaque = buildDriftView([row('G4M', 'MNQ SEP26', [
+      { label: 'PT 1/2/3 · SL 4', count: 1, changes: [change('EdgeLeverage', 'False', 'True')], accounts: holders(1, 'b') },
+    ])]);
+    expect(opaque.rows[0].groups[0].leadName).toBeNull();
+    expect(opaque.rows[0].groups[0].namedChanges).toEqual([]);
+    expect(opaque.rows[0].groups[0].unnamedChanges).toHaveLength(1);
+  });
+
+  it('splits named from unnamed without losing or duplicating a change', () => {
+    const view = buildDriftView([row('URGO', 'MNQ SEP26', [
+      {
+        label: 'PT 1/2/3 · SL 4',
+        count: 1,
+        changes: [
+          change('URGO2', '2', '4'),
+          change('StopLossTicks', '300', '315'),
+          change('URGO4', '3', '2'),
+          change('TrailByTicks', '200', '225'),
+        ],
+        accounts: holders(1, 'b'),
+      },
+    ])]);
+    const group = view.rows[0].groups[0];
+    expect(group.namedChanges.length + group.unnamedChanges.length).toBe(group.changes.length);
+    expect([...group.namedChanges, ...group.unnamedChanges].map((c) => c.name).sort())
+      .toEqual(group.changes.map((c) => c.name).sort());
   });
 });
 

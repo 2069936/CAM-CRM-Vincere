@@ -96,6 +96,49 @@ describe('the real book (public/local-snapshot.json, closes 2026-06-25 → 2026-
     expect(checked).toBe(1952);
   });
 
+  it('leaves all 460 flags a CAM acknowledged out of the queue', () => {
+    // The count behind the decision to treat stored Acknowledged rows as closed.
+    // 6,553 flag records on this book: 1,952 Open, 4,141 Resolved, 460
+    // Acknowledged (409 Warning, 51 Critical) across 51 clients.
+    //
+    // The Acknowledge BUTTON is gone — the desk manager wanted one way to close
+    // a flag — but these 460 are work a CAM already did, and this queue is the
+    // only screen that reaches flags stranded behind a client's latest close. If
+    // isFlagOpen ever stops excluding the status, they land here and nothing
+    // takes them out again. The synthetic half of that guard, which CI runs, is
+    // src/domain/flagStatusWrites.test.js; this is the size of what it protects.
+    const census = { Open: 0, Resolved: 0, Acknowledged: 0 };
+    const acknowledgedIds = new Set();
+    const acknowledgedBySeverity = { Warning: 0, Critical: 0 };
+    for (const client of state.clients) {
+      for (const entry of client.dailyImports || []) {
+        for (const flag of entry.flags || []) {
+          census[flag.status] = (census[flag.status] || 0) + 1;
+          if (flag.status !== 'Acknowledged') continue;
+          acknowledgedIds.add(flag.id);
+          acknowledgedBySeverity[flag.severity] += 1;
+        }
+      }
+    }
+    expect(census).toEqual({ Open: 1952, Resolved: 4141, Acknowledged: 460 });
+    expect(acknowledgedBySeverity).toEqual({ Warning: 409, Critical: 51 });
+    expect([...acknowledgedIds].every((id) => !isFlagOpen({ status: 'Acknowledged', id }))).toBe(true);
+
+    // And none of them is offered by any CAM's queue.
+    let offered = 0;
+    for (const cam of state.camProfiles) {
+      const queue = buildCamFlagQueue(camClients(cam.name), { today: TODAY });
+      for (const group of queue.groups) {
+        for (const row of group.rows) {
+          for (const call of flagResolutionPlan(row)) {
+            if (acknowledgedIds.has(call.flagId)) offered += 1;
+          }
+        }
+      }
+    }
+    expect(offered).toBe(0);
+  });
+
   it('every (client, import, flag) it would send exists in the state it was built from', () => {
     // The queue is the only place these three ids are put together, so a
     // mismatch here is a resolution that would no-op in local state and patch a

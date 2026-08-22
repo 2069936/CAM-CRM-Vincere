@@ -18,6 +18,82 @@ import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType } from './reconcile';
 
 export const CLIENT_STAGE_INACTIVE = 'Inactive';
 
+/**
+ * The stages a client can be at, in the order they run.
+ *
+ * ONE list. It was written out three times — the Client stage selector, the
+ * "Add new client" form and the pipeline board's own STAGES — and only one of
+ * those three could lose a client if they drifted: the board renders a column
+ * per name in its copy and drops every card whose stage is not one of them,
+ * silently and with no count anywhere saying so. A stage added to the selector
+ * and not to the board is a client who disappears off the pipeline the moment a
+ * CAM assigns it.
+ *
+ * Today's book cannot show that — every one of its 96 clients is Active or
+ * Paused — which is exactly why it is a constant and a guard rather than a
+ * comment. The board still buckets anything unrecognised into a column of its
+ * own instead of trusting this list to be complete: a value written by hand in
+ * the SQL editor, or by a version of the app older than this one, is a real
+ * client either way.
+ */
+export const CLIENT_STAGES = ['Onboarding', 'Active', 'At Risk', 'Paused', CLIENT_STAGE_INACTIVE];
+
+/** What a client with no stage recorded counts as, everywhere. */
+export const CLIENT_STAGE_DEFAULT = 'Active';
+
+/**
+ * Where a client imported from a sign-up sheet starts.
+ *
+ * Named rather than typed out at the two import sites, so the stage names appear
+ * in this file and nowhere else — the check in clientLifecycle.test.js is
+ * whole-file and a default is just as capable of drifting from the list as an
+ * option is.
+ */
+export const CLIENT_STAGE_NEW = 'Onboarding';
+
+/** The column an unrecognised stage lands in, rather than nowhere. */
+export const CLIENT_STAGE_OTHER = 'Other';
+
+/**
+ * The pipeline board's lanes, with nobody left out of one.
+ *
+ * The board used to bucket into a private copy of the stage list and then render
+ * a column per name in that same list — so `byStage[stage]` would happily create
+ * a bucket for an unrecognised stage and then never render it. The client was
+ * gone from the board, and no count on the page disagreed with the board, so
+ * there was nothing to notice.
+ *
+ * Two things here, and they are separate on purpose. The known stages always get
+ * a lane, in order, EMPTY OR NOT — an empty "At Risk" column is information, and
+ * a board whose columns come and goes with the data cannot be read at a glance.
+ * Anything else gets one shared lane at the end, which appears only when
+ * somebody is actually in it.
+ *
+ * The total is returned rather than left to be recomputed: the caller prints it
+ * against the roster, and the only way a lane can lose a client is if those two
+ * numbers are derived separately.
+ */
+export function pipelineColumns(clients = [], stageOf = (client) => client?.profile?.stage) {
+  const byStage = new Map(CLIENT_STAGES.map((stage) => [stage, []]));
+  const other = [];
+  for (const client of clients) {
+    const stage = stageOf(client) || CLIENT_STAGE_DEFAULT;
+    if (byStage.has(stage)) byStage.get(stage).push(client);
+    else other.push(client);
+  }
+  const columns = [...byStage.entries()].map(([stage, members]) => ({
+    stage,
+    clients: members,
+    known: true,
+  }));
+  if (other.length) columns.push({ stage: CLIENT_STAGE_OTHER, clients: other, known: false });
+  return {
+    columns,
+    placed: columns.reduce((sum, column) => sum + column.clients.length, 0),
+    unknown: other.length,
+  };
+}
+
 function toDate(value) {
   if (!value) return null;
   const text = String(value).slice(0, 10);
@@ -44,6 +120,81 @@ export function isChurnedClient(client) {
   // Manual only. profile.stage is what the Client stage selector writes;
   // client.status === 'Inactive' is the soft-delete path, counted separately.
   return client?.profile?.stage === CLIENT_STAGE_INACTIVE;
+}
+
+/**
+ * WHY A CLIENT LEFT, as a fixed list rather than a sentence.
+ *
+ * The desk manager's instruction was specific: the CRM should capture why when a
+ * CAM marks a client Inactive, "as a short list of options rather than free
+ * text, so the reasons can be counted later. Free text that nobody can aggregate
+ * is how this question gets asked again in three months." A note may accompany
+ * the option; the OPTION is the part that has to be structured.
+ *
+ * `code` is what is stored and what the panel groups on; `label` is what is
+ * shown. Storing the code means the wording can be rewritten later without
+ * rewriting the rows, and it means a reason survives redaction as itself —
+ * scripts/redact-export.mjs keeps `churn_reason` because it is an enum, and
+ * redacts `churn_note` because it is prose a CAM wrote about a person.
+ *
+ * `other` is on the list and is NOT the same thing as no reason. Choosing it is
+ * a CAM saying "none of these"; an absent reason is nobody having been asked.
+ * Collapsing the second into the first is the one thing the manager ruled out by
+ * name, and CHURN_REASON_UNRECORDED below is what keeps them apart.
+ */
+export const CHURN_REASONS = [
+  { code: 'not-profitable', label: 'Not profitable' },
+  { code: 'cost', label: 'Cost of the service' },
+  { code: 'lost-funding', label: 'Lost funded account' },
+  { code: 'unresponsive', label: 'Stopped responding' },
+  { code: 'switched-provider', label: 'Went elsewhere' },
+  { code: 'personal', label: 'Personal circumstances' },
+  { code: 'other', label: 'Other' },
+];
+
+/**
+ * The reason of a client who was marked Inactive before this was ever asked.
+ *
+ * Not a member of CHURN_REASONS: it can never be chosen, only observed. It is a
+ * synthetic grouping key so the panel can count "how many of these do we simply
+ * not know", which is a number the desk should be able to watch fall.
+ */
+export const CHURN_REASON_UNRECORDED = 'unrecorded';
+export const CHURN_REASON_UNRECORDED_LABEL = 'Not recorded';
+
+export function churnReasonLabel(code) {
+  const text = String(code || '').trim();
+  if (!text) return CHURN_REASON_UNRECORDED_LABEL;
+  // An unknown code prints as itself rather than as "Other". A row written by a
+  // hand-run UPDATE, or by a build older than a list change, is a reason nobody
+  // on this list gave — printing it as one of them would invent agreement.
+  return CHURN_REASONS.find((reason) => reason.code === text)?.label || text;
+}
+
+/**
+ * What the CRM knows about one client's departure.
+ *
+ * Lives on `client.churn`, NOT on `client.profile`. The profile object is
+ * re-sent whole on every edit of the Client profile card (updateProfile spreads
+ * it), so a churn field parked there would be written back by someone correcting
+ * a phone number — on a database where step 39 has not run, that would turn
+ * every profile save into a failed write instead of only the classification
+ * itself. Keeping it out of `profile` confines the new columns to the one path
+ * that records a classification.
+ *
+ * Every field is allowed to be absent, and absent stays absent: no default
+ * reason, no back-dated date.
+ */
+export function clientChurnRecord(client) {
+  const churn = client?.churn || {};
+  const code = String(churn.reason || '').trim();
+  return {
+    recorded: Boolean(code),
+    reasonCode: code || CHURN_REASON_UNRECORDED,
+    reasonLabel: churnReasonLabel(code),
+    reasonNote: String(churn.note || '').trim(),
+    churnedAt: toDate(churn.at) || '',
+  };
 }
 
 /**
@@ -223,6 +374,11 @@ export function buildClientLifecycle(client, { camName = '' } = {}) {
     camName,
     startedAt,
     churned,
+    // Carried whether or not they are churned, and read only when they are: a
+    // client who was reactivated keeps the record of the last time they left,
+    // and re-churning overwrites it. Nothing shows a stale record, because
+    // nothing reads it unless `churned` is true.
+    churn: clientChurnRecord(client),
     stage: client?.profile?.stage || '',
     daysWithUs: startedAt ? daysBetween(startedAt, new Date().toISOString().slice(0, 10)) : null,
 
@@ -255,8 +411,19 @@ export function buildClientLifecycle(client, { camName = '' } = {}) {
  * Churn and retention across a set of clients.
  * Churn is manual (stage === 'Inactive'), so this is a straight count, not a
  * time-decayed model. Retention is simply the complement.
+ *
+ * `churnedClients` is the ROW SET behind the number, not a name list. The desk
+ * manager's complaint about this panel was that the count "tells him almost
+ * nothing", and a count you cannot open is the whole of that complaint — so
+ * every row carries what he asked to see and filter on: whose book it was, when
+ * they left, and why.
+ *
+ * `camNameByClientId` is optional and works exactly as it does in
+ * DeviationAlertList: a CAM reading his own book already knows whose client it
+ * is, a manager reading eight books does not. Omitted, attribution is left empty
+ * rather than guessed at.
  */
-export function buildChurnRetention(clients = []) {
+export function buildChurnRetention(clients = [], { camNameByClientId = null } = {}) {
   const total = clients.length;
   const churnedClients = clients.filter(isChurnedClient);
   const churned = churnedClients.length;
@@ -270,13 +437,107 @@ export function buildChurnRetention(clients = []) {
     churnedClients: churnedClients.map((client) => ({
       clientId: client.id,
       clientName: client.name,
+      camName: camNameByClientId ? camNameByClientId[client.id] || '' : '',
       startedAt: clientStartDate(client),
+      ...clientChurnRecord(client),
     })),
   };
 }
 
-/** Roll lifecycles up across many clients (CAM view / team view). */
-export function buildLifecycleRollup(clients = []) {
+/**
+ * The churn rows a manager is actually looking at, after his filters.
+ *
+ * Pure, and separate from the component, for the reason the previous round of
+ * this screen made expensive: the drill-down that got deleted was driven by the
+ * page's own as-of date state, so choosing a date "in the panel" silently
+ * re-pinned every KPI above it. Filters that belong to a panel are computed from
+ * arguments the panel owns, and this function is where that is enforceable.
+ *
+ * WHAT IT REPORTS AS WELL AS WHAT IT KEEPS:
+ *
+ *  - `scoped` is the count after the CAM and date filters but BEFORE the reason
+ *    filter, which is what `reasons` is counted over. That makes the reason
+ *    breakdown a legend and a control at once: each option shows how many rows
+ *    picking it would leave.
+ *  - `undatedHidden` is the rows dropped purely because a date range is on and
+ *    they carry no churn date. A client marked Inactive before step 39 has no
+ *    date, cannot satisfy any range, and would otherwise vanish from a filtered
+ *    view with nothing said. Absence gets counted out loud instead.
+ */
+export function buildChurnDetail(churnedClients = [], {
+  cam = '',
+  reason = '',
+  from = '',
+  to = '',
+} = {}) {
+  const rows = Array.isArray(churnedClients) ? churnedClients : [];
+  const fromDay = toDate(from) || '';
+  const toDay = toDate(to) || '';
+  const dateFiltered = Boolean(fromDay || toDay);
+
+  const inRange = (row) => {
+    if (!dateFiltered) return true;
+    if (!row.churnedAt) return false;
+    if (fromDay && row.churnedAt < fromDay) return false;
+    if (toDay && row.churnedAt > toDay) return false;
+    return true;
+  };
+  const matchesCam = (row) => !cam || (row.camName || '') === cam;
+
+  const scopedRows = rows.filter((row) => matchesCam(row) && inRange(row));
+  const undatedHidden = dateFiltered
+    ? rows.filter((row) => matchesCam(row) && !row.churnedAt).length
+    : 0;
+
+  const counts = new Map();
+  for (const row of scopedRows) {
+    const code = row.reasonCode || CHURN_REASON_UNRECORDED;
+    const entry = counts.get(code) || { code, label: row.reasonLabel || churnReasonLabel(code), count: 0 };
+    entry.count += 1;
+    counts.set(code, entry);
+  }
+
+  const visible = scopedRows.filter((row) => !reason || (row.reasonCode || CHURN_REASON_UNRECORDED) === reason);
+
+  return {
+    // Newest departure first — the desk cares about what just happened — with
+    // the rows that carry no date last rather than sorted as if they were the
+    // oldest, so the rows a date range excludes are also the rows that sit
+    // together at the end when no range is on.
+    //
+    // TWO THINGS HERE ARE NOT GUARDS, AND SAYING SO IS CHEAPER THAN FINDING OUT.
+    // Descending on the date alone would already put the undated at the bottom,
+    // because '' compares below every date — so deleting the first clause
+    // changes no output and breaks no test. It is the intent written down, and
+    // what the suite pins is its DIRECTION: filed at the top instead, "sorts
+    // newest departure first and puts the undated last" fails, and a client
+    // whose departure was never dated is presented as the freshest news on the
+    // desk. `.slice()` is the same kind of thing: the two filters above already
+    // hand this a new array, so nothing here can reach the caller's rows today
+    // and removing it breaks nothing either. It is what keeps that true if
+    // either filter is ever short-circuited to return `rows` itself.
+    rows: visible.slice().sort((a, b) => (
+      Number(Boolean(b.churnedAt)) - Number(Boolean(a.churnedAt))
+      || (b.churnedAt || '').localeCompare(a.churnedAt || '')
+      || String(a.clientName || '').localeCompare(String(b.clientName || ''))
+    )),
+    total: rows.length,
+    scoped: scopedRows.length,
+    cams: [...new Set(rows.map((row) => row.camName).filter(Boolean))].sort(),
+    reasons: [...counts.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
+    undatedHidden,
+    dateFiltered,
+  };
+}
+
+/**
+ * Roll lifecycles up across many clients (CAM view / team view).
+ *
+ * `camNameByClientId` is passed straight down to buildChurnRetention so the
+ * manager's roll-up can attribute each departure to a book. It changes no
+ * number here — the same clients are counted either way.
+ */
+export function buildLifecycleRollup(clients = [], { camNameByClientId = null } = {}) {
   const lifecycles = clients.map((client) => buildClientLifecycle(client));
   const evaluationCount = lifecycles.reduce((sum, l) => sum + l.evaluationCount, 0);
   const passedCount = lifecycles.reduce((sum, l) => sum + l.passedCount, 0);
@@ -313,6 +574,6 @@ export function buildLifecycleRollup(clients = []) {
     cashBalance: lifecycles.reduce((sum, l) => sum + l.cashBalance, 0),
     propFirms: [...firmTotals.values()].sort((a, b) => b.accounts - a.accounts),
     algos: [...algoTotals.values()].sort((a, b) => b.days - a.days),
-    ...buildChurnRetention(clients),
+    ...buildChurnRetention(clients, { camNameByClientId }),
   };
 }

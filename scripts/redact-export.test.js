@@ -100,6 +100,28 @@ describe('redact-export', () => {
     expect(out.orders.map((row) => row.strategy_name)).toEqual(['RBO-1.8', 'IFSP-1.1', '']);
   });
 
+  it('keeps the churn reason countable and redacts the note beside it', () => {
+    // Step 39 put two new text columns on `clients` and they need opposite
+    // treatment, which is the trap this script exists to make explicit.
+    // churn_reason is one of seven fixed codes — the whole reason it is a code
+    // and not a sentence is that it can be counted, and a book where every
+    // reason reads `[redacted 4]` cannot answer that. churn_note is prose a CAM
+    // wrote about a person, and prose is where a client's own name turns up.
+    const source = syntheticExport();
+    source.tables.clients[0].churn_reason = 'unresponsive';
+    source.tables.clients[0].churn_note = 'Rosalind Vance stopped replying after the June drawdown.';
+    source.tables.clients[0].churned_at = '2026-07-14';
+    const out = redact(source);
+
+    expect(out.clients[0].churn_reason).toBe('unresponsive');
+    expect(out.clients[0].churned_at).toBe('2026-07-14');
+    expect(out.clients[0].churn_note).not.toContain('Rosalind Vance');
+    expect(out.clients[0].churn_note).toMatch(/^\[redacted \d+]$/);
+    // Length survives because it drives layout, so the marker is not the empty
+    // string and the assertion above is not passing on absence.
+    expect(out.clients[0].churn_note).toContain('56');
+  });
+
   it('leaves a blank Name blank, because rule 4b reads exactly that', () => {
     // deriveStrategyPnl distinguishes a detached strategy order (blank Strategy,
     // generated Name) from a hand-placed one (blank both) on nothing but whether

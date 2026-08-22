@@ -34,7 +34,7 @@ import {
   sharedParameterNames,
 } from './setFileCatalog';
 import { FIELD, SIZING } from './setFileNormalise';
-import { strategyFamilyOf } from './strategyRiskProfile';
+import { strategyFamilyOf } from './strategyFamily';
 
 /* ── Classes ──────────────────────────────────────────────────────────────── */
 

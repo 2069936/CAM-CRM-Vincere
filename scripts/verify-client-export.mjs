@@ -131,9 +131,16 @@ for (const testCase of cases) {
   }
   console.log(`   audit ${JSON.stringify(inserts.map((entry) => ({ table: entry.table, action: entry.row.action, clients: entry.row.after_data.clientCount, total: entry.row.after_data.totalRows })))}`);
   // Only the data blocks: the envelope legitimately names product_key and
-  // client_credentials in its own redaction/exclusion notes.
-  const payload = JSON.stringify({ tables: body.tables, series: body.series });
-  console.log(`   leak check on tables+series: ${/product_key|password_encrypted|firm_password|"login"|client_credentials/.test(payload) ? 'LEAK' : 'clean'}`);
+  // client_credentials in its own redaction/exclusion notes. `dictionaries` is
+  // in here because it holds row data — the strategy configurations hoisted off
+  // strategy_snapshots — and a leak check that scanned only where the data used
+  // to live would go green the day it moved.
+  const payload = JSON.stringify({
+    tables: body.tables,
+    series: body.series,
+    dictionaries: body.dictionaries,
+  });
+  console.log(`   leak check on tables+series+dictionaries: ${/product_key|password_encrypted|firm_password|"login"|client_credentials/.test(payload) ? 'LEAK' : 'clean'}`);
   console.log('');
 }
 

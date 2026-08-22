@@ -119,30 +119,36 @@ export default function CamFlagQueue({
     }
   }
 
-  function applyRow(row, status) {
+  // Resolve is the only thing these buttons do. There used to be an Acknowledge
+  // beside each one — "seen, hide for now" — and the desk manager took it out:
+  // it wrote a second status that every count in the app already treated as
+  // Resolved, so the two buttons closed the flag in the same way while looking
+  // like a choice. Neither function takes a status any more, so there is nothing
+  // for a future caller to pass.
+  function applyRow(row) {
     if (!onResolveFlag) return;
     // One call per open occurrence. A problem still open on eleven closes has
     // eleven rows in operational_flags with eleven different uuids, and
     // updateSupabaseOperationalFlag patches one uuid per call. Closing only the
     // newest is what leaves 597 historical copies Open in Postgres and keeps
     // the all-history counter reading 1,952 for a book with 253 live problems.
-    for (const call of flagResolutionPlan(row, status)) {
-      onResolveFlag(call.clientId, call.importId, call.flagId, call.status);
+    for (const call of flagResolutionPlan(row)) {
+      onResolveFlag(call.clientId, call.importId, call.flagId);
     }
-    logActivity(row.clientId, flagActivityEntry(row, status));
+    logActivity(row.clientId, flagActivityEntry(row));
   }
 
-  function applyGroup(group, status) {
+  function applyGroup(group) {
     if (!onResolveFlag) return;
     for (const row of group.rows) {
-      for (const call of flagResolutionPlan(row, status)) {
-        onResolveFlag(call.clientId, call.importId, call.flagId, call.status);
+      for (const call of flagResolutionPlan(row)) {
+        onResolveFlag(call.clientId, call.importId, call.flagId);
       }
     }
     // One summary line per group, the same shape handleBulkResolveFlags writes
     // for a whole import. Nineteen separate "flag resolved" entries for one
     // click would bury the client's log under the tool that made them.
-    logActivity(group.clientId, flagGroupActivityEntry(group, status));
+    logActivity(group.clientId, flagGroupActivityEntry(group));
   }
 
   if (!totals.rows) {
@@ -240,20 +246,9 @@ export default function CamFlagQueue({
               data-group-key={group.key}
               data-write-calls={group.occurrences}
               style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-              onClick={() => applyGroup(group, 'Resolved')}
+              onClick={() => applyGroup(group)}
             >
               <CheckCircle2 size={13} /> Resolve all {group.total}
-            </button>
-            <button
-              type="button"
-              className="resolve-button"
-              data-action="acknowledge-group"
-              data-group-key={group.key}
-              data-write-calls={group.occurrences}
-              style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-              onClick={() => applyGroup(group, 'Acknowledged')}
-            >
-              Acknowledge all {group.total}
             </button>
             <span className="muted" style={{ fontSize: 11 }}>
               {group.occurrences === group.total
@@ -313,20 +308,9 @@ export default function CamFlagQueue({
                         data-row-key={row.key}
                         data-client-id={row.clientId}
                         style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-                        onClick={() => applyRow(row, 'Resolved')}
+                        onClick={() => applyRow(row)}
                       >
                         <CheckCircle2 size={13} /> Resolve
-                      </button>{' '}
-                      <button
-                        type="button"
-                        className="resolve-button"
-                        data-action="acknowledge-row"
-                        data-row-key={row.key}
-                        data-client-id={row.clientId}
-                        style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-                        onClick={() => applyRow(row, 'Acknowledged')}
-                      >
-                        Acknowledge
                       </button>
                     </td>
                   </tr>

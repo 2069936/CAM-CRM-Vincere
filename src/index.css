@@ -2297,11 +2297,78 @@ textarea {
   resize: vertical;
 }
 
+/* Lists as long as the book.
+   One treatment, applied wherever a list grows with the client count: a fixed
+   height, its own scroll, and a note saying so. See components/BookList.jsx —
+   the note is the part that matters, because a bounded box with no affordance
+   looks exactly like a truncated one. */
+.book-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.book-list-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 26rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Room for the scrollbar so a card's border is never under it. */
+  padding-right: 2px;
+}
+/* One wrapper per entry. It is what BookList.test.jsx counts to prove nothing
+   was dropped, so it exists whether or not the entry needs a box. */
+.book-list-item {
+  min-width: 0;
+}
+.book-list-inline > .book-list-body {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 12rem;
+}
+.book-list-note {
+  font-size: 10px;
+  margin: 0;
+}
+.book-list-empty {
+  gap: 0;
+}
+/* The table shape of the same bound: fixed height, sticky column names. 96 rows
+   of roster used to push everything below them off the page and take the header
+   with them. */
+.book-table {
+  max-height: 30rem;
+  overflow-y: auto;
+}
+.book-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
+}
+.bulk-task-target {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.bulk-task-targets {
+  grid-column: 1/-1;
+}
+
 .pipeline-board {
   display: flex;
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 4px;
+}
+.pipeline-total {
+  font-size: 11px;
+  margin: 0 0 8px;
 }
 .pipeline-column {
   flex: 1;
@@ -2309,6 +2376,13 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+/* Each lane scrolls inside its own bound, so the board is as tall as its
+   tallest visible column instead of as tall as its biggest stage. On the export
+   in the repo that is 95 of 96 clients in Active against four lanes holding one
+   card between them. */
+.pipeline-column .book-list-body {
+  max-height: 22rem;
 }
 .pipeline-col-header {
   display: flex;
@@ -5809,63 +5883,53 @@ tr:nth-child(2) .rank-badge {
   font-weight: 600;
   color: var(--text-muted);
 }
-.insight-group .insight-item {
+/* One row per signal, in a table, because everything the rows share has already
+   been hoisted into .insight-constants above them. The old card layout is gone:
+   it spent three lines per signal restating a rule that is now stated once. */
+.insight-group-body {
   margin-left: 22px;
+  display: grid;
+  gap: 8px;
 }
-.insight-item {
+.insight-constants {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 8px 12px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 12px 14px;
-  text-align: left;
-  width: 100%;
-  cursor: pointer;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
-  transition:
-    background 0.15s,
-    border-color 0.15s,
-    transform 0.15s;
 }
-.insight-item:hover {
-  background: var(--surface-3);
-  border-color: rgba(var(--info-rgb), 0.28);
-  transform: translateY(-1px);
-}
-.insight-critical {
-  border-left: 3px solid var(--error);
-}
-.insight-warning {
-  border-left: 3px solid var(--warning);
-  background: linear-gradient(90deg, rgba(var(--warning-rgb), 0.08), transparent 36%), var(--surface-2);
-}
-.insight-opportunity {
-  border-left: 3px solid var(--success);
-}
-.insight-info {
-  border-left: 3px solid var(--blue);
-}
-
-.insight-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  margin-top: 6px;
-}
-.insight-body {
-  flex: 1;
+.insight-constants > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
 }
-.insight-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 3px;
+.insight-constants dt {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
+.insight-constants dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.insight-constant-action {
+  /* The one line a reader acts on, so it takes the whole width rather than
+     competing for space with the counts beside it. */
+  flex-basis: 100%;
+}
+.insight-constant-action dd {
+  font-style: italic;
+  color: var(--text-muted);
+}
+/* The rule's name on the group row. Uppercased and tracked so a reader scanning
+   a collapsed feed is reading rule names, not sentences. */
 .insight-type {
   font-size: 11px;
   font-weight: 800;
@@ -5873,49 +5937,58 @@ tr:nth-child(2) .rank-badge {
   letter-spacing: 0.06em;
   color: var(--muted);
 }
-.insight-client {
-  font-weight: 700;
-  font-size: 13px;
-  color: #fff;
-  opacity: 1;
+.insight-table {
+  font-size: 12px;
+}
+.insight-table th[scope='row'] {
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.insight-table td {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* A signal with no value for a column keeps the cell, so every column below a
+   heading holds that heading's quantity and nothing else. */
+.insight-cell-empty {
+  color: var(--muted);
+}
+.insight-row-critical th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--error);
+  padding-left: 10px;
+}
+.insight-row-warning th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--warning);
+  padding-left: 10px;
+}
+.insight-row-info-green th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--success);
+  padding-left: 10px;
+}
+.insight-row-info th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--blue);
+  padding-left: 10px;
 }
 .insight-account {
   font-size: 12px;
   color: var(--muted);
 }
-.insight-message {
-  margin: 0 0 3px;
-  font-size: 13px;
-  color: var(--text);
-  line-height: 1.4;
-}
-.insight-action {
+.insight-sev-text {
   font-size: 11px;
-  color: var(--muted);
-  font-style: italic;
+  font-weight: 700;
 }
 
-.insight-severity-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 20px;
-  flex-shrink: 0;
-}
 .insight-sev-critical {
-  background: rgba(var(--error-rgb), 0.15);
   color: var(--error);
 }
 .insight-sev-warning {
-  background: rgba(var(--warning-rgb), 0.15);
   color: var(--warning);
 }
 .insight-sev-info-green {
-  background: rgba(var(--success-rgb), 0.15);
   color: var(--success);
 }
 .insight-sev-info {
-  background: rgba(var(--info-rgb), 0.15);
   color: var(--blue);
 }
 
@@ -7141,6 +7214,57 @@ tr:nth-child(2) .rank-badge {
   .lifecycle-stats { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* The one stat that opens: Churned. Same box as its siblings so the grid does
+   not break, plus a hint line so the affordance is visible without a hover. */
+.lifecycle-stat-button {
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.lifecycle-stat-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.lifecycle-stat-hint {
+  font-size: 11px;
+}
+
+/* Churn drill-down: filters this panel owns, then the rows. */
+.churn-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.churn-filter-row select,
+.churn-filter-row input[type="date"] {
+  font-size: 12px;
+}
+.churn-count,
+.churn-note-line,
+.churn-empty {
+  font-size: 12px;
+}
+.churn-note-line { margin: 0 0 8px; }
+.churn-reason-options {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 10px;
+}
+.churn-reason-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.churn-reason-note {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Collapsible panel heading: chevron + title + count act as one toggle. */
 .collapse-toggle {
   display: flex;
@@ -7696,6 +7820,29 @@ tr:nth-child(2) .rank-badge {
   background: var(--surface-alt, rgba(127, 127, 127, 0.12));
 }
 
+/* The algorithm row as a disclosure.
+   Scoped to `details.drift-row` on purpose: LiveAccountsPanel,
+   QuietAccountsPanel, SetFileMatchPanel and AccountLifecyclePanel all render
+   .drift-row as a plain <section> and must not pick any of this up. */
+details.drift-row > summary {
+  display: flex; flex-direction: column; gap: 2px; list-style: none;
+  cursor: pointer; padding: 5px 6px 6px 0; border-radius: 5px;
+}
+details.drift-row > summary::-webkit-details-marker { display: none; }
+details.drift-row > summary:hover { background: var(--surface-alt, rgba(127, 127, 127, 0.1)); }
+details.drift-row + details.drift-row { margin-top: 4px; }
+details.drift-row > summary .drift-head::before {
+  content: "▸"; color: var(--muted); font-size: 10px; margin-right: 4px;
+  display: inline-block; transition: transform 0.12s ease;
+}
+details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg); }
+.drift-findings { font-size: 11px; white-space: nowrap; }
+/* What a closed row says about itself. Without it, ten collapsed algorithms are
+   ten names and a reader has to open all of them to find the one worth opening. */
+.drift-worst { font-size: 12px; line-height: 1.4; }
+.drift-key { font-size: 11px; line-height: 1.5; margin: 4px 0 0; }
+.drift-list-note { font-size: 11px; margin: 10px 0 6px; }
+
 /* The findings. Indented and rule-marked so the eye can tell a group from the
    cohort line above it, which flat 11px grey never allowed. */
 .drift-groups { list-style: none; margin: 6px 0 0; padding: 0 0 0 10px; border-left: 1px solid var(--border); }
@@ -7760,6 +7907,18 @@ tr:nth-child(2) .rank-badge {
 }
 .drift-table td { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .drift-here { font-weight: 600; }
+/* The row the headline is about. A group can differ in 22 settings and the
+   sentence above the table names exactly one of them; nothing connected the two,
+   so the reader re-derived the link on every group they opened. */
+.drift-change-lead > th { font-weight: 600; }
+.drift-lead-mark { color: var(--warning); margin-right: 4px; }
+.drift-lead-note { color: var(--muted); font-size: 10px; font-weight: 400; }
+/* Parameters with no established meaning, captioned once as a block. Ranked 99
+   by describeParameter and therefore always the tail of the table. */
+.drift-unnamed > tr:first-child > th {
+  font-size: 10px; color: var(--muted); font-weight: 400; font-style: italic;
+  white-space: normal; padding-top: 7px;
+}
 /* "absent" read as "someone deleted this setting". 94 of 267 changes on the real
    book are one side missing, and every one of them is a build that does not
    carry the parameter — both sides reported the same version string. */

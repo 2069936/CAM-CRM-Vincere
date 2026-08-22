@@ -1,17 +1,19 @@
 // Account lifecycle: born (dateAdded) -> algos it ran (from algoHistory) ->
-// outcome (funded / failed / still active). Built from the CSV-driven account
-// meta (not logs). Two views: one account's timeline, and per-algo aggregates
-// (which combo gets accounts funded, lasts longer, survives) so a CAM/manager can
-// see which configuration makes accounts win.
+// outcome (funded / failed / still active), for ONE account. Built from the
+// CSV-driven account meta (not logs), and rendered by StackPlaybook's per-account
+// timeline.
 //
-// WARNING about the two functions above, kept because StackPlaybook and
-// LifecycleByAlgo render them: they key `outcome` entirely off `dateFailed`, and
-// `dateFailed` is set on 2 of 764 accounts on the real book. buildLifecycleByAlgo
-// therefore reports `failed: 0` for every algo combo while 48 accounts carry
-// status 'Failed'. That is not a bug in the aggregation, it is the column being
-// empty — the AccountManager dropdown writes `status` and nothing else — but it
-// is the reason buildAccountLifecycleStates below never reads `dateFailed` as
-// evidence of anything.
+// buildLifecycleByAlgo — the per-algo-combo aggregate that fed the "Lifecycle by
+// algo" panel on the manager, CAM and Stack Playbook screens — USED TO BE HERE,
+// and went out with that panel. It is worth recording why it was not simply
+// re-pointed at a better column: it keyed `outcome` entirely off `dateFailed`,
+// which is set on 2 of 764 accounts on the real book, so it reported
+// `failed: 0` for every combo while 48 accounts carried status 'Failed'. That was
+// never a bug in the aggregation — the AccountManager dropdown writes `status`
+// and nothing else, so the column really is empty — and it is the same reason
+// buildAccountLifecycleStates below never reads `dateFailed` as evidence of
+// anything. buildAccountLifecycle above still keys off it and is still read for
+// one account at a time, where a reader can see the dates it is working from.
 
 // './reconcile.js', not './reconcile'. Vite resolves the extension-less form and
 // plain Node ESM does not — server/export/ runs as a Vercel function, which is
@@ -72,52 +74,6 @@ export function buildAccountLifecycle(account = {}, { asOf = '' } = {}) {
     currentAlgo: account.algoStack || algo || '',
     phases,
   };
-}
-
-// Per-algo (algoStack combo) lifecycle aggregates across clients: funded rate,
-// average lifespan, average days-to-fund. Cash / ignored accounts excluded.
-export function buildLifecycleByAlgo(clients = [], { asOf = '' } = {}) {
-  const byCombo = {};
-  for (const client of clients || []) {
-    for (const meta of Object.values(client.accountRegistry || {})) {
-      // A simulator is never funded and never fails, so counting one here would
-      // push every algo's funded rate down by a denominator that can never
-      // convert. 11 of the clients in the real exports carry one.
-      if (
-        isCashType(meta.accountType)
-        || isSimulationAccountType(meta.accountType)
-        || meta.accountType === 'Inactive / Ignore'
-      ) continue;
-      const combo = meta.algoStack || 'Unassigned';
-      if (!byCombo[combo]) {
-        byCombo[combo] = { combo, accounts: 0, funded: 0, failed: 0, active: 0, lifespans: [], daysToFund: [] };
-      }
-      const g = byCombo[combo];
-      g.accounts += 1;
-      if (meta.dateFailed) g.failed += 1;
-      else if (meta.dateFunded || meta.accountType === 'Funded') g.funded += 1;
-      else g.active += 1;
-
-      const end = meta.dateFailed || asOf || meta.dateFunded || meta.dateAdded;
-      const life = meta.dateAdded ? daysBetween(meta.dateAdded, end) : null;
-      if (life != null) g.lifespans.push(life);
-      const ttf = meta.dateAdded && meta.dateFunded ? daysBetween(meta.dateAdded, meta.dateFunded) : null;
-      if (ttf != null) g.daysToFund.push(ttf);
-    }
-  }
-  const avg = (arr) => (arr.length ? Math.round((arr.reduce((s, v) => s + v, 0) / arr.length) * 10) / 10 : null);
-  return Object.values(byCombo)
-    .map((g) => ({
-      combo: g.combo,
-      accounts: g.accounts,
-      funded: g.funded,
-      failed: g.failed,
-      active: g.active,
-      fundedRate: g.accounts ? Math.round((g.funded / g.accounts) * 100) : 0,
-      avgLifespan: avg(g.lifespans),
-      avgDaysToFund: avg(g.daysToFund),
-    }))
-    .sort((a, b) => b.fundedRate - a.fundedRate || b.accounts - a.accounts);
 }
 
 /* ------------------------------------------------------------------------- *

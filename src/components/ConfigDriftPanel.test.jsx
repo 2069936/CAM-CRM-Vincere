@@ -1,254 +1,235 @@
-import { readFileSync } from 'node:fs';
+// The configuration review's legibility rules, on synthetic fixtures, so CI
+// runs them.
+//
+// ConfigDriftPanel.book.test.jsx holds the numbers — 10 algorithms, 29 findings,
+// 267 differences — and is dropped on every clone that does not carry
+// public/local-snapshot.json. That is the whole reason this file exists: the
+// rules below are what the second readability pass changed, and a rule pinned
+// only by a gated suite is not pinned.
+//
+// Each one is here because it can be broken silently. A row that stops
+// collapsing still renders every finding. A key that renders per row instead of
+// once still says the right thing. A lead marker on the wrong row looks exactly
+// like a lead marker on the right one. None of those fail a count.
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import ConfigDriftPanel from './ConfigDriftPanel';
-import { buildCrmStateFromTables } from '../domain/supabaseStore';
-
-// Asserted against public/local-snapshot.json, the real redacted book: 10
-// algorithm rows, 29 outlier groups, 267 individual parameter differences. The
-// previous panel painted 75 of those 267 and hid the rest behind an inert
-// "+N more", so the counts here are the point of the file, not decoration.
-
-const snapshot = JSON.parse(
-  readFileSync(new URL('../../public/local-snapshot.json', import.meta.url), 'utf8'),
-);
-const { clients } = buildCrmStateFromTables(snapshot.tables);
-
-function strip(fragment) {
-  return String(fragment)
-    .replace(/<[^>]*>/g, '')
-    .replace(/&#x27;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-const countOf = (html, pattern) => (html.match(pattern) || []).length;
-const rowsIn = (html) => countOf(html, /<section class="drift-row">/g);
-const groupsIn = (html) => countOf(html, /<li class="drift-group">/g);
 
 /**
- * What the panel puts on the surface against what it folds into the closing
- * <details>. Both halves are rendered markup, so counting the whole page cannot
- * tell them apart — and the difference between them is exactly what the `limit`
- * prop controls.
+ * A NinjaTrader parameter string: values, then the names in brackets.
+ * `extra` appends pairs, which is how an unmapped parameter gets into a diff.
  */
-function split(html) {
-  const at = html.indexOf('<details class="drift-rest">');
-  return at === -1
-    ? { surfaced: html, collapsed: '' }
-    : { surfaced: html.slice(0, at), collapsed: html.slice(at) };
+const params = ({ pt = '400/450/500', sl = '300', extra = {} } = {}) => {
+  const [pt1, pt2, pt3] = pt.split('/');
+  const names = ['LicenseKey', 'ProfitTargetTicks1', 'ProfitTargetTicks2',
+    'ProfitTargetTicks3', 'StopLossTicks', 'TrailByTicks'];
+  const values = ['V-8F5D54-C32866C2-3DB348W', pt1, pt2, pt3, sl, '200'];
+  for (const [name, value] of Object.entries(extra)) {
+    names.push(name);
+    values.push(String(value));
+  }
+  return `${values.join('/')} (${names.join('/')})`;
+};
+
+const strategyRow = (family, account, opts) => ({
+  strategyName: `0 - ${family}-4.5`,
+  instrument: 'MNQ SEP26',
+  accountName: account,
+  parametersRaw: params(opts),
+});
+
+const client = (id, rows) => ({
+  id,
+  name: id,
+  dailyImports: [{ date: '2026-08-03', strategies: rows }],
+});
+
+/**
+ * Two algorithms, each a 12-account majority against 3 outliers, which clears
+ * buildConfigDrift's guards (cohort >= 8, outlier share >= 0.15, dominant share
+ * >= 0.4) without depending on any of them.
+ */
+function book() {
+  const clients = [];
+  for (const family of ['URGO', 'OGX']) {
+    for (let i = 0; i < 12; i += 1) {
+      clients.push(client(`${family}-maj-${i}`, [strategyRow(family, `${family}A${i}`)]));
+    }
+    // A stop-loss outlier that also differs in a parameter with no plain name.
+    clients.push(client(`${family}-stop`, [
+      strategyRow(family, `${family}S1`, { sl: '315', extra: { URGO2: '4' } }),
+    ]));
+    // A pair whose profit target moved, so the group has more than one member.
+    clients.push(client(`${family}-target-a`, [strategyRow(family, `${family}T1`, { pt: '30/60/90' })]));
+    clients.push(client(`${family}-target-b`, [strategyRow(family, `${family}T2`, { pt: '30/60/90' })]));
+  }
+  return clients;
 }
 
-/** Every parameter difference as { setting, cohort, here }, in render order. */
-function differences(html) {
-  const pattern = /<tr><th scope="row">([\s\S]*?)<\/th><td>([\s\S]*?)<\/td><td class="drift-here">([\s\S]*?)<\/td><\/tr>/g;
-  return [...html.matchAll(pattern)].map(([, setting, cohort, here]) => ({
-    setting: strip(setting),
-    cohort: strip(cohort),
-    here: strip(here),
-    cohortAbsent: cohort.includes('drift-absent'),
-    hereAbsent: here.includes('drift-absent'),
-  }));
-}
-
+const clients = book();
 const render = (props = {}) => renderToStaticMarkup(
   <ConfigDriftPanel clients={clients} {...props} />,
 );
-
 const html = render();
 
-describe('ConfigDriftPanel — every finding is rendered and reachable', () => {
-  it('renders all 29 findings across all 10 algorithm rows', () => {
-    expect(rowsIn(html)).toBe(10);
-    expect(groupsIn(html)).toBe(29);
-    expect(differences(html)).toHaveLength(267);
-  });
+const strip = (fragment) => String(fragment)
+  .replace(/<[^>]*>/g, ' ')
+  .replace(/&#x27;/g, "'")
+  .replace(/&amp;/g, '&')
+  .replace(/\s+/g, ' ')
+  .trim();
 
-  it('states the same finding count in prose that it renders', () => {
-    // The recurring-question line counts the findings below it. If the list and
-    // the sentence ever disagree, one of them is lying about the book.
-    expect(strip(html)).toContain('One question covers 14 of the 29 findings below.');
-    expect(groupsIn(html)).toBe(29);
-  });
+const countOf = (markup, pattern) => (markup.match(pattern) || []).length;
+const rowsIn = (markup) => countOf(markup, /<details class="drift-row"/g);
+const openRowsIn = (markup) => countOf(markup, /<details class="drift-row" open=""/g);
+const groupsIn = (markup) => countOf(markup, /<li class="drift-group">/g);
+const changesIn = (markup) => countOf(markup, /<tr class="drift-change/g);
 
-  it('names what the totals count, in rows and accounts and clients', () => {
-    // 72 strategy rows are 42 identifiable accounts plus 2 rows with no account
-    // number. Calling rows accounts inflated the headline by two thirds.
-    const text = strip(html);
-    expect(text).toContain(
-      '72 strategy rows across 10 algorithms run settings the rest of their cohort '
-      + 'does not — 42 accounts, 23 clients (+2 rows with no account number).',
-    );
+describe('the fixture actually exercises the panel', () => {
+  it('produces two algorithm rows with findings in them', () => {
+    // Stated first because every assertion below is vacuous on an empty view,
+    // and buildConfigDrift declines a cohort with no clear majority.
+    expect(rowsIn(html)).toBe(2);
+    expect(groupsIn(html)).toBeGreaterThanOrEqual(4);
+    expect(changesIn(html)).toBeGreaterThan(0);
   });
 });
 
-describe('ConfigDriftPanel — the surfaced count follows the limit prop', () => {
-  it('surfaces exactly the default limit and collapses the remainder, counted', () => {
-    // Eight rows on the surface, two folded away, and the summary says how many
-    // were folded. Forcing the limit to 1 leaves 1 on the surface and 9 folded,
-    // which is what this pins.
-    const { surfaced, collapsed } = split(html);
-
-    expect(rowsIn(surfaced)).toBe(8);
-    expect(rowsIn(collapsed)).toBe(2);
-    expect(strip(collapsed)).toContain('2 more algorithms with fewer accounts to verify');
+describe('every algorithm is a row; the limit only decides what opens', () => {
+  it('opens one by default and leaves the rest listed and closed', () => {
+    expect(openRowsIn(html)).toBe(1);
+    expect(rowsIn(html)).toBe(2);
   });
 
-  it('moves rows between the surface and the fold as the limit changes', () => {
-    const three = split(render({ limit: 3 }));
-    expect(rowsIn(three.surfaced)).toBe(3);
-    expect(rowsIn(three.collapsed)).toBe(7);
-    expect(strip(three.collapsed)).toContain('7 more algorithms');
-
-    const five = split(render({ limit: 5 }));
-    expect(rowsIn(five.surfaced)).toBe(5);
-    expect(rowsIn(five.collapsed)).toBe(5);
-    expect(strip(five.collapsed)).toContain('5 more algorithms');
-
-    const one = split(render({ limit: 1 }));
-    expect(rowsIn(one.surfaced)).toBe(1);
-    expect(rowsIn(one.collapsed)).toBe(9);
-    expect(strip(one.collapsed)).toContain('9 more algorithms');
-  });
-
-  it('drops the fold entirely once the limit covers every algorithm', () => {
-    const all = render({ limit: 10 });
-    expect(all).not.toContain('drift-rest');
-    expect(rowsIn(all)).toBe(10);
-    expect(groupsIn(all)).toBe(29);
-  });
-
-  it('keeps every finding rendered no matter where the limit falls', () => {
-    // The limit decides what is open, never what exists. Both totals must hold
-    // at every limit.
-    for (const limit of [1, 3, 5, 8, 10]) {
+  it('opens exactly the limit, and never changes how many rows exist', () => {
+    for (const limit of [0, 1, 2]) {
       const out = render({ limit });
-      expect(rowsIn(out)).toBe(10);
-      expect(groupsIn(out)).toBe(29);
-      expect(differences(out)).toHaveLength(267);
+      expect(openRowsIn(out)).toBe(limit);
+      expect(rowsIn(out)).toBe(2);
     }
+    expect(openRowsIn(render({ limit: 9 }))).toBe(2);
+  });
+
+  it('renders every finding at every limit, open or closed', () => {
+    // A <details> holds its children whether or not it is open, so collapsing is
+    // a reading affordance and never a filter. If that ever stops being true the
+    // counts move.
+    const at = (limit) => {
+      const out = render({ limit });
+      return [groupsIn(out), changesIn(out)];
+    };
+    expect(at(0)).toEqual(at(2));
+    expect(at(1)).toEqual(at(2));
+  });
+
+  it('has no second fold to hide a row behind', () => {
+    // `N more algorithms with fewer accounts to verify` was itself the fix for a
+    // version that dropped those rows outright. One list, one disclosure level.
+    expect(html).not.toContain('drift-rest');
+    expect(strip(html)).not.toContain('more algorithms with fewer accounts');
+  });
+
+  it('says how many algorithms are in the list before listing them', () => {
+    expect(strip(html)).toContain('2 algorithms to review, worst first.');
   });
 });
 
-describe('ConfigDriftPanel — a row states how many accounts it is asking about', () => {
-  it('adds its groups up to the count in its own header', () => {
-    // URGO MNQ SEP26: five outlier groups of 1, 2, 1, 1 and 9 accounts against a
-    // 78-account cohort, 64 of which run one configuration.
-    const urgo = html.slice(
-      html.indexOf('<strong>URGO</strong>'),
-      html.indexOf('<strong>OGX</strong>'),
-    );
-    const counts = [...urgo.matchAll(/class="drift-group-count"[^>]*>(\d+) accounts?</g)]
-      .map(([, count]) => Number(count));
-
-    expect(groupsIn(urgo)).toBe(5);
-    expect(counts).toEqual([1, 2, 1, 1, 9]);
-    expect(counts.reduce((sum, count) => sum + count, 0)).toBe(14);
-    expect(strip(urgo)).toContain('14 to verify');
-    expect(strip(urgo)).toContain('Cohort: 64 of 78 (82%) run');
-    expect(strip(urgo)).toContain('PT 400/450/500 · SL 300');
+describe('a closed row can be skipped or opened on sight', () => {
+  it('states its name, how much it is asking about, and its worst finding', () => {
+    // The closed one, whichever of the two ranked second — the point is that a
+    // row nobody has expanded still says what it is.
+    const closed = html.slice(html.lastIndexOf('<details class="drift-row"><summary>'));
+    const summary = strip(closed.slice(0, closed.indexOf('</summary>')));
+    expect(summary).toMatch(/^(URGO|OGX) MNQ SEP26/);
+    expect(summary).toContain('to verify');
+    expect(summary).toMatch(/\d+ findings?/);
+    // The worst finding in words, not just a count. Without it a collapsed row
+    // is a name and a number and every row has to be opened.
+    expect(summary).toContain('Stop loss: 315 ticks on this account, 300 in the cohort.');
   });
 
-  it('separates strategy rows from accounts where they differ', () => {
-    // IFSP NG SEP26 is 10 strategy rows over 9 accounts, because one account
-    // carries two snapshot rows. A header of "10 accounts" above 9 account
-    // numbers is the mismatch that costs a panel its credibility.
-    expect(html).toContain(
-      '<span class="drift-count" title="10 strategy rows, 9 accounts'
-      + ' — some accounts carry more than one snapshot row.">9 to verify</span>',
-    );
+  it('leads with the worst finding, not the biggest group', () => {
+    // The 2-account profit-target group is larger than the 1-account stop-loss
+    // group. Ranking is by what costs money, so the stop leads.
+    const first = html.slice(html.indexOf('<details class="drift-row"'));
+    const summary = strip(first.slice(0, first.indexOf('</summary>')));
+    expect(summary).toContain('Stop loss');
+    expect(summary).not.toContain('Profit target 1');
   });
 });
 
-describe('ConfigDriftPanel — both sides of a difference are on screen', () => {
-  it('renders the cohort value and this account’s value in separate cells', () => {
-    // The bug the rewrite exists to fix: an outlier rendered identically to the
-    // majority. Wren Larch’s single URGO account runs a 315-tick stop against a
-    // cohort on 300, and both numbers have to be readable side by side.
-    const stop = differences(html).find((row) => row.setting === 'Stop lossticks');
-
-    expect(stop.cohort).toBe('300');
-    expect(stop.here).toBe('315');
-    expect(stop.here).not.toBe(stop.cohort);
-
-    expect(html).toContain(
-      '<tr><th scope="row">Stop loss<em>ticks</em></th>'
-      + '<td>300</td><td class="drift-here">315</td></tr>',
-    );
-    // The columns name whose value each is, and how many accounts are behind it.
-    expect(html).toContain('<th scope="col">Cohort<em>64 accounts</em></th>');
-    expect(html).toContain('<th scope="col">These 1<em>account</em></th>');
-    expect(strip(html)).toContain('Stop loss: 315 ticks on this account, 300 in the cohort.');
-  });
-
-  it('never renders the two sides of a difference as the same value', () => {
-    // Across all 267 differences on the book. A row whose sides read alike is an
-    // outlier presented as the majority, which is worse than not listing it.
-    const identical = differences(html).filter((row) => row.here === row.cohort);
-    expect(identical).toEqual([]);
-  });
-
-  it('never leaves a side blank when the parameter is absent from one build', () => {
-    // 97 of the 267 rows have one side missing. The old panel printed "absent"
-    // for a dropped parameter and, because JSX renders null as nothing, printed
-    // an empty cell for an added one. Both are a build difference, not a value.
-    const rows = differences(html);
-    const oneSided = rows.filter((row) => row.cohortAbsent || row.hereAbsent);
-
-    expect(oneSided).toHaveLength(97);
-    for (const row of rows) {
-      expect(row.cohort).not.toBe('');
-      expect(row.here).not.toBe('');
-    }
-    for (const row of oneSided) {
-      expect(row.cohortAbsent && row.hereAbsent).toBe(false);
-      expect(row.cohortAbsent ? row.cohort : row.here).toBe('not in this build');
-    }
-  });
-
-  it('reports the cohort values as a set when the cohort has no single one', () => {
-    // Close all open trades is 16:30 on 44 accounts across 7 algorithms, and
-    // their cohorts run three different values. Naming one of them would be the
-    // panel inventing a norm the book does not have.
+describe('the shorthand every configuration is named by', () => {
+  it('spells out PT and SL once, above a surface that repeats them', () => {
     const text = strip(html);
-    expect(text).toContain('Close all open trades is 16:30 on 44 of these accounts, across 7 algorithms');
-    expect(text).toContain('3 different values (15:45, 16:45, 16:50)');
+    expect(text).toContain('PT is the three profit-target legs the strategy scales out at');
+    expect(text).toContain('SL the stop loss, both in ticks');
+    // Once. A key repeated per row is the repetition it exists to remove.
+    expect(countOf(html, /profit-target legs the strategy scales out at/g)).toBe(1);
+    // And the shorthand is on screen often enough to be worth the line.
+    expect(countOf(html, /PT \d/g)).toBeGreaterThan(3);
   });
 });
 
-describe('ConfigDriftPanel — wording', () => {
-  it('asks the reader to verify and never calls a minority configuration a fault', () => {
-    // A minority configuration is often a deliberate customisation. Fault
-    // wording trains a CAM to dismiss the panel, so the only place the words
-    // appear at all is the sentence that disowns them.
-    const disclaimer = 'For each line, confirm the setting is what the client asked for. '
-      + 'Different is not wrong — unexplained is. Customisation is legitimate; '
-      + 'this is a list to verify, not a fault list.';
-    const text = strip(html);
+describe('the expanded table connects to the sentence above it', () => {
+  it('marks the one change the headline names, and only that one', () => {
+    expect(countOf(html, /class="drift-change drift-change-lead"/g)).toBeGreaterThan(0);
+    // At most one lead per group: the headline names a single change.
+    expect(countOf(html, /class="drift-change drift-change-lead"/g))
+      .toBeLessThanOrEqual(groupsIn(html));
+    expect(strip(html)).toContain('the difference named above');
+  });
 
-    expect(text).toContain(disclaimer);
-    expect(text).toContain('to verify');
-    expect(text).toContain('14 to verify');
-    expect(text.replace(disclaimer, ''))
-      .not.toMatch(/\b(error|wrong|fault|invalid|violation|breach|incorrect|misconfigur)/i);
+  it('marks the row the headline is about and not a neighbouring one', () => {
+    // The failure this catches is silent: a marker on the wrong row reads
+    // exactly like a marker on the right one. The stop-loss group's headline
+    // names the stop, so the stop is the marked row and the trail is not.
+    const lead = html.match(
+      /<tr class="drift-change drift-change-lead"><th scope="row">[\s\S]*?<\/th>/,
+    );
+    expect(lead).not.toBeNull();
+    expect(strip(lead[0])).toContain('Stop loss');
+    expect(strip(lead[0])).not.toContain('Trail by');
+  });
+
+  it('captions the parameters with no established meaning instead of tooltipping each', () => {
+    // `URGO2 2 → 4` is the strategy name plus a digit. It used to sit in the
+    // same table as a stop loss with only a hover to say so.
+    expect(countOf(html, /<tbody class="drift-unnamed">/g)).toBeGreaterThan(0);
+    expect(strip(html)).toContain(
+      'in parameters with no established meaning — shown exactly as the strategy writes them',
+    );
+  });
+
+  it('still renders every difference it captions', () => {
+    // Captioning is not hiding: the unnamed rows are in the same table, under
+    // the note, in the same <tr class="drift-change"> shape as the rest.
+    expect(html).toContain('<code>URGO2</code>');
+    const unnamed = html.slice(html.indexOf('<tbody class="drift-unnamed">'));
+    expect(countOf(unnamed.slice(0, unnamed.indexOf('</tbody>')), /<tr class="drift-change/g))
+      .toBeGreaterThan(0);
+  });
+
+  it('never marks an opaque parameter as the lead', () => {
+    // `leadChangeOf` refuses an unranked name for the same reason `headlineFor`
+    // does. If the two ever forked, the marked row would be a parameter the
+    // sentence above it does not mention.
+    const leads = [...html.matchAll(
+      /<tr class="drift-change drift-change-lead"><th scope="row">([\s\S]*?)<\/th>/g,
+    )];
+    expect(leads.length).toBeGreaterThan(0);
+    for (const [, cell] of leads) expect(cell).not.toContain('<code>');
   });
 });
 
-describe('ConfigDriftPanel — nothing to review', () => {
+describe('nothing to review', () => {
   it('renders a sentence rather than an empty list', () => {
     const empty = renderToStaticMarkup(<ConfigDriftPanel clients={[]} />);
-
     expect(strip(empty)).toBe(
       'Every algorithm cohort with a clear majority is running one configuration.',
     );
     expect(rowsIn(empty)).toBe(0);
-    expect(groupsIn(empty)).toBe(0);
     expect(empty).not.toContain('drift-panel');
-    expect(empty).not.toContain('drift-rest');
     expect(strip(empty)).not.toMatch(/\d/);
   });
 });

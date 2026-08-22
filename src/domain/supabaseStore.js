@@ -553,6 +553,20 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
       pinned: Boolean(client.pinned),
       pinnedNote: client.pinned_note || '',
       notes: client.notes || '',
+      // Why they left, if anybody was asked. Step 39 adds the three columns; on
+      // a database where it has not run — and on every export taken before it,
+      // public/local-snapshot.json included — they are undefined and this reads
+      // as the empty record, which src/domain/clientLifecycle.js reports as
+      // "Not recorded" rather than inventing a reason.
+      //
+      // Deliberately NOT inside `profile`: updateProfile re-sends that object
+      // whole on every edit of the contact card, so a churn field parked there
+      // would ride along with a phone-number correction.
+      churn: {
+        reason: client.churn_reason || '',
+        note: client.churn_note || '',
+        at: client.churned_at ? String(client.churned_at).slice(0, 10) : '',
+      },
       profile: {
         stage: client.stage || 'Active',
         fullName: client.full_name || client.name,
@@ -837,6 +851,23 @@ function clientPatchToDb(patch = {}) {
     if ('propFirm' in profile) mapped.prop_firm = profile.propFirm || '';
     if ('messenger' in profile) mapped.messenger = profile.messenger || '';
     if ('subscriptionPrice' in profile) mapped.subscription_price = normalizeSubscriptionPrice(profile.subscriptionPrice);
+  }
+  // The churn classification, mapped only when a patch actually carries one.
+  //
+  // This is the whole reason `churn` is a top-level key rather than a profile
+  // field: `'churn' in patch` is true only on the write that records a
+  // client leaving, so no other save touches these columns and, on a database
+  // where step 39 has not run, no other save can fail because of them.
+  //
+  // The three land in the same UPDATE as `stage` — the App sends one patch — so
+  // a client cannot be filed as Inactive without the reason that was given for
+  // it. That is the point of the manager's decision, not a nicety: the failure
+  // he asked to be rid of is a churn count nobody can explain.
+  if ('churn' in patch) {
+    const churn = patch.churn || {};
+    mapped.churn_reason = emptyToNull(churn.reason);
+    mapped.churn_note = churn.note || '';
+    mapped.churned_at = emptyToNull(churn.at);
   }
   mapped.updated_at = new Date().toISOString();
   return mapped;
@@ -1471,7 +1502,13 @@ export async function updateSupabaseOperationalFlag(flagId, status) {
   }
   const patch = {
     status,
-    resolved_at: ['Resolved', 'Acknowledged', 'Ignored'].includes(status) ? new Date().toISOString() : null,
+    // 'Acknowledged' used to be on this list, because the Acknowledge button on
+    // the client Dashboard and the CAM flag queue wrote it. Both are gone and
+    // 'Resolved' is the only status the product now sends here. It is off the
+    // list rather than left as a harmless extra: this is the one place that
+    // decides a flag has been closed, and a status listed here reads as a status
+    // this app writes.
+    resolved_at: ['Resolved', 'Ignored'].includes(status) ? new Date().toISOString() : null,
   };
   const { data, error } = await supabase
     .from('operational_flags')

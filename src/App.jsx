@@ -56,7 +56,6 @@ import DailySOP from "./components/DailySOP";
 import ProfilePanel from "./components/ProfilePanel";
 import PerformanceCharts from './components/PerformanceCharts';
 import StackPlaybook from "./components/StackPlaybook";
-import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
 import AutoCollectionManager from "./components/AutoCollectionManager";
@@ -104,6 +103,8 @@ import {
   removeAccountFromRegistry,
 } from "./domain/crmStateStore";
 import { buildCamOverview } from "./domain/camOverview";
+import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
+import { daysBetween } from "./domain/overviewCharts";
 import {
   recalculateDailyImport,
   reconcileDailyImport,
@@ -126,10 +127,14 @@ import {
 } from "./domain/report";
 import { buildClientSegments } from "./domain/clientSegments";
 import {
+  CLIENT_STAGES,
+  CLIENT_STAGE_INACTIVE,
+  CLIENT_STAGE_NEW,
   buildClientLifecycle,
   buildLifecycleRollup,
   isChurnedClient,
   partitionSidebarClients,
+  pipelineColumns,
 } from "./domain/clientLifecycle";
 import {
   TIME_OFF_KINDS,
@@ -139,12 +144,14 @@ import {
   pendingTimeOffAlert,
 } from "./domain/camCoverage";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
+import ChurnReasonDialog from "./components/ChurnReasonDialog";
 import TimeOffPanel, {
   PendingTimeOffNotice,
   TimeOffRequestForm,
 } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import BookList from "./components/BookList";
 import DeskMoneyPanel, { CAPITAL_DETAIL_ID } from "./components/DeskMoneyPanel";
 import { SEGMENTS } from "./domain/operationsSegments";
 import {
@@ -170,9 +177,8 @@ import LiveAccountsPanel from "./components/LiveAccountsPanel";
 import CamFlagQueue from "./components/CamFlagQueue";
 import { buildCamFlagQueue, createCamFlagResolver } from "./domain/camFlagQueue";
 import BulletBotDeskPanel from "./components/BulletBotDeskPanel";
+import DeviationAlertList from "./components/DeviationAlertList";
 import CapitalDetailPanel from "./components/CapitalDetailPanel";
-import StrategyRiskScatter from "./components/StrategyRiskScatter";
-import { buildStrategyRiskProfile } from "./domain/strategyRiskProfile";
 import {
   AlgoContributionChart,
   BookMixBar,
@@ -1792,7 +1798,7 @@ function intakeCsvRowToClient(row = {}) {
   return {
     name: fullName,
     cam: "",
-    stage: "Onboarding",
+    stage: CLIENT_STAGE_NEW,
     email,
     phone: getCsvField(row, ["Phone", "Phone Number"]),
     timezone: getCsvField(row, ["Time Zone", "Timezone"]) || "America/New_York",
@@ -2961,7 +2967,7 @@ function DataToolsPanel({
                         <strong>{row.name}</strong>
                       </td>
                       <td className="muted">{row.email || "-"}</td>
-                      <td>{row.stage || "Onboarding"}</td>
+                      <td>{row.stage || CLIENT_STAGE_NEW}</td>
                       <td>
                         {row.duplicateReason ? (
                           <span className="badge warning">
@@ -3931,12 +3937,51 @@ function ManagerOverview({
   const bulletBotTileRow = deskMoney.segments.find(
     (row) => row.segment === SEGMENTS.EVAL_BULLET,
   ) || null;
-  // Firm-wide rather than one CAM's book: the manager's question is which
-  // configurations carry exposure across everyone, not what a single client runs.
-  const riskProfile = useMemo(
-    () => buildStrategyRiskProfile(clients, { asOfDate }),
-    [clients, asOfDate],
-  );
+  // The desk-wide deviation alerts, from the SAME buildCamOverview the CAM
+  // overview has always run. The manager asked for the alert his CAMs already
+  // have; giving the consolidated screen its own peer comparison is how two
+  // screens end up disagreeing about which account is the odd one out, so this
+  // calls the one function and hands the result to the one row component.
+  //
+  // Note what it is NOT pinned to. buildCamOverview reads each client's own
+  // latest close (getLatestClientImport) and takes no as-of date, so this panel
+  // ignores the date picker at the top of the page. That is stated on the panel
+  // rather than papered over: the "Latest close snapshot" panel further down
+  // carries the same caveat and the same badge.
+  const deskDeviation = useMemo(() => buildCamOverview(clients), [clients]);
+  // Why the desk figure is not the sum of the eight CAM figures, computed
+  // instead of asserted. A peer group is every account running the same
+  // algorithm and version in whatever book is being looked at, so widening the
+  // book from one CAM to the desk moves the mean and the 1.5-sigma threshold
+  // under it. On the real book that is 74 desk alerts against 30 across the
+  // eight CAM views, of which 25 appear on both — the manager's list is a
+  // different question, not a bigger copy of theirs, and a manager who has just
+  // been told "12" by a CAM needs to see that in writing.
+  const deviationVsCams = useMemo(() => {
+    const deskIds = new Set(deskDeviation.deviationFlags.map((flag) => flag.id));
+    let camTotal = 0;
+    let onBoth = 0;
+    for (const profile of activeCamProfiles) {
+      const book = clientsForCam(clients, profile, coverage, asOfDate);
+      for (const flag of buildCamOverview(book).deviationFlags) {
+        camTotal += 1;
+        if (deskIds.has(flag.id)) onBoth += 1;
+      }
+    }
+    return {
+      cams: activeCamProfiles.length,
+      camTotal,
+      onBoth,
+      deskOnly: deskDeviation.deviationFlags.length - onBoth,
+    };
+  }, [deskDeviation, clients, activeCamProfiles, coverage, asOfDate]);
+  const camNameByClientId = useMemo(() => {
+    const byClient = {};
+    for (const profile of activeCamProfiles) {
+      for (const clientId of profile.clientIds || []) byClient[clientId] = profile.name;
+    }
+    return byClient;
+  }, [activeCamProfiles]);
   // COUNTS ONLY. `dailyPnl` and `weeklyPnl` used to be in here — one number for
   // the desk, reached by adding every CAM's book together — and the clipboard
   // report printed them. They are gone rather than left unused: a field named
@@ -4612,8 +4657,21 @@ function ManagerOverview({
             <AlertTriangle size={16} />
             <span>
               <strong>{unassignedClients.length} client{unassignedClients.length !== 1 ? "s" : ""} unassigned</strong>
-              {" "}- no active CAM assigned. Reassign in the Client roster below:{" "}
-              {unassignedClients.map((client) => client.name).join(", ")}
+              {" "}- no active CAM assigned. Reassign in the Client roster below.
+              {/* This can be the whole book. Nothing bounds how many clients sit
+                  without an active CAM — a desk between hires, or every CAM
+                  profile deactivated at once, and it is every name — and they
+                  were joined with commas into one run of prose inside a warning
+                  banner. Same treatment as the pipeline: bounded, scrolling, and
+                  it says so. */}
+              <BookList
+                items={unassignedClients}
+                keyOf={(client) => client.id}
+                className="book-list-inline"
+                fits={12}
+              >
+                {(client) => <span className="badge muted">{client.name}</span>}
+              </BookList>
             </span>
           </div>
         )}
@@ -4673,13 +4731,7 @@ function ManagerOverview({
                     setNewClientForm((f) => ({ ...f, stage: e.target.value }))
                   }
                 >
-                  {[
-                    "Onboarding",
-                    "Active",
-                    "At Risk",
-                    "Paused",
-                    "Inactive",
-                  ].map((s) => (
+                  {CLIENT_STAGES.map((s) => (
                     <option key={s}>{s}</option>
                   ))}
                 </select>
@@ -4725,17 +4777,18 @@ function ManagerOverview({
 
         {showPipeline &&
           (() => {
-            const STAGES = [
-              "Onboarding",
-              "Active",
-              "At Risk",
-              "Paused",
-              "Inactive",
-            ];
-            const byStage = {};
-            STAGES.forEach((s) => (byStage[s] = []));
-            for (const client of clients) {
-              const stage = client.profile?.stage || "Active";
+            // Buckets, one per known stage, plus one for anything else.
+            //
+            // The board used to render a column per name in a list of five it
+            // held privately, and push cards into `byStage[stage]` — so a client
+            // whose stage was not one of those five got a bucket that was never
+            // rendered and vanished from the board with no count anywhere saying
+            // it had. Today's book cannot produce that (95 Active, 1 Paused),
+            // which is exactly why the list is now one shared constant AND why
+            // an unrecognised stage still gets a column of its own rather than
+            // being trusted not to happen.
+            const { columns, placed, unknown } = pipelineColumns(clients);
+            const cardFor = (client) => {
               const cam = activeCamProfiles.find((p) =>
                 (p.clientIds || []).includes(client.id),
               );
@@ -4750,86 +4803,96 @@ function ManagerOverview({
               const openFlags = (latest?.flags || []).filter(
                 (f) => f.status !== "Resolved" && f.status !== "Acknowledged",
               ).length;
-              (byStage[stage] || (byStage[stage] = [])).push({
-                client,
-                cam,
-                pnl,
-                openTasks,
-                openFlags,
-              });
-            }
+              return { client, cam, pnl, openTasks, openFlags };
+            };
+            const filled = columns.filter((column) => column.clients.length).length;
             return (
               <section className="panel">
                 <div className="panel-heading">
                   <h3>Client pipeline</h3>
                   <span className="badge muted">by stage · click to open</span>
                 </div>
+                {/* The columns add up to the roster, in writing. A board whose
+                    lanes silently drop a client is the failure this panel is
+                    being fixed for, and a total that reconciles is the cheapest
+                    way for a reader to see that they do not. */}
+                <p className="muted pipeline-total">
+                  {placed} client{placed === 1 ? "" : "s"} across {filled} stage
+                  {filled === 1 ? "" : "s"}
+                  {unknown ? (
+                    <span className="negative">
+                      {" "}
+                      · {unknown} at a stage this board does not know
+                    </span>
+                  ) : null}
+                </p>
                 <div className="pipeline-board">
-                  {STAGES.map((stage) => {
-                    const cards = byStage[stage] || [];
-                    return (
-                      <div key={stage} className="pipeline-column">
-                        <div className="pipeline-col-header">
-                          <span>{stage}</span>
-                          <span className="count">{cards.length}</span>
-                        </div>
-                        {cards.length === 0 ? (
-                          <div className="pipeline-empty muted">-</div>
-                        ) : (
-                          cards.map(
-                            ({ client, cam, pnl, openTasks, openFlags }) => (
-                              <div
-                                key={client.id}
-                                role="button"
-                                tabIndex={0}
-                                className={`pipeline-card${openFlags > 0 ? " pipeline-card-flag" : ""}`}
-                                onClick={() => onOpenCam(cam?.id, client.id)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    onOpenCam(cam?.id, client.id);
-                                  }
-                                }}
-                              >
-                                <strong>{client.name}</strong>
-                                <small className="muted">
-                                  {cam?.name || "Unassigned"}
-                                </small>
-                                <div className="pipeline-card-chips">
-                                  <span
-                                    className={
-                                      pnl >= 0 ? "positive" : "negative"
-                                    }
-                                    style={{ fontSize: 11 }}
-                                  >
-                                    {formatCurrency(pnl)}
-                                  </span>
-                                  {openFlags > 0 && (
-                                    <span
-                                      className="task-chip task-chip-high"
-                                      style={{ fontSize: 10 }}
-                                    >
-                                      {openFlags} flag
-                                      {openFlags !== 1 ? "s" : ""}
-                                    </span>
-                                  )}
-                                  {openTasks > 0 && (
-                                    <span
-                                      className="task-chip"
-                                      style={{ fontSize: 10 }}
-                                    >
-                                      {openTasks} task
-                                      {openTasks !== 1 ? "s" : ""}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ),
-                          )
-                        )}
+                  {columns.map(({ stage, clients: members, known }) => (
+                    <div
+                      key={stage}
+                      className={known ? "pipeline-column" : "pipeline-column pipeline-column-other"}
+                    >
+                      <div className="pipeline-col-header">
+                        <span>{stage}</span>
+                        <span className="count">{members.length}</span>
                       </div>
-                    );
-                  })}
+                      <BookList
+                        items={members}
+                        keyOf={(client) => client.id}
+                        fits={6}
+                        empty={<div className="pipeline-empty muted">-</div>}
+                      >
+                        {(member) => {
+                          const { client, cam, pnl, openTasks, openFlags } = cardFor(member);
+                          return (
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            className={`pipeline-card${openFlags > 0 ? " pipeline-card-flag" : ""}`}
+                            onClick={() => onOpenCam(cam?.id, client.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                onOpenCam(cam?.id, client.id);
+                              }
+                            }}
+                          >
+                            <strong>{client.name}</strong>
+                            <small className="muted">
+                              {cam?.name || "Unassigned"}
+                            </small>
+                            <div className="pipeline-card-chips">
+                              <span
+                                className={pnl >= 0 ? "positive" : "negative"}
+                                style={{ fontSize: 11 }}
+                              >
+                                {formatCurrency(pnl)}
+                              </span>
+                              {openFlags > 0 && (
+                                <span
+                                  className="task-chip task-chip-high"
+                                  style={{ fontSize: 10 }}
+                                >
+                                  {openFlags} flag
+                                  {openFlags !== 1 ? "s" : ""}
+                                </span>
+                              )}
+                              {openTasks > 0 && (
+                                <span
+                                  className="task-chip"
+                                  style={{ fontSize: 10 }}
+                                >
+                                  {openTasks} task
+                                  {openTasks !== 1 ? "s" : ""}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          );
+                        }}
+                      </BookList>
+                    </div>
+                  ))}
                 </div>
               </section>
             );
@@ -5304,17 +5367,65 @@ function ManagerOverview({
           <BulletBotDeskPanel clients={clients} />
         </CollapsiblePanel>
 
+        {/* One column, not a pair. "Exposure by algorithm" — the reward:risk
+            against fills-per-day scatter — sat on the right until the desk
+            manager asked twice for it to go: he could not read it, and a chart
+            nobody can read is a chart that gets believed or ignored at random.
+            buildStrategyRiskProfile existed only to feed it and went with it. */}
         <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
-          <div className="ov-pair">
-            <div>
-              <h4>Settings against the cohort</h4>
-              <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
-            </div>
-            <div>
-              <h4>Exposure by algorithm</h4>
-              <StrategyRiskScatter rows={riskProfile} limit={10} />
-            </div>
-          </div>
+          <h4>Settings against the cohort</h4>
+          <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Directly under the configuration review, because the two ask the same
+          shape of question about the same peer groups: that one compares an
+          account's SETTINGS against the cohort running the same algorithm, this
+          one compares what those settings then DID. A manager who has just seen
+          an account called out for a stop nobody else runs wants the next line
+          to say whether it also lost money nobody else lost.
+
+          Every CAM already has this panel on his own overview and keeps it. This
+          is the desk-wide read of the same function, and the two reconcile on
+          screen rather than in a comment.
+        */}
+        <CollapsiblePanel
+          title="Deviation alerts"
+          count={deskDeviation.deviationFlags.length}
+          tone={deskDeviation.deviationFlags.length ? "danger-panel" : ""}
+          badges={
+            <span className="badge muted">
+              Peer groups across the whole desk · each client&apos;s own latest close
+            </span>
+          }
+        >
+          <p className="muted chart-empty">
+            Accounts below their peers on the same algorithm, and accounts whose fills
+            ran opposite to their peers, over{" "}
+            {deskDeviation.totals.algorithms} algorithm
+            {deskDeviation.totals.algorithms === 1 ? "" : "s"} and{" "}
+            {deskDeviation.totals.accounts} accounts. The {deviationVsCams.cams} CAM
+            overview{deviationVsCams.cams === 1 ? "" : "s"} show {deviationVsCams.camTotal}{" "}
+            between them and {deviationVsCams.onBoth} of those appear here: a peer group is
+            every account running that algorithm in the book being looked at, so widening
+            the book from one CAM to the desk moves the threshold.{" "}
+            {deviationVsCams.deskOnly} of the alerts below are visible on no CAM&apos;s own
+            page.
+          </p>
+          {/* Only said when there is something to disagree with. With nothing
+              pinned the page is already on each client's latest close, and the
+              sentence would be warning about a difference that does not exist. */}
+          {asOfDate ? (
+            <p className="muted chart-empty">
+              Read off each client&apos;s own latest close, not the {asOfDate} pinned at the
+              top of this page — the same basis as the &ldquo;Latest close snapshot&rdquo;
+              panel below.
+            </p>
+          ) : null}
+          <DeviationAlertList
+            flags={deskDeviation.deviationFlags}
+            camNameByClientId={camNameByClientId}
+          />
         </CollapsiblePanel>
 
         {/*
@@ -5973,8 +6084,6 @@ function ManagerOverview({
                 <strong>{lifecycle.avgDaysToPayout}</strong>
               </div>
             </div>
-            <h4 className="muted" style={{ margin: "14px 0 6px" }}>By algo combo — funded rate, lifespan, survival</h4>
-            <LifecycleByAlgo clients={clients} />
           </div>
         </section>
 
@@ -6064,9 +6173,17 @@ function ManagerOverview({
           onEditCoverage={onEditCoverage}
         />
 
+        {/* camNameByClientId is what makes the churn drill-down answerable for a
+            manager: eight books, and "which CAM was this" is the first thing he
+            asked to filter on. Same map the deviation list uses, same rule —
+            omitted on the CAM's own page below, where the answer is always him. */}
         <LifecycleRollupPanel
-          rollup={buildLifecycleRollup(clients || [])}
+          rollup={buildLifecycleRollup(clients || [], { camNameByClientId })}
           title="Team lifecycle & retention"
+          onSelectClient={(clientId) => onOpenCam(
+            activeCamProfiles.find((p) => (p.clientIds || []).includes(clientId))?.id,
+            clientId,
+          )}
         />
 
         {camPerf.length > 0 ? (
@@ -6217,7 +6334,12 @@ function ManagerOverview({
                   </>
                 }
               >
-                <div className="table-wrap">
+                {/* The same bound as the pipeline, in the shape a table can
+                    take: a fixed height with a sticky header, so 96 rows of
+                    roster do not push everything below them off the page and the
+                    column names stay attached to the numbers under them. Every
+                    row is still rendered — the count above says how many. */}
+                <div className="table-wrap book-table">
                   <table className="ops-table">
                     <thead>
                       <tr>
@@ -6296,133 +6418,6 @@ function ManagerOverview({
               </CollapsiblePanel>
             );
           })()}
-
-        <section className="panel">
-          <div className="panel-heading">
-            <h3>Historical date drill-down</h3>
-            <input
-              type="date"
-              value={asOfDate}
-              onChange={(e) => setAsOfDate(e.target.value)}
-              style={{
-                marginLeft: "auto",
-                fontSize: 12,
-                padding: "3px 8px",
-                borderRadius: 6,
-                border: "1px solid var(--line)",
-                background: "var(--surface)",
-                color: "var(--text)",
-              }}
-            />
-            {asOfDate && (
-              <button
-                className="ghost-button"
-                style={{ fontSize: 11 }}
-                onClick={() => setAsOfDate("")}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          {!asOfDate && (
-            <p className="muted" style={{ fontSize: 12 }}>
-              Pick a date to see every client's P&L, accounts, and flags for
-              that day.
-            </p>
-          )}
-          {asOfDate &&
-            (() => {
-              const drillRows = clients
-                .map((client) => {
-                  const imp = (client.dailyImports || []).find(
-                    (d) => d.date === asOfDate,
-                  );
-                  if (!imp) return null;
-                  const pnl = (imp.snapshots || []).reduce(
-                    (s, sn) => s + Number(sn.grossRealizedPnl || 0),
-                    0,
-                  );
-                  const cam = camProfiles.find((p) =>
-                    (p.clientIds || []).includes(client.id),
-                  );
-                  return {
-                    client,
-                    cam,
-                    pnl,
-                    accounts: (imp.snapshots || []).length,
-                    flags: (imp.flags || []).filter(
-                      (f) => f.severity === "Critical",
-                    ).length,
-                  };
-                })
-                .filter(Boolean);
-              if (!drillRows.length)
-                return (
-                  <p className="muted" style={{ fontSize: 12 }}>
-                    No data uploaded for {asOfDate}.
-                  </p>
-                );
-              const total = drillRows.reduce((s, r) => s + r.pnl, 0);
-              return (
-                <div className="table-wrap">
-                  <table className="ops-table">
-                    <thead>
-                      <tr>
-                        <th>Client</th>
-                        <th>CAM</th>
-                        <th>Accounts</th>
-                        <th>Daily P&L</th>
-                        <th>Critical flags</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {drillRows
-                        .sort((a, b) => b.pnl - a.pnl)
-                        .map(({ client, cam, pnl, accounts, flags }) => (
-                          <tr
-                            key={client.id}
-                            style={{ cursor: "pointer" }}
-                            onClick={() => onOpenCam(cam?.id, client.id)}
-                          >
-                            <td>
-                              <strong>{client.name}</strong>
-                            </td>
-                            <td className="muted">{cam?.name || "-"}</td>
-                            <td>{accounts}</td>
-                            <td className={pnl >= 0 ? "positive" : "negative"}>
-                              <strong>
-                                {pnl >= 0 ? "+" : ""}
-                                {formatCurrency(pnl)}
-                              </strong>
-                            </td>
-                            <td>
-                              {flags > 0 ? (
-                                <span className="negative">{flags}</span>
-                              ) : (
-                                <span className="muted">0</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      <tr
-                        style={{
-                          borderTop: "2px solid var(--line)",
-                          fontWeight: 700,
-                        }}
-                      >
-                        <td colSpan={3}>Total - {drillRows.length} clients</td>
-                        <td className={total >= 0 ? "positive" : "negative"}>
-                          {total >= 0 ? "+" : ""}
-                          {formatCurrency(total)}
-                        </td>
-                        <td />
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })()}
-        </section>
 
         <section className="panel">
           <div className="panel-heading">
@@ -8801,6 +8796,22 @@ export function buildTodayBriefing(clients) {
 
 // ── Insight Feed ─────────────────────────────────────────────────────────────
 // Aggregates all notable signals across a CAM's portfolio into one prioritized list
+//
+// Every signal carries three things beyond its prose:
+//
+//   `facts`   the numbers of the message as {label, value} pairs, already
+//             formatted, in reading order. The message string is kept — it is
+//             what a reader hovers and what the existing tests assert — but a
+//             panel cannot lay out numbers that are already glued into a
+//             sentence, and re-parsing prose to get them back is exactly the
+//             wrong move. The producer states them once, in both forms.
+//   `urgency` the number that makes this signal urgent, higher being worse, and
+//             comparable ONLY against other signals of the same rule. See
+//             domain/insightFeed.js, which sorts inside a group and never across
+//             one.
+//   `action`  unchanged, still per signal. It happens to be constant per rule on
+//             every rule today, which is why the panel hoists it — but it hoists
+//             it by testing the values, not by assuming they agree.
 export function remainingBuffer(s, m) {
   const ddLimit = Number(m?.maxDrawdownLimit || 0);
   const rawDD = Number(s?.trailingMaxDrawdown || 0);
@@ -8855,6 +8866,23 @@ export function buildPortfolioInsights(clients) {
           clientName: client.name,
           accountAlias: meta.alias || snap.accountName,
           message: `Buffer ${formatCurrency(buffer)} depleting ~${formatCurrency(Math.abs(dailyChange))}/day - projected breach in ${daysToBreech} trading day${daysToBreech !== 1 ? "s" : ""}`,
+          // Sooner is worse, so the urgency is the negated projection: -1 sorts
+          // above -5. No magic constant, and nothing to re-tune if the rule's
+          // 5-day window moves.
+          urgency: -daysToBreech,
+          facts: [
+            {
+              label: "Breach in",
+              value: `${daysToBreech} trading day${daysToBreech !== 1 ? "s" : ""}`,
+              tone: "bad",
+            },
+            { label: "Buffer left", value: formatCurrency(buffer) },
+            {
+              label: "Depleting",
+              value: `${formatCurrency(Math.abs(dailyChange))}/day`,
+              tone: "bad",
+            },
+          ],
           action: "Review stack or reduce position size",
         });
       }
@@ -8870,6 +8898,13 @@ export function buildPortfolioInsights(clients) {
         clientName: client.name,
         accountAlias: w.alias,
         message: `Best day (${formatCurrency(w.bestDayPnl)} on ${w.bestDayDate}) is ${w.ratio}% of total gains - consistency rule at risk`,
+        urgency: w.ratio,
+        facts: [
+          { label: "Share of gains", value: `${w.ratio}%`, tone: "bad" },
+          { label: "Best day", value: formatCurrency(w.bestDayPnl) },
+          { label: "On", value: w.bestDayDate },
+          { label: "Total gains", value: formatCurrency(w.totalPositive) },
+        ],
         action: "Consider reducing position on strong days",
       });
     }
@@ -8887,6 +8922,19 @@ export function buildPortfolioInsights(clients) {
           message: a.ready
             ? `Target reached - ${formatCurrency(a.profit)} profit vs ${formatCurrency(a.target)} goal. Request payout.`
             : `${a.pct}% of payout target - ${formatCurrency(a.target - a.profit)} remaining`,
+          // Closest to the money first. A ready account is at or past 100 by
+          // construction, so it leads without needing a separate rule.
+          urgency: Number(a.pct) || 0,
+          facts: [
+            { label: "Of target", value: `${a.pct}%`, tone: a.ready ? "good" : "" },
+            { label: "Profit", value: formatCurrency(a.profit) },
+            { label: "Target", value: formatCurrency(a.target) },
+            {
+              label: "Remaining",
+              value: a.ready ? "reached" : formatCurrency(a.target - a.profit),
+              tone: a.ready ? "good" : "",
+            },
+          ],
           action: a.ready ? "Request payout now" : "Monitor until target",
         });
       }
@@ -8926,6 +8974,24 @@ export function buildPortfolioInsights(clients) {
             clientName: client.name,
             accountAlias: meta.alias || snap.accountName,
             message: `Performance shift: avg was ${formatCurrency(priorAvg)}/day, now ${formatCurrency(recentAvg)}/day (${negativeDays} negative days recently)`,
+            // The size of the swing, not the number of red days: two accounts
+            // with 3 negative days each are not equally cold if one gave back
+            // $80/day and the other $900.
+            urgency: priorAvg - recentAvg,
+            facts: [
+              {
+                label: "Swing",
+                value: `${formatCurrency(priorAvg - recentAvg)}/day`,
+                tone: "bad",
+              },
+              { label: "Was", value: `${formatCurrency(priorAvg)}/day` },
+              {
+                label: "Now",
+                value: `${formatCurrency(recentAvg)}/day`,
+                tone: "bad",
+              },
+              { label: "Negative days", value: String(negativeDays) },
+            ],
             action: "Review in Stack Playbook - consider algo change",
           });
         }
@@ -8946,6 +9012,18 @@ export function buildPortfolioInsights(clients) {
         const yest = prevTradingDay.toISOString().slice(0, 10);
         const yesterdayImport = getClientImportByDate(client, yest);
         if (!yesterdayImport && imports.length > 0) {
+          // This rule fires per client and its sentence never varies, so on the
+          // real book it produced 84 rows of identical text — the group said
+          // "Missing Close 84" and then said the same thing 84 times with only a
+          // name to tell one row from another. The date of the last close, and
+          // how long ago that was, are the facts that separate a client who
+          // missed yesterday from one who has not uploaded in three weeks. They
+          // are read off the imports rather than asserted: `daysBetween` counts
+          // calendar days, and the label says calendar days, because the 2-day
+          // window this rule tests is in TRADING days and quietly reporting one
+          // as the other is the kind of wrong answer that arrives silently.
+          const lastClose = imports.at(-1)?.date || null;
+          const calendarDays = lastClose ? daysBetween(lastClose, today) : null;
           insights.push({
             severity: "warning",
             type: "Missing Close",
@@ -8953,6 +9031,15 @@ export function buildPortfolioInsights(clients) {
             clientName: client.name,
             accountAlias: null,
             message: `No daily close uploaded in the last 2 trading days`,
+            urgency: calendarDays ?? 0,
+            facts: [
+              { label: "Last close", value: lastClose || "never" },
+              {
+                label: "Calendar days ago",
+                value: calendarDays === null ? "—" : String(calendarDays),
+                tone: "bad",
+              },
+            ],
             action: "Check VPS connection and upload NT CSV",
           });
         }
@@ -8966,11 +9053,34 @@ export function buildPortfolioInsights(clients) {
   );
 }
 
-function InsightFeedPanel({ insights, onSelectClient }) {
+/**
+ * The Insight Feed, as a table per rule instead of a card per signal.
+ *
+ * The CAM was asked whether to keep this panel and chose "keep it, simplify
+ * it". Nothing is dropped: every signal buildPortfolioInsights produces is still
+ * rendered, still clickable, still carries its own sentence. What changed is
+ * where the words live.
+ *
+ * On the manager's book the old shape printed 192 signals as 192 three-line
+ * cards — client and account, the message, then "→ what to do". Those 192 action
+ * lines carried three distinct sentences between them, and one group of 84 was
+ * the same message 84 times over. A reader had to scan 576 lines to find the
+ * account with one day of buffer left, and could not, because rows inside a
+ * group were left in whatever order the clients were walked in.
+ *
+ * So: domain/insightFeed.js hoists anything constant across a group into a
+ * heading, sorts what is left by the number that makes it urgent, and hands back
+ * the columns that actually vary. This renders that. The prose message stays on
+ * the row as its title, so the sentence is one hover away and no wording is
+ * lost.
+ */
+export function InsightFeedPanel({ insights = [], onSelectClient }) {
   // Collapsed by default. A portfolio can produce hundreds of signals and the
   // same rule repeats across clients, so the feed shows one row per signal type
   // and the CAM opens only the group they're actually working.
   const [expandedTypes, setExpandedTypes] = useState(() => new Set());
+  const { groups, totals } = useMemo(() => groupInsights(insights), [insights]);
+
   if (!insights.length) {
     return (
       <section className="panel">
@@ -8986,40 +9096,6 @@ function InsightFeedPanel({ insights, onSelectClient }) {
     );
   }
 
-  const criticalCount = insights.filter(
-    (i) => i.severity === "critical",
-  ).length;
-  const warningCount = insights.filter((i) => i.severity === "warning").length;
-
-  const severityConfig = {
-    critical: { label: "Critical", cls: "insight-critical", dot: "var(--error)" },
-    warning: { label: "Warning", cls: "insight-warning", dot: "var(--warning)" },
-    "info-green": {
-      label: "Opportunity",
-      cls: "insight-opportunity",
-      dot: "var(--success)",
-    },
-    info: { label: "Info", cls: "insight-info", dot: "var(--info)" },
-  };
-
-  // One group per signal type, worst severity first, then biggest group.
-  const severityRank = { critical: 0, warning: 1, "info-green": 2, info: 3 };
-  const groupsByType = new Map();
-  for (const item of insights) {
-    const key = item.type || "Other";
-    if (!groupsByType.has(key)) groupsByType.set(key, []);
-    groupsByType.get(key).push(item);
-  }
-  const groups = [...groupsByType.entries()]
-    .map(([type, items]) => ({
-      type,
-      items,
-      critical: items.filter((i) => i.severity === "critical").length,
-      warning: items.filter((i) => i.severity === "warning").length,
-      rank: Math.min(...items.map((i) => severityRank[i.severity] ?? 3)),
-    }))
-    .sort((a, b) => a.rank - b.rank || b.items.length - a.items.length);
-
   function toggleType(type) {
     setExpandedTypes((prev) => {
       const next = new Set(prev);
@@ -9030,92 +9106,180 @@ function InsightFeedPanel({ insights, onSelectClient }) {
   }
 
   return (
-    <section className={`panel ${criticalCount ? "danger-panel" : ""}`}>
+    <section className={`panel ${totals.critical ? "danger-panel" : ""}`}>
       <div className="panel-heading">
         <h3>Insight Feed</h3>
         <div style={{ display: "flex", gap: 8 }}>
-          {criticalCount ? (
-            <span className="badge danger">{criticalCount} critical</span>
+          {totals.critical ? (
+            <span className="badge danger">{totals.critical} critical</span>
           ) : null}
-          {warningCount ? (
-            <span className="badge warning">{warningCount} warning</span>
+          {totals.warning ? (
+            <span className="badge warning">{totals.warning} warning</span>
           ) : null}
-          <span className="badge muted">{insights.length} signals</span>
+          <span className="badge muted">
+            {totals.signals} signal{totals.signals === 1 ? "" : "s"} ·{" "}
+            {totals.clients} client{totals.clients === 1 ? "" : "s"}
+          </span>
         </div>
       </div>
       <div className="insight-feed">
-        {groups.map((group) => {
-          const isOpen = expandedTypes.has(group.type);
-          return (
-            <div className="insight-group" key={group.type}>
-              <button
-                className="insight-group-head"
-                onClick={() => toggleType(group.type)}
-                aria-expanded={isOpen}
-                title={isOpen ? "Collapse" : "Expand"}
-              >
-                <ChevronDown
-                  className={isOpen ? "chevron open" : "chevron"}
-                  size={14}
-                />
-                <span className="insight-type">{group.type}</span>
-                <span className="insight-group-count">
-                  {group.items.length}
-                </span>
-                {group.critical ? (
-                  <span className="badge danger">{group.critical} critical</span>
-                ) : null}
-                {group.warning ? (
-                  <span className="badge warning">{group.warning} warning</span>
-                ) : null}
-              </button>
-              {isOpen
-                ? group.items.map((item, i) => {
-                    const cfg =
-                      severityConfig[item.severity] || severityConfig.info;
-                    return (
+        {groups.map((group) => (
+          <InsightGroup
+            key={group.type}
+            group={group}
+            open={expandedTypes.has(group.type)}
+            onToggle={() => toggleType(group.type)}
+            onSelectClient={onSelectClient}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One rule: its name and counts on the closed row, and — when opened — the one
+ * line that is true of every signal under it, then the table of what differs.
+ */
+function InsightGroup({ group, open, onToggle, onSelectClient }) {
+  const columns = group.columns;
+  return (
+    <div className="insight-group">
+      <button
+        className="insight-group-head"
+        onClick={onToggle}
+        aria-expanded={open}
+        title={open ? "Collapse" : "Expand"}
+      >
+        <ChevronDown className={open ? "chevron open" : "chevron"} size={14} />
+        <span className="insight-type">{group.type}</span>
+        <span className="insight-group-count">{group.count}</span>
+        {group.critical ? (
+          <span className="badge danger">{group.critical} critical</span>
+        ) : null}
+        {group.warning ? (
+          <span className="badge warning">{group.warning} warning</span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="insight-group-body">
+          {/* Said once, because it is the same on every row underneath. The
+              hoist is decided in domain/insightFeed.js by comparing the values,
+              never by assuming a rule's action or severity is fixed — a group
+              whose rows disagree keeps its column and states nothing here. */}
+          <dl className="insight-constants">
+            {group.severity ? (
+              <div>
+                <dt>Severity</dt>
+                <dd className={`insight-sev-text insight-sev-${group.severity}`}>
+                  {SEVERITY_LABEL[group.severity] || group.severity}
+                  <span className="muted"> · all {group.count}</span>
+                </dd>
+              </div>
+            ) : null}
+            {group.accountConstant ? (
+              <div>
+                <dt>Account</dt>
+                <dd>{group.accountConstant}</dd>
+              </div>
+            ) : null}
+            {group.constants.map((constant) => (
+              <div key={constant.label}>
+                <dt>{constant.label}</dt>
+                <dd>{constant.value}</dd>
+              </div>
+            ))}
+            {group.action ? (
+              <div className="insight-constant-action">
+                <dt>What to do</dt>
+                <dd>{group.action}</dd>
+              </div>
+            ) : null}
+          </dl>
+          {/* Bounded and sticky-headed by `book-table`, the same treatment the
+              client roster and the pipeline lanes get: a rule can fire 65 times
+              on this book, and a 65-row table that pushes the next group off the
+              page is the long-list problem again inside the panel that was just
+              shortened. The group header above states the total. */}
+          <div className="table-wrap book-table">
+            <table className="ops-table insight-table">
+              <thead>
+                <tr>
+                  <th scope="col">Client</th>
+                  {group.showAccount ? <th scope="col">Account</th> : null}
+                  {columns.map((label) => (
+                    <th scope="col" key={label}>
+                      {label}
+                    </th>
+                  ))}
+                  {group.severity ? null : <th scope="col">Severity</th>}
+                  {group.action ? null : <th scope="col">What to do</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {group.items.map((item, index) => (
+                  <tr
+                    key={`${item.clientId}-${item.accountAlias || ""}-${index}`}
+                    className={`insight-row insight-row-${item.severity}`}
+                    title={item.message}
+                  >
+                    <th scope="row">
                       <button
-                        key={i}
-                        className={`insight-item ${cfg.cls}`}
+                        type="button"
+                        className="link-button"
                         onClick={() =>
                           onSelectClient && onSelectClient(item.clientId)
                         }
                         title={`Open ${item.clientName}`}
                       >
-                        <span
-                          className="insight-dot"
-                          style={{ background: cfg.dot }}
-                        />
-                        <div className="insight-body">
-                          <div className="insight-head">
-                            <span className="insight-client">
-                              {item.clientName}
-                            </span>
-                            {item.accountAlias ? (
-                              <span className="insight-account">
-                                · {item.accountAlias}
-                              </span>
-                            ) : null}
-                          </div>
-                          <p className="insight-message">{item.message}</p>
-                          <small className="insight-action">
-                            → {item.action}
-                          </small>
-                        </div>
-                        <span
-                          className={`insight-severity-badge insight-sev-${item.severity}`}
-                        >
-                          {cfg.label}
-                        </span>
+                        {item.clientName}
                       </button>
-                    );
-                  })
-                : null}
-            </div>
-          );
-        })}
-      </div>
-    </section>
+                    </th>
+                    {group.showAccount ? (
+                      <td className="insight-account">
+                        {item.accountAlias || ""}
+                      </td>
+                    ) : null}
+                    {/* Read by label, never by position. A signal that carries
+                        no value for a column gets an empty cell in that column
+                        rather than the next value sliding into it — the failure
+                        that prints a stop loss under "Profit target". */}
+                    {columns.map((label) => {
+                      const value = factValue(item, label);
+                      const fact = (item.facts || []).find(
+                        (f) => f && f.label === label,
+                      );
+                      return (
+                        <td
+                          key={label}
+                          className={
+                            value === null
+                              ? "insight-cell-empty"
+                              : fact?.tone === "bad"
+                                ? "negative"
+                                : fact?.tone === "good"
+                                  ? "positive"
+                                  : undefined
+                          }
+                        >
+                          {value === null ? "" : value}
+                        </td>
+                      );
+                    })}
+                    {group.severity ? null : (
+                      <td className={`insight-sev-text insight-sev-${item.severity}`}>
+                        {SEVERITY_LABEL[item.severity] || item.severity}
+                      </td>
+                    )}
+                    {group.action ? null : <td>{item.action}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -9233,14 +9397,6 @@ function CamOverview({
   });
 
   const today = todayIsoDate();
-  // Exposure is frequency divided by reward:risk — a family that fires ten times
-  // a day for less than it risks carries more than one that fires twice for
-  // three times its stop.
-  const riskProfile = useMemo(
-    () => buildStrategyRiskProfile(clients, { asOfDate: today }),
-    [clients, today],
-  );
-
   // The two per-client counters on this page count the CAM's WORKING book, the
   // same set the sidebar lists above the "Former clients" disclosure. Counting
   // churned clients here produced the header-disagrees-with-the-list defect this
@@ -9255,7 +9411,13 @@ function CamOverview({
     [clients],
   );
   const formerCount = clients.length - workingClients.length;
-  const closeStats = (() => {
+  // Memoised rather than the bare IIFE it was, on the same inputs it already
+  // read: two full passes over the CAM's book per render, and the React
+  // Compiler refused to compile this component at all without a reactive scope
+  // holding `today` between its declaration and the flag-queue memo below. The
+  // scope that used to hold it was the risk-profile memo behind the "Algorithm
+  // risk profile" scatter, which is gone.
+  const closeStats = useMemo(() => {
     const withUpload = workingClients.filter((c) =>
       getClientImportByDate(c, today),
     );
@@ -9267,7 +9429,7 @@ function CamOverview({
       withUpload: withUpload.length,
       closed: closed.length,
     };
-  })();
+  }, [workingClients, today]);
   const closePct = closeStats.total
     ? Math.round((closeStats.closed / closeStats.total) * 100)
     : 0;
@@ -9536,10 +9698,6 @@ function CamOverview({
         onSelectClient={onSelectClient}
       />
 
-      <CollapsiblePanel title="Algorithm risk profile" tone="cam-charts-panel">
-        <StrategyRiskScatter rows={riskProfile} />
-      </CollapsiblePanel>
-
       <CollapsiblePanel title="Book coverage and mix" tone="cam-charts-panel">
         <div className="ov-pair">
           <div>
@@ -9654,25 +9812,19 @@ function CamOverview({
                   <option>High</option>
                   <option>Low</option>
                 </select>
-                <div
-                  style={{
-                    gridColumn: "1/-1",
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 6,
-                  }}
+                {/* One checkbox per client in the book. Same treatment as the
+                    pipeline: bounded, scrolling, and it says how many are in
+                    there — the form's submit button counts what is TICKED, so
+                    the total has to be visible somewhere or the two numbers look
+                    like a contradiction. */}
+                <BookList
+                  items={clients}
+                  keyOf={(c) => c.id}
+                  className="book-list-inline bulk-task-targets"
+                  fits={12}
                 >
-                  {clients.map((c) => (
-                    <label
-                      key={c.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        fontSize: 12,
-                        cursor: "pointer",
-                      }}
-                    >
+                  {(c) => (
+                    <label className="bulk-task-target">
                       <input
                         type="checkbox"
                         checked={bulkTaskTargets.includes(c.id)}
@@ -9686,8 +9838,8 @@ function CamOverview({
                       />
                       {c.name}
                     </label>
-                  ))}
-                </div>
+                  )}
+                </BookList>
                 <button
                   type="submit"
                   className="primary-button"
@@ -10074,46 +10226,25 @@ function CamOverview({
         </div>
       </div>
 
+      {/* No camNameByClientId: this book is his, so the CAM column and its
+          filter would be one repeated value. The churn rows still open. */}
       <LifecycleRollupPanel
         rollup={buildLifecycleRollup(clients || [])}
         title="My book - lifecycle & retention"
+        onSelectClient={onSelectClient}
       />
-
-      <CollapsiblePanel
-        title="Lifecycle by algo"
-        badges={<span className="badge muted">Which combo funds / survives</span>}
-      >
-        <LifecycleByAlgo clients={clients} />
-      </CollapsiblePanel>
 
       <CollapsiblePanel
         title="Deviation alerts"
         count={overview.deviationFlags.length}
         tone={overview.deviationFlags.length ? "danger-panel" : ""}
       >
-        {overview.deviationFlags.length ? (
-          <div className="flag-list">
-            {overview.deviationFlags.map((flag) => (
-              <div className="flag warning" key={flag.id}>
-                <AlertTriangle size={16} />
-                <div>
-                  <strong>{flag.algorithm}</strong>
-                  <span>
-                    {flag.message} Daily realized:{" "}
-                    {formatCurrency(flag.realized)}.
-                    {flag.executionMove !== undefined
-                      ? ` Execution move: ${flag.executionMove > 0 ? "+" : ""}${flag.executionMove.toFixed(2)} vs peer direction ${flag.peerDirection}.`
-                      : ""}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="notice success">
-            <CheckCircle2 size={16} /> No cross-account deviation alerts.
-          </div>
-        )}
+        {/* The rows moved into DeviationAlertList when the manager's
+            consolidated view got this panel too. Same component, same
+            buildCamOverview behind it — the CAM's list and the desk's list
+            cannot word an alert differently. No CAM attribution here: this book
+            is his. */}
+        <DeviationAlertList flags={overview.deviationFlags} />
       </CollapsiblePanel>
 
       {(() => {
@@ -11229,9 +11360,31 @@ function CredentialsTab({
   const countryListId = `country-options-${String(client?.id || "client").replace(/[^a-z0-9_-]/gi, "-")}`;
   const [showPasswords, setShowPasswords] = useState(false);
   const [additionalEmailDraft, setAdditionalEmailDraft] = useState("");
+  const [churnPrompt, setChurnPrompt] = useState(false);
 
   function updateProfile(patch) {
     onUpdateClient({ profile: { ...profile, ...patch } });
+  }
+  /**
+   * Files the client as Inactive and says why, in ONE patch.
+   *
+   * `churn` rides beside `profile` rather than inside it: clientPatchToDb maps
+   * the churn columns only when the patch carries that key, so this is the only
+   * save in the app that writes them, and every other profile edit is unchanged.
+   * Both halves reach the database in the same UPDATE, so there is no window in
+   * which a client is churned with no reason — the state step 39 exists to stop
+   * growing.
+   *
+   * The date is today rather than a field to fill in. It is the moment the CAM
+   * classified them, which is the thing the panel filters on and the only date
+   * anyone here can actually attest to.
+   */
+  function commitChurn({ reason, note }) {
+    setChurnPrompt(false);
+    onUpdateClient({
+      profile: { ...profile, stage: CLIENT_STAGE_INACTIVE },
+      churn: { reason, note, at: todayIsoDate() },
+    });
   }
   function updateCredentials(patch) {
     onUpdateClient({ credentials: { ...credentials, ...patch } });
@@ -11432,15 +11585,29 @@ function CredentialsTab({
           </label>
           <label>
             Client stage
+            {/* The one write in the app that produces a churned client, so it is
+                the one place the reason can be captured AT classification. Every
+                other stage goes straight through; Inactive asks first, and the
+                stage is written by the dialog's confirm together with the reason
+                in a single patch, never separately. Cancelling writes nothing,
+                which is why the select still reads the stored stage below. */}
             <select
               value={profile.stage || "Active"}
-              onChange={(e) => updateProfile({ stage: e.target.value })}
+              onChange={(e) => {
+                const nextStage = e.target.value;
+                if (
+                  nextStage === CLIENT_STAGE_INACTIVE &&
+                  profile.stage !== CLIENT_STAGE_INACTIVE
+                ) {
+                  setChurnPrompt(true);
+                  return;
+                }
+                updateProfile({ stage: nextStage });
+              }}
             >
-              <option>Onboarding</option>
-              <option>Active</option>
-              <option>At Risk</option>
-              <option>Paused</option>
-              <option>Inactive</option>
+              {CLIENT_STAGES.map((stage) => (
+                <option key={stage}>{stage}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -11766,6 +11933,13 @@ function CredentialsTab({
           </div>
         </section>
       ) : null}
+
+      <ChurnReasonDialog
+        clientName={client.name}
+        open={churnPrompt}
+        onCancel={() => setChurnPrompt(false)}
+        onConfirm={commitChurn}
+      />
     </div>
   );
 }
@@ -12106,34 +12280,77 @@ export default function App() {
     open: false,
     focusClientId: "",
     busy: false,
+    progress: null,
     error: "",
     result: null,
   });
   function openClientExport(focusClientId = "") {
-    setClientExport({ open: true, focusClientId, busy: false, error: "", result: null });
+    setClientExport({ open: true, focusClientId, busy: false, progress: null, error: "", result: null });
   }
-  async function runClientExport(request) {
-    setClientExport((prev) => ({ ...prev, busy: true, error: "", result: null }));
+  /**
+   * Runs the parts the dialog planned, in order, one file each.
+   *
+   * A pull that fits is one part and behaves exactly as it always did. A pull
+   * that does not is several, and the two properties that matter are that a
+   * failure STOPS the walk and that what did arrive is reported as incomplete:
+   * the parts that already downloaded are real files sitting in a folder, and
+   * the only place anyone can be told they are not the whole range is here.
+   */
+  async function runClientExport(requests) {
+    const parts = Array.isArray(requests) ? requests : [requests];
+    setClientExport((prev) => ({
+      ...prev,
+      busy: true,
+      progress: { done: 0, total: parts.length },
+      error: "",
+      result: null,
+    }));
+    const payloads = [];
     try {
-      const payload = await loadClientScopedExport(request);
-      const stamp = `${payload.range.from}_${payload.range.to}`;
-      const label = payload.scope.includedClientCount === 1
-        ? (payload.scope.includedClients[0]?.name || "client")
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .replace(/^-|-$/g, "")
-        : `${payload.scope.includedClientCount}-clients`;
-      downloadTextFile(
-        `cam-crm-export-${label}-${stamp}.json`,
-        JSON.stringify(payload, null, 2),
-      );
-      setClientExport((prev) => ({ ...prev, busy: false, result: payload }));
+      for (const request of parts) {
+        const payload = await loadClientScopedExport(request);
+        const stamp = `${payload.range.from}_${payload.range.to}`;
+        const label = payload.scope.includedClientCount === 1
+          ? (payload.scope.includedClients[0]?.name || "client")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-|-$/g, "")
+          : `${payload.scope.includedClientCount}-clients`;
+        // The part number goes in the FILENAME as well as in the payload. A
+        // folder of five files named alike is the one place the envelope's own
+        // `scope.batch` cannot be read without opening them.
+        const part = payload.scope?.batch
+          ? `-part${payload.scope.batch.index}of${payload.scope.batch.of}`
+          : "";
+        downloadTextFile(
+          `cam-crm-export-${label}-${stamp}${part}.json`,
+          JSON.stringify(payload, null, 2),
+        );
+        payloads.push(payload);
+        setClientExport((prev) => ({
+          ...prev,
+          progress: { done: payloads.length, total: parts.length },
+        }));
+      }
+      setClientExport((prev) => ({
+        ...prev,
+        busy: false,
+        progress: null,
+        result: { payloads, expectedParts: parts.length },
+      }));
     } catch (error) {
       console.error("[CRM] Client export failed:", error);
       setClientExport((prev) => ({
         ...prev,
         busy: false,
-        error: error.message || "Could not export client data.",
+        progress: null,
+        // The parts that did arrive are kept, so the dialog can say how many of
+        // how many are on disk. Dropping them here would leave real files with
+        // nothing on screen admitting they are a fragment.
+        result: payloads.length ? { payloads, expectedParts: parts.length } : null,
+        error: parts.length > 1
+          ? `Part ${payloads.length + 1} of ${parts.length} failed: ${error.message || "could not export client data."}`
+          : (error.message || "Could not export client data."),
       }));
     }
   }
@@ -13557,16 +13774,22 @@ export default function App() {
     });
   }
 
-  function handleResolveFlag(flagId, status = "Resolved") {
+  // Resolve, and only Resolve. This used to take a status so the Dashboard could
+  // send "Acknowledged" from the Ack button beside each row; the desk manager
+  // removed that button, and the parameter went with it rather than being left
+  // defaulted — a status argument on a handler is an invitation to pass one.
+  // Flags ALREADY stored as Acknowledged are untouched here and stay closed: see
+  // isFlagOpen in src/domain/camFlagQueue.js and
+  // supabase/step_38_flag_acknowledged_to_resolved.sql.
+  function handleResolveFlag(flagId) {
     if (!selectedClient || !dailyImport) return;
     const flag = (dailyImport.flags || []).find((f) => f.id === flagId);
     let entry = null;
-    if (flag && (status === "Resolved" || status === "Acknowledged")) {
-      const verb = status === "Resolved" ? "resolved" : "acknowledged";
+    if (flag) {
       entry = {
         id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         type: "Alert",
-        text: `Flag ${verb}: [${flag.type}] ${flag.message}`,
+        text: `Flag resolved: [${flag.type}] ${flag.message}`,
         accountName: flag.accountName || "",
         createdAt: new Date().toISOString(),
       };
@@ -13578,25 +13801,26 @@ export default function App() {
     saveEdit({
       what: "the flag",
       apply: (current) => {
-        let next = resolveFlagInImport(current, clientId, importId, flagId, status);
+        let next = resolveFlagInImport(current, clientId, importId, flagId, "Resolved");
         if (entry) next = addActivityEntry(next, clientId, entry);
         return next;
       },
-      // Back to the status it actually had, not to a hardcoded "Open": a
-      // Warning that was Acknowledged and is being Resolved must not reopen.
-      // The activity line goes with it — it says the flag was resolved, and it
-      // was not.
+      // Back to the status it actually had, not to a hardcoded "Open". Nothing
+      // writes Acknowledged any more, but a legacy Acknowledged row can still be
+      // resolved from this screen, and a failed write must put that status back
+      // rather than reopen it. The activity line goes with it — it says the flag
+      // was resolved, and it was not.
       rollback: (current) => {
         const reverted = resolveFlagInImport(current, clientId, importId, flagId, previousStatus);
         return entry ? deleteActivityEntry(reverted, clientId, entry.id) : reverted;
       },
-      write: () => updateSupabaseOperationalFlag(flagId, status),
+      write: () => updateSupabaseOperationalFlag(flagId, "Resolved"),
       onSaved: () => auditSilently({
         entityType: "operational_flag",
         entityId: flagId,
-        action: status === "Resolved" ? "flag.resolve" : "flag.acknowledge",
+        action: "flag.resolve",
         beforeData: flag ? { status: previousStatus, type: flag.type } : null,
-        afterData: { clientId, clientName, dailyImportId: importId, flagId, status },
+        afterData: { clientId, clientName, dailyImportId: importId, flagId, status: "Resolved" },
       }),
     });
     if (entry)
@@ -13614,7 +13838,7 @@ export default function App() {
   // `dailyImport` is null and the handler returns before doing anything. The CAM
   // flag queue lists flags from 51 different imports at once, so it has to name
   // the import per row. This is modelled on the manager's onResolveFlag, which
-  // already took (clientId, importId, flagId, status); createCamFlagResolver
+  // already took (clientId, importId, flagId); createCamFlagResolver
   // refuses a call missing any of the three rather than silently no-opping,
   // because a silent no-op looks exactly like a resolution that worked — the row
   // leaves the queue and is back on the next load.
@@ -13627,17 +13851,19 @@ export default function App() {
     },
   });
 
-  function handleBulkResolveFlags(status = "Acknowledged") {
+  // Its default used to be "Acknowledged", so the only caller — the Dashboard's
+  // "Resolve all" — was the one thing standing between this and bulk-writing a
+  // status the manager has now removed. There is no parameter left to default.
+  function handleBulkResolveFlags() {
     if (!selectedClient || !dailyImport) return;
     const openFlags = (dailyImport.flags || []).filter(
       (f) => f.status !== "Resolved" && f.status !== "Acknowledged",
     );
     if (!openFlags.length) return;
-    const verb = status === "Resolved" ? "resolved" : "acknowledged";
     const entry = {
       id: `act-${Date.now()}-bulk`,
       type: "Alert",
-      text: `Bulk ${verb} ${openFlags.length} flag${openFlags.length !== 1 ? "s" : ""}`,
+      text: `Bulk resolved ${openFlags.length} flag${openFlags.length !== 1 ? "s" : ""}`,
       accountName: "",
       createdAt: new Date().toISOString(),
     };
@@ -13649,26 +13875,26 @@ export default function App() {
           selectedClient.id,
           dailyImport.id,
           flag.id,
-          status,
+          "Resolved",
         );
       }
       return addActivityEntry(next, selectedClient.id, entry);
     });
     Promise.all(
-      openFlags.map((flag) => updateSupabaseOperationalFlag(flag.id, status)),
+      openFlags.map((flag) => updateSupabaseOperationalFlag(flag.id, "Resolved")),
     )
       .then(() => insertSupabaseActivity(selectedClient.id, entry))
       .then(() => {
         auditSilently({
           entityType: "operational_flag",
           entityId: dailyImport.id,
-          action: status === "Resolved" ? "flag.bulk_resolve" : "flag.bulk_acknowledge",
+          action: "flag.bulk_resolve",
           afterData: {
             clientId: selectedClient.id,
             clientName: selectedClient.name,
             dailyImportId: dailyImport.id,
             flagCount: openFlags.length,
-            status,
+            status: "Resolved",
           },
         });
       })
@@ -14094,16 +14320,16 @@ export default function App() {
                 }),
               });
             }}
-            onResolveFlag={(clientId, importId, flagId, status = "Resolved") => {
+            onResolveFlag={(clientId, importId, flagId) => {
               setState((current) =>
-                resolveFlagInImport(current, clientId, importId, flagId, status),
+                resolveFlagInImport(current, clientId, importId, flagId, "Resolved"),
               );
-              updateSupabaseOperationalFlag(flagId, status).then(() => {
+              updateSupabaseOperationalFlag(flagId, "Resolved").then(() => {
                 auditSilently({
                   entityType: "operational_flag",
                   entityId: flagId,
-                  action: status === "Resolved" ? "flag.resolve" : "flag.acknowledge",
-                  afterData: { clientId, importId, flagId, status, source: "manager" },
+                  action: "flag.resolve",
+                  afterData: { clientId, importId, flagId, status: "Resolved", source: "manager" },
                 });
               }).catch((error) => {
                 console.error("[CRM] Failed to update manager flag:", error);
@@ -15597,13 +15823,21 @@ export default function App() {
           onCancel={() => setWorkspaceConfirmAction(null)}
           onConfirm={runWorkspaceConfirmAction}
         />
+        {/* camClients is the Manager's middle scope. On his screen
+            `accessibleClients` is the whole book while the sidebar he is looking
+            at is one CAM's, so "all my clients" is ambiguous between two real
+            lists and both are worth having. A CAM gets neither prop: for them
+            the two are the same list. */}
         <ClientExportDialog
           open={clientExport.open}
           onOpenChange={(open) => setClientExport((prev) => ({ ...prev, open }))}
           clients={accessibleClients}
+          camClients={isManagerSession ? currentCamClients : null}
+          camName={isManagerSession ? (currentCamProfile?.name || "") : ""}
           namedScopeForAll={isManagerSession}
           focusClientId={clientExport.focusClientId}
           busy={clientExport.busy}
+          progress={clientExport.progress}
           error={clientExport.error}
           result={clientExport.result}
           onExport={runClientExport}

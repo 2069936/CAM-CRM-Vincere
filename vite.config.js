@@ -35,9 +35,9 @@ export const localSnapshotTests = [
   "src/components/AccountLifecyclePanel.test.jsx",
   "src/components/AlgoContributionPanel.book.test.jsx",
   "src/components/BulletBotDeskPanel.test.jsx",
-  "src/components/CamFlagQueue.test.jsx",
+  "src/components/CamFlagQueue.book.test.jsx",
   "src/components/CapitalDetailPanel.test.jsx",
-  "src/components/ConfigDriftPanel.test.jsx",
+  "src/components/ConfigDriftPanel.book.test.jsx",
   "src/components/LiveAccountsPanel.test.jsx",
   "src/components/QuietAccountsPanel.test.jsx",
   "src/components/SetFileMatchPanel.test.jsx",
@@ -45,6 +45,9 @@ export const localSnapshotTests = [
   "src/domain/accountLifecycle.book.test.js",
   "src/domain/algoContribution.book.test.js",
   "src/domain/camFlagQueue.book.test.js",
+  "src/domain/camOverview.book.test.js",
+  "src/domain/clientExportPlan.book.test.js",
+  "src/domain/clientLifecycle.book.test.js",
   "src/domain/deskMoney.book.test.js",
   "src/domain/liveAccounts.book.test.js",
   "src/domain/quietAccounts.book.test.js",
@@ -52,6 +55,7 @@ export const localSnapshotTests = [
   "src/domain/sidebarClientList.test.js",
   "src/domain/supabaseLoadCost.book.test.js",
   "src/domain/synthesizedReference.book.test.js",
+  "src/insightFeed.book.test.js",
 ]
 
 /**

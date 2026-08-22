@@ -849,9 +849,12 @@ export function recalculateDailyImport({ dailyImport, registry = {} }) {
   // rebuilt snapshots would drop their nested strategy detail whenever the
   // top-level detail arrays are empty (e.g. right after an upload, before a
   // reload), which is what made Recalculate look like it erased the import.
-  // Carry each prior flag's triage (Acknowledged/Resolved + resolvedAt) onto the
-  // regenerated flag so Recalculate keeps the operator's work instead of resetting
-  // every flag to Open. Match on a reconstructed type|account|message key (not the
+  // Carry each prior flag's triage (any status other than Open, plus resolvedAt)
+  // onto the regenerated flag so Recalculate keeps the operator's work instead of
+  // resetting every flag to Open. Written as `!== 'Open'` rather than a list of
+  // statuses, which is why the Acknowledge button's removal did not need to touch
+  // it: the 460 flags a CAM acknowledged before the button went still survive a
+  // Recalculate, and would reopen on the next one if this named its statuses. Match on a reconstructed type|account|message key (not the
   // id) so it also matches flags reloaded from the DB, which carry a uuid id.
   const flagKey = (f) => `${f.type}|${f.accountName || 'client'}|${f.message || ''}`;
   const priorByKey = Object.fromEntries((dailyImport.flags || []).map((f) => [flagKey(f), f]));

@@ -63,6 +63,16 @@ const DROP_TABLES = new Set(['app_users', 'audit_logs', 'client_credentials']);
 const KEEP_FIELDS = new Set([
   // Classifications the app branches on.
   'status', 'stage', 'account_type', 'payout_state', 'risk_level', 'severity',
+  // churn_reason is one of the seven codes in CHURN_REASONS — 'cost',
+  // 'unresponsive', and so on. It is the countable half of why a client left,
+  // and a redacted book where every reason is `[redacted 4]` cannot answer the
+  // question the column was added for.
+  //
+  // Its neighbour churn_note is DELIBERATELY ABSENT from this list and must stay
+  // absent. It is a sentence a CAM wrote about a person and is exactly the kind
+  // of free text this script fails closed on. `churned_at` is a date and passes
+  // through the type check below like every other date.
+  'churn_reason',
   // simulation_mode is a two-value enum ('simulation' | 'live') and the whole
   // point of the redacted book is that classification behaviour can be checked
   // against it. Note the standing trap this file creates for that check:
@@ -484,6 +494,11 @@ function verify(source, redacted) {
   collect(source.clients, 'product_key');
   collect(source.clients, 'messenger');
   collect(source.clients, 'notes');
+  // Same class as `notes`: prose a CAM wrote about a client, which is where a
+  // client's own name turns up written by hand. Scanned for survival like the
+  // rest, so adding churn_note to KEEP_FIELDS by mistake refuses the write
+  // instead of shipping.
+  collect(source.clients, 'churn_note');
   collect(source.clients, 'phone');
   collect(source.cam_profiles, 'name');
   collect(source.cam_profiles, 'email');

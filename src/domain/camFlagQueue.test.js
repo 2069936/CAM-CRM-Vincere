@@ -60,16 +60,19 @@ describe('a resolution names the flag it means, not the day on screen', () => {
       .find((row) => row.type === 'Strategy disabled');
 
     expect(stranded.occurrences).toHaveLength(2);
-    expect(flagResolutionPlan(stranded, 'Resolved')).toEqual([
-      { clientId: 'client-1', importId: 'imp-0715', flagId: 'f-0715', status: 'Resolved' },
-      { clientId: 'client-1', importId: 'imp-0721', flagId: 'f-0721', status: 'Resolved' },
+    // No status in the plan. Resolve is the only action a flag has since the
+    // desk manager removed Acknowledge, so there is nothing left to choose and
+    // nothing for a caller to pass by mistake.
+    expect(flagResolutionPlan(stranded)).toEqual([
+      { clientId: 'client-1', importId: 'imp-0715', flagId: 'f-0715' },
+      { clientId: 'client-1', importId: 'imp-0721', flagId: 'f-0721' },
     ]);
 
     // The day a CAM would be standing on. Nothing in the plan refers to it,
     // which is the entire point: handleResolveFlag would have sent imp-0730 (or
     // returned without doing anything, because on the real book the date picker
     // opens on a day with no import at all).
-    const plan = flagResolutionPlan(stranded, 'Resolved');
+    const plan = flagResolutionPlan(stranded);
     expect(plan.some((call) => call.importId === 'imp-0730')).toBe(false);
     expect(plan.some((call) => call.flagId === 'f-0730-other')).toBe(false);
   });
@@ -82,8 +85,8 @@ describe('a resolution names the flag it means, not the day on screen', () => {
       .find((row) => row.type === 'Strategy disabled');
 
     let state = { clients };
-    for (const call of flagResolutionPlan(stranded, 'Resolved')) {
-      state = resolveFlagInImport(state, call.clientId, call.importId, call.flagId, call.status);
+    for (const call of flagResolutionPlan(stranded)) {
+      state = resolveFlagInImport(state, call.clientId, call.importId, call.flagId, 'Resolved');
     }
 
     const byImport = Object.fromEntries(
@@ -263,7 +266,8 @@ describe('createCamFlagResolver', () => {
     const setState = vi.fn((updater) => { seen = updater({ clients: [] }); });
 
     const resolve = createCamFlagResolver({ setState, patchState, updateFlag, audit });
-    await resolve('client-1', 'imp-0715', 'f-0715', 'Resolved');
+    // Three ids and no status: the resolver decides, and it decides 'Resolved'.
+    await resolve('client-1', 'imp-0715', 'f-0715');
 
     expect(patchState).toHaveBeenCalledWith({ clients: [] }, 'client-1', 'imp-0715', 'f-0715', 'Resolved');
     expect(seen).toEqual({ clients: [] });
@@ -284,14 +288,18 @@ describe('createCamFlagResolver', () => {
     });
   });
 
-  it('audits an acknowledgement under its own action', async () => {
+  it('writes Resolved whatever a caller tries to hand it', async () => {
+    // The regression this replaces: the resolver used to take a status and audit
+    // an 'Acknowledged' one under flag.acknowledge. The Acknowledge action is
+    // gone, so a fourth argument must be ignored rather than honoured — a caller
+    // left over from before must not still be able to write the retired status.
     const audit = vi.fn();
-    const resolve = createCamFlagResolver({
-      updateFlag: () => Promise.resolve(null),
-      audit,
-    });
+    const updateFlag = vi.fn(() => Promise.resolve(null));
+    const resolve = createCamFlagResolver({ updateFlag, audit });
     await resolve('client-1', 'imp-0715', 'f-0715', 'Acknowledged');
-    expect(audit.mock.calls[0][0].action).toBe('flag.acknowledge');
+    expect(updateFlag).toHaveBeenCalledWith('f-0715', 'Resolved');
+    expect(audit.mock.calls[0][0].action).toBe('flag.resolve');
+    expect(audit.mock.calls[0][0].afterData.status).toBe('Resolved');
   });
 
   it('refuses a resolution missing any of the three ids instead of failing silently', () => {
@@ -321,7 +329,7 @@ describe('activity entries', () => {
     const [row] = buildCamFlagQueue(bookWithStrandedFlag(), { today: TODAY })
       .groups.flatMap((group) => group.rows)
       .filter((entry) => entry.type === 'Strategy disabled');
-    const entry = flagActivityEntry(row, 'Resolved', { now: '2026-08-11T09:00:00Z' });
+    const entry = flagActivityEntry(row, { now: '2026-08-11T09:00:00Z' });
     expect(entry.text).toBe(
       'Flag resolved: [Strategy disabled] Strategy Bullet 3.2 is disabled on ACC-1 (raised 2026-07-15)',
     );
@@ -331,15 +339,27 @@ describe('activity entries', () => {
 
   it('writes one line for a whole group, not one per row', () => {
     const group = buildCamFlagQueue(bookWithStrandedFlag(), { today: TODAY }).groups[0];
-    const entry = flagGroupActivityEntry(group, 'Acknowledged', { now: '2026-08-11T09:00:00Z' });
+    const entry = flagGroupActivityEntry(group, { now: '2026-08-11T09:00:00Z' });
     expect(entry.text).toBe(
-      'Bulk acknowledged 1 flag [Strategy disabled] raised 2026-07-15 → 2026-07-21',
+      'Bulk resolved 1 flag [Strategy disabled] raised 2026-07-15 → 2026-07-21',
     );
   });
 
-  it('has nothing to log for a status that is not a triage decision', () => {
-    expect(flagActivityEntry({ type: 'x', message: 'y' }, 'Open')).toBeNull();
-    expect(flagGroupActivityEntry(null, 'Resolved')).toBeNull();
+  it('never writes the word acknowledged into a client log again', () => {
+    // Both entries used to take a status and conjugate a verb off it. The verb
+    // is fixed now, and a second argument in the old position is an options
+    // object — so a stale `flagActivityEntry(row, 'Acknowledged')` logs a
+    // resolution rather than reviving the retired wording.
+    const row = { type: 'Strategy disabled', message: 'x', firstSeen: '2026-07-15' };
+    expect(flagActivityEntry(row).text).toContain('Flag resolved:');
+    expect(flagActivityEntry(row, 'Acknowledged').text).toContain('Flag resolved:');
+    const group = buildCamFlagQueue(bookWithStrandedFlag(), { today: TODAY }).groups[0];
+    expect(flagGroupActivityEntry(group, 'Acknowledged').text).toContain('Bulk resolved');
+  });
+
+  it('has nothing to log without a row or a group', () => {
+    expect(flagActivityEntry(null)).toBeNull();
+    expect(flagGroupActivityEntry(null)).toBeNull();
   });
 });
 
