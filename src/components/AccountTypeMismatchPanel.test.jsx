@@ -119,3 +119,79 @@ describe('the finding on screen', () => {
     expect(screen.queryByRole('table')).toBe(null);
   });
 });
+
+/**
+ * The second finding on the same panel: the programme against the rule it runs
+ * under. What the markup could undo is the shape of the count — one headline of
+ * "running where it is not typed for" that adds the retired and the untyped
+ * accounts to the exceptions and reads several times larger than the work.
+ */
+describe('the programme against its rule, on screen', () => {
+  const runs = (id, accountType) => client({
+    id,
+    name: id,
+    accountType,
+    accounts: [`${id}1`],
+    days: [{ date: '2026-07-10', rows: [{ strategies: [on('Bullet Bot')] }] }],
+  });
+
+  const book = [
+    runs('ok', 'Evaluation - Bullet Bot'),
+    runs('fund', 'Funded'),
+    runs('retired', 'Inactive / Ignore'),
+    runs('untyped', 'Unassigned'),
+  ];
+
+  it('leads with the exceptions only, and names each one', () => {
+    render(<AccountTypeMismatchPanel clients={book} />);
+    const intro = document.querySelector('.programme-standing .drift-intro');
+    expect(intro.querySelector('strong').textContent).toBe('1');
+    expect(intro.textContent).toMatch(
+      /1 live account of another type is running Bullet Bot, of the 4 accounts/,
+    );
+    expect(screen.getByRole('row', { name: /fund1/ })).toBeTruthy();
+  });
+
+  it('keeps the retired and untyped accounts out of that number and says why', () => {
+    render(<AccountTypeMismatchPanel clients={book} />);
+    const groups = document.querySelectorAll('.programme-standing-groups > li');
+    const text = [...groups].map((row) => row.textContent);
+    expect(text.some((row) => /1 retired/.test(row))).toBe(true);
+    expect(text.some((row) => /1 unclassified/.test(row))).toBe(true);
+    expect(screen.getByText(/A retired record of what the account used to run/)).toBeTruthy();
+    expect(screen.getByText(/classification backlog, not a breach/)).toBeTruthy();
+    // The exception table holds the one account, not four.
+    const table = screen.getByRole('table', { name: /The exceptions, longest-standing first/ });
+    expect(within(table).getAllByRole('row')).toHaveLength(2);
+  });
+
+  it('states the rule in the desk’s own words', () => {
+    render(<AccountTypeMismatchPanel clients={book} />);
+    expect(
+      screen.getByText(/the only accounts that run Bullet Bot are evaluation accounts/),
+    ).toBeTruthy();
+    // Once as the rule, once as the note on the exception group.
+    expect(screen.getAllByText(/there should be none/).length).toBe(2);
+  });
+
+  it('reports a clean rule rather than disappearing', () => {
+    render(<AccountTypeMismatchPanel clients={[runs('ok', 'Evaluation - Bullet Bot')]} />);
+    expect(
+      screen.getByText(/Every live account running Bullet Bot is an evaluation account/),
+    ).toBeTruthy();
+    expect(screen.queryByRole('table', { name: /The exceptions/ })).toBe(null);
+  });
+
+  it('still asks its question when the labelling half of the panel found nothing', () => {
+    // The panel used to return early on a clean labelling finding, which took
+    // the rule check off the screen with it. They are two questions, and a
+    // panel that goes quiet says nothing was checked.
+    render(<AccountTypeMismatchPanel clients={[runs('ok', 'Evaluation - Bullet Bot')]} />);
+    expect(screen.getByText(/Every account whose type names an algorithm is running that algorithm/))
+      .toBeTruthy();
+    expect(screen.getByText(/Bullet Bot against the rule it runs under/)).toBeTruthy();
+    expect(
+      screen.getByText(/Every live account running Bullet Bot is an evaluation account/),
+    ).toBeTruthy();
+  });
+});

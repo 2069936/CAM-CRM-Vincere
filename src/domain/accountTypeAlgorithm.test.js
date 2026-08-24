@@ -20,8 +20,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   ALGORITHM_NAMED_TYPES,
+  PROGRAMME_STANDINGS,
   accountTypeMismatchRefusals,
   buildAccountTypeMismatch,
+  buildProgrammeAccountStanding,
+  programmeStandingRefusals,
 } from './accountTypeAlgorithm';
 import { SEGMENTS } from './operationsSegments';
 
@@ -272,5 +275,136 @@ describe('what the finding will not say', () => {
     // The ask is a question, in the same register as the configuration review.
     expect(finding.ask).toMatch(/Different is not wrong/);
     expect(finding.ask).toMatch(/confirm/);
+  });
+});
+
+/**
+ * The second finding: the programme against the rule it runs under.
+ *
+ * The CAM stated the rule — the only accounts that run Bullet Bot are evaluation
+ * accounts — so a LIVE account of another type running it is an exception and
+ * there should be none. The thing this can get wrong is the shape of the count:
+ * a retired account and an untyped account are not exceptions, and adding them
+ * in makes the work look several times larger than it is.
+ */
+describe('the programme against the rule it runs under', () => {
+  const runs = (accountType, id) => makeClient({
+    id,
+    name: id,
+    accountType,
+    accounts: [`${id}-1`],
+    days: [{ date: '2026-07-10', rows: [{ strategies: [on('Bullet Bot')] }] }],
+  });
+
+  const book = () => [
+    runs('Evaluation - Bullet Bot', 'ok'),
+    runs('Funded', 'funded'),
+    runs('Evaluation - Standard', 'std'),
+    runs('Inactive / Ignore', 'retired'),
+    runs('Unassigned', 'untyped'),
+  ];
+
+  it('counts only the live accounts of another type as exceptions', () => {
+    const [finding] = buildProgrammeAccountStanding(book());
+    expect(finding.family).toBe('Bullet Bot');
+    expect(finding.accounts).toBe(5);
+    expect(finding.anomalyAccounts).toBe(2);
+    expect(finding.anomalyClients).toBe(2);
+    expect(finding.anomalies.map((row) => row.segment).sort()).toEqual([
+      SEGMENTS.EVAL_STANDARD, SEGMENTS.FUNDED,
+    ]);
+    expect(finding.expectedAccounts).toBe(1);
+  });
+
+  it('holds the retired and the untyped accounts apart from the exceptions', () => {
+    const [finding] = buildProgrammeAccountStanding(book());
+    const standing = Object.fromEntries(
+      finding.byStanding.map((row) => [row.standing, row.accounts]),
+    );
+    expect(standing[PROGRAMME_STANDINGS.ANOMALY]).toBe(2);
+    expect(standing[PROGRAMME_STANDINGS.RETIRED]).toBe(1);
+    expect(standing[PROGRAMME_STANDINGS.UNCLASSIFIED]).toBe(1);
+    expect(standing[PROGRAMME_STANDINGS.EXPECTED]).toBe(1);
+    // Every group carries the reason it is not an exception, on the object
+    // rather than in the markup.
+    for (const row of finding.byStanding) expect(row.note).toBeTruthy();
+  });
+
+  it('treats an account type this build has never seen as an exception, not as expected', () => {
+    const [finding] = buildProgrammeAccountStanding([runs('Some Future Type', 'new')]);
+    expect(finding.anomalyAccounts).toBe(1);
+    expect(finding.anomalies[0].segment).toBe('Some Future Type');
+  });
+
+  it('says so plainly when the rule holds, rather than going quiet', () => {
+    const [finding] = buildProgrammeAccountStanding([runs('Evaluation - Bullet Bot', 'ok')]);
+    expect(finding.anomalyAccounts).toBe(0);
+    expect(finding.byStanding.map((row) => row.standing)).toEqual([PROGRAMME_STANDINGS.EXPECTED]);
+    expect(finding.rule).toMatch(/there should be none/);
+  });
+
+  it('returns nothing at all for a book the programme never ran on', () => {
+    expect(buildProgrammeAccountStanding([
+      makeClient({
+        id: 'x',
+        accountType: 'Funded',
+        days: [{ date: '2026-07-10', rows: [{ strategies: [on('OGX')] }] }],
+      }),
+    ])).toEqual([]);
+  });
+
+  it('carries no money, on accounts that moved -$500 a close', () => {
+    const flat = JSON.stringify(buildProgrammeAccountStanding(book()));
+    expect(flat).not.toContain('500');
+    expect(flat).not.toContain('grossRealizedPnl');
+    expect(flat).not.toContain('meanPerAccountDay');
+  });
+
+  it('leads with the account and keeps the row count as ageing evidence', () => {
+    const [finding] = buildProgrammeAccountStanding([
+      makeClient({
+        id: 'f',
+        accountType: 'Funded',
+        accounts: ['F1'],
+        days: [
+          { date: '2026-07-10', rows: [{ strategies: [on('Bullet Bot')] }] },
+          { date: '2026-07-11', rows: [{ strategies: [on('Bullet Bot')] }] },
+          { date: '2026-07-12', rows: [{ strategies: [on('Bullet Bot')] }] },
+        ],
+      }),
+    ]);
+    expect(finding.anomalyAccounts).toBe(1);
+    expect(finding.anomalyRows).toBe(3);
+    expect(finding.anomalies[0].closes).toBe(3);
+    expect(finding.anomalies[0].firstDate).toBe('2026-07-10');
+    expect(finding.anomalies[0].lastDate).toBe('2026-07-12');
+  });
+
+  it('counts one account once, however many closes carried the programme', () => {
+    // The unit is the account. A still-true condition is re-imported on every
+    // close, and a finding whose headline counted rows would grow every day
+    // nobody acted on it — the inflation camFlagQueue.js exists to undo.
+    const [finding] = buildProgrammeAccountStanding([
+      makeClient({
+        id: 'one',
+        accountType: 'Funded',
+        accounts: ['M1'],
+        days: [
+          { date: '2026-07-10', rows: [{ strategies: [on('Bullet Bot')] }] },
+          { date: '2026-07-11', rows: [{ strategies: [on('Bullet Bot')] }] },
+        ],
+      }),
+    ]);
+    expect(finding.accounts).toBe(1);
+    expect(finding.anomalyAccounts).toBe(1);
+    expect(finding.anomalies[0].rows).toBe(2);
+  });
+
+  it('refuses to add the retired and untyped accounts into one headline', () => {
+    const refusals = programmeStandingRefusals(buildProgrammeAccountStanding(book()));
+    const lump = refusals.find((row) => row.figure.startsWith('One number for'));
+    expect(lump.reason).toMatch(/5 accounts have run a programme on this book and 2 of them are/);
+    expect(lump.reason).toMatch(/a retired account is a record of what it used to run/);
+    expect(refusals.some((row) => /performance/i.test(row.reason))).toBe(true);
   });
 });

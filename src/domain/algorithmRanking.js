@@ -30,6 +30,39 @@
 // reads -$9.52 per account-day with a 95% interval of -$45.51 to +$26.47 — one
 // answer, and one that says plainly that it has not been shown to make money.
 //
+// WHY IT WAS CHANGED AGAIN, PASS THREE: ONE THING ON THIS LIST WAS NEVER A PEER
+// OF THE OTHERS. The CAM settled it. "They are different categories. Bullet Bot
+// usually runs on a single account and should not be running in combination. The
+// other algorithms can run however they like: combined, alone, on prop-firm
+// accounts, on evaluation accounts, on cash accounts, on all of them. The only
+// accounts that run Bullet Bot are evaluation accounts... But Bullet Bot is a
+// strategy for PASSING EVALUATIONS, and it has different results from using a
+// stack of ordinary algorithms."
+//
+// So the two answer different questions. Of a stack you ask what it MAKES; of
+// Bullet Bot you ask whether it PASSED. This ranking is ordered by a dollar per
+// account-day, which answers the first and is close to meaningless for the
+// second: an evaluation that passes on day two by making a small amount has
+// succeeded completely, and the same figure on a funded stack is a mediocre
+// week. Worse, the two figures are not even the same measurement. Bullet Bot is
+// alone on the account-day on 99% of its account-days, so its mean is close to
+// the whole account's day; OGX is stacked on nine of every ten of its, so its
+// mean is a share of a day split with others. Ranked together, -$93.68 against
+// -$11.98 compared a whole with a part and read as Bullet Bot performing worse
+// when it was carrying more.
+//
+// SO THE PROGRAMME IS OFF THIS LIST AND ONTO ITS OWN PANEL, and the boundary is
+// the ALGORITHM ITSELF being that programme — a named family, listed in
+// algorithmProgrammes.js — NOT a solo-versus-stacked threshold. The ratio is the
+// SYMPTOM the desk noticed; the programme is the reason. A threshold cannot be
+// stated as a number anyone could say out loud: URGO runs alone on a third of
+// its account-days and would sit in limbo under any line. Anything else that
+// runs solo stays here, because an ordinary algorithm running alone is an
+// ordinary algorithm having an ordinary day.
+//
+// IT IS NOT HIDDEN. It keeps a row where it used to sit, carrying its counts,
+// what it is, and the panel that measures it — `ranking.programmes`.
+//
 // WHAT SEGMENTS AN ALGORITHM, AND WHAT DOES NOT.
 //
 //   * CONFIGURATION does. Under version 2.4 the book holds three parameter sets
@@ -93,6 +126,7 @@
 // and those days are not independent draws.
 
 import { businessForSegment, segmentForAccount, BUSINESS_KEYS } from './operationsSegments';
+import { PROGRAMME_BOUNDARY, isProgrammeFamily, programmeFor, thresholdRefusal } from './algorithmProgrammes';
 import { DESK_BUSINESS_ORDER, bookCloses, deskBusinessColumns } from './deskMoney';
 import { configKeyOf, shortConfigLabel } from './strategyConfigDrift';
 
@@ -122,8 +156,9 @@ const FIELD = '\u0001';
 
 const BUSINESS_NOTES = {
   [BUSINESS_KEYS.BULLET]: 'Accounts typed as bullet-bot evaluations — pass or fail inside days. '
-    + 'An account type, not an algorithm: the algorithms actually running on these accounts are '
-    + 'in the ranking above, Bullet Bot among them.',
+    + 'An account type, not an algorithm: the ordinary algorithms running on these accounts hold '
+    + 'their rows in the ranking above, and the Bullet Bot programme itself is measured on its '
+    + 'own panel rather than ranked against them.',
   [BUSINESS_KEYS.PROP_OTHER]: 'Funded and standard-evaluation prop accounts, plus any account '
     + 'type this build has not been taught, so a new type is reported here rather than dropped.',
   [BUSINESS_KEYS.CASH]: 'Real client money. A dollar here is a dollar; a dollar on a prop '
@@ -181,6 +216,19 @@ const INSTRUMENT_CAVEAT = 'Dollars per account-day are not normalised for contra
   + 'algorithm on NQ moves roughly ten times what one on MNQ does at the same position size, so '
   + 'the instrument and the sizing are printed beside every row and two rows on different '
   + 'contracts are not the same measurement.';
+
+/**
+ * What stands where a programme's row used to, on the ranking itself.
+ *
+ * Not a rank, not a mean, and not an omission either. The row is still printed —
+ * with what the programme is, the account-days behind it and the panel that
+ * measures it — because a reader who came to this table looking for Bullet Bot
+ * and found nothing would conclude it had stopped running, or go looking for the
+ * figure somewhere it could be compared with OGX's.
+ */
+const PROGRAMME_ROW_NOTE = 'Kept on this table, without a rank and without a mean, so that a '
+  + 'reader looking for it finds where it is measured instead of finding nothing. Its counts are '
+  + 'here; its results are on its own panel.';
 
 function day(value) {
   return String(value || '').slice(0, 10);
@@ -334,6 +382,15 @@ function emptyStats() {
     accounts: new Map(),
     clients: new Set(),
     unmeasuredAccountDays: 0,
+    // Account-days on which this was the ONLY algorithm enabled on the account.
+    // Counted over measured and unmeasured days alike, because it is a fact
+    // about the account-day and not about whether anything measured it.
+    //
+    // It is evidence, never a rule. What it explains is why one row's mean and
+    // another's are not the same measurement: a solo account-day's figure is
+    // close to the whole account's day, a stacked one's is a share of a day
+    // split with others. Nothing in this module branches on it.
+    soloAccountDays: 0,
     upDays: 0,
     downDays: 0,
     flatDays: 0,
@@ -350,9 +407,10 @@ function emptyStats() {
 }
 
 function addObservation(stats, {
-  accountKey, clientKey, date, business, segment, entry, snapshot, client,
+  accountKey, clientKey, date, business, segment, entry, snapshot, client, solo = false,
 }) {
   stats.clients.add(clientKey);
+  if (solo) stats.soloAccountDays += 1;
   if (!stats.accounts.has(accountKey)) stats.accounts.set(accountKey, 0);
 
   const deployed = stats.bySegment.get(segment)
@@ -535,6 +593,10 @@ function collectObservations(clients, { throughDate }) {
 
         dates.add(date);
         clientsSeen.add(clientKey);
+        // One enabled family on this account-day. A property of the DAY, so the
+        // configuration fold below is handed the same value: a configuration of
+        // the only algorithm running is still on a solo account-day.
+        const solo = perFamily.size === 1;
         let measuredHere = false;
         for (const [algo, entry] of perFamily) {
           const row = rows.get(algo) || {
@@ -546,7 +608,7 @@ function collectObservations(clients, { throughDate }) {
           };
           if (entry.measured) measuredHere = true;
           addObservation(row.stats, {
-            accountKey, clientKey, date, business, segment, entry, snapshot, client,
+            accountKey, clientKey, date, business, segment, entry, snapshot, client, solo,
           });
           rows.set(algo, row);
         }
@@ -557,7 +619,7 @@ function collectObservations(clients, { throughDate }) {
           const held = row.configs.get(configKey)
             || { key: configKey, config, stats: emptyStats() };
           addObservation(held.stats, {
-            accountKey, clientKey, date, business, segment, entry, snapshot, client,
+            accountKey, clientKey, date, business, segment, entry, snapshot, client, solo,
           });
           row.configs.set(configKey, held);
         }
@@ -693,6 +755,17 @@ function finishStats(stats, { withholds = 'a result' } = {}) {
     // Account-days this ran on where neither the fills nor the grid said what it
     // made. In no figure above.
     unmeasuredAccountDays: stats.unmeasuredAccountDays,
+    // Alone on the account-day, against sharing it. Printed as CONTEXT for the
+    // mean and never as a rule: a solo account-day's figure is close to the
+    // whole account's day and a stacked one's is a share of a day split with
+    // others, which is why two means from different ends of this column are not
+    // the same measurement. Nothing here is ranked, gated or excluded by it —
+    // see algorithmProgrammes.js for why a threshold was refused.
+    soloAccountDays: stats.soloAccountDays,
+    stackedAccountDays: accountDays + stats.unmeasuredAccountDays - stats.soloAccountDays,
+    soloShare: accountDays + stats.unmeasuredAccountDays
+      ? Math.round((stats.soloAccountDays / (accountDays + stats.unmeasuredAccountDays)) * 100)
+      : null,
     // Over DECIDED days only, and labelled that way wherever it is printed.
     winRate: decided ? Math.round((stats.upDays / decided) * 100) : null,
     decidedDays: decided,
@@ -832,6 +905,68 @@ export function closeSeries(byDate, closes = [], anchor = '') {
  * `buildAlgorithmDetail` below and for nothing else: the detail view must be the
  * ranking's own row, not a second measurement that happens to agree today.
  */
+/**
+ * A programme's row, with every ranked figure taken off it.
+ *
+ * WHAT IS DELIBERATELY ABSENT: `meanPerAccountDay`, its interval, the up/down/
+ * flat counts, the win rate and the seven-day trend. Every one of them is a
+ * reading of "what did it make per day", which is the question a stack answers
+ * and the programme does not. Leaving one of them on the object is all it would
+ * take for a panel to render it in a column beside OGX's, which is the mistake
+ * this whole change exists to remove — the figure is stated once, in prose, in
+ * `rankRefusal`, where it cannot be sorted.
+ *
+ * WHAT IS PRESENT: counts. Account-days, accounts, clients, where it is
+ * deployed, what it trades, and how often it was alone on the account-day. Those
+ * are facts about the deployment, not verdicts about it.
+ */
+function buildProgrammeRow(row, { topRanked }) {
+  const programme = programmeFor(row.name);
+  const totalDays = row.accountDays + row.unmeasuredAccountDays;
+  const offType = (row.deployment || []).filter((entry) => entry.segment !== programme.segment);
+  const compared = topRanked && topRanked.soloShare != null
+    ? `${topRanked.name}, the row at the top of this table, was alone on `
+      + `${topRanked.soloShare}% of its`
+    : 'the ordinary algorithms share their account-days, so their means are a share of';
+  return {
+    name: row.name,
+    programme: true,
+    asks: programme.asks,
+    what: programme.what,
+    answeredBy: programme.answeredBy,
+    answeredByNote: programme.answeredByNote,
+    note: PROGRAMME_ROW_NOTE,
+    // Counts only. Same fields, meaning the same thing, as on a ranking row.
+    accountDays: row.accountDays,
+    unmeasuredAccountDays: row.unmeasuredAccountDays,
+    accounts: row.accounts,
+    clients: row.clients,
+    soloAccountDays: row.soloAccountDays,
+    stackedAccountDays: row.stackedAccountDays,
+    soloShare: row.soloShare,
+    instruments: row.instruments,
+    sizing: row.sizing,
+    deployment: row.deployment,
+    expectedSegment: programme.segment,
+    // Account-days on accounts NOT typed for the programme. Not the same thing
+    // as a breach of the CAM's rule — an untyped account has no type to
+    // contradict — which is why the count is neutral here and the exceptions
+    // are sorted out by standing in buildProgrammeAccountStanding, where each
+    // one is named.
+    offTypeAccountDays: offType.reduce((sum, entry) => sum + entry.accountDays, 0),
+    offTypeSegments: offType.map((entry) => entry.segment),
+    rankRefusal: `Not ranked here, and not because it did badly. ${row.name} was alone on the `
+      + `account-day on ${row.soloAccountDays} of its ${totalDays} account-day`
+      + `${totalDays === 1 ? '' : 's'} (${row.soloShare}%), so a per-account-day figure for it is `
+      + `close to the whole account's day; ${compared} account-days, so the same figure there is a `
+      + 'share of a day split with others. Ranking the two in one column compares a whole with a '
+      + 'part. And the column asks the wrong question of it anyway: this is a programme for '
+      + 'PASSING an evaluation, where passing on day two for a small amount is a complete success '
+      + 'and the same amount on a funded stack is a mediocre week.',
+    moneyRefusal: row.moneyRefusal,
+  };
+}
+
 export function buildStrategyRanking(clients = [], { asOfDate = '', withDetail = false } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
@@ -869,13 +1004,36 @@ export function buildStrategyRanking(clients = [], { asOfDate = '', withDetail =
     finished.push(out);
   }
 
+  // The programmes come off the ranked population before anything is sorted.
+  // They are not peers of the rows below and the column they were sorted in
+  // asks a question they do not answer — see algorithmProgrammes.js. Their rows
+  // survive, in `programmes`, carrying counts and no verdict.
+  const rankable = finished.filter((row) => !isProgrammeFamily(row.name));
+  const programmeSource = finished.filter((row) => isProgrammeFamily(row.name));
+
   // Ranked first, best mean first. Unranked after, most evidence first, so the
   // reader can see which rows are closest to earning a rank.
-  const ranked = finished.filter((row) => row.ranked)
+  const ranked = rankable.filter((row) => row.ranked)
     .sort((a, b) => b.meanPerAccountDay - a.meanPerAccountDay);
   ranked.forEach((row, index) => { row.rank = index + 1; });
-  const unranked = finished.filter((row) => !row.ranked)
+  const unranked = rankable.filter((row) => !row.ranked)
     .sort((a, b) => b.accountDays - a.accountDays || a.name.localeCompare(b.name));
+
+  const programmes = programmeSource
+    .map((row) => buildProgrammeRow(row, { topRanked: ranked[0] || null }))
+    .sort((a, b) => b.accountDays - a.accountDays || a.name.localeCompare(b.name));
+  // The ordinary algorithm that runs alone most often, named so the refusal of a
+  // solo-versus-stacked threshold carries this book's own counter-example
+  // instead of an assertion.
+  // Taken from the RANKED rows where there are any: a two-account-day row at
+  // 50% is not a counter-example anybody would accept, and the point of the
+  // sentence is that the line cannot be drawn anywhere defensible.
+  const soloCandidates = (ranked.length ? ranked : rankable);
+  const topSoloOrdinary = [...soloCandidates]
+    .filter((row) => row.soloShare != null)
+    .sort((a, b) => b.soloShare - a.soloShare
+      || b.accountDays - a.accountDays
+      || a.name.localeCompare(b.name))[0] || null;
 
   const labels = labelsByBusiness();
   const businesses = DESK_BUSINESS_ORDER
@@ -924,6 +1082,12 @@ export function buildStrategyRanking(clients = [], { asOfDate = '', withDetail =
       rows: [...ranked, ...unranked],
       rankedCount: ranked.length,
       unrankedCount: unranked.length,
+      // Off the ranked population, still on the page. Never spread into `rows`:
+      // the whole point is that these two lists are not one list.
+      programmes,
+      programmeCount: programmes.length,
+      programmeBoundary: PROGRAMME_BOUNDARY,
+      thresholdRefusal: thresholdRefusal(topSoloOrdinary),
       unitNote: RANK_UNIT_NOTE,
       instrumentCaveat: INSTRUMENT_CAVEAT,
     },
@@ -960,7 +1124,22 @@ export function rankingRefusals(result) {
   const unranked = result?.ranking?.unrankedCount || 0;
   const ranked = result?.ranking?.rankedCount || 0;
   const businesses = result?.businesses?.length || 0;
+  const programmes = result?.ranking?.programmes || [];
   return [
+    ...programmes.map((programme) => ({
+      figure: `A rank for ${programme.name}, and a mean per account-day beside the rows above`,
+      value: null,
+      reason: `${programme.rankRefusal} It is not hidden: it keeps a row on this table with its `
+        + `${programme.accountDays} measured account-day`
+        + `${programme.accountDays === 1 ? '' : 's'} on ${programme.accounts} account`
+        + `${programme.accounts === 1 ? '' : 's'}, and what it is measured on is `
+        + `“${programme.answeredBy}”.`,
+    })),
+    {
+      figure: 'A solo-versus-stacked threshold instead of a named programme',
+      value: null,
+      reason: result?.ranking?.thresholdRefusal || thresholdRefusal(null),
+    },
     {
       figure: 'A separate ranking per account type',
       value: null,
@@ -1188,11 +1367,21 @@ export function buildAlgorithmDetail(clients = [], { algorithm = '', asOfDate = 
   const result = buildStrategyRanking(clients, { asOfDate, withDetail: true });
   const row = result.ranking.rows.find((candidate) => candidate.name === name) || null;
   const known = [...new Set(result.ranking.rows.map((candidate) => candidate.name))].sort();
+  // Opened by name, a programme does not fall through to "nothing in this book
+  // carries a row for it" — which would be the one reading that is false. It is
+  // measured, richly, somewhere else, and the answer is the pointer there.
+  const programme = (result.ranking.programmes || [])
+    .find((candidate) => candidate.name === name) || null;
 
   if (!row) {
     return {
       algorithm: name,
       found: false,
+      // Not a ranked algorithm and not an unknown one. A third state, because
+      // the two existing ones are both wrong about it.
+      programme,
+      programmes: result.ranking.programmes || [],
+      programmeBoundary: result.ranking.programmeBoundary,
       basis: result.basis,
       overall: null,
       configurations: [],
@@ -1231,8 +1420,13 @@ export function buildAlgorithmDetail(clients = [], { algorithm = '', asOfDate = 
     rank: row.rank,
     ranked: row.ranked,
     rankRefusal: row.rankRefusal,
+    // Ordinary algorithms only. The programmes were never peers of this row and
+    // are no longer counted as though they were — see algorithmProgrammes.js.
     peers: result.ranking.rows.length,
     rankedPeers: result.ranking.rankedCount,
+    programme: null,
+    programmes: result.ranking.programmes || [],
+    programmeBoundary: result.ranking.programmeBoundary,
     series,
     seriesNote: SERIES_NOTE,
     measuredCloses: series.filter((point) => point.accountDays > 0).length,

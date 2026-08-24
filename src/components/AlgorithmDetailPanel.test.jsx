@@ -403,3 +403,82 @@ describe('the ranking table it opens from', () => {
     expect(screen.getByText('SUBJECT')).toBeTruthy();
   });
 });
+
+/**
+ * The programme's row on the ranking table, and the programme opened as though
+ * it were an algorithm.
+ *
+ * The markup is what can undo this: printing the mean back into the sorted
+ * column, or dropping the row altogether so a reader concludes the programme
+ * stopped running.
+ */
+describe('a programme on the ranking table', () => {
+  const bulletClient = () => {
+    const accounts = Array.from({ length: 10 }, (_, i) => `B${i + 1}`);
+    return client({
+      id: 'bb',
+      name: 'Bullet client',
+      accountType: 'Evaluation - Bullet Bot',
+      accounts,
+      days: Array.from({ length: 4 }, (_, d) => ({
+        date: `2026-07-1${d}`,
+        rows: accounts.map((account) => ({
+          account, pnl: -930, strategies: on('Bullet Bot', -930),
+        })),
+      })),
+    });
+  };
+  const withProgramme = () => buildStrategyRanking([propBulk(), bulletClient()]);
+
+  it('keeps the row, says what it is, and names the panel that measures it', () => {
+    render(<AlgorithmRankingPanel result={withProgramme()} />);
+    const row = screen.getByRole('row', { name: /Bullet Bot/ });
+    expect(within(row).getByText('not ranked')).toBeTruthy();
+    expect(within(row).getByText(/A programme, not a peer of the rows above/)).toBeTruthy();
+    expect(within(row).getByText('Bullet Bot across the desk')).toBeTruthy();
+    expect(within(row).getByText(/40 measured account-days on 10 accounts/)).toBeTruthy();
+  });
+
+  it('puts no mean, no rank and no dollar in the sorted columns beside it', () => {
+    render(<AlgorithmRankingPanel result={withProgramme()} />);
+    const row = screen.getByRole('row', { name: /Bullet Bot/ });
+    // -$930 a day over 40 account-days is a real figure and it is not here.
+    expect(row.textContent).not.toContain('$930');
+    expect(row.textContent).not.toContain('-$930');
+    expect(within(row).queryByText('95% CI', { exact: false })).toBe(null);
+    // Four cells, not eight: rank, name, and one spanning cell of prose.
+    expect(within(row).getAllByRole('cell')).toHaveLength(2);
+  });
+
+  it('never makes the programme name a way into the ranked detail view', () => {
+    const onSelect = vi.fn();
+    render(
+      <AlgorithmRankingPanel
+        result={withProgramme()}
+        selectedAlgorithm={null}
+        onSelectAlgorithm={onSelect}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Bullet Bot/ })).toBe(null);
+    expect(screen.getAllByRole('button', { name: /SUBJECT/ }).length).toBeGreaterThan(0);
+  });
+
+  it('prints the boundary above the table, in the words the desk settled on', () => {
+    render(<AlgorithmRankingPanel result={withProgramme()} />);
+    expect(screen.getByText(/That the programme runs alone and the others are stacked is the SYMPTOM/))
+      .toBeTruthy();
+    // Above the table and again in the refusal list, so it is on the page
+    // whichever of the two a reader is looking at.
+    expect(screen.getAllByText(/A solo-versus-stacked threshold is the rule that suggests itself/))
+      .toHaveLength(2);
+  });
+
+  it('sends the reader to the right panel when the programme is opened by name', () => {
+    openDetail([propBulk(), bulletClient()], 'Bullet Bot');
+    expect(screen.getByText('a programme, measured elsewhere')).toBeTruthy();
+    expect(screen.getByText(/is a programme, not one of the ranked algorithms/)).toBeTruthy();
+    expect(screen.getByText('Bullet Bot across the desk')).toBeTruthy();
+    // And not the message for a name this book has never heard of.
+    expect(screen.queryByText(/Nothing in this book carries a row for/)).toBe(null);
+  });
+});

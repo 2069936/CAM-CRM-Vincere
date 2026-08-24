@@ -24,6 +24,18 @@ import BusinessCoverageLine from "./BusinessCoverageLine";
  * four coverage lines under the table, where it belongs to the DESK across every
  * algorithm at once and no algorithm's rate can be read out of it.
  *
+ * ONE THING ON THIS TABLE IS NOT A PEER OF THE OTHERS, AND IT NO LONGER HOLDS A
+ * RANK. Bullet Bot is a PROGRAMME for passing an evaluation: of it the desk asks
+ * whether the account passed, of the rows above it asks what they made, and the
+ * column this table is sorted by answers only the second. It keeps a row at the
+ * foot of the table — what it is, its counts, and the panel that measures it —
+ * because a reader who came here looking for it and found nothing would decide
+ * it had stopped running. What it does NOT keep is a mean in the sorted column
+ * beside OGX's: it is alone on nearly every account-day it has, so its figure is
+ * close to a whole account's day, while OGX's is a share of a day split with
+ * four others. That is the boundary being a named PROGRAMME rather than a
+ * solo-versus-stacked ratio, and the header says so in those words.
+ *
  * There is no headline figure and no composite score here for the same reason
  * there is none on the desk-money panel: the moment one exists, it is what gets
  * read.
@@ -170,6 +182,55 @@ function AlgorithmCell({ row, selected, onSelect }) {
   );
 }
 
+/**
+ * The row a programme keeps, at the foot of the table it used to be ranked in.
+ *
+ * It spans the six measured columns rather than filling them with dashes: a
+ * dash in the "Mean P&L per reported account-day" column reads as "not
+ * measured", which is false — the figure exists and is deliberately not
+ * published in a sortable column beside algorithms it cannot be compared with.
+ * The reason is printed in the cell, not hidden in a tooltip.
+ */
+function ProgrammeRow({ programme }) {
+  const total = programme.accountDays + programme.unmeasuredAccountDays;
+  const instruments = programme.instruments.map((entry) => entry.name).join(", ");
+  return (
+    <tr className="board-programme">
+      <td className="board-rank">
+        <span className="desk-refusal" title={programme.rankRefusal}>
+          not ranked
+        </span>
+      </td>
+      <th scope="row">
+        <strong>{programme.name}</strong>
+        <small className="muted">
+          {programme.clients} client{programme.clients === 1 ? "" : "s"}
+          {instruments ? ` · ${instruments}` : ""}
+        </small>
+      </th>
+      <td colSpan={6}>
+        <strong>A programme, not a peer of the rows above.</strong> {programme.what}{" "}
+        {programme.asks} That question is answered on{" "}
+        <strong>{programme.answeredBy}</strong> — {programme.answeredByNote}
+        <small className="muted">
+          {programme.accountDays} measured account-day
+          {programme.accountDays === 1 ? "" : "s"} on {programme.accounts} account
+          {programme.accounts === 1 ? "" : "s"} across {programme.clients} client
+          {programme.clients === 1 ? "" : "s"}
+          {programme.unmeasuredAccountDays
+            ? ` · ${programme.unmeasuredAccountDays} unmeasured`
+            : ""}
+          {programme.soloShare === null
+            ? ""
+            : ` · alone on the account-day on ${programme.soloAccountDays} of ${total} (${programme.soloShare}%)`}
+        </small>
+        <small className="desk-refusal">{programme.rankRefusal}</small>
+        <small className="muted">{programme.note}</small>
+      </td>
+    </tr>
+  );
+}
+
 function RankingTable({ ranking, anchor, selectedAlgorithm, onSelectAlgorithm }) {
   return (
     <div className="table-wrap">
@@ -258,6 +319,9 @@ function RankingTable({ ranking, anchor, selectedAlgorithm, onSelectAlgorithm })
               <TrendCell row={row} anchor={anchor} />
             </tr>
           ))}
+          {ranking.programmes.map((programme) => (
+            <ProgrammeRow key={programme.name} programme={programme} />
+          ))}
         </tbody>
       </table>
     </div>
@@ -270,7 +334,9 @@ export default function AlgorithmRankingPanel({
   onSelectAlgorithm = null,
 }) {
   const refusals = rankingRefusals(result);
-  if (!result?.ranking?.rows?.length) {
+  // A book that measured only the programme is not a book with nothing to show.
+  // The empty state is for a book with neither, and it says so.
+  if (!result?.ranking?.rows?.length && !result?.ranking?.programmeCount) {
     return (
       <section className="panel strategy-boards-panel">
         <div className="panel-heading">
@@ -294,12 +360,21 @@ export default function AlgorithmRankingPanel({
         <h3>Algorithm ranking</h3>
         <span className="badge muted">
           {ranking.rankedCount} ranked · {ranking.unrankedCount} without a rank
+          {ranking.programmeCount
+            ? ` · ${ranking.programmeCount} programme${ranking.programmeCount === 1 ? "" : "s"} off the ranking`
+            : ""}
         </span>
       </div>
       <p className="desk-basis">
         <CalendarDays size={13} /> {result.basis.label}
       </p>
       <p className="muted desk-basis-note">{ranking.unitNote}</p>
+      {ranking.programmeCount ? (
+        <>
+          <p className="muted desk-basis-note">{ranking.programmeBoundary}</p>
+          <p className="muted desk-basis-note">{ranking.thresholdRefusal}</p>
+        </>
+      ) : null}
       <p className="muted desk-basis-note">{result.moneyIsPerBusiness}</p>
       <p className="muted desk-basis-note">{ranking.instrumentCaveat}</p>
       <p className="muted desk-basis-note">{result.gate.note}</p>

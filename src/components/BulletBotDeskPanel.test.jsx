@@ -319,6 +319,21 @@ describe('BulletBotDeskPanel — the real book', () => {
     expect(realHtml).toContain('median of 18 accounts');
   });
 
+  it('says how blank the book’s own Bullet Bot columns are, above every rate', () => {
+    // The panel answers "who passes, long or short, how fast" and the book has
+    // columns with those names. They are blank on almost every account, nothing
+    // here reads them, and a manager has to be told both halves of that.
+    expect(realHtml).toContain(
+      'bullet_bot_pass_type is blank on 221 of the 240 accounts here (92.1%)',
+    );
+    expect(realHtml).toContain('bullet_bot_direction on 231 (96.3%)');
+    expect(realHtml).toContain('a blank is not a failure');
+    expect(realHtml).toContain('Nothing here fills either column in');
+    // The disclosure comes before the first rate on the page, not after it.
+    expect(realHtml.indexOf('bullet_bot_pass_type'))
+      .toBeLessThan(realHtml.indexOf('bbdesk-rate-value'));
+  });
+
   it('leaves the streak slots empty on the real book too', () => {
     const streaks = realHtml.slice(
       realHtml.indexOf('bbdesk-streaks'),

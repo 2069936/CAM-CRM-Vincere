@@ -43,34 +43,71 @@ describe('the ranking over the whole book', () => {
     expect(result.basis.closesToAnchor).toBe(14);
   });
 
-  it('gives fifteen algorithms one rank each, nine of them earned', () => {
+  it('gives fourteen algorithms one rank each, eight of them earned', () => {
     // The build this replaced published 25 rows across four boards for the same
     // fifteen algorithms, because an algorithm held a row on every board its
-    // accounts happened to fall on.
-    expect(result.ranking.rows).toHaveLength(15);
-    expect(result.ranking.rankedCount).toBe(9);
+    // accounts happened to fall on. Fourteen here rather than fifteen: the
+    // fifteenth is the Bullet Bot PROGRAMME, which is off the ranked population
+    // and on its own row below the table.
+    expect(result.ranking.rows).toHaveLength(14);
+    expect(result.ranking.rankedCount).toBe(8);
     expect(result.ranking.unrankedCount).toBe(6);
-    expect(result.ranking.rows.slice(0, 9).map((row) => row.name)).toEqual([
-      'ARPD', 'OGX', 'URGO', 'B2X', 'IFSP', 'G4M', 'Bullet Bot', 'RBO', 'SYFY',
+    expect(result.ranking.rows.slice(0, 8).map((row) => row.name)).toEqual([
+      'ARPD', 'OGX', 'URGO', 'B2X', 'IFSP', 'G4M', 'RBO', 'SYFY',
     ]);
     // Every ranked row loses money per account-day. The board that sorted by
     // total P&L printed this book upside down.
-    expect(result.ranking.rows.slice(0, 9).every((row) => row.meanPerAccountDay < 0)).toBe(true);
+    expect(result.ranking.rows.slice(0, 8).every((row) => row.meanPerAccountDay < 0)).toBe(true);
+    expect(result.ranking.rows.some((row) => row.name === 'Bullet Bot')).toBe(false);
   });
 
-  it('ranks Bullet Bot as a peer algorithm on the same list', () => {
-    const bullet = result.ranking.rows.find((row) => row.name === 'Bullet Bot');
-    expect(bullet.rank).toBe(7);
-    expect(bullet.meanPerAccountDay).toBe(-93.68);
+  it('keeps the programme off the ranking and on its own row, with its counts', () => {
+    // It was #7 at -$93.68 per account-day against OGX at -$11.98, and read as
+    // the seventh-best algorithm on the desk. It is not an algorithm on that
+    // list at all: it is alone on 337 of its 337 account-days, so that figure
+    // is a whole account's day, while OGX's is a share of one.
+    expect(result.ranking.programmeCount).toBe(1);
+    const bullet = result.ranking.programmes[0];
+    expect(bullet.name).toBe('Bullet Bot');
     expect(bullet.accountDays).toBe(337);
     expect(bullet.accounts).toBe(115);
-    // It trades NQ where OGX trades MNQ, which is why the ranking prints the
-    // contract beside every row and refuses to call these two comparable.
+    expect(bullet.clients).toBe(34);
+    expect(bullet.soloAccountDays).toBe(337);
+    expect(bullet.soloShare).toBe(100);
+    // It trades NQ where OGX trades MNQ, which is one more reason the two were
+    // never one measurement.
     expect(bullet.instruments[0].name).toBe('NQ SEP26');
-    // And 12 of its 337 account-days are on accounts NOT typed for it, which the
-    // board named after that account type could not show.
+    // And 12 of its 337 account-days are on accounts NOT typed for it.
     const away = bullet.deployment.filter((entry) => entry.segment !== SEGMENTS.EVAL_BULLET);
     expect(away.reduce((n, entry) => n + entry.accountDays, 0)).toBe(12);
+    expect(bullet.offTypeAccountDays).toBe(12);
+    expect(bullet.answeredBy).toBe('Bullet Bot across the desk');
+  });
+
+  it('publishes no rank and no per-account-day figure for the programme', () => {
+    // -$93.68 is real and it is not on this object. The only place it appears
+    // on the whole screen is inside the sentence that refuses to rank it, where
+    // it cannot be sorted against anything.
+    const bullet = result.ranking.programmes[0];
+    const flat = JSON.stringify({ ...bullet, rankRefusal: '' });
+    expect(flat).not.toContain('93.68');
+    expect(flat).not.toContain('meanPerAccountDay');
+    expect(bullet.rank).toBeUndefined();
+    expect(bullet.ranked).toBeUndefined();
+    expect(bullet.winRate).toBeUndefined();
+  });
+
+  it('names the ordinary algorithm a solo-versus-stacked threshold would strand', () => {
+    // The boundary is the programme, not the ratio, and this is why. G4M runs
+    // alone on 40% of its account-days and is an ordinary algorithm having
+    // ordinary days; every line drawn between it and Bullet Bot's 100% is a
+    // number nobody could defend.
+    expect(result.ranking.thresholdRefusal).toMatch(/G4M, alone on 40% of its account-days/);
+    const g4m = result.ranking.rows.find((row) => row.name === 'G4M');
+    expect(g4m.rank).toBe(6);
+    expect(g4m.soloShare).toBe(40);
+    expect(g4m.soloAccountDays).toBe(44);
+    expect(g4m.stackedAccountDays).toBe(66);
   });
 
   it('states the desk’s money per business, and none of it on a row', () => {
@@ -121,7 +158,7 @@ describe('OGX on the real book — one algorithm, one answer', () => {
   it('is one row at #2, on evidence that clears both arms of the gate', () => {
     expect(detail.found).toBe(true);
     expect(detail.rank).toBe(2);
-    expect(detail.rankedPeers).toBe(9);
+    expect(detail.rankedPeers).toBe(8);
     expect(detail.overall.accountDays).toBe(77);
     expect(detail.overall.accounts).toBe(24);
     expect(detail.overall.clients).toBe(19);

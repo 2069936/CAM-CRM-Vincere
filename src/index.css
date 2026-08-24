@@ -7909,6 +7909,14 @@ tr:nth-child(2) .rank-badge {
    still needs to see that the algorithm exists and how little is behind it. */
 .board-unranked { opacity: 0.72; }
 .board-unranked th[scope="row"] strong { font-weight: 500; }
+/* The programme's row. It sits at the foot of the table it used to be RANKED
+   in, separated by a rule and given its own tint, so that it reads as a
+   different kind of thing rather than as row sixteen. Not dimmed like an
+   unranked row: nothing about it is short of evidence — it answers a different
+   question, and a faded row would say the opposite. */
+.board-programme > * { border-top: 2px solid var(--line); }
+.board-programme td[colspan] { font-size: 11px; line-height: 1.55; white-space: normal; }
+.board-programme td[colspan] small { margin-top: 4px; }
 .board-coverage { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
 .board-refusals { margin-top: 16px; font-size: 11px; }
 .board-refusals summary { cursor: pointer; color: var(--muted); }
@@ -8002,6 +8010,16 @@ tr:nth-child(2) .rank-badge {
 .type-mismatch-family { display: block; white-space: nowrap; }
 .type-mismatch-families { margin: 0; font-size: 11px; line-height: 1.7; }
 .type-mismatch-elsewhere { margin: 0; font-size: 11px; line-height: 1.5; }
+
+/* The second finding in the same panel: the desk's own rule about where a
+   programme runs, checked against the book. Ruled off from the labelling
+   question above it because they are two findings and a manager acting on one
+   should not read the other's counts as its denominator. */
+.programme-standing-block { border-top: 1px solid var(--line); padding-top: 10px; }
+.programme-standing-block > h5 { margin: 0 0 8px; font-size: 12px; }
+.programme-standing { display: flex; flex-direction: column; gap: 10px; }
+.programme-standing-groups { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.6; }
+.programme-standing-groups > li { margin-bottom: 3px; }
 
 /* The panel the tiles open. Full width under the metric grid, because the tile
    it belongs to is one cell of a repeat(4, minmax(160px, 1fr)) grid and this

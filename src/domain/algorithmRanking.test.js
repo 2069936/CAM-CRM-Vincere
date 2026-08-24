@@ -559,22 +559,18 @@ describe('one rank per algorithm, whatever the accounts are called', () => {
     expect(businessForSegment('Some Future Type')).toBe(BUSINESS_KEYS.PROP_OTHER);
   });
 
-  it('ranks Bullet Bot as a peer algorithm, not as an account type', () => {
+  it('routes an algorithm running on a bullet-bot-typed account to its own row', () => {
     // "Evaluation - Bullet Bot" is an ACCOUNT TYPE that shares its name with an
     // algorithm, and the board named after it made "OGX on the Bullet Bot board"
-    // read as OGX being a Bullet Bot strategy. Bullet Bot is one row here, and
-    // an algorithm running on a bullet-bot-typed account is that algorithm's row.
+    // read as OGX being a Bullet Bot strategy. OGX is OGX wherever it runs, and
+    // the account type is deployment context on its row.
     const result = buildStrategyRanking([
       makeClient({
         id: 'bb', accountType: 'Evaluation - Bullet Bot', accounts: ['B1'],
         days: [{ date: '2026-07-10', rows: [{ account: 'B1', pnl: -500, strategies: [strat('OGX', { realized: -500 })] }] }],
       }),
-      makeClient({
-        id: 'bb2', name: 'Two', accountType: 'Evaluation - Bullet Bot', accounts: ['B2'],
-        days: [{ date: '2026-07-10', rows: [{ account: 'B2', pnl: -60, strategies: [strat('Bullet Bot', { realized: -60 })] }] }],
-      }),
     ]);
-    expect(result.ranking.rows.map((row) => row.name).sort()).toEqual(['Bullet Bot', 'OGX']);
+    expect(result.ranking.rows.map((row) => row.name)).toEqual(['OGX']);
     const ogx = rowFor(result, 'OGX');
     expect(ogx.meanPerAccountDay).toBe(-500);
     expect(ogx.deployment.map((entry) => entry.segment)).toEqual([SEGMENTS.EVAL_BULLET]);
@@ -1283,5 +1279,159 @@ describe('what the algorithm view says it will not produce', () => {
     expect(row.series).toBeUndefined();
     expect(row.configurations).toBeUndefined();
     expect(row.byDate).toBeUndefined();
+  });
+});
+
+/**
+ * The programme boundary.
+ *
+ * The CAM settled this after three passes of getting it wrong: Bullet Bot and
+ * the ordinary algorithms are different categories, answering different
+ * questions. Of a stack you ask what it MAKES; of a programme you ask whether it
+ * PASSED. Every rule below is about keeping those two apart without hiding
+ * either, and about where the boundary sits — a named family, not a ratio.
+ */
+describe('the programme, which is not a peer of the algorithms', () => {
+  const withProgramme = () => buildStrategyRanking([
+    bulkClient({ algo: 'Bullet Bot', accountType: 'Evaluation - Bullet Bot', id: 'p', pnl: -900 }),
+    bulkClient({ algo: 'OGX', id: 'o', pnl: -10 }),
+  ]);
+
+  it('takes the programme out of the ranked population and leaves the rest on it', () => {
+    const result = withProgramme();
+    expect(result.ranking.rows.map((row) => row.name)).toEqual(['OGX']);
+    expect(result.ranking.rankedCount).toBe(1);
+    expect(result.ranking.programmes.map((row) => row.name)).toEqual(['Bullet Bot']);
+    expect(result.ranking.programmeCount).toBe(1);
+    // And no rank of any kind reaches it, including the "no rank" one.
+    expect(result.ranking.programmes[0].rank).toBeUndefined();
+    expect(result.ranking.programmes[0].ranked).toBeUndefined();
+  });
+
+  it('keeps its row rather than dropping it, with what it is and where it is measured', () => {
+    const programme = withProgramme().ranking.programmes[0];
+    expect(programme.programme).toBe(true);
+    expect(programme.asks).toMatch(/PASS/);
+    expect(programme.what).toMatch(/passing an evaluation/i);
+    expect(programme.answeredBy).toBe('Bullet Bot across the desk');
+    // The counts survive: this is a deployment of 60 account-days on 12
+    // accounts and a reader has to be able to see that it is still running.
+    expect(programme.accountDays).toBe(60);
+    expect(programme.accounts).toBe(12);
+    expect(programme.clients).toBe(1);
+  });
+
+  it('publishes no mean, no interval, no win rate and no trend for it', () => {
+    // Every one of these answers "what did it make per day", which is the stack
+    // question. One of them left on the object is all a panel needs to render
+    // it in a column beside OGX's.
+    const programme = withProgramme().ranking.programmes[0];
+    for (const field of [
+      'meanPerAccountDay', 'ci', 'upDays', 'downDays', 'flatDays', 'winRate',
+      'decidedDays', 'trend', 'trendDirection', 'accountsProfitable', 'accountsProfitablePct',
+      'rank', 'ranked', 'sufficient',
+    ]) {
+      expect(programme[field]).toBeUndefined();
+    }
+    // -900 a day, 60 times, and not one dollar of it is on this object.
+    expect(JSON.stringify(programme)).not.toContain('-900');
+  });
+
+  it('says why, in a refusal that names the whole against the part', () => {
+    const programme = withProgramme().ranking.programmes[0];
+    expect(programme.rankRefusal).toMatch(/not because it did badly/);
+    expect(programme.rankRefusal).toMatch(/alone on the account-day on 60 of its 60/);
+    expect(programme.rankRefusal).toMatch(/compares a whole with a part/);
+    expect(programme.rankRefusal).toMatch(/PASSING an evaluation/);
+  });
+
+  it('states in the header that solo-versus-stacked is the symptom and the programme the reason', () => {
+    const { programmeBoundary } = withProgramme().ranking;
+    expect(programmeBoundary).toMatch(/SYMPTOM/);
+    expect(programmeBoundary).toMatch(/the reason is the programme/i);
+    expect(programmeBoundary).toMatch(/boundary is the ALGORITHM ITSELF/);
+    expect(programmeBoundary).toMatch(/may run alone and that is ordinary/);
+  });
+
+  it('keeps an ordinary algorithm that runs alone in the ranking', () => {
+    // URGO runs alone on a third of its account-days on the real book. Running
+    // alone is not a programme; it is an ordinary algorithm having an ordinary
+    // day, and a threshold would have put it in limbo.
+    const result = buildStrategyRanking([
+      bulkClient({ algo: 'URGO', id: 'u', pnl: -20 }),
+      bulkClient({ algo: 'Bullet Bot', accountType: 'Evaluation - Bullet Bot', id: 'p' }),
+    ]);
+    const urgo = rowFor(result, 'URGO');
+    expect(urgo).toBeTruthy();
+    expect(urgo.soloShare).toBe(100);
+    expect(urgo.rank).toBe(1);
+    expect(result.ranking.programmes.map((row) => row.name)).toEqual(['Bullet Bot']);
+  });
+
+  it('refuses a threshold and names this book’s own counter-example', () => {
+    const result = buildStrategyRanking([
+      bulkClient({ algo: 'URGO', id: 'u', pnl: -20 }),
+      bulkClient({ algo: 'Bullet Bot', accountType: 'Evaluation - Bullet Bot', id: 'p' }),
+    ]);
+    expect(result.ranking.thresholdRefusal).toMatch(/URGO, alone on 100% of its account-days/);
+    expect(result.ranking.thresholdRefusal).toMatch(/cannot be stated/);
+    const listed = rankingRefusals(result)
+      .find((row) => row.figure.startsWith('A solo-versus-stacked threshold'));
+    expect(listed.reason).toBe(result.ranking.thresholdRefusal);
+  });
+
+  it('counts solo and stacked account-days on every row, as context and not as a rule', () => {
+    const result = buildStrategyRanking([
+      makeClient({
+        id: 'mix',
+        accounts: ['A1'],
+        days: [
+          { date: '2026-07-10', rows: [{ account: 'A1', pnl: -30, strategies: [strat('OGX', { realized: -10 }), strat('IFSP', { realized: -20 })] }] },
+          { date: '2026-07-11', rows: [{ account: 'A1', pnl: -10, strategies: [strat('OGX', { realized: -10 })] }] },
+        ],
+      }),
+    ]);
+    const ogx = rowFor(result, 'OGX');
+    expect(ogx.soloAccountDays).toBe(1);
+    expect(ogx.stackedAccountDays).toBe(1);
+    expect(ogx.soloShare).toBe(50);
+    const ifsp = rowFor(result, 'IFSP');
+    expect(ifsp.soloAccountDays).toBe(0);
+    expect(ifsp.soloShare).toBe(0);
+    // Both are still ranked-population rows. Nothing branches on the share.
+    expect(result.ranking.programmes).toEqual([]);
+  });
+
+  it('lists the refusal of its rank among the figures the ranking will not produce', () => {
+    const refusals = rankingRefusals(withProgramme());
+    const row = refusals.find((entry) => entry.figure.startsWith('A rank for Bullet Bot'));
+    expect(row).toBeTruthy();
+    expect(row.reason).toMatch(/It is not hidden/);
+    expect(row.reason).toMatch(/Bullet Bot across the desk/);
+  });
+
+  it('answers with the programme when it is opened as though it were an algorithm', () => {
+    const detail = buildAlgorithmDetail([
+      bulkClient({ algo: 'Bullet Bot', accountType: 'Evaluation - Bullet Bot', id: 'p' }),
+      bulkClient({ algo: 'OGX', id: 'o' }),
+    ], { algorithm: 'Bullet Bot' });
+    // Not "nothing in this book carries a row for it" — which is the one
+    // reading that is false.
+    expect(detail.found).toBe(false);
+    expect(detail.programme).toBeTruthy();
+    expect(detail.programme.answeredBy).toBe('Bullet Bot across the desk');
+    expect(detail.knownAlgorithms).toEqual(['OGX']);
+  });
+
+  it('does not count the programme among an ordinary algorithm’s peers', () => {
+    const detail = buildAlgorithmDetail([
+      bulkClient({ algo: 'Bullet Bot', accountType: 'Evaluation - Bullet Bot', id: 'p' }),
+      bulkClient({ algo: 'OGX', id: 'o' }),
+    ], { algorithm: 'OGX' });
+    expect(detail.found).toBe(true);
+    expect(detail.peers).toBe(1);
+    expect(detail.rankedPeers).toBe(1);
+    expect(detail.programme).toBeNull();
+    expect(detail.programmes.map((row) => row.name)).toEqual(['Bullet Bot']);
   });
 });

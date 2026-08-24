@@ -970,6 +970,13 @@ export function buildStrategyAnalyzer(clients = []) {
 // a tick pays; the dollars are not, because those are an accounting figure. A
 // function that returns one ranked list with one dollar total over the whole desk
 // must not exist here, because the next caller renders it.
+//
+// One thing on that list is no longer ranked on it: Bullet Bot is a PROGRAMME
+// for passing an evaluation, and "what did it make per account-day" is not the
+// question asked of it. It keeps a row at the foot of the table saying what it
+// is and pointing at "Bullet Bot across the desk", which measures passes. See
+// src/domain/algorithmProgrammes.js for why the boundary is a named family and
+// not a solo-versus-stacked ratio.
 
 export function buildLifecycleMetrics(clients = []) {
   const evalFails = [];

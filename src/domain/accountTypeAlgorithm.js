@@ -30,7 +30,8 @@
 // count is carried beside it as evidence of how long it has been true, and is
 // never the number the finding leads with.
 
-import { segmentForAccount, SEGMENTS } from './operationsSegments';
+import { segmentForAccount, SEGMENTS, EXCLUDED_FROM_TOTAL } from './operationsSegments';
+import { PROGRAMMES } from './algorithmProgrammes';
 
 /**
  * Account types that name an algorithm, and the algorithm they name.
@@ -39,10 +40,15 @@ import { segmentForAccount, SEGMENTS } from './operationsSegments';
  * convention, not a one-off: the day the desk adds `Evaluation - <something>`
  * for another algorithm, the finding should extend rather than be rewritten.
  * One entry today, which is the honest state of this book.
+ *
+ * DERIVED FROM THE PROGRAMME LIST rather than written out again. The pair
+ * (account type, algorithm name) is the same pair algorithmProgrammes.js holds
+ * for the ranking, and two lists that agree today are two lists that drift: the
+ * day a second programme is added, an algorithm could be off the ranking and
+ * still absent from this finding, or the reverse.
  */
-export const ALGORITHM_NAMED_TYPES = [
-  { segment: SEGMENTS.EVAL_BULLET, family: 'Bullet Bot' },
-];
+export const ALGORITHM_NAMED_TYPES = PROGRAMMES
+  .map(({ segment, family }) => ({ segment, family }));
 
 const ASK = 'For each account, confirm which algorithm it is meant to be running. Different is '
   + 'not wrong — a client can be moved onto another algorithm deliberately — but an account '
@@ -259,6 +265,269 @@ export function accountTypeMismatchRefusals(finding) {
         + `how long it has been true: the ${finding?.strategyRows || 0} rows below sit on `
         + `${finding?.accounts || 0} account${finding?.accounts === 1 ? '' : 's'}. The accounts `
         + 'are the work; the rows are how long it has been waiting.',
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// THE SECOND FINDING: THE PROGRAMME RUNNING WHERE THE RULE SAYS IT CANNOT.
+//
+// The CAM stated a rule about the desk: "The only accounts that run Bullet Bot
+// are evaluation accounts, because you cannot assign it wherever you want in
+// NinjaTrader." A rule stated that plainly is worth checking, and the book does
+// not quite keep it.
+//
+// WHY IT IS NOT THE FINDING ABOVE. That one starts from the account TYPE — an
+// account labelled for an algorithm and running another — and its `elsewhere`
+// line counts the reverse in one lump. This one starts from the PROGRAMME and
+// sorts the reverse by what each account actually is, because by the CAM's rule
+// the four groups are four different things and only one of them is an
+// exception:
+//
+//   * A LIVE account of another type running it is the exception. There should
+//     be none, and each one is named.
+//   * An account marked Inactive / Ignore is a retired record of what it used to
+//     run. Not an exception.
+//   * An account nobody has typed yet is a classification backlog. Not an
+//     exception either — it may well be an evaluation account whose row is
+//     blank, and calling it a breach would be inventing the type.
+//   * A close with no account row on record is a reconciliation problem about
+//     the account, not about the programme.
+//
+// Printing all four as one number — the shape the `elsewhere` line has — makes
+// the exception look an order of magnitude bigger than it is, and an operational
+// list nobody can act on is one nobody reads twice.
+//
+// NO MONEY, SAME AS ABOVE. What these accounts made has nothing to do with
+// whether the programme should be assigned to them.
+// ---------------------------------------------------------------------------
+
+/**
+ * How an account running a programme stands against the rule.
+ *
+ * The order is the order the panel prints them in, and `anomaly` is deliberately
+ * first: it is the only one that is work.
+ */
+export const PROGRAMME_STANDINGS = {
+  ANOMALY: 'anomaly',
+  EXPECTED: 'expected',
+  UNCLASSIFIED: 'unclassified',
+  RETIRED: 'retired',
+  NO_RECORD: 'no record',
+  NOT_REAL_MONEY: 'not real money',
+};
+
+const STANDING_ORDER = [
+  PROGRAMME_STANDINGS.ANOMALY,
+  PROGRAMME_STANDINGS.EXPECTED,
+  PROGRAMME_STANDINGS.UNCLASSIFIED,
+  PROGRAMME_STANDINGS.RETIRED,
+  PROGRAMME_STANDINGS.NO_RECORD,
+  PROGRAMME_STANDINGS.NOT_REAL_MONEY,
+];
+
+const STANDING_NOTES = {
+  [PROGRAMME_STANDINGS.ANOMALY]: 'Live accounts of another type. By the rule there should be '
+    + 'none of these, so each one is named below.',
+  [PROGRAMME_STANDINGS.EXPECTED]: 'Evaluation accounts — where the rule says the programme runs, '
+    + 'and where nearly all of it does.',
+  [PROGRAMME_STANDINGS.UNCLASSIFIED]: 'Accounts nobody has typed yet. A classification backlog, '
+    + 'not a breach: an untyped account may well be an evaluation account whose row is blank, and '
+    + 'counting it as an exception would be inventing the type.',
+  [PROGRAMME_STANDINGS.RETIRED]: 'Accounts marked Inactive / Ignore. A retired record of what the '
+    + 'account used to run, not something running today.',
+  [PROGRAMME_STANDINGS.NO_RECORD]: 'Closes whose account has no registry row at all. A '
+    + 'reconciliation problem about the account, not about the programme.',
+  [PROGRAMME_STANDINGS.NOT_REAL_MONEY]: 'Simulated or nature-undetermined accounts. Not the '
+    + 'desk’s money and not in any total.',
+};
+
+function standingFor(segment, expectedSegment) {
+  if (segment === expectedSegment) return PROGRAMME_STANDINGS.EXPECTED;
+  if (segment === SEGMENTS.UNCLASSIFIED) return PROGRAMME_STANDINGS.UNCLASSIFIED;
+  if (segment === SEGMENTS.IGNORED) return PROGRAMME_STANDINGS.RETIRED;
+  if (segment === SEGMENTS.ORPHAN) return PROGRAMME_STANDINGS.NO_RECORD;
+  if (EXCLUDED_FROM_TOTAL.has(segment)) return PROGRAMME_STANDINGS.NOT_REAL_MONEY;
+  // Cash, Funded, Evaluation - Standard, and any account type this build has
+  // not been taught. A new type lands here — as an exception to be looked at —
+  // rather than being quietly folded into the expected group.
+  return PROGRAMME_STANDINGS.ANOMALY;
+}
+
+const PROGRAMME_ASK = 'For each account named below, confirm which of the two is stale: the '
+  + 'account type, or the assignment. Different is not wrong — this is a list to verify, and only '
+  + 'the CAM who moved the client can say which side to correct — but the desk states this one as '
+  + 'a rule, and an exception to a stated rule is either a mislabelled account or a rule that '
+  + 'needs restating.';
+
+// Not the mismatch finding's POPULATION, which says an account with no registry
+// row is not in the list. This one keeps that account and gives it a group of
+// its own: dropping it would quietly shrink the denominator every count here is
+// read against.
+const PROGRAMME_POPULATION = 'Read off the real-money closes in the book — the same account-days '
+  + 'the algorithm ranking measures. Simulated closes are not in this list. A close whose account '
+  + 'has no registry row is counted in its own group below rather than dropped, so the total is '
+  + 'every account the book has seen the programme on.';
+
+const PROGRAMME_NOT_A_SEGMENT = 'A labelling question, not a performance one. No P&L, no mean '
+  + 'and no verdict on the programme appears here: whether an account should be running it has '
+  + 'nothing to do with what it made.';
+
+/**
+ * Every account the book has seen running a programme, sorted by how it stands
+ * against the rule that the programme runs on evaluation accounts only.
+ *
+ * One finding per programme family. The unit is the ACCOUNT, as it is on the
+ * mismatch finding above: a still-true condition is re-imported on every close,
+ * so the strategy-row count grows with how long it has been true and is carried
+ * as ageing evidence rather than as the headline.
+ */
+export function buildProgrammeAccountStanding(clients = [], { asOfDate = '' } = {}) {
+  const bound = day(asOfDate);
+  const byFamily = new Map(PROGRAMMES.map((entry) => [entry.family, {
+    programme: entry,
+    accounts: new Map(),
+  }]));
+
+  for (const client of clients || []) {
+    const registry = client?.accountRegistry || {};
+    const clientKey = client?.id ?? client?.name ?? '';
+    for (const dailyImport of client?.dailyImports || []) {
+      const date = day(dailyImport?.date);
+      if (!date) continue;
+      if (bound && date > bound) continue;
+      for (const snapshot of dailyImport?.snapshots || []) {
+        const segment = segmentForAccount(registry[snapshot.accountName], snapshot.accountName);
+        const accountKey = `${clientKey} ${snapshot.accountName}`;
+        for (const strategy of snapshot.strategies || []) {
+          const held = byFamily.get(familyOf(strategy));
+          if (!held) continue;
+          const seat = held.accounts.get(accountKey) || {
+            accountKey,
+            accountName: snapshot.accountName,
+            clientKey,
+            clientName: client?.name || '',
+            // One type per account, not one per close: the registry is per
+            // client and holds a single accountType, so every close of this
+            // account segments the same way. Re-deriving it per close and
+            // keeping the latest would suggest the type can move inside the
+            // window, which this data model cannot express.
+            segment,
+            rows: 0,
+            enabledRows: 0,
+            closes: new Set(),
+            firstDate: date,
+            lastDate: date,
+          };
+          if (date < seat.firstDate) seat.firstDate = date;
+          if (date >= seat.lastDate) seat.lastDate = date;
+          seat.rows += 1;
+          if (strategy?.enabled) seat.enabledRows += 1;
+          seat.closes.add(date);
+          held.accounts.set(accountKey, seat);
+        }
+      }
+    }
+  }
+
+  return [...byFamily.values()]
+    .filter((held) => held.accounts.size > 0)
+    .map(({ programme, accounts }) => {
+      const seats = [...accounts.values()].map((seat) => ({
+        accountKey: seat.accountKey,
+        accountName: seat.accountName,
+        clientKey: seat.clientKey,
+        clientName: seat.clientName,
+        segment: seat.segment,
+        standing: standingFor(seat.segment, programme.segment),
+        rows: seat.rows,
+        enabledRows: seat.enabledRows,
+        closes: seat.closes.size,
+        firstDate: seat.firstDate,
+        lastDate: seat.lastDate,
+      }));
+
+      const byStanding = STANDING_ORDER
+        .map((standing) => {
+          const held = seats.filter((seat) => seat.standing === standing);
+          return {
+            standing,
+            note: STANDING_NOTES[standing],
+            accounts: held.length,
+            clients: new Set(held.map((seat) => seat.clientKey)).size,
+            rows: held.reduce((sum, seat) => sum + seat.rows, 0),
+            segments: [...new Set(held.map((seat) => seat.segment))].sort()
+              .map((segment) => ({
+                segment,
+                accounts: held.filter((seat) => seat.segment === segment).length,
+              })),
+          };
+        })
+        .filter((row) => row.accounts > 0);
+
+      const anomalies = seats
+        .filter((seat) => seat.standing === PROGRAMME_STANDINGS.ANOMALY)
+        // Longest-standing first: the one that has been true across the most
+        // closes is the one nobody has looked at.
+        .sort((a, b) => b.closes - a.closes
+          || b.rows - a.rows
+          || a.accountName.localeCompare(b.accountName));
+
+      return {
+        family: programme.family,
+        expectedSegment: programme.segment,
+        accounts: seats.length,
+        clients: new Set(seats.map((seat) => seat.clientKey)).size,
+        byStanding,
+        anomalies,
+        anomalyAccounts: anomalies.length,
+        anomalyClients: new Set(anomalies.map((seat) => seat.clientKey)).size,
+        anomalyRows: anomalies.reduce((sum, seat) => sum + seat.rows, 0),
+        expectedAccounts: seats
+          .filter((seat) => seat.standing === PROGRAMME_STANDINGS.EXPECTED).length,
+        rule: `The desk states this as a rule: the only accounts that run ${programme.family} are `
+          + 'evaluation accounts, because it cannot be assigned wherever you like in NinjaTrader. '
+          + 'So a LIVE account of any other type running it is an exception, and there should be '
+          + 'none. Retired accounts and accounts nobody has typed yet are counted apart below — '
+          + 'neither is an exception to the rule, and folding all three together makes the '
+          + 'exception look several times larger than it is.',
+        ask: PROGRAMME_ASK,
+        notASegment: PROGRAMME_NOT_A_SEGMENT,
+        population: PROGRAMME_POPULATION,
+      };
+    });
+}
+
+/**
+ * The figures the programme-standing finding will not produce.
+ *
+ * Two of them, and both are about the same temptation: turning a list of
+ * accounts into a verdict on the programme.
+ */
+export function programmeStandingRefusals(findings = []) {
+  const anomalies = findings.reduce((sum, finding) => sum + finding.anomalyAccounts, 0);
+  const seen = findings.reduce((sum, finding) => sum + finding.accounts, 0);
+  return [
+    {
+      figure: 'What the accounts breaking the rule made, against the ones keeping it',
+      value: null,
+      reason: PROGRAMME_NOT_A_SEGMENT + ' It would also be the per-account-type verdict the '
+        + 'algorithm ranking was rebuilt to remove, arrived at from the other direction.',
+    },
+    {
+      figure: 'One number for “accounts running it that are not typed for it”',
+      value: null,
+      reason: `${seen} account${seen === 1 ? '' : 's'} have run a programme on this book and `
+        + `${anomalies} of them ${anomalies === 1 ? 'is' : 'are'} a live account of another type. `
+        + 'Adding the retired accounts and the untyped ones to that figure would multiply it '
+        + 'several times over with rows that are not exceptions: a retired account is a record of '
+        + 'what it used to run, and an untyped account has no type to contradict.',
+    },
+    {
+      figure: 'A verdict on which side is stale',
+      value: null,
+      reason: 'Whether the account type is wrong or the assignment is cannot be read off an '
+        + 'export. The list names the accounts and the wording never says “wrong”.',
     },
   ];
 }

@@ -583,7 +583,9 @@ export default function AlgorithmDetailPanel({ detail, onClose = null }) {
         <span className="badge muted">
           {detail.found
             ? `${detail.configurationCount} configuration${detail.configurationCount === 1 ? "" : "s"} · ${detail.ranked ? `#${detail.rank} of ${detail.rankedPeers} ranked` : "no rank"}`
-            : "not in the ranking"}
+            : detail.programme
+              ? "a programme, measured elsewhere"
+              : "not in the ranking"}
         </span>
         {onClose ? (
           <button className="ghost-button" type="button" onClick={() => onClose()}>
@@ -592,7 +594,26 @@ export default function AlgorithmDetailPanel({ detail, onClose = null }) {
         ) : null}
       </div>
 
-      {!detail.found ? (
+      {!detail.found && detail.programme ? (
+        /* Not "nothing in this book carries a row for it", which is the one
+           reading that is false: it is measured, in detail, on another panel.
+           A programme opened as though it were an algorithm gets sent there. */
+        <div style={{ padding: "12px 0" }}>
+          <p>
+            <strong>{detail.algorithm} is a programme, not one of the ranked algorithms.</strong>{" "}
+            {detail.programme.what} {detail.programme.asks} That question is answered on{" "}
+            <strong>{detail.programme.answeredBy}</strong> — {detail.programme.answeredByNote}
+          </p>
+          <p className="muted">
+            {detail.programme.accountDays} measured account-day
+            {detail.programme.accountDays === 1 ? "" : "s"} on {detail.programme.accounts} account
+            {detail.programme.accounts === 1 ? "" : "s"} across {detail.programme.clients} client
+            {detail.programme.clients === 1 ? "" : "s"}. There is no configuration comparison here
+            because there is no rank here to open one from.
+          </p>
+          <p className="muted desk-refusal">{detail.programme.rankRefusal}</p>
+        </div>
+      ) : !detail.found ? (
         <p className="muted" style={{ padding: "12px 0" }}>
           Nothing in this book carries a row for <strong>{detail.algorithm}</strong>. Nothing is
           shown rather than an empty page of zeroes — the algorithms this book measured are{" "}

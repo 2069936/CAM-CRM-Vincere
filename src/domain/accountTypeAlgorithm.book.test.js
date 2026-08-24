@@ -11,7 +11,7 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { buildAccountTypeMismatch } from './accountTypeAlgorithm';
+import { buildAccountTypeMismatch, buildProgrammeAccountStanding } from './accountTypeAlgorithm';
 import { buildCrmStateFromTables } from './supabaseStore';
 import { SEGMENTS } from './operationsSegments';
 
@@ -20,6 +20,7 @@ const snapshot = JSON.parse(
 );
 const { clients } = buildCrmStateFromTables(snapshot.tables);
 const finding = buildAccountTypeMismatch(clients);
+const [standing] = buildProgrammeAccountStanding(clients);
 
 describe('accounts typed Evaluation - Bullet Bot that are not running Bullet Bot', () => {
   it('is 18 accounts across 12 clients, half of them running no Bullet Bot at all', () => {
@@ -78,6 +79,60 @@ describe('accounts typed Evaluation - Bullet Bot that are not running Bullet Bot
     // None of it is here: the question is what the account is called, not what
     // the algorithm made.
     const flat = JSON.stringify(finding);
+    expect(flat).not.toContain('grossRealizedPnl');
+    expect(flat).not.toContain('measuredPnl');
+    expect(flat).not.toContain('meanPerAccountDay');
+  });
+});
+
+/**
+ * The second finding on the real book: the CAM's own rule about where the
+ * programme runs, checked.
+ *
+ * His words: "The only accounts that run Bullet Bot are evaluation accounts,
+ * because you cannot assign it wherever you want in NinjaTrader." The book does
+ * not quite keep it, and the size of the gap is the point — six accounts a
+ * manager can work through in a morning, not the forty-two the undifferentiated
+ * count reads.
+ */
+describe('Bullet Bot against the rule it runs under', () => {
+  it('finds six live accounts of another type running it, out of 218', () => {
+    expect(standing.family).toBe('Bullet Bot');
+    expect(standing.accounts).toBe(218);
+    expect(standing.clients).toBe(47);
+    expect(standing.anomalyAccounts).toBe(6);
+    expect(standing.anomalyClients).toBe(4);
+    expect(standing.anomalyRows).toBe(16);
+    expect(standing.expectedAccounts).toBe(176);
+    expect(standing.anomalies.map((row) => row.segment)).toEqual([
+      SEGMENTS.EVAL_STANDARD, SEGMENTS.FUNDED, SEGMENTS.FUNDED,
+      SEGMENTS.EVAL_STANDARD, SEGMENTS.EVAL_STANDARD, SEGMENTS.EVAL_STANDARD,
+    ]);
+  });
+
+  it('keeps the retired and untyped accounts out of that six, and counts them', () => {
+    // The one-lump reading of the same book is 42 accounts — the `elsewhere`
+    // line above. Thirty-six of those are 17 retired accounts, 18 accounts
+    // nobody has typed, and one close with no account row: none of them
+    // contradicts a type, because none of them has a live type to contradict.
+    expect(Object.fromEntries(standing.byStanding.map((row) => [row.standing, row.accounts])))
+      .toEqual({
+        anomaly: 6, expected: 176, unclassified: 18, retired: 17, 'no record': 1,
+      });
+    expect(standing.byStanding.reduce((sum, row) => sum + row.accounts, 0))
+      .toBe(standing.accounts);
+  });
+
+  it('names the longest-standing exception first', () => {
+    const worst = standing.anomalies[0];
+    expect(worst.segment).toBe(SEGMENTS.EVAL_STANDARD);
+    expect(worst.closes).toBe(5);
+    expect(worst.rows).toBe(5);
+    expect(worst.lastDate).toBe('2026-07-30');
+  });
+
+  it('carries no money, on accounts that moved plenty', () => {
+    const flat = JSON.stringify(standing);
     expect(flat).not.toContain('grossRealizedPnl');
     expect(flat).not.toContain('measuredPnl');
     expect(flat).not.toContain('meanPerAccountDay');

@@ -40,7 +40,7 @@ describe('opening OGX off a ranking row', () => {
   it('shows one algorithm at #2 with three configurations under it', () => {
     open('OGX');
     expect(screen.getByRole('heading', { name: 'Algorithm · OGX' })).toBeTruthy();
-    expect(screen.getByText('3 configurations · #2 of 9 ranked')).toBeTruthy();
+    expect(screen.getByText('3 configurations · #2 of 8 ranked')).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Across every account it ran on' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'v2.4 · PT 220/395/495 · SL 200' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'v2.4 · PT 200/350/425 · SL 200' })).toBeTruthy();
@@ -61,7 +61,7 @@ describe('opening OGX off a ranking row', () => {
   it('reads -$12 a day over 77 account-days, with an interval that crosses zero', () => {
     open('OGX');
     const overall = blockFor('Across every account it ran on');
-    expect(overall.getByText('#2 of 9 ranked')).toBeTruthy();
+    expect(overall.getByText('#2 of 8 ranked')).toBeTruthy();
     expect(overall.getByText('-$12')).toBeTruthy();
     expect(overall.getByText('95% CI -$45 to $21')).toBeTruthy();
     expect(overall.getByText('77 account-days')).toBeTruthy();
@@ -184,14 +184,18 @@ describe('opening an algorithm the ranking refuses to rank', () => {
 });
 
 describe('the ranking table itself, over the real book', () => {
-  it('renders fifteen algorithms as fifteen rows, ranked nine', () => {
+  it('renders fourteen algorithms as fourteen rows, ranked eight, plus the programme', () => {
     // The panel is otherwise only seen against fixtures, and the book is where
     // the shapes fixtures do not have live: a row with four businesses of money
     // on it, a row whose windows refuse a trend, a name with a space in it.
     render(<AlgorithmRankingPanel result={buildStrategyRanking(clients)} />);
-    expect(screen.getByText('9 ranked · 6 without a rank')).toBeTruthy();
+    expect(screen.getByText(/8 ranked · 6 without a rank/)).toBeTruthy();
+    expect(screen.getByText(/1 programme off the ranking/)).toBeTruthy();
     const body = screen.getByRole('table').querySelectorAll('tbody tr');
+    // Fourteen ranked-population rows and the programme's own, which is the
+    // fifteenth line on the table and holds no rank and no mean.
     expect(body).toHaveLength(15);
+    expect(body[14].className).toBe('board-programme');
     const ogx = screen.getByRole('row', { name: /^1?2\s*OGX/ });
     expect(within(ogx).getByText('-$12')).toBeTruthy();
     expect(within(ogx).getByText('95% CI -$45 to $21')).toBeTruthy();
@@ -205,5 +209,19 @@ describe('the ranking table itself, over the real book', () => {
     // And the desk's money, per business, is under the table where it belongs.
     expect(screen.getByText(/What Cash does not see:/)).toBeTruthy();
     expect(screen.getByText(/What Other prop algos does not see:/)).toBeTruthy();
+  });
+
+  it("puts the programme's own figure nowhere a reader could sort it", () => {
+    // -$93.68 per account-day is what it read at #7. The number is on the page
+    // exactly twice — in the refusal on its row and in the refusal drawer —
+    // and in neither place is it in a column.
+    const { container } = render(<AlgorithmRankingPanel result={buildStrategyRanking(clients)} />);
+    const row = screen.getByRole('row', { name: /Bullet Bot/ });
+    expect(within(row).getByText('not ranked')).toBeTruthy();
+    expect(within(row).getByText(/A programme, not a peer of the rows above/)).toBeTruthy();
+    expect(within(row).getByText('Bullet Bot across the desk')).toBeTruthy();
+    expect(within(row).getByText(/337 measured account-days on 115 accounts across 34 clients/))
+      .toBeTruthy();
+    expect(container.textContent).not.toContain('93.68');
   });
 });
