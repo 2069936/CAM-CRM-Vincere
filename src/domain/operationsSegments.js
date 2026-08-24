@@ -103,9 +103,9 @@ export const BUSINESS_KEYS = {
  * Which business a segment belongs to, or null when it belongs to none.
  *
  * THE ONLY DEFINITION. rollUpByBusiness sums segment rows with it and
- * strategyBoards routes account-days with it, so a board and the tile above it
- * cannot disagree about where a Funded account's money goes. When this was two
- * filters written twice, the second one was free to drift.
+ * algorithmRanking routes account-days with it, so a coverage line and the tile
+ * above it cannot disagree about where a Funded account's money goes. When this
+ * was two filters written twice, the second one was free to drift.
  *
  * `propOther` is defined by exclusion — anything counted that is not cash, not
  * unclassified and not Bullet Bot — so an account type nobody has taught

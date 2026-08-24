@@ -5,7 +5,7 @@ import { buildAllFundedAccounts } from './App';
 // suite. The function is deleted; its evidence rules — never split an account's
 // day across the algorithms that were running, treat an absent Realized column
 // exactly like a grid that reported zero, prefer a derived figure over a
-// reported one — moved to src/domain/strategyBoards.test.js, which is ungated so
+// reported one — moved to src/domain/algorithmRanking.test.js, which is ungated so
 // CI pins them.
 
 // ── buildAllFundedAccounts ────────────────────────────────────────────────────

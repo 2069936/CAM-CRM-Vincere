@@ -5428,7 +5428,17 @@ tr:nth-child(2) .rank-badge {
 }
 
 @page {
-  size: A4;
+  /*
+    No `size` on purpose.
+
+    This said `size: A4` and never once produced an A4 page. Every one of the
+    eleven reports the desk sent on 2026-08-21 is 215.9 x 279.4mm — US Letter —
+    because the paper comes from the print dialog, not from here, and the desk's
+    dialog is set to Letter. A stylesheet that asserts a geometry it does not
+    get is worse than one that asserts none: the layout below was budgeted
+    against A4's 273mm of usable height while the paper only ever gave 255.4mm,
+    so every calculation was 17.6mm optimistic. The margin is real and stays.
+  */
   margin: 12mm;
 }
 @media print {
@@ -5456,26 +5466,152 @@ tr:nth-child(2) .rank-badge {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  /* keep rows, sections and per-client blocks from splitting across pages */
+  /*
+    WHERE THE PAGE IS ALLOWED TO BREAK.
+
+    `break-inside: avoid` used to sit on `.report-section` as well as on `tr`.
+    A section is a heading plus a whole account table, so "keep it whole" means
+    a section taller than the space left on the sheet is pushed to the next one
+    entire and the rest of the current sheet is thrown away. That is not a
+    hypothetical: on 2026-08-21 the desk sent a two-page report whose first page
+    carried nothing but the header and the three metric tiles — 50mm of ink on a
+    255mm sheet, 80% of it blank, with a six-row table waiting on page two.
+
+    Measured the same way, 13 book clients printed to PDF at Letter/12mm through
+    this stylesheet: 23 sides, 4 of the 13 first pages under 250 characters, one
+    sheet holding nothing but the footer, and 1,031mm of blank space on sheets
+    that still had content queued behind them. Sections break now, and the same
+    corpus is 18 sides, no near-empty first page, no footer-only sheet, and
+    208mm of that mid-report blank space left. scripts/verify-report-print-layout.mjs
+    prints it and measures it; src/printLayout.test.js pins the rules.
+
+    What must NOT break is spelled out below rather than left to `avoid` on a
+    container, because the two are not the same thing: keeping a table ROW whole
+    is almost always right, keeping a whole multi-row SECTION whole is what
+    wasted the sheet.
+  */
   .report-section,
-  .report-sheet section,
-  .cam-day-client,
+  .report-sheet section {
+    break-inside: auto;
+  }
+  /*
+    The CAM's own day sheet is a list of short per-client blocks, four lines
+    each, and splitting one across sheets would separate a client's name from
+    that client's numbers. It stays whole. (App.jsx also sets this inline; the
+    rule is here so the intent is stated where the other break rules are, and it
+    is scoped through `.report-sheet` so it outranks the `section` rule above.)
+  */
+  .report-sheet .cam-day-client {
+    break-inside: avoid;
+  }
+  /* Half a row is unreadable, so a row is the atom. */
   tr {
     break-inside: avoid;
   }
+  /*
+    Nothing that only introduces something else may be the last thing on a
+    sheet: not a heading, not a table's header row, and not a heading plus a
+    header row with no data under them. Chrome has no `orphans`/`widows` for
+    table rows, so "never strand one line" has to be said row by row — the first
+    body row travels with the heading above it, the last one with the row above
+    it.
+  */
   h1,
   h2 {
     break-after: avoid;
   }
   thead {
+    /*
+      This rule was already here and was dead code: a header only repeats when a
+      table splits, and nothing was ever allowed to split. Now that sections
+      break, a continued table opens with its own column headings again.
+    */
     display: table-header-group;
+    break-after: avoid;
+  }
+  .report-table tbody tr:first-child {
+    break-after: avoid;
+  }
+  .report-table tbody tr:last-child {
+    break-before: avoid;
+  }
+  /*
+    The other half of the complaint. A sheet that is full, plus a footer whose
+    margin, rule and single line come to another 74px, overflows by a couple of
+    points — and the client gets a second sheet holding that one line. That
+    shipped too, on 2026-08-21, 96.7% blank; one of the 13 book clients did the
+    same. The footer is never split and never opens a sheet of its own.
+
+    It is not free. Tying the footer to what precedes it also drags the last
+    unbreakable group with it, which is why one book client's first sheet ends
+    63mm short. A sheet 63mm short beats a sheet with one line on it.
+  */
+  .report-footer {
+    break-inside: avoid;
+    break-before: avoid;
+    margin-top: 14px;
+  }
+  /*
+    Fixed inter-block whitespace, tightened for paper only.
+
+    On screen the report is a scrolling sheet and the air is free. On paper the
+    22px above and below the metrics, the 20px above every section and the 32px
+    above the footer come to 138px — 36.5mm, 14% of a sheet — of margin before a
+    single figure is printed, and it is what pushed three of the 13 reports onto
+    a trailing sheet that then held almost nothing. Screen values are untouched.
+  */
+  .report-metrics {
+    margin: 12px 0;
+    /*
+      Paper is 192mm wide whatever the screen breakpoints think it is.
+
+      `@media (max-width: 980px)` (index.css:4676) collapses this grid to a
+      single column, and the printed page box is 725 CSS px, so on any print
+      path that evaluates width media queries against the page the three metric
+      tiles stack into a 302px tower — 80mm of sheet for three numbers. The
+      eleven reports the desk sent on 2026-08-21 do NOT show that: their tiles
+      sit side by side on a 138pt pitch, four columns across a 677px layout. So
+      the desk's own print path and a print-to-PDF of the same page disagree
+      about the report's shape, and only one of them is right for paper.
+
+      Pinning the column count here settles it: print does not care about screen
+      breakpoints, and every path now produces the row the desk already gets.
+    */
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .report-section {
+    margin-top: 12px;
   }
   .report-table,
   .report-sheet .ops-table {
-    table-layout: fixed;
+    /*
+      `table-layout: fixed` with no column widths splits the width equally, so
+      the Account column — an alias plus a connection name — wrapped while six
+      numeric columns sat half empty. Measured over the 95 account rows the 13
+      book clients print: 82.8px a row on average under `fixed` against 60.7px
+      under `auto`, worst row 115px against 76px. That is 5.8mm of paper per
+      account row. `auto` lets the columns take what they need; the guarantee
+      `fixed` was there for (a pathological account id cannot widen the table
+      past the page) is kept by `overflow-wrap: anywhere` below, which holds
+      min-content width down to one character.
+    */
+    table-layout: auto;
     width: 100%;
-    word-break: break-word;
+    /* `word-break: break-word` was a legacy alias for exactly the next line. */
     overflow-wrap: anywhere;
+  }
+  .report-table th,
+  .report-sheet .ops-table th {
+    /*
+      `anywhere` is for a pathological account id, not for a column heading.
+      Under `auto` it also lowers a column's min-content width to one character,
+      which let the algorithm make the Status and Balance columns narrower than
+      their own headings and print them as "STATU / S" and "BALANC / E". The
+      first print of this change did exactly that. Headings wrap between words
+      or not at all.
+    */
+    overflow-wrap: normal;
+    word-break: normal;
   }
 }
 
@@ -7769,10 +7905,6 @@ tr:nth-child(2) .rank-badge {
 .board-mean strong { display: block; }
 .board-mean small { display: block; font-size: 10px; }
 .board-days { white-space: nowrap; }
-/* Exposure, not rank. Held back visually on purpose: it is the column the old
-   board sorted by, and giving it the same weight as the mean is what made a
-   reader treat it as the answer. */
-.board-exposure { color: var(--muted); font-size: 11px; }
 /* A row the evidence gate did not rank. Dimmed rather than hidden — the desk
    still needs to see that the algorithm exists and how little is behind it. */
 .board-unranked { opacity: 0.72; }
@@ -7781,6 +7913,95 @@ tr:nth-child(2) .rank-badge {
 .board-refusals { margin-top: 16px; font-size: 11px; }
 .board-refusals summary { cursor: pointer; color: var(--muted); }
 .board-refusals > ul { margin-top: 8px; }
+
+/* The algorithm name is the way into that algorithm's own side of the book, so
+   it has to look like a control. Underlined rather than coloured: the board's
+   colours already mean profit and loss and a blue algorithm name would read as a
+   third state. */
+.board-open-algo {
+  background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: pointer; text-align: left;
+  text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;
+}
+.board-open-algo:hover { text-decoration-style: solid; }
+.board-open-algo[aria-pressed="true"] { text-decoration-style: solid; }
+.board-row-open { background: var(--surface-2, rgba(127, 127, 127, 0.09)); }
+
+/* One algorithm, looking outward. Full width under the boards: an algorithm on
+   this book runs on up to four of them and this panel carries a block each. */
+.algo-detail-panel { padding: 14px; margin-bottom: 14px; }
+.algo-detail-panel .panel-heading h3 { margin: 0; }
+.algo-detail-segment { font-variant-numeric: tabular-nums; }
+
+.algo-detail-stats {
+  display: grid; gap: 10px; margin: 10px 0 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.algo-detail-stat { display: flex; flex-direction: column; gap: 1px; }
+.algo-detail-stat > span:first-child { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.algo-detail-stat strong { font-size: 15px; font-weight: 600; }
+.algo-detail-stat small { font-size: 10px; line-height: 1.4; }
+
+.algo-detail-series { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
+.algo-detail-series svg { width: 100%; height: 72px; display: block; }
+.algo-detail-zero { stroke: var(--border, var(--line)); stroke-width: 0.6; stroke-dasharray: 2 2; }
+.algo-detail-bar-up { fill: var(--success, #2f9e5f); }
+.algo-detail-bar-down { fill: var(--error, #d0453b); }
+/* A close nothing measured. Drawn on the zero line and muted, never as a bar of
+   height zero: "made nothing" and "did not run" are different claims, and 976 of
+   the 1,402 measured observations on this book are genuine zeroes. */
+.algo-detail-gap { fill: var(--muted); opacity: 0.35; }
+.algo-detail-series-ends {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 10px; color: var(--muted);
+}
+.algo-detail-series-refusal { margin: 0 0 12px; font-size: 11px; line-height: 1.5; }
+.algo-detail-note { margin: 4px 0 0; font-size: 10px; line-height: 1.5; }
+.algo-detail-closes { font-size: 11px; }
+.algo-detail-closes summary { cursor: pointer; color: var(--muted); }
+.algo-detail-closes[open] > .table-wrap { margin-top: 6px; }
+
+.algo-detail-table { font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+.algo-detail-table th[scope="row"] strong,
+.algo-detail-table th[scope="row"] small,
+.algo-detail-table td small { display: block; }
+.algo-detail-table td small { font-size: 10px; }
+.algo-detail-caption { text-align: left; font-size: 11px; color: var(--muted); padding-bottom: 4px; }
+.algo-detail-source { font-size: 11px; }
+.algo-detail-accounts { font-size: 11px; margin-bottom: 8px; }
+.algo-detail-accounts summary { cursor: pointer; color: var(--muted); }
+.algo-detail-accounts[open] > .table-wrap { margin-top: 6px; }
+
+/* NO MONEY STYLES FOR AN ALGORITHM OR A CONFIGURATION, ON PURPOSE.
+
+   `.algo-money-list` styled a list of named per-business figures — cash beside
+   prop, never added — on the ranking row and inside every configuration block.
+   The list is gone, and these rules went with it so that re-adding the markup
+   is a visible change and not a one-line restoration of something that already
+   has a stylesheet waiting for it. A dollar per business, printed beside the
+   deployment table that holds the account-days of each business, is a P&L per
+   account type with the division left to the reader. The desk's own money, per
+   business, is in `.board-coverage` under both panels. */
+
+/* Deployment context: counts only. The refusal above the table is not
+   decoration — it is the sentence that stops the table being read as a verdict
+   on an account type. */
+.algo-deployment { margin: 10px 0 12px; }
+.algo-business { margin-bottom: 10px; }
+.algo-business .board-note { margin-top: 2px; }
+.algo-configurations { margin-top: 18px; }
+.algo-configuration { margin-top: 14px; padding-left: 10px; border-left: 2px solid var(--line); }
+.algo-detail-overall { margin-top: 4px; }
+
+/* Accounts whose type names an algorithm they are not running. Borrows the
+   configuration review's voice deliberately — the two are the same kind of ask
+   and sit in the same collapsible. */
+.type-mismatch { display: flex; flex-direction: column; gap: 10px; }
+.type-mismatch-table { font-size: 11px; font-variant-numeric: tabular-nums; }
+.type-mismatch-table td small { display: block; font-size: 10px; }
+.type-mismatch-family { display: block; white-space: nowrap; }
+.type-mismatch-families { margin: 0; font-size: 11px; line-height: 1.7; }
+.type-mismatch-elsewhere { margin: 0; font-size: 11px; line-height: 1.5; }
 
 /* The panel the tiles open. Full width under the metric grid, because the tile
    it belongs to is one cell of a repeat(4, minmax(160px, 1fr)) grid and this

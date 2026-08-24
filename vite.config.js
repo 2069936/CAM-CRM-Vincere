@@ -34,6 +34,7 @@ const hasLocalSnapshot = fs.existsSync(path.resolve(__dirname, "public/local-sna
 export const localSnapshotTests = [
   "src/components/AccountLifecyclePanel.test.jsx",
   "src/components/AlgoContributionPanel.book.test.jsx",
+  "src/components/AlgorithmDetailPanel.book.test.jsx",
   "src/components/BulletBotDeskPanel.test.jsx",
   "src/components/CamFlagQueue.book.test.jsx",
   "src/components/CapitalDetailPanel.test.jsx",
@@ -43,7 +44,9 @@ export const localSnapshotTests = [
   "src/components/SetFileMatchPanel.test.jsx",
   "src/components/TimeOffPanel.test.jsx",
   "src/domain/accountLifecycle.book.test.js",
+  "src/domain/accountTypeAlgorithm.book.test.js",
   "src/domain/algoContribution.book.test.js",
+  "src/domain/algorithmRanking.book.test.js",
   "src/domain/camFlagQueue.book.test.js",
   "src/domain/camOverview.book.test.js",
   "src/domain/clientExportPlan.book.test.js",
@@ -56,6 +59,7 @@ export const localSnapshotTests = [
   "src/domain/supabaseLoadCost.book.test.js",
   "src/domain/synthesizedReference.book.test.js",
   "src/insightFeed.book.test.js",
+  "src/printLayout.book.test.js",
 ]
 
 /**

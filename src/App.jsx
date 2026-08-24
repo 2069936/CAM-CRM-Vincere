@@ -163,8 +163,10 @@ import {
   formatDeskReport,
   monthFor,
 } from "./domain/deskMoney";
-import StrategyBoardsPanel from "./components/StrategyBoardsPanel";
-import { buildStrategyBoards } from "./domain/strategyBoards";
+import AlgorithmDetailPanel from "./components/AlgorithmDetailPanel";
+import AlgorithmRankingPanel from "./components/AlgorithmRankingPanel";
+import { buildAlgorithmDetail, buildStrategyRanking } from "./domain/algorithmRanking";
+import AccountTypeMismatchPanel from "./components/AccountTypeMismatchPanel";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
@@ -901,7 +903,7 @@ export function buildMonthlyTotals(client) {
 // And it was one number over deployment size, on a book where every algorithm
 // loses, which is the same defect the leaderboard had one panel down: the
 // largest deployment scored 0.0 and a two-observation algorithm scored 10.0.
-// src/domain/strategyBoards.js replaces it with measured columns that are
+// src/domain/algorithmRanking.js replaces it with measured columns that are
 // allowed to disagree with each other.
 //
 // `avgWeekly` went with it. It was `snapshot.weeklyPnl / enabledCount` — the
@@ -955,15 +957,19 @@ export function buildStrategyAnalyzer(clients = []) {
 // accounts) and a two-observation algorithm sorted FIRST (ARPD_PF, 2
 // account-days, +$864).
 //
-// And it was not one business. 30.0% of the -$92,669.75 it ranked was not prop
-// money - cash -$23,113.00, Ignored -$2,630.50, Unclassified -$2,082.00 - and
-// Bullet-Bot evaluations, which pass or fail inside three days, were 27.8% of it
-// and sat in the same list as the ordinary algorithms.
+// And it published one dollar total across the desk: 30.0% of the -$92,669.75 it
+// ranked was not prop money - cash -$23,113.00, Ignored -$2,630.50, Unclassified
+// -$2,082.00 - which is a cash desk's real client money added to a prop desk's
+// movement on a simulated plan size.
 //
-// src/domain/strategyBoards.js replaces it with one board per business, ordered
+// src/domain/algorithmRanking.js replaces it with one rank per algorithm, ordered
 // by mean P&L per reported account-day with an account-clustered interval and an
-// evidence gate. A function that returns one ranked list over the whole desk must
-// not exist here, because the next caller renders it.
+// evidence gate, and with the MONEY reported per business and never added. Note
+// what is and is not split there: the rate is pooled over every account-day,
+// because the account type is a property of the account and does not change what
+// a tick pays; the dollars are not, because those are an accounting figure. A
+// function that returns one ranked list with one dollar total over the whole desk
+// must not exist here, because the next caller renders it.
 
 export function buildLifecycleMetrics(clients = []) {
   const evalFails = [];
@@ -3890,6 +3896,11 @@ function ManagerOverview({
   // one line of a table and CapitalDetailPanel carries four tables. The chip in
   // the row is the control; the panel opens full width directly under it.
   const [openCapitalSegment, setOpenCapitalSegment] = useState(null);
+  // Which algorithm has its own side of the book open. Held here for the same
+  // reason as the capital segment above: the detail cannot render inside the
+  // board row, because it carries one block per board the algorithm runs on and
+  // the row it is opened from is one line of one of them.
+  const [openAlgorithm, setOpenAlgorithm] = useState(null);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
   // Every cell of the strip is buildDeskMoney pinned to that close, so a day on
   // the strip is the same arithmetic as the same day on the panel above it.
@@ -4010,13 +4021,22 @@ function ManagerOverview({
   );
 
   const strategies = useMemo(() => buildStrategyAnalyzer(clients), [clients]);
-  // One board per business, keyed off the same asOfDate the tiles are pinned to.
+  // One rank per algorithm, keyed off the same asOfDate the tiles are pinned to.
   // The board it replaced took no date at all and compared its seven-day windows
   // against `new Date()`, so on 2026-08-20 over a book ending 2026-07-30 every
   // "Last 7d" cell read $0.00 and every trend arrow pointed up.
-  const strategyBoards = useMemo(
-    () => buildStrategyBoards(clients, { asOfDate }),
+  const strategyRanking = useMemo(
+    () => buildStrategyRanking(clients, { asOfDate }),
     [clients, asOfDate],
+  );
+  // One algorithm's record, pinned to the same close as the ranking it is opened
+  // from. It is the ranking's own row sliced to one name — not a second
+  // measurement — so the detail and the row above it cannot disagree.
+  const algorithmDetail = useMemo(
+    () => (openAlgorithm
+      ? buildAlgorithmDetail(clients, { algorithm: openAlgorithm, asOfDate })
+      : null),
+    [clients, openAlgorithm, asOfDate],
   );
   const lifecycle = useMemo(() => buildLifecycleMetrics(clients), [clients]);
   const riskDist = useMemo(
@@ -5375,6 +5395,14 @@ function ManagerOverview({
         <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
           <h4>Settings against the cohort</h4>
           <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
+
+          {/* Second review in the same panel, and in the same register: a list
+              to verify, not a fault list. It lives here rather than on the
+              ranking above because it is an OPERATIONAL finding about a label,
+              not a reading of any algorithm — which is exactly what the board
+              named after an account type made it look like. */}
+          <h4>Account type against the algorithm running</h4>
+          <AccountTypeMismatchPanel clients={clients} asOfDate={asOfDate} />
         </CollapsiblePanel>
 
         {/*
@@ -6015,7 +6043,21 @@ function ManagerOverview({
           </p>
         </section>
 
-        <StrategyBoardsPanel result={strategyBoards} />
+        <AlgorithmRankingPanel
+          result={strategyRanking}
+          selectedAlgorithm={openAlgorithm}
+          onSelectAlgorithm={setOpenAlgorithm}
+        />
+
+        {/* Opened from a ranking row and rendered full width directly under it:
+            an algorithm on this book runs up to three configurations and the
+            page carries a block per configuration, plus the algorithm's own. */}
+        {algorithmDetail ? (
+          <AlgorithmDetailPanel
+            detail={algorithmDetail}
+            onClose={() => setOpenAlgorithm(null)}
+          />
+        ) : null}
 
         <section className="overview-grid">
           <div className="panel">
