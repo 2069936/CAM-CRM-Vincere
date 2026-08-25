@@ -171,6 +171,7 @@ import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
+import ReportSheetActions from "./components/ReportSheetActions";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
 import QuietAccountsPanel from "./components/QuietAccountsPanel";
@@ -1704,20 +1705,6 @@ function auditSilently(entry) {
  */
 function pendingClientId() {
   return `pending-client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-// Print-to-PDF uses document.title as the default filename, so set it to the
-// client + date before printing and restore it after — no more manual renaming.
-function printWithTitle(title) {
-  const safe = String(title || "report").replace(/[\\/:*?"<>|]+/g, "-").trim();
-  const prev = document.title;
-  document.title = safe;
-  const restore = () => {
-    document.title = prev;
-    window.removeEventListener("afterprint", restore);
-  };
-  window.addEventListener("afterprint", restore);
-  window.print();
 }
 
 function downloadTextFile(fileName, text, type = "application/json") {
@@ -6729,6 +6716,10 @@ function ManagerOverview({
 }
 
 function MonthlyReportPanel({ client, month, onClose }) {
+  // The live sheet, so ReportSheetActions can send its outerHTML to
+  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
+  // is the whole reason the downloaded file and the printed one agree.
+  const sheetRef = useRef(null);
   // month = 'YYYY-MM'
   const lastMonthImport = (client?.dailyImports || [])
     .filter((di) => di.date?.startsWith(month))
@@ -6793,14 +6784,9 @@ function MonthlyReportPanel({ client, month, onClose }) {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="report-sheet">
+      <div className="report-sheet" ref={sheetRef}>
         <div className="report-actions no-print">
-          <button
-            className="secondary-button"
-            onClick={() => printWithTitle(`${client?.name || "Client"} - ${monthLabel} monthly report`)}
-          >
-            <FileText size={14} /> Print / Save PDF
-          </button>
+          <ReportSheetActions title={`${client?.name || "Client"} - ${monthLabel} monthly report`} sheetRef={sheetRef} />
           <button
             className="report-close-button"
             type="button"
@@ -7028,6 +7014,10 @@ function ReportPanel({
   onSaveConfig,
   onClose,
 }) {
+  // The live sheet, so ReportSheetActions can send its outerHTML to
+  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
+  // is the whole reason the downloaded file and the printed one agree.
+  const sheetRef = useRef(null);
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
   // Same two inputs as the summary above: everything this needs is already on
   // the reconciled import (orders, executions, the import-level strategies) and
@@ -7167,7 +7157,7 @@ function ReportPanel({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="report-sheet">
+      <div className="report-sheet" ref={sheetRef}>
         <div className="report-actions no-print">
           <span className={`remote-pill ${saveStatus === "error" ? "error" : saveStatus === "saved" ? "connected" : ""}`}>
             {saveStatus === "saving"
@@ -7188,12 +7178,7 @@ function ReportPanel({
           >
             <Settings2 size={14} /> {designOpen ? "Done designing" : "Design"}
           </button>
-          <button
-            className="secondary-button"
-            onClick={() => printWithTitle(`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`)}
-          >
-            <FileText size={14} /> Print / Save PDF
-          </button>
+          <ReportSheetActions title={`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`} sheetRef={sheetRef} />
           <button
             className="report-close-button"
             type="button"
@@ -7520,6 +7505,10 @@ function ReportPanel({
 }
 
 function CamDayReportPanel({ clients, date, camName, onClose }) {
+  // The live sheet, so ReportSheetActions can send its outerHTML to
+  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
+  // is the whole reason the downloaded file and the printed one agree.
+  const sheetRef = useRef(null);
   const rows = useMemo(() => buildCamDayReport(clients, date), [clients, date]);
   const totalPnl = rows.reduce((s, r) => s + Number(r.report.totals.grossRealizedPnl || 0), 0);
   const sign = (n) => (n >= 0 ? "+" : "");
@@ -7530,14 +7519,9 @@ function CamDayReportPanel({ clients, date, camName, onClose }) {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="report-sheet">
+      <div className="report-sheet" ref={sheetRef}>
         <div className="report-actions no-print">
-          <button
-            className="secondary-button"
-            onClick={() => printWithTitle(`Day report ${date}${camName ? ` - ${camName}` : ""}`)}
-          >
-            <FileText size={14} /> Print / Save PDF
-          </button>
+          <ReportSheetActions title={`Day report ${date}${camName ? ` - ${camName}` : ""}`} sheetRef={sheetRef} />
           <button
             className="report-close-button"
             type="button"

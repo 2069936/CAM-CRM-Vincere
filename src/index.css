@@ -2642,6 +2642,26 @@ textarea {
   padding: 34px;
 }
 
+/*
+  Why a download can fail, said on the sheet.
+
+  IT GETS ITS OWN ROW, and that is the whole rule. `.report-actions` is a flex
+  row with `flex-wrap: wrap`; sharing the row, this message is long enough to
+  push Print and the close button onto a second line — which is a poor way to
+  deliver a message whose text is "use Print to save this one". `flex-basis:
+  100%` gives it a line of its own and `order: 1` puts that line last, after the
+  close button, whatever order the panels render their children in.
+
+  `.report-actions` carries `.no-print`, so none of this reaches a client's
+  paper — printed or downloaded.
+*/
+.report-download-error {
+  flex: 0 0 100%;
+  order: 1;
+  white-space: normal;
+  line-height: 1.35;
+}
+
 .report-actions {
   position: sticky;
   top: -34px;

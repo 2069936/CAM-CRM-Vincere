@@ -70,3 +70,4 @@ release-upload/
 public/local-snapshot.json
 *.export.json
 .report-verify/
+.print-layout-verify/

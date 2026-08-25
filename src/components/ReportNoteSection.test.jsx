@@ -1,9 +1,13 @@
 // The note on the page, asserted on the markup that becomes the PDF.
 //
-// `printWithTitle` (App.jsx:1721) calls window.print() on the live report DOM —
-// there is no PDF generator in this repo, confirmed by the browser print header
-// in every one of the 11 real PDFs. So "does it print" is entirely a question of
-// which classes the markup carries, and that is what these assert:
+// Both paths to a client's PDF render THIS markup through THIS stylesheet:
+// `printWithTitle` (src/domain/reportPrint.js) calls window.print() on the live
+// report DOM, and the Download button posts the same live DOM to
+// /api/report/pdf, which loads it into a headless Chrome under print media.
+// Neither one filters the markup itself — deliberately, because a second copy of
+// this contract is precisely how the CAM's textarea would reach a client. So
+// "does it print" is still entirely a question of which classes the markup
+// carries, and that is what these assert:
 //
 //   .no-print          -> src/index.css:5250 `display: none !important` in print
 //   .report-note-print -> `display: none` on screen, `display: block` in print

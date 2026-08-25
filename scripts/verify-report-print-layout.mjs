@@ -2,23 +2,38 @@
 /**
  * House rule 1: verify by printing real output.
  *
- * There is no PDF generator in this repo. printWithTitle (App.jsx:1721) is
- * window.print() on the live report DOM, so "does the report use the page well"
- * is a question only paper can answer, and a print layout argued from CSS is how
- * this kind of change ships wrong. This script prints and measures.
+ * A client's report reaches them two ways. `printWithTitle`
+ * (src/domain/reportPrint.js) is window.print() on the live report DOM, and the
+ * Download button posts that same DOM to /api/report/pdf, where a headless
+ * Chrome loads it against this build's own stylesheet and prints it at the same
+ * Letter/12mm. Both are the same stylesheet and the same fragmentation engine,
+ * which is the entire reason the download route was chosen over a client-side
+ * rasteriser or a second vector renderer. "Does the report use the page well" is
+ * still a question only paper can answer, so this script produces paper and
+ * measures it.
  *
- * It runs two halves:
+ * WHAT CHANGED WHEN THE DOWNLOAD SHIPPED. This script used to print the report
+ * in a local harness of its own. It now drives THE ENDPOINT, over HTTP, and
+ * measures the bytes that come back — so the pinned 18 sheets, the 208mm of
+ * mid-report blank and the 39-of-39 clean boundary positions are assertions
+ * about the file the client actually receives, not about a lookalike. It also
+ * checks the name on the response, because the file name is half of what the
+ * CAM asked for.
+ *
+ * It runs four halves:
  *
  *   THE BOOK. Boots the CRM against public/local-snapshot.json, opens each
- *   listed client's close through the real UI, prints the live report DOM to PDF
- *   at US Letter with the 12mm margin @page asks for — the paper the desk
- *   actually uses, confirmed against the eleven reports it sent on 2026-08-21,
- *   every one of them 215.9 x 279.4mm and none of them A4 — and then measures
- *   where the ink landed. It fails on:
- *       * a sheet left more than 60mm blank while a later sheet still has content
+ *   listed client's close through the real UI, captures the live `.report-sheet`
+ *   exactly as the Download button would send it, POSTs it to the endpoint and
+ *   measures where the ink landed on the PDF that comes back. It fails on:
+ *       * a sheet left more than 75mm blank while a later sheet still has content
  *       * a sheet whose only content is the footer line
  *       * a heading that renders under print media but is missing from the PDF
- *       * the editor chrome or the panel actions reaching the paper
+ *       * the editor chrome or the panel actions reaching the paper — checked
+ *         BOTH by computed style and by looking for the button labels in the
+ *         text of the delivered PDF
+ *       * a Content-Disposition that does not name the file the way the desk
+ *         files it
  *
  *   THE BOUNDARY. Walks a section heading past the page boundary in 10px steps
  *   and asks, at each position, whether the break the browser chose is one a
@@ -28,21 +43,45 @@
  *   the continuation. This half needs no book and is the one that catches a
  *   regression in the rules themselves.
  *
+ *   THE FONT GUARD. Renders one report with the Google font origins blocked and
+ *   requires the endpoint to REFUSE it. This is not defensive coding: measured
+ *   here, a real book client's close is one sheet with Inter and Outfit loaded
+ *   and TWO sheets without them. Font availability is a pagination input, and an
+ *   unstyled render does not look broken enough for anyone to catch it before it
+ *   reaches a client.
+ *
+ *   THE NAME. Asserts the endpoint's Content-Disposition survives a client name
+ *   that is not ASCII. Real names on this book include Muñoz, Bałka and Şahin,
+ *   and an HTTP header is latin-1 at best.
+ *
  *   node scripts/verify-report-print-layout.mjs [--keep] [--sweep-only]
  *
- * Requires the playwright dev dependency and a Chrome on the machine.
+ * IT RUNS `vite build` AND OVERWRITES dist/. That is deliberate: the endpoint
+ * resolves the content-hashed /assets/index-<hash>.css out of the deployment's
+ * own index.html, so the only way to measure the real thing is to serve a real
+ * build. dist/ is git-ignored and the deploy rebuilds it anyway.
+ *
+ * Requires the playwright dev dependency and a Chrome on the machine. It does
+ * NOT require @sparticuz/chromium: the endpoint's browser launcher is injected,
+ * so this drives the shipped handler with a local Chrome.
  * src/printLayout.test.js is the fast stylesheet-level guard for the same rules.
  */
 
+import { Buffer } from 'node:buffer';
 import fs from 'node:fs';
+import http from 'node:http';
+import process from 'node:process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
+import { build, createServer } from 'vite';
 import { chromium } from 'playwright';
 import { readPrintedPages, pageSpace } from './lib/printedPage.mjs';
+import { createHandler } from '../api/report/pdf.js';
+import { REPORT_VIEWPORT } from '../server/report/reportPdf.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WORK = path.join(ROOT, '.print-layout-verify');
+const DIST = path.join(ROOT, 'dist');
 const KEEP = process.argv.includes('--keep');
 const SWEEP_ONLY = process.argv.includes('--sweep-only');
 const SNAPSHOT = path.join(ROOT, 'public', 'local-snapshot.json');
@@ -60,12 +99,6 @@ const CLIENTS = (process.env.VERIFY_REPORT_CLIENTS || [
   'Harper Juniper', 'Wren Larch', 'Reese Knoll',
 ].join('|')).split('|');
 
-/** US Letter at 12mm, which is what the desk's dialog produces. */
-const PAPER = {
-  format: 'Letter',
-  printBackground: true,
-  margin: { top: '12mm', bottom: '12mm', left: '12mm', right: '12mm' },
-};
 /**
  * How empty a sheet may be left with content still queued behind it.
  *
@@ -93,6 +126,23 @@ const ALLOWED_MID_REPORT_BLANK_MM = 75;
  */
 const ALLOWED_CORPUS_BLANK_MM = 300;
 
+/**
+ * Chrome on the paper, in text, that would mean the print contract has slipped.
+ *
+ * These are the labels of controls that live inside `.report-actions.no-print`
+ * and `.report-note-editor.no-print`. They travel up to the endpoint inside the
+ * report DOM ON PURPOSE — the whole reason this route was chosen is that the
+ * `@media print` blocks, and not a second hand-maintained copy of them, decide
+ * what reaches the paper — so finding one of them in the delivered PDF is the
+ * exact failure the rasteriser route was rejected for.
+ */
+const CHROME_ON_PAPER = [
+  'Download PDF',
+  'Start from the generated message',
+  'Save note',
+  'Done designing',
+];
+
 let ok = true;
 function report(label, passed, extra = '') {
   console.log(`  ${passed ? 'PASS' : 'FAIL'}  ${label}${extra ? ` — ${extra}` : ''}`);
@@ -103,7 +153,102 @@ function report(label, passed, extra = '') {
 const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
 /* ------------------------------------------------------------------ *
- * Half one: the book, through the real UI.
+ * The deployment, as the endpoint will see it.
+ * ------------------------------------------------------------------ */
+
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+};
+
+/**
+ * A plain static host over dist/.
+ *
+ * Not the vite dev server: dev serves a `.css` request through its own
+ * transform pipeline, and the thing being verified is the BUILT stylesheet at
+ * the content-hashed URL the endpoint will actually resolve in production.
+ */
+async function startAssetServer() {
+  const server = http.createServer((req, res) => {
+    const pathname = new URL(req.url, 'http://assets.local').pathname;
+    const file = path.join(DIST, pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''));
+    if (!file.startsWith(DIST) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      res.writeHead(404).end('not found');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream' });
+    fs.createReadStream(file).pipe(res);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+/**
+ * The shipped handler, mounted on a real socket.
+ *
+ * Two things are injected and nothing else is: authorization (there is no
+ * Supabase here) and the browser launcher (a local Chrome instead of
+ * @sparticuz/chromium, so this script does not need a 76 MB dependency to
+ * measure the route). Everything the layout depends on — the render document,
+ * the CSP, the asset resolution, the font check, the paper, the file name — is
+ * the production code path.
+ *
+ * The launcher hands out a fresh browser CONTEXT rather than a fresh browser
+ * process. Process launch is not what this script measures, and 52 of them would
+ * add a minute of nothing; the isolation that matters (a clean page, a clean
+ * cache, the pinned viewport) is what a context gives.
+ */
+async function startReportEndpoint({ assetOrigin, browser, blockFonts = false }) {
+  const launchBrowser = async () => {
+    const context = await browser.newContext({ viewport: { ...REPORT_VIEWPORT } });
+    if (blockFonts) {
+      await context.route('https://fonts.googleapis.com/**', (route) => route.abort());
+      await context.route('https://fonts.gstatic.com/**', (route) => route.abort());
+    }
+    return { newPage: () => context.newPage(), close: () => context.close() };
+  };
+  const handler = createHandler({
+    createClients: () => ({ admin: {}, auth: {} }),
+    authorize: async () => ({ id: 'verify', role: 'Manager', status: 'Active' }),
+    launchBrowser,
+    env: { REPORT_PDF_BASE_URL: assetOrigin },
+  });
+  const server = http.createServer((req, res) => {
+    res.status = (code) => { res.statusCode = code; return res; };
+    res.json = (body) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(body)); return res; };
+    res.send = (body) => { res.end(body); return res; };
+    handler(req, res).catch((error) => {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: String(error?.message || error) }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+/** One report, through the endpoint, exactly as the Download button sends it. */
+async function requestReportPdf(endpoint, { html, title }) {
+  const response = await fetch(`${endpoint}/api/report/pdf`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer verify', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html, title }),
+  });
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return {
+    status: response.status,
+    contentType: response.headers.get('content-type') || '',
+    disposition: response.headers.get('content-disposition') || '',
+    bytes: buffer,
+    error: response.ok ? '' : buffer.toString('utf8').slice(0, 300),
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Half one: the book, through the real UI and then the real endpoint.
  * ------------------------------------------------------------------ */
 
 async function captureReports(page) {
@@ -129,6 +274,8 @@ async function captureReports(page) {
     await open.click();
     await page.waitForSelector('.report-sheet', { timeout: 20000 });
     await page.waitForTimeout(500);
+    // outerHTML of the live sheet: byte for byte what
+    // src/domain/reportPdfDownload.js sends.
     captured[name] = await page.locator('.report-sheet').first().evaluate((node) => node.outerHTML);
     await page.locator('.report-close-button').click();
     await page.waitForTimeout(200);
@@ -136,63 +283,84 @@ async function captureReports(page) {
   return captured;
 }
 
-function writeHarness(captured) {
-  fs.rmSync(WORK, { recursive: true, force: true });
-  fs.mkdirSync(WORK, { recursive: true });
-  for (const [name, html] of Object.entries(captured)) {
-    fs.writeFileSync(path.join(WORK, `${slug(name)}.html`), `<!doctype html>
-<html><head><meta charset="utf-8"><title>${name}</title></head>
-<body><div class="report-overlay" id="root"></div>
-<script type="module">
-import '../src/index.css';
-document.getElementById('root').innerHTML = ${JSON.stringify(html)};
-window.__ready = true;
-</script></body></html>`);
-  }
+/**
+ * What renders under print media, asked of a page rather than of a PDF.
+ *
+ * Kept as a separate probe because the PDF cannot answer it: "this heading is
+ * visible under print media" is a statement about the DOM, and comparing it with
+ * what came out of the endpoint is what catches a heading that the stylesheet
+ * shows and the paper loses.
+ */
+async function probePrintMedia(browser, assetOrigin, css, html) {
+  const page = await browser.newPage({ viewport: { ...REPORT_VIEWPORT } });
+  await page.setContent(`<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="${assetOrigin}${css}"></head>
+<body><div class="report-overlay">${html}</div></body></html>`, { waitUntil: 'load' });
+  await page.emulateMedia({ media: 'print' });
+  const seen = await page.evaluate(() => {
+    const shown = (selector) => {
+      const node = document.querySelector(selector);
+      return node ? getComputedStyle(node).display : 'absent';
+    };
+    return {
+      headings: [...document.querySelectorAll('.report-sheet h1, .report-sheet h2')]
+        .filter((node) => getComputedStyle(node).display !== 'none'
+          && getComputedStyle(node.closest('section, header, footer') || node).display !== 'none')
+        .map((node) => node.innerText.replace(/\s+/g, ' ').trim()),
+      actions: shown('.report-actions'),
+      editor: shown('.report-note-editor'),
+    };
+  });
+  await page.close();
+  return seen;
 }
 
-async function measureBook(browser, port, captured) {
-  console.log('\nTHE BOOK — every report printed to PDF at Letter/12mm');
+async function measureBook(browser, endpoint, assetOrigin, cssPath, captured) {
+  console.log('\nTHE BOOK — every report through /api/report/pdf at Letter/12mm');
   console.log('-'.repeat(78));
-  console.log('  client            sheets   used/blank mm per sheet');
+  console.log('  client            sheets   KB    used/blank mm per sheet');
   let sheets = 0;
   let midReportBlank = 0;
+  let totalBytes = 0;
   const offences = [];
-  for (const name of Object.keys(captured)) {
-    const page = await browser.newPage({ viewport: { width: 1200, height: 1400 } });
-    await page.goto(`http://localhost:${port}/${path.basename(WORK)}/${slug(name)}.html`, { waitUntil: 'load' });
-    await page.waitForFunction(() => window.__ready === true, null, { timeout: 30000 });
-    await page.waitForTimeout(200);
+  for (const [name, html] of Object.entries(captured)) {
+    const title = `${name} - ${DATE} daily report`;
+    const onPaper = await probePrintMedia(browser, assetOrigin, cssPath, html);
+    const answer = await requestReportPdf(endpoint, { html, title });
 
-    await page.emulateMedia({ media: 'print' });
-    const onPaper = await page.evaluate(() => {
-      const shown = (selector) => {
-        const node = document.querySelector(selector);
-        return node ? getComputedStyle(node).display : 'absent';
-      };
-      return {
-        headings: [...document.querySelectorAll('.report-sheet h1, .report-sheet h2')]
-          .filter((node) => getComputedStyle(node).display !== 'none'
-            && getComputedStyle(node.closest('section, header, footer') || node).display !== 'none')
-          .map((node) => node.innerText.replace(/\s+/g, ' ').trim()),
-        actions: shown('.report-actions'),
-        editor: shown('.report-note-editor'),
-      };
-    });
-    await page.emulateMedia({ media: null });
+    if (answer.status !== 200) {
+      report(`${name} rendered`, false, `${answer.status} ${answer.error}`);
+      continue;
+    }
+    if (!answer.contentType.startsWith('application/pdf')) {
+      offences.push(`${name}: the endpoint answered ${answer.contentType || '(no content type)'}`);
+    }
+    // The file name is half of what the CAM asked for: today the eleven reports
+    // land in whichever folder the dialog last pointed at, under whatever the
+    // title happened to be.
+    if (!answer.disposition.includes(`filename="${title}.pdf"`)) {
+      offences.push(`${name}: Content-Disposition is "${answer.disposition}", not the name the desk files by`);
+    }
 
-    const pages = readPrintedPages(await page.pdf(PAPER)).map((sheet) => ({ ...pageSpace(sheet), text: sheet.text }));
-    await page.close();
+    if (KEEP) fs.writeFileSync(path.join(WORK, `${slug(name)}.pdf`), answer.bytes);
+    totalBytes += answer.bytes.length;
 
+    const pages = readPrintedPages(answer.bytes).map((sheet) => ({ ...pageSpace(sheet), text: sheet.text }));
     sheets += pages.length;
-    const printed = pages.map((sheet) => sheet.text).join(' ').replace(/\s+/g, '').toLowerCase();
+    const printed = pages.map((sheet) => sheet.text).join(' ');
+    const squashed = printed.replace(/\s+/g, '').toLowerCase();
     for (const heading of onPaper.headings) {
-      if (!printed.includes(heading.replace(/\s+/g, '').toLowerCase())) {
+      if (!squashed.includes(heading.replace(/\s+/g, '').toLowerCase())) {
         offences.push(`${name}: heading "${heading}" renders under print media but is not in the PDF`);
       }
     }
     if (onPaper.actions !== 'none') offences.push(`${name}: .report-actions reaches the paper`);
     if (onPaper.editor !== 'none' && onPaper.editor !== 'absent') offences.push(`${name}: the note editor reaches the paper`);
+    // The same question, asked of the delivered bytes rather than of a
+    // stylesheet. This is the one the client would have noticed.
+    for (const label of CHROME_ON_PAPER) {
+      if (printed.includes(label)) offences.push(`${name}: "${label}" is in the delivered PDF`);
+    }
 
     pages.forEach((sheet, index) => {
       if (index === pages.length - 1) return;
@@ -206,10 +374,12 @@ async function measureBook(browser, port, captured) {
       offences.push(`${name}: the last sheet holds ${last.used.toFixed(0)}mm of ink and nothing else`);
     }
 
-    console.log(`  ${name.padEnd(16)} ${String(pages.length).padStart(6)}   ${pages.map((s) => `${s.used.toFixed(0)}/${s.blank.toFixed(0)}`).join('  ')}`);
+    console.log(`  ${name.padEnd(16)} ${String(pages.length).padStart(6)} ${(answer.bytes.length / 1024).toFixed(0).padStart(5)}    ${pages.map((s) => `${s.used.toFixed(0)}/${s.blank.toFixed(0)}`).join('  ')}`);
   }
   console.log('-'.repeat(78));
+  const count = Object.keys(captured).length;
   console.log(`  ${sheets} sheets, ${midReportBlank.toFixed(0)}mm blank on sheets that still had content queued behind them`);
+  console.log(`  ${(totalBytes / 1024).toFixed(0)} KB delivered, mean ${(totalBytes / 1024 / (count || 1)).toFixed(1)} KB a report`);
   for (const offence of offences) console.log(`  ! ${offence}`);
   report('no sheet is left substantially empty while content waits on the next', !offences.length, offences.length ? `${offences.length} offence(s)` : `${sheets} sheets`);
   report('the corpus wastes less than a sheet in total', midReportBlank <= ALLOWED_CORPUS_BLANK_MM,
@@ -222,42 +392,43 @@ async function measureBook(browser, port, captured) {
 
 const SWEEP_ROWS = 10;
 
-function writeSweep() {
-  fs.mkdirSync(WORK, { recursive: true });
+/**
+ * One `.report-sheet` with a spacer of a given height in front of the section.
+ *
+ * Built as a string rather than mutated in a live page, because the endpoint
+ * takes markup: the sweep now walks the boundary through the same route a
+ * client's report takes. The spacer carries a rule at its foot so it leaves
+ * ink — a page whose content is an invisible box would measure as blank and the
+ * sweep would lie.
+ */
+function sweepSheet(spacerPx) {
   const rows = Array.from({ length: SWEEP_ROWS }, (_, i) => `<tr><td><strong>Rowmark${i + 1}</strong><br><small>a connection name</small></td><td>Active</td><td><small>Legends</small></td><td>$0</td><td>$0</td><td>-</td><td>$50,000</td></tr>`).join('');
-  fs.writeFileSync(path.join(WORK, 'sweep.html'), `<!doctype html>
-<html><head><meta charset="utf-8"><title>boundary sweep</title></head><body>
-<div class="report-overlay"><div class="report-sheet">
+  return `<div class="report-sheet">
 <header class="report-header"><div><p class="report-firm">Vincere Trading</p><h1>Boundary sweep</h1></div></header>
-<div id="spacer"></div>
+<div id="spacer" style="height:${spacerPx}px;border-bottom:1px solid #333"></div>
 <section class="report-section"><h2>Sweepsection</h2><table class="report-table">
 <thead><tr><th>Account</th><th>Status</th><th>Strategies</th><th>Daily PnL</th><th>Weekly PnL</th><th>Drawdown</th><th>Balance</th></tr></thead>
 <tbody>${rows}</tbody></table></section>
 <footer class="report-footer"><span>Generated</span><span>Vincere Trading · Confidential</span></footer>
-</div></div>
-<script type="module">
-import '../src/index.css';
-// The spacer carries a rule at its foot so it leaves ink: a page whose content
-// is an invisible box would measure as blank and the sweep would lie.
-window.setSpacer = (px) => {
-  const spacer = document.getElementById('spacer');
-  spacer.style.height = px + 'px';
-  spacer.style.borderBottom = '1px solid #333';
-};
-</script></body></html>`);
+</div>`;
 }
 
-async function sweepBoundary(browser, port) {
+async function sweepBoundary(endpoint) {
   console.log('\nTHE BOUNDARY — a section heading walked past the page edge in 10px steps');
   console.log('-'.repeat(78));
-  const page = await browser.newPage({ viewport: { width: 1200, height: 1400 } });
-  await page.goto(`http://localhost:${port}/${path.basename(WORK)}/sweep.html`, { waitUntil: 'load' });
-  await page.waitForFunction(() => typeof window.setSpacer === 'function', null, { timeout: 30000 });
   const offences = [];
   let positions = 0;
   for (let spacer = 500; spacer <= 880; spacer += 10) {
-    await page.evaluate((px) => window.setSpacer(px), spacer);
-    const sheets = readPrintedPages(await page.pdf(PAPER));
+    const answer = await requestReportPdf(endpoint, {
+      html: sweepSheet(spacer),
+      title: `Boundary sweep ${spacer}`,
+    });
+    if (answer.status !== 200) {
+      offences.push(`spacer ${spacer}px: the endpoint answered ${answer.status} ${answer.error}`);
+      positions += 1;
+      continue;
+    }
+    const sheets = readPrintedPages(answer.bytes);
     positions += 1;
     const rowsOn = (text) => (text.match(/Rowmark/g) || []).length;
     const first = sheets[0];
@@ -276,10 +447,42 @@ async function sweepBoundary(browser, port) {
     if (worst > ALLOWED_MID_REPORT_BLANK_MM) flags.push(`${worst.toFixed(0)}mm of the sheet left blank with content queued`);
     for (const flag of flags) offences.push(`spacer ${spacer}px: ${flag}`);
   }
-  await page.close();
   for (const offence of offences.slice(0, 12)) console.log(`  ! ${offence}`);
   if (offences.length > 12) console.log(`  ! ...and ${offences.length - 12} more`);
   report('every break the browser chooses is one a reader would choose', !offences.length, `${positions} boundary positions`);
+}
+
+/* ------------------------------------------------------------------ *
+ * Half three: the fonts, and half four: the name.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The endpoint must REFUSE to render against fonts that did not arrive.
+ *
+ * Measured on this corpus: Gray Birch's close is one sheet with Inter and
+ * Outfit loaded and two sheets without them. A silent fallback would post a
+ * client a report paginated unlike every report they have received, and nothing
+ * about it would look wrong enough to catch.
+ */
+async function verifyFontGuard(endpoint) {
+  console.log('\nTHE FONT GUARD — a render with the font origins blocked');
+  console.log('-'.repeat(78));
+  const answer = await requestReportPdf(endpoint, { html: sweepSheet(200), title: 'Font guard - 2026-08-24 daily report' });
+  console.log(`  the endpoint answered ${answer.status}: ${answer.error.slice(0, 120)}`);
+  report('a report whose fonts did not load is refused, not sent', answer.status === 502 && /report_font_missing/.test(answer.error),
+    'font availability is a pagination input');
+}
+
+async function verifyName(endpoint) {
+  console.log('\nTHE NAME — the file the desk files by');
+  console.log('-'.repeat(78));
+  const title = 'Ayşe Şahin - 2026-08-24 daily report';
+  const answer = await requestReportPdf(endpoint, { html: sweepSheet(120), title });
+  const extended = /filename\*=UTF-8''(\S+)/.exec(answer.disposition)?.[1] || '';
+  console.log(`  ${answer.disposition}`);
+  report('a non-ASCII client name survives the header intact', decodeURIComponent(extended) === `${title}.pdf`,
+    'HTTP header values are latin-1 at best; Node throws on U+015F');
+  report('the response asks the browser to save rather than display', /^attachment;/.test(answer.disposition));
 }
 
 /* ------------------------------------------------------------------ */
@@ -290,28 +493,59 @@ async function main() {
     console.log('  public/local-snapshot.json is absent, so the book half cannot run.');
     console.log('  Running the boundary sweep only, which needs no book.');
   }
-  process.env.VITE_LOCAL_SNAPSHOT = '1';
-  const server = await createServer({ root: ROOT, server: { port: 5195, strictPort: false }, logLevel: 'error' });
-  await server.listen();
-  const port = server.config.server.port || server.httpServer.address().port;
-  const browser = await chromium.launch({ channel: 'chrome' });
-  try {
-    if (hasBook && !SWEEP_ONLY) {
-      const app = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const runBook = hasBook && !SWEEP_ONLY;
+
+  fs.rmSync(WORK, { recursive: true, force: true });
+  fs.mkdirSync(WORK, { recursive: true });
+
+  let captured = {};
+  if (runBook) {
+    process.env.VITE_LOCAL_SNAPSHOT = '1';
+    const dev = await createServer({ root: ROOT, server: { port: 5195, strictPort: false }, logLevel: 'error' });
+    await dev.listen();
+    const devPort = dev.config.server.port || dev.httpServer.address().port;
+    const devBrowser = await chromium.launch({ channel: 'chrome' });
+    try {
+      const app = await devBrowser.newPage({ viewport: { width: 1440, height: 1000 } });
       app.on('pageerror', (error) => console.error('  [page error]', error.message));
-      await app.goto(`http://localhost:${port}/`, { waitUntil: 'load' });
-      const captured = await captureReports(app);
+      await app.goto(`http://localhost:${devPort}/`, { waitUntil: 'load' });
+      captured = await captureReports(app);
       await app.close();
-      report('opened every listed client through the real UI', Object.keys(captured).length === CLIENTS.length,
-        `${Object.keys(captured).length}/${CLIENTS.length} on ${DATE}`);
-      writeHarness(captured);
-      await measureBook(browser, port, captured);
+    } finally {
+      await devBrowser.close();
+      await dev.close();
     }
-    writeSweep();
-    await sweepBoundary(browser, port);
+    report('opened every listed client through the real UI', Object.keys(captured).length === CLIENTS.length,
+      `${Object.keys(captured).length}/${CLIENTS.length} on ${DATE}`);
+    if (KEEP) {
+      for (const [name, html] of Object.entries(captured)) {
+        fs.writeFileSync(path.join(WORK, `${slug(name)}.html`), html);
+      }
+    }
+  }
+
+  // The endpoint resolves the content-hashed stylesheet out of the deployment's
+  // own index.html, so the deployment has to be real.
+  console.log('\nbuilding dist/ so the endpoint can resolve this build\'s own assets...');
+  await build({ root: ROOT, logLevel: 'error' });
+  const cssPath = (/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/.exec(fs.readFileSync(path.join(DIST, 'index.html'), 'utf8')) || [])[1];
+  if (!cssPath) throw new Error('dist/index.html links no stylesheet');
+  console.log(`  serving dist/, stylesheet ${cssPath}`);
+
+  const assets = await startAssetServer();
+  const browser = await chromium.launch({ channel: 'chrome' });
+  const endpoint = await startReportEndpoint({ assetOrigin: assets.origin, browser });
+  const blocked = await startReportEndpoint({ assetOrigin: assets.origin, browser, blockFonts: true });
+  try {
+    if (runBook) await measureBook(browser, endpoint.origin, assets.origin, cssPath, captured);
+    await sweepBoundary(endpoint.origin);
+    await verifyFontGuard(blocked.origin);
+    await verifyName(endpoint.origin);
   } finally {
+    endpoint.server.close();
+    blocked.server.close();
+    assets.server.close();
     await browser.close();
-    await server.close();
     if (!KEEP) fs.rmSync(WORK, { recursive: true, force: true });
     else console.log(`\nkept ${WORK}`);
   }

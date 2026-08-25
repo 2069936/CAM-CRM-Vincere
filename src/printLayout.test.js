@@ -1,15 +1,22 @@
 // What the print stylesheet promises the paper.
 //
-// `printWithTitle` (App.jsx:1721) is window.print() on the live report DOM —
-// there is no PDF generator in this repo — so the shape of a client's PDF is
-// decided entirely by @page and the three `@media print` blocks in
-// src/index.css. This file reads those blocks and pins the decisions in them.
+// A client's PDF is produced two ways now, and BOTH of them are this
+// stylesheet. `printWithTitle` (src/domain/reportPrint.js) is window.print() on
+// the live report DOM; the Download button posts that same DOM to
+// /api/report/pdf, where a headless Chrome loads it against this same built
+// stylesheet and prints it at the same Letter/12mm. Neither path re-implements
+// the report, so the shape of what a client receives is still decided entirely
+// by @page and the three `@media print` blocks in src/index.css. This file
+// reads those blocks and pins the decisions in them — and pinning them is worth
+// MORE than it was before, because two shipping paths now depend on them
+// instead of one.
 //
 // WHY A STYLESHEET IS ASSERTED HERE AND NOT A RENDERED PAGE. jsdom has no
 // fragmentation engine: it cannot tell you where a page breaks, so a test that
 // rendered the report would be asserting nothing about paper. The real
 // verification is a browser one and it is in scripts/verify-report-print-layout.mjs,
-// which prints 13 book clients to PDF at Letter/12mm, sweeps a section heading
+// which sends 13 book clients' reports through the real endpoint, measures the
+// PDF bytes that come back, sweeps a section heading
 // past the page boundary in 10px steps and fails on a stranded heading, a
 // stranded row, a footer alone on a sheet, a lost repeated header, or a page
 // left more than 75mm empty with content still queued. That script needs a

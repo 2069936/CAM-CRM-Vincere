@@ -18,6 +18,14 @@ needed to switch on the automatic collector; the CRM is fully usable without it.
   `Cash` value keeps working and is reported as unclassified.
 - A report designer: each CAM sets a default layout for their reports, and any
   client can override it.
+- **Reports download instead of printing.** The report sheet's first action is
+  now **Download PDF**: one click, no operating-system print dialog, and the file
+  arrives in the browser's downloads folder already named
+  `<Client> - <date> daily report.pdf`. It is rendered by a new function,
+  `/api/report/pdf`, which loads the same report DOM against the same
+  `@media print` stylesheet in a headless Chrome — so the downloaded file is the
+  printed file. **Print** is still there, demoted to a ghost button: it is the
+  only path that works when the function or the network is down.
 - CAM time off and temporary client coverage: a CAM requests time off, a manager
   approves it and assigns cover in the same action. Cover adds access without
   removing it and expires on its own end date.
@@ -110,6 +118,12 @@ Add:
 | Variable | Value |
 |---|---|
 | `INGEST_TOKEN_PEPPER` | A secret: `openssl rand -hex 32`. Generate it in Vercel and keep it there — it must not be committed or sent over chat. Device authentication has nothing to hash without it. |
+
+Optional, and normally left unset:
+
+| Variable | Value |
+|---|---|
+| `REPORT_PDF_BASE_URL` | Where `/api/report/pdf` fetches this build's stylesheet and fonts. Unset, it uses `VERCEL_URL`, which is correct for a normal project. Set it to the CRM's public origin (`https://host`, no path) **only if Deployment Protection is on** — with SSO in front of `VERCEL_URL` the function gets a login page instead of `index.html` and every download fails with `report_stylesheet_missing`. |
 
 The three below come out of step 3 and are only needed for the collector. Leave
 them unset until then — the CRM does not need them.
@@ -208,6 +222,29 @@ against a disposable payload, so the real one has to be deployed from a machine
 with licensed NinjaTrader. `install-agent.ps1` warns and continues when it is
 absent, so the service installs and pairs first; NinjaTrader capture begins once
 the AddOn is in place.
+
+**The report PDF function has not been timed on Lambda.** `/api/report/pdf`
+takes the 6th of Vercel Hobby's 12 serverless functions and carries ~75 MB of
+`@sparticuz/chromium` + `puppeteer-core`, which is why it is its own file rather
+than another key in `api/admin/[action].js` — putting it there would attach that
+weight, and its cold-start decompression, to client-export and all seven
+`ingest-*` endpoints. Warm renders measured 0.8–1.5s each with a real Chrome;
+the cold start on Lambda (brotli-decompressing chromium, then launching it) was
+not measured here and is the number to watch after the first deploy.
+`vercel.json` sets `maxDuration: 60` for this route so a cold start has room.
+If it is too slow in practice, Print still works and is one click away.
+
+**The report's fonts come from Google at render time.** The report is set in
+Inter and Outfit, which `src/index.css` `@import`s from `fonts.googleapis.com`,
+so the render function fetches them like any browser does. This is not a new
+dependency — every report the desk has ever printed fetched the same two
+families — but it is now a dependency of a server. It is not a silent one: fonts
+are a pagination input (measured, a real client's close is one sheet with them
+and two without), so a render whose fonts did not load is **refused** with
+`report_font_missing` rather than sent. Self-hosting the two families through
+`@fontsource` would remove the dependency entirely and is the obvious follow-up;
+`@fontsource-variable/geist` is already installed, declares five `@font-face`
+rules and is applied to nothing, so 76 KB of woff2 ships unused today.
 
 **The agent package is unsigned.** Distribution deliberately does not depend on a
 code-signing certificate. Integrity is still enforced — the manifest is pinned by
