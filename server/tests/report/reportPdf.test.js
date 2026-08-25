@@ -34,7 +34,7 @@ const INDEX_HTML = `<!doctype html><html><head>
 <script type="module" crossorigin src="/assets/index-def456.js"></script>
 <link rel="stylesheet" crossorigin href="/assets/index-abc123.css">
 </head><body><div id="root"></div></body></html>`;
-const CSS = '@import url("https://fonts.googleapis.com/css2?family=Inter");.x{background:url(/assets/geist.woff2)}.y{fill:url(#clientPnlArea)}';
+const CSS = '@font-face{font-family:"Inter Variable";src:url(/assets/inter-latin-wght-normal-Dx4kXJAl.woff2)}.y{fill:url(#clientPnlArea)}';
 
 /** A live report sheet, with everything the print contract has to strip. */
 const SHEET = `<div class="report-sheet">
@@ -153,13 +153,20 @@ describe('what the render document is allowed to reach', () => {
     expect(csp(browser.seen.document)).toContain("object-src 'none'");
   });
 
-  it('allows only the deployment and the two font origins the stylesheet has always used', async () => {
+  it('allows the deployment and nothing else, now that the fonts are the deployment\'s', async () => {
+    // This list used to carry https://fonts.googleapis.com and
+    // https://fonts.gstatic.com, because Inter and Outfit were `@import`ed from
+    // Google and a render could not paginate without them. Self-hosting the two
+    // families through `@fontsource` is what let both third-party origins leave
+    // the policy, so their ABSENCE is the assertion worth making.
     const { browser, result } = render();
     await result;
     const policy = csp(browser.seen.document);
-    expect(policy).toContain(`style-src ${ORIGIN} https://fonts.googleapis.com 'unsafe-inline'`);
-    expect(policy).toContain(`font-src ${ORIGIN} https://fonts.gstatic.com`);
+    expect(policy).toContain(`style-src ${ORIGIN} 'unsafe-inline'`);
+    expect(policy).toContain(`font-src ${ORIGIN}`);
     expect(policy).toContain(`img-src ${ORIGIN} data:`);
+    expect(policy).not.toContain('fonts.googleapis.com');
+    expect(policy).not.toContain('fonts.gstatic.com');
   });
 
   it('keeps inline styles working, because the report uses them', async () => {
@@ -178,8 +185,10 @@ describe('making the built stylesheet self-contained', () => {
   it('points root-relative asset urls back at the deployment', () => {
     // The sheet is inlined, so its own URL is no longer there to resolve
     // `url(/assets/…)` against. Without this the fonts 404 and the report
-    // repaginates.
-    expect(absolutizeCssUrls('a{src:url(/assets/g.woff2)}', ORIGIN)).toBe(`a{src:url(${ORIGIN}/assets/g.woff2)}`);
+    // repaginates — and that is no longer a hypothetical: Inter and Outfit ARE
+    // `/assets/*.woff2` now, so this rewrite is on the pagination path.
+    expect(absolutizeCssUrls('a{src:url(/assets/inter-latin-wght-normal-Dx4kXJAl.woff2)}', ORIGIN))
+      .toBe(`a{src:url(${ORIGIN}/assets/inter-latin-wght-normal-Dx4kXJAl.woff2)}`);
     expect(absolutizeCssUrls('a{src:url("/assets/g.woff2")}', ORIGIN)).toBe(`a{src:url("${ORIGIN}/assets/g.woff2")}`);
   });
 
@@ -190,7 +199,11 @@ describe('making the built stylesheet self-contained', () => {
     expect(absolutizeCssUrls('a{fill:url(#clientPnlArea)}', ORIGIN)).toBe('a{fill:url(#clientPnlArea)}');
   });
 
-  it('leaves the Google Fonts @import alone, because it is what loads Inter and Outfit', () => {
+  it('leaves urls that are already absolute alone', () => {
+    // The stylesheet no longer carries a Google Fonts `@import` — the fonts are
+    // self-hosted — but only a SINGLE leading slash is rewritten, and that is
+    // what keeps any absolute url that does appear from being mangled into
+    // `https://cam.example.test/https://…`.
     const css = '@import url("https://fonts.googleapis.com/css2?family=Inter");';
     expect(absolutizeCssUrls(css, ORIGIN)).toBe(css);
     // Protocol-relative too: `url(//host/x)` is not a root-relative path.
@@ -283,15 +296,17 @@ describe('refusing to send paper that was laid out against missing assets', () =
 
   it('refuses a page whose fonts did not load, because that changes the page count', () => {
     // MEASURED on a real book report rendered through this module: with Inter
-    // and Outfit loaded, Gray Birch's close is ONE sheet. With the Google
-    // origins blocked it is TWO. Font availability is a pagination input, and an
+    // and Outfit loaded, Gray Birch's close is ONE sheet. With the font files
+    // blocked it is TWO. Font availability is a pagination input, and an
     // unstyled render does not look broken enough for anyone to catch it before
-    // it reaches a client.
+    // it reaches a client. Self-hosting the families did not retire this check —
+    // a woff2 that 404s after a bad deploy costs the same sheet Google's outage
+    // would have.
     const noFonts = { stylesheets: [1493], fonts: REPORT_FONT_FAMILIES.map((family) => ({ family, loaded: 0, seen: 8 })) };
     expect(() => assertReportAssetsLoaded(noFonts, 1)).toThrow(/report_font_missing/);
     // One of the two is just as wrong as neither: Outfit sets every heading.
-    const halfFonts = { stylesheets: [1493], fonts: [{ family: 'Inter', loaded: 2 }, { family: 'Outfit', loaded: 0 }] };
-    expect(() => assertReportAssetsLoaded(halfFonts, 1)).toThrow(/report_font_missing: Outfit/);
+    const halfFonts = { stylesheets: [1493], fonts: [{ family: 'Inter Variable', loaded: 2 }, { family: 'Outfit Variable', loaded: 0 }] };
+    expect(() => assertReportAssetsLoaded(halfFonts, 1)).toThrow(/report_font_missing: Outfit Variable/);
   });
 
   it('refuses a page that reported no font families at all', () => {
@@ -300,13 +315,15 @@ describe('refusing to send paper that was laid out against missing assets', () =
   });
 
   it('asks the page about the fonts the report is actually set in', async () => {
-    // Not Geist: src/index.css imports @fontsource-variable/geist, but a scan of
-    // the built stylesheet finds "Geist Variable" in five @font-face rules and
-    // in zero declarations that would use one. Asserting it would fail every
-    // render.
+    // The names the BROWSER reports, not the ones a reader would guess:
+    // @fontsource-variable declares its faces as "Inter Variable" and "Outfit
+    // Variable", and `document.fonts` is asked by family name. Probing for
+    // "Inter" would fail every render as surely as probing for Geist would have
+    // — src/index.css used to import @fontsource-variable/geist, whose five
+    // @font-face rules no declaration in the sheet ever selected.
     const { browser, result } = render();
     await result;
-    expect(browser.seen.probeArg).toEqual(['Inter', 'Outfit']);
+    expect(browser.seen.probeArg).toEqual(['Inter Variable', 'Outfit Variable']);
   });
 });
 

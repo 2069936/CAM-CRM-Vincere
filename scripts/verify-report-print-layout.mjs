@@ -43,12 +43,16 @@
  *   the continuation. This half needs no book and is the one that catches a
  *   regression in the rules themselves.
  *
- *   THE FONT GUARD. Renders one report with the Google font origins blocked and
- *   requires the endpoint to REFUSE it. This is not defensive coding: measured
- *   here, a real book client's close is one sheet with Inter and Outfit loaded
- *   and TWO sheets without them. Font availability is a pagination input, and an
- *   unstyled render does not look broken enough for anyone to catch it before it
- *   reaches a client.
+ *   THE FONT GUARD. Renders one report with the deployment's own woff2 files
+ *   blocked and requires the endpoint to REFUSE it. This is not defensive
+ *   coding: measured here, a real book client's close is one sheet with Inter
+ *   and Outfit loaded and TWO sheets without them. Font availability is a
+ *   pagination input, and an unstyled render does not look broken enough for
+ *   anyone to catch it before it reaches a client. It blocks the DEPLOYMENT's
+ *   font URLs because that is where the two families live now — they were
+ *   `@import`ed from fonts.googleapis.com until self-hosting them through
+ *   `@fontsource` took Google off the render path — so this half also fails if a
+ *   third-party origin ever creeps back onto it.
  *
  *   THE NAME. Asserts the endpoint's Content-Disposition survives a client name
  *   that is not ASCII. Real names on this book include Muñoz, Bałka and Şahin,
@@ -75,6 +79,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, createServer } from 'vite';
 import { chromium } from 'playwright';
+import { getTransformedRoutes } from '@vercel/routing-utils';
 import { readPrintedPages, pageSpace } from './lib/printedPage.mjs';
 import { createHandler } from '../api/report/pdf.js';
 import { REPORT_VIEWPORT } from '../server/report/reportPdf.js';
@@ -156,6 +161,63 @@ const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
  * The deployment, as the endpoint will see it.
  * ------------------------------------------------------------------ */
 
+/**
+ * `vercel.json`'s header rules, compiled by the router Vercel itself compiles
+ * them with.
+ *
+ * WHY THE REAL COMPILER AND NOT A `path.extname(file) === '.woff2'` CHECK, which
+ * is what this stood on until it was reviewed. The whole Download button now
+ * rests on ONE line of deployment config matching the built font paths, and a
+ * host that decided for itself which files are fonts would have passed
+ * identically had that line read `/fonts/(.*).woff2` — it validated the header's
+ * VALUE and never the `source` that carries it. The rule turned out to be
+ * right, but nothing here had measured it, and nobody on this desk can deploy a
+ * fix if it is ever wrong.
+ *
+ * `getTransformedRoutes` is Vercel's own `@vercel/routing-utils`, the code that
+ * turns a `vercel.json` into the route table the platform runs. Feeding it this
+ * repo's actual file yields
+ * `{"src":"^/assets(?:/(.*))\\.woff2$","continue":true}` — a literal `.`, an
+ * anchored suffix, case-sensitive — and every request below is matched against
+ * that, so this host answers exactly what production answers.
+ */
+const VERCEL_HEADER_ROUTES = (() => {
+  const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
+  const { routes, error } = getTransformedRoutes(config);
+  if (error) throw new Error(`vercel.json does not compile: ${error.message}`);
+  return (routes || [])
+    .filter((route) => route.headers && route.src)
+    .map((route) => ({ pattern: new RegExp(route.src), headers: route.headers }));
+})();
+
+/** Every header the deployment would put on this path. */
+function deploymentHeadersFor(pathname) {
+  const out = {};
+  for (const route of VERCEL_HEADER_ROUTES) {
+    if (route.pattern.test(pathname)) Object.assign(out, route.headers);
+  }
+  return out;
+}
+
+// A woff2 that the compiled rule does NOT cover cannot be served with the header
+// by any accident of this script, so fail loudly here rather than at render time
+// with a 502 nobody can trace back to a routing pattern.
+{
+  const fonts = fs.existsSync(path.join(DIST, 'assets'))
+    ? fs.readdirSync(path.join(DIST, 'assets')).filter((name) => name.endsWith('.woff2'))
+    : [];
+  const uncovered = fonts.filter(
+    (name) => !deploymentHeadersFor(`/assets/${name}`)['Access-Control-Allow-Origin'],
+  );
+  if (fonts.length && uncovered.length) {
+    throw new Error(
+      `vercel.json does not send Access-Control-Allow-Origin on ${uncovered.length} of ${fonts.length} `
+      + `built font files (${uncovered.join(', ')}). The render document has an opaque origin, so it `
+      + 'asks for these with `Origin: null` and every report would come back 502 report_font_missing.',
+    );
+  }
+}
+
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -166,11 +228,23 @@ const CONTENT_TYPES = {
 };
 
 /**
- * A plain static host over dist/.
+ * A plain static host over dist/, serving what the deployment serves.
  *
  * Not the vite dev server: dev serves a `.css` request through its own
  * transform pipeline, and the thing being verified is the BUILT stylesheet at
  * the content-hashed URL the endpoint will actually resolve in production.
+ *
+ * IT SENDS `Access-Control-Allow-Origin: *` ON THE FONTS, because Vercel does —
+ * and it decides which paths get it by compiling `vercel.json` through Vercel's
+ * own router (see VERCEL_HEADER_ROUTES), not by deciding for itself what a font
+ * is. server/tests/report/reportFontOrigin.test.js holds the same two statements
+ * together from the other side. This is not a convenience. A font fetch is always
+ * CORS-mode, and the render document the endpoint builds with setContent has an
+ * OPAQUE origin, so its request for the deployment's own woff2 arrives with
+ * `Origin: null` and is refused without that header. Measured, on this exact
+ * corpus, with the header absent: every one of the 13 reports and all 39 sweep
+ * positions came back 502 report_font_missing. Serving the fonts here without it
+ * would make this script pass or fail for reasons production does not share.
  */
 async function startAssetServer() {
   const server = http.createServer((req, res) => {
@@ -180,7 +254,11 @@ async function startAssetServer() {
       res.writeHead(404).end('not found');
       return;
     }
-    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream' });
+    const headers = {
+      'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream',
+      ...deploymentHeadersFor(pathname),
+    };
+    res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -206,8 +284,10 @@ async function startReportEndpoint({ assetOrigin, browser, blockFonts = false })
   const launchBrowser = async () => {
     const context = await browser.newContext({ viewport: { ...REPORT_VIEWPORT } });
     if (blockFonts) {
-      await context.route('https://fonts.googleapis.com/**', (route) => route.abort());
-      await context.route('https://fonts.gstatic.com/**', (route) => route.abort());
+      // The stylesheet itself is deliberately left reachable: blocking the whole
+      // asset origin would trip report_stylesheet_missing first and this half
+      // would stop testing what it claims to test.
+      await context.route(`${assetOrigin}/assets/*.woff2`, (route) => route.abort());
     }
     return { newPage: () => context.newPage(), close: () => context.close() };
   };
@@ -463,9 +543,13 @@ async function sweepBoundary(endpoint) {
  * Outfit loaded and two sheets without them. A silent fallback would post a
  * client a report paginated unlike every report they have received, and nothing
  * about it would look wrong enough to catch.
+ *
+ * Self-hosting the two families did not retire this. It changed what the failure
+ * looks like — a woff2 that 404s after a bad deploy rather than a Google origin
+ * the deployment cannot reach — and it costs the client the same extra sheet.
  */
 async function verifyFontGuard(endpoint) {
-  console.log('\nTHE FONT GUARD — a render with the font origins blocked');
+  console.log('\nTHE FONT GUARD — a render with the deployment\'s own font files blocked');
   console.log('-'.repeat(78));
   const answer = await requestReportPdf(endpoint, { html: sweepSheet(200), title: 'Font guard - 2026-08-24 daily report' });
   console.log(`  the endpoint answered ${answer.status}: ${answer.error.slice(0, 120)}`);

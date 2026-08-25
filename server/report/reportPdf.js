@@ -116,17 +116,23 @@ export const MAX_REPORT_PDF_BYTES = 4 * 1024 * 1024;
  * The faces the report is actually SET IN, and the list was measured, not read
  * off the import list.
  *
- * src/index.css imports three font sources. Two of them are these, from Google:
- * `--font-sans: Inter, …` is inherited by the whole sheet and every table in it,
- * and `--font-heading: Outfit, …` sets h1 and h2. The third,
- * `@fontsource-variable/geist`, declares five `@font-face` blocks and is applied
- * to NOTHING — a scan of the built stylesheet finds `Geist Variable` in five
- * font-face rules and in zero declarations that would use one. Asserting Geist
- * here would fail every render; asserting Inter and Outfit is asserting the
- * fonts the paper is actually laid out in.
+ * `--font-sans: "Inter Variable", …` is inherited by the whole sheet and every
+ * table in it, and `--font-heading: "Outfit Variable", …` sets h1 and h2. The
+ * names carry `Variable` because that is what `@fontsource-variable/inter` and
+ * `@fontsource-variable/outfit` declare their `@font-face` families as, and this
+ * list has to name the family the browser will report, not the family a reader
+ * would guess. A scan of the built stylesheet finds nine `@font-face` rules —
+ * seven `Inter Variable` subsets and two `Outfit Variable` — and every one of
+ * them is reachable from a declaration that uses it.
+ *
+ * (It did not always hold. `@fontsource-variable/geist` used to sit in the same
+ * import list declaring five faces that NOTHING in the sheet selected: `Geist
+ * Variable` appeared in five font-face rules and in zero declarations, and 76.4
+ * KB of woff2 shipped on every build for it. Asserting Geist here would have
+ * failed every render. It is gone.)
  *
  * WHY THIS IS A HARD FAILURE AND NOT A WARNING, measured on real book reports
- * rendered through this exact module with the Google origins blocked:
+ * rendered through this exact module with the font files blocked:
  *
  *     client            fonts loaded        sheets
  *     Gray Birch        Inter, Outfit         1
@@ -137,15 +143,26 @@ export const MAX_REPORT_PDF_BYTES = 4 * 1024 * 1024;
  * look broken enough for anyone to catch it before it reaches a client, so a
  * font that does not load fails the request and the CAM falls back to Print.
  *
- * This is not a NEW dependency on Google: the desk's own print path has fetched
- * these two families on every report it has ever sent. What is new is that a
- * failure to fetch them is now detected instead of shipped.
+ * WHERE THEY COME FROM, and this changed. Both families were `@import`ed from
+ * fonts.googleapis.com, which made a third party a runtime dependency of THIS
+ * SERVER: every render reached out to Google, and this check existed to catch
+ * the renders where that failed. They are now self-hosted through `@fontsource`
+ * and served from the deployment's own `/assets` — the same Inter v20 and Outfit
+ * v15 files Google was serving, one variable woff2 a subset sliced to the wght
+ * axis, so the paper is unchanged. The check stays: a self-hosted font can still
+ * 404 after a bad deploy, and it would still cost a client a sheet.
+ *
+ * SELF-HOSTED STILL MEANS CROSS-ORIGIN HERE, and this is the trap. A font fetch
+ * is always CORS-mode, and the document below is built with setContent, which
+ * gives it an OPAQUE origin — so its request for the deployment's own woff2 goes
+ * out with `Origin: null` and is refused unless the response carries
+ * `Access-Control-Allow-Origin`. fonts.gstatic.com always sent one, which is why
+ * nothing here had to think about it before. `vercel.json` now sends one on
+ * `/assets/*.woff2`; server/tests/report/reportFontOrigin.test.js holds that
+ * file and this module together, and without it every render is refused with the
+ * error below — measured, all 13 book reports and all 39 sweep positions.
  */
-export const REPORT_FONT_FAMILIES = Object.freeze(['Inter', 'Outfit']);
-
-/** Where those two families come from. `@import` in src/index.css:1. */
-export const FONT_STYLE_ORIGIN = 'https://fonts.googleapis.com';
-export const FONT_FILE_ORIGIN = 'https://fonts.gstatic.com';
+export const REPORT_FONT_FAMILIES = Object.freeze(['Inter Variable', 'Outfit Variable']);
 
 const ORIGIN_ONLY = /^https?:\/\/[^/?#]+$/;
 
@@ -170,11 +187,16 @@ function escapeHtml(value) {
  * Root-relative asset URLs in the built stylesheet, made absolute.
  *
  * The stylesheet is INLINED into the render document rather than linked, so its
- * own URL is no longer there to resolve `url(/assets/…)` against. Two things
- * must survive untouched and do: `url(#clientPnlArea)` and `url(#clientPnlLine)`
- * are SVG fragment references the report's charts depend on, and
- * `url("https://fonts.googleapis.com/…")` is the `@import` that fetches Inter
- * and Outfit. Only a single leading `/` is rewritten, so neither matches.
+ * own URL is no longer there to resolve `url(/assets/…)` against. This is what
+ * makes the report's fonts resolve at all now that they are the deployment's own
+ * `/assets/inter-latin-wght-normal-<hash>.woff2` and not Google's, so it is on
+ * the pagination path, not a tidiness measure.
+ *
+ * What must survive untouched and does: `url(#clientPnlArea)` and
+ * `url(#clientPnlLine)` are SVG fragment references the report's charts depend
+ * on, and an absolute or protocol-relative `url(//host/…)` is not a root-
+ * relative path either. Only a single leading `/` is rewritten, so neither
+ * matches.
  */
 export function absolutizeCssUrls(css, origin) {
   return String(css).replace(/url\((['"]?)\/(?!\/)/g, `url($1${origin}/`);
@@ -204,11 +226,18 @@ export function absolutizeCssUrls(css, origin) {
  * renders caller-supplied HTML in a browser that sits inside the deployment's
  * network, so an `<img src="http://169.254.169.254/…">` or an exfiltrating
  * `<script>` would be a genuine hole. `default-src 'none'` closes it: the only
- * subresources this document may fetch at all are the deployment's own assets
- * and the two Google font origins the stylesheet has always used.
- * `'unsafe-inline'` is granted to style-src alone, because the report sets inline
- * styles (the CAM day sheet's break rule, and the hand-rolled SVG charts) and
- * would render wrong without it. script-src stays `'none'`.
+ * subresources this document may fetch at all are the deployment's OWN assets.
+ * `font-src ${origin}` is necessary but NOT sufficient for the fonts: this
+ * document has an opaque origin, so the deployment also has to answer those
+ * requests with `Access-Control-Allow-Origin` (see REPORT_FONT_FAMILIES).
+ * That is the whole allow-list now — it used to also carry
+ * https://fonts.googleapis.com and https://fonts.gstatic.com, because Inter and
+ * Outfit were `@import`ed from Google and the render could not paginate without
+ * them; self-hosting the two families through `@fontsource` took both third-party
+ * origins out of this policy and off the render path. `'unsafe-inline'` is
+ * granted to style-src alone, because the report sets inline styles (the CAM day
+ * sheet's break rule, and the hand-rolled SVG charts) and would render wrong
+ * without it. script-src stays `'none'`.
  */
 export function reportDocument({ html, title, styles = [], origin }) {
   const sheets = styles
@@ -216,8 +245,8 @@ export function reportDocument({ html, title, styles = [], origin }) {
     .join('\n    ');
   const csp = [
     "default-src 'none'",
-    `style-src ${origin} ${FONT_STYLE_ORIGIN} 'unsafe-inline'`,
-    `font-src ${origin} ${FONT_FILE_ORIGIN}`,
+    `style-src ${origin} 'unsafe-inline'`,
+    `font-src ${origin}`,
     `img-src ${origin} data:`,
     "script-src 'none'",
     "connect-src 'none'",

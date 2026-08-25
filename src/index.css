@@ -1,8 +1,23 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap");
+/* The two families the whole product — and every printed and downloaded report —
+   is set in, self-hosted. They were fetched from fonts.googleapis.com until the
+   report PDF endpoint made them a SERVER's runtime dependency: server/report/
+   reportPdf.js runs a headless Chrome that had to reach Google on every render,
+   and a family that did not arrive repaginates a client's report (measured: Gray
+   Birch's close is one sheet with them and two without). Same design and same
+   versions — Inter v20 and Outfit v15 — but re-built binaries, not Google's
+   bytes, and declared differently: that `css2?family=…:wght@400;500;…` URL
+   returns DISCRETE faces (Inter 400-800, Outfit 500-800) while these declare one
+   variable face a subset at `font-weight: 100 900`. Pagination is unchanged
+   across the swap; the wider range is not free, and what it cost is written
+   down at `.report-sheet h1, h2` below.
+   `wght.css` is named rather than the package root — they are the same file
+   today — because Inter also ships an `opsz` slice, and that one is a different
+   font (72 KB a subset against 48 KB) that Google was never serving here. */
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/outfit/wght.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -57,6 +72,7 @@
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
   color: var(--text);
   font-family:
+    "Inter Variable",
     Inter,
     system-ui,
     -apple-system,
@@ -64,6 +80,7 @@
     "Segoe UI",
     sans-serif;
   --font-sans:
+    "Inter Variable",
     Inter,
     system-ui,
     -apple-system,
@@ -71,7 +88,9 @@
     "Segoe UI",
     sans-serif;
   --font-heading:
+    "Outfit Variable",
     Outfit,
+    "Inter Variable",
     Inter,
     system-ui,
     sans-serif;
@@ -2820,6 +2839,25 @@ textarea {
   padding-bottom: 18px;
 }
 
+/* The weight every report heading has always printed at, said out loud.
+   It used to be an accident of what Google served. Tailwind preflight sets
+   `h1..h6 { font-weight: inherit }`, so a report's <h1> and <h2> compute to 400
+   — and the `css2?family=Outfit:wght@500;600;700;800` this sheet used to import
+   declared no 400 face, so the browser matched 400 up to the 500 one. Every
+   client name and every section title on every report has printed at Medium
+   since the day the report existed.
+   Self-hosting through @fontsource replaced those discrete faces with one
+   variable face declared `font-weight: 100 900`, which HAS a real 400 — so the
+   same CSS silently began printing those 36 headings 16.8% lighter. Pagination
+   was unaffected (identical sheet counts, identical mm), which is exactly why
+   nothing caught it: only the ink changed, on paper a client receives.
+   Scoped to `.report-sheet` and not to the global h1..h6 block above, which is
+   product-wide. server/tests/report/reportHeadingWeight.test.js pins it. */
+.report-sheet h1,
+.report-sheet h2 {
+  font-weight: 500;
+}
+
 .report-header h1 {
   margin: 4px 0;
 }
@@ -4494,7 +4532,7 @@ tr:nth-child(2) .rank-badge {
   border-radius: 10px;
   background: var(--surface);
 }
-.collector-summary strong { font: 700 24px/1 "Outfit", sans-serif; }
+.collector-summary strong { font: 700 24px/1 "Outfit Variable", "Outfit", sans-serif; }
 .collector-summary span { color: var(--text-muted); font-size: 12px; }
 .collector-summary .attention strong { color: var(--warning); }
 .collector-toolbar, .collector-toolbar form, .collector-pagination {
@@ -7103,8 +7141,8 @@ tr:nth-child(2) .rank-badge {
 }
 
 @theme inline {
-  --font-heading: Outfit, Inter, system-ui, sans-serif;
-  --font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "Outfit Variable", Outfit, "Inter Variable", Inter, system-ui, sans-serif;
+  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --color-info: var(--info);
   --color-info-foreground: var(--background);
   --color-success: var(--success);

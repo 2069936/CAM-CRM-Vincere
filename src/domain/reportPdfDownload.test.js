@@ -134,7 +134,7 @@ describe('what the CAM is told when it fails', () => {
     // Worth distinguishing because it is the failure that would otherwise ship:
     // the render succeeded mechanically, against fonts that were not there, and
     // a real client report goes from one sheet to two when that happens.
-    const { download } = downloader({ fetchImpl: failing(502, 'report_font_missing: Inter, Outfit') });
+    const { download } = downloader({ fetchImpl: failing(502, 'report_font_missing: Inter Variable, Outfit Variable') });
     await expect(download({ sheet: sheet(), title: TITLE })).rejects.toMatchObject({
       code: 'assets_unavailable',
       status: 502,

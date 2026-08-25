@@ -122,7 +122,7 @@ describe('POST /api/report/pdf', () => {
   it('surfaces a missing-font failure as a failure and not as paper', async () => {
     // The measured hazard: with the fonts absent a real report goes from one
     // sheet to two. A 200 here would ship that to a client.
-    const render = vi.fn(async () => { throw new ApiError(502, 'report_font_missing: Inter, Outfit'); });
+    const render = vi.fn(async () => { throw new ApiError(502, 'report_font_missing: Inter Variable, Outfit Variable'); });
     const { handler } = setup({ render });
     const res = response();
     await handler(request(), res);

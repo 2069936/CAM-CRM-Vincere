@@ -190,8 +190,41 @@ Reference: [`docs/publish-collector-release.md`](publish-collector-release.md)
   pairing code the card generates. Details in
   [`collector/docs/installing.md`](../collector/docs/installing.md).
 
+- Open any client's close and click **Download PDF**. The file must arrive named
+  `<Client> - <date> daily report.pdf`. A **502 `report_font_missing`** means the
+  deployment is not sending `Access-Control-Allow-Origin` on `/assets/*.woff2` —
+  see [The one header the report PDF needs](#the-one-header-the-report-pdf-needs).
+  Nothing local can catch this: no test and no script observes the real platform
+  emitting that header, and until someone clicks this button once, nobody knows.
+
+  ```bash
+  curl -sI -H 'Origin: null' "https://<deployment>/assets/$(basename "$(ls dist/assets/*.woff2 | head -1)")" | grep -i access-control-allow-origin
+  ```
+
 Install on **one** VPS and confirm a scheduled capture lands as that client's
 daily close before rolling out further.
+
+---
+
+## The one header the report PDF needs
+
+`vercel.json` sends `Access-Control-Allow-Origin: *` on `/assets/(.*).woff2`.
+**Without it there is no Download PDF at all** — measured, all 13 book reports and
+all 39 boundary-sweep positions came back 502 `report_font_missing`, not a wrong
+layout but no layout.
+
+A font fetch is always CORS-mode, and the document the function renders is built
+with `setContent`, so it has an opaque origin and asks for the deployment's own
+woff2 with `Origin: null`. `fonts.gstatic.com` sent that header for free; a static
+host does not.
+
+This is the one thing in the branch that cannot be proved before it is deployed.
+`server/tests/report/reportFontOrigin.test.js` fails if the rule leaves
+`vercel.json`, and `scripts/verify-report-print-layout.mjs` compiles the rule's
+own `source` pattern through Vercel's router rather than assuming what it
+matches — but neither of them observes the real platform. That is what the
+Download PDF click in Step 4 is for. Serving the CRM from anything other than
+this `vercel.json` means sending that header there too.
 
 ---
 
@@ -234,17 +267,38 @@ not measured here and is the number to watch after the first deploy.
 `vercel.json` sets `maxDuration: 60` for this route so a cold start has room.
 If it is too slow in practice, Print still works and is one click away.
 
-**The report's fonts come from Google at render time.** The report is set in
-Inter and Outfit, which `src/index.css` `@import`s from `fonts.googleapis.com`,
-so the render function fetches them like any browser does. This is not a new
-dependency — every report the desk has ever printed fetched the same two
-families — but it is now a dependency of a server. It is not a silent one: fonts
-are a pagination input (measured, a real client's close is one sheet with them
-and two without), so a render whose fonts did not load is **refused** with
-`report_font_missing` rather than sent. Self-hosting the two families through
-`@fontsource` would remove the dependency entirely and is the obvious follow-up;
-`@fontsource-variable/geist` is already installed, declares five `@font-face`
-rules and is applied to nothing, so 76 KB of woff2 ships unused today.
+**The report's fonts are a pagination input, and they are now this
+deployment's.** The report is set in Inter and Outfit. Both were `@import`ed from
+`fonts.googleapis.com`, which made Google a runtime dependency of a SERVER once
+`/api/report/pdf` started rendering there; they are now self-hosted through
+`@fontsource` and served from the deployment's own `/assets`, and the render
+document's CSP no longer names `fonts.googleapis.com` or `fonts.gstatic.com` at
+all. Same design and same versions — Inter v20, Outfit v15 — but re-built
+binaries, not Google's bytes, and declared differently: that `css2` URL returned
+discrete faces at Inter 400-800 and Outfit 500-800, while `@fontsource` declares
+one variable face a subset at `font-weight: 100 900`. The pinned layout is
+unchanged across the swap: 18 sheets, 208mm of 300mm blank, 39 of 39 clean
+boundary positions. The build ships 266 KB of woff2 for it and no longer ships
+the 76 KB of `@fontsource-variable/geist`, which declared five `@font-face` rules
+that no declaration in the stylesheet ever selected.
+
+That wider weight range cost one thing, and it is written down here because it
+reached client paper before anyone chose it. Report headings inherit weight 400
+through Tailwind preflight; Outfit had **no** 400 face at Google, so 400 matched
+the 500 one and every client name and section title has always printed at Medium.
+The variable face has a real 400, so the same CSS silently began printing those
+36 headings 16.8% lighter — identical sheet counts, identical millimetres, only
+ink. `src/index.css` now states `font-weight: 500` on `.report-sheet h1, h2`
+instead of inheriting it from whatever a font vendor happens to serve, and
+`server/tests/report/reportHeadingWeight.test.js` fails if it goes away.
+
+What the swap did **not** change is that a font that does not load repaginates a
+client's report (measured: a real close is one sheet with the two families and
+two without). So the guard stays — a render whose fonts did not arrive is
+**refused** with `report_font_missing` rather than sent — and it now fires on a
+woff2 that 404s after a bad deploy rather than on a Google origin the function
+cannot reach. `scripts/verify-report-print-layout.mjs` proves it by blocking the
+deployment's own font URLs and requiring the 502.
 
 **The agent package is unsigned.** Distribution deliberately does not depend on a
 code-signing certificate. Integrity is still enforced — the manifest is pinned by
@@ -259,7 +313,7 @@ signature, so Windows warns when a script downloaded from the internet is run;
 
 ```bash
 npm install
-npm test        # 979 passing, 5 skipped
+npm test        # 2488 passing, 5 skipped (without the local snapshot)
 npm run build
 npm run lint
 ```
