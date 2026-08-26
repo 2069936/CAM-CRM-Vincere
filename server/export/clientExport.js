@@ -76,10 +76,40 @@ const DEFAULT_RANGE_DAYS = 30;
 const MAX_RANGE_DAYS = 92;
 
 /**
- * Ceiling on clients per request. The largest CAM on the real book has 32.
- * A Manager wanting the whole 136-client book still has /api/admin/data-export.
+ * Ceiling on clients per REQUEST — not on how many clients may be exported.
+ *
+ * This number was read as a policy ("you may not export more than 60 clients")
+ * and it never was one. It is not the binding constraint and it never bound the
+ * failing case: the busiest CAM carries 28 clients and 18 for the next, and BOTH
+ * were at or over MAX_RESPONSE_BYTES on their default 30-day pull. A request for
+ * 60 would have been refused with a 413 long before it reached this line, so
+ * raising it would have bought exactly nothing and "export in batches of 60"
+ * would have failed on batch one. Bytes are the axis; a client count is not.
+ *
+ * So it stays, as a cheap per-request bound on PostgREST round trips and URL
+ * length, and the way to get more than 60 clients out is to ask for them in
+ * parts — each part sized by measured bytes, each part carrying `batch` so the
+ * pieces can be told apart in a downloads folder. src/domain/clientExportPlan.js
+ * plans the parts and caps each at this number as well as at the byte ceiling,
+ * because the two bite in opposite places: on this book a part of 60 dormant
+ * clients is ~0.5 MiB and a part of six busy ones is ~2.5 MiB.
+ *
+ * A Manager wanting the whole 136-client book in ONE file still has
+ * /api/admin/data-export.
  */
 const MAX_CLIENTS = 60;
+
+/**
+ * Ceiling on the number of parts a batched export may declare.
+ *
+ * `batch` is a label the caller supplies and this endpoint echoes into the
+ * envelope and the audit row; it changes no filter and grants no access. It is
+ * still validated rather than passed through, because it is written into a
+ * downloads folder and into the only detection surface this project has, and an
+ * unbounded "part 1 of 10000000" is a nuisance in both. 200 is far above the
+ * ~3 parts the whole book needs today.
+ */
+const MAX_BATCHES = 200;
 
 const PAGE_SIZE = 1000;
 
@@ -160,11 +190,49 @@ const MAX_TOTAL_ROWS = 25000;
  * strategy configurations once per account per day. That is the same shape as
  * the reports.content.summary redaction above (13.92 MB of 14.25 MB), and it is
  * an order of magnitude more than anything in `series`. Neither column can
- * simply be dropped: src/domain/strategyRiskProfile.js and
- * src/domain/setFileMatch.js both parse parameters_raw. Hoisting the distinct
+ * simply be dropped: src/domain/setFileMatch.js parses parameters_raw.
+ * (strategyRiskProfile.js was the second parser and is gone — it existed only to
+ * feed the exposure scatter the desk manager asked to have removed.) Hoisting the distinct
  * values into one dictionary and referencing them per row is the fix, and it is
  * a shape change to a raw-table mirror, so it wants a decision rather than a
  * quiet edit.
+ *
+ * THE DECISION IS TAKEN: the dictionary ships, unconditionally, and `version` is
+ * 2 rather than 1 so a consumer pinned to the old shape sees the change instead
+ * of reading an absent column as an absent configuration. See
+ * STRATEGY_PARAMETER_COLUMNS below for the mechanics and the rehydration rule.
+ * Re-measured through this handler, per CAM, default 30-day pull, no trade
+ * history:
+ *
+ *   clients  strategy rows  before            after
+ *        28           1022  3.995 MiB 99.9%   2.503 MiB 62.6%
+ *        18            846  3.756 MiB 93.9%   2.597 MiB 64.9%
+ *        14            572  2.588 MiB 64.7%   1.685 MiB 42.1%
+ *        14            559  2.358 MiB 59.0%   1.503 MiB 37.6%
+ *        13            478  2.075 MiB 51.9%   1.349 MiB 33.7%
+ *        32             49  0.312 MiB  7.8%   0.263 MiB  6.6%
+ *         8             99  0.373 MiB  9.3%   0.248 MiB  6.2%
+ *         8             82  0.359 MiB  9.0%   0.247 MiB  6.2%
+ *
+ * The busiest CAM's headline case goes from 99.9% of this ceiling to 62.6% and
+ * strategy_snapshots from 2,109 to 505 bytes a row. Note what the "before"
+ * column says about the paragraph further down: the ~100 KB the registry
+ * attributes returned is the whole reason that row reads 3.995 and not 4.06, so
+ * the endpoint was inside 0.1% of refusing its own headline case.
+ *
+ * It is hoisted as a PAIR, one ref per row, not a ref per column. Across the
+ * whole book the two columns hold 116 and 129 distinct values but only 135
+ * distinct (params_parsed, parameters_raw) pairs, and they are two renderings of
+ * one fact — splitting them across two dictionaries would store the pairing
+ * nowhere and invite the two to be joined back together wrongly.
+ *
+ * WHAT IT DOES NOT FIX. The whole 136-client book over the same 30 days is
+ * 15.75 MiB of tables+series before and 10.14 MiB after. A manager pulling every
+ * client still cannot have it in one response, so the client list is split into
+ * parts sized by MEASURED BYTES rather than by a client count — see MAX_CLIENTS
+ * and `batch` below, and src/domain/clientExportPlan.js which does the sizing.
+ * Per-CAM pulls no longer need parts at all, which is the sizes this desk
+ * actually has.
  *
  * The trim this comment used to prescribe does NOT work. series[].days[].accounts
  * repeated six static registry attributes (accountType, accountStatus, riskLevel,
@@ -218,6 +286,89 @@ const REDACTIONS = [
     reason: 'A re-render of the same day this payload already carries as rows: 13.92 MB of the 14.25 MB the reports table occupies on the real book. content.message is kept.',
   },
 ];
+
+/**
+ * The two strategy_snapshots columns that are stored once per payload instead of
+ * once per row, and the column that replaces them.
+ *
+ * They are 38.8% of the busiest CAM's whole 4 MiB budget for 42 distinct values
+ * repeated over 1,022 rows; the measurement and the decision are in the
+ * MAX_RESPONSE_BYTES comment above.
+ *
+ * The columns are REMOVED from the row rather than left present with some
+ * stand-in value, for the reason this payload already refuses to render an
+ * absent account's P&L as a zero: `parameters_raw: ""` reads as "this strategy
+ * had no configuration" to every parser in this tree, including
+ * src/domain/setFileNormalise.js, which is a wrong answer arriving quietly. An
+ * absent key is a wrong SHAPE, which arrives loudly. `version` goes to 2 for
+ * consumers that check it instead of the shape.
+ */
+const STRATEGY_PARAMETER_TABLE = 'strategy_snapshots';
+const STRATEGY_PARAMETER_COLUMNS = ['params_parsed', 'parameters_raw'];
+const STRATEGY_PARAMETER_REF = 'parameters_ref';
+
+/**
+ * Replaces the parameter columns on every strategy row with one integer ref.
+ *
+ * EVERY row gets a ref, including a row whose configuration is null on both
+ * columns — 98 of the book's 3,805 strategy rows carry an empty parameters_raw.
+ * A missing ref would then mean two different things ("no configuration" and
+ * "this payload was built before the dictionary existed") and a consumer would
+ * have to guess which.
+ *
+ * Rows are copied, never mutated: `series` is built from the same row objects
+ * and a mutation here would reach into a block that has nothing to do with this.
+ */
+export function hoistStrategyParameters(rows = []) {
+  const refByValue = new Map();
+  const entries = [];
+  const hoisted = rows.map((row) => {
+    const values = STRATEGY_PARAMETER_COLUMNS.map((column) => row[column] ?? null);
+    const key = JSON.stringify(values);
+    let ref = refByValue.get(key);
+    if (ref === undefined) {
+      ref = entries.length;
+      refByValue.set(key, ref);
+      entries.push(Object.fromEntries([
+        ['ref', ref],
+        ...STRATEGY_PARAMETER_COLUMNS.map((column, index) => [column, values[index]]),
+      ]));
+    }
+    const copy = { ...row };
+    for (const column of STRATEGY_PARAMETER_COLUMNS) delete copy[column];
+    copy[STRATEGY_PARAMETER_REF] = ref;
+    return copy;
+  });
+  return { rows: hoisted, entries };
+}
+
+/**
+ * Puts the columns back, given a whole payload. The inverse of the above, and
+ * the reference implementation of the one sentence the envelope has room for.
+ *
+ * Exported so the suite can assert the round trip against the real book rather
+ * than describing it in prose, and so a consumer in this repo has one call
+ * rather than its own copy of the join.
+ */
+export function rehydrateStrategyParameters(payload) {
+  const rows = payload?.tables?.[STRATEGY_PARAMETER_TABLE] || [];
+  const entries = payload?.dictionaries?.strategyParameters?.entries || [];
+  const byRef = new Map(entries.map((entry) => [entry.ref, entry]));
+  return rows.map((row) => {
+    const entry = byRef.get(row[STRATEGY_PARAMETER_REF]);
+    // A ref with no entry is a broken payload, not an empty configuration, so it
+    // throws rather than handing back a row that looks like an unconfigured
+    // strategy. Unreachable through this endpoint; reachable through a file that
+    // was edited or truncated on the way here.
+    if (!entry) {
+      throw new Error(`strategy_snapshots row ${row.id} references parameters_ref ${row[STRATEGY_PARAMETER_REF]}, which is not in the dictionary.`);
+    }
+    const copy = { ...row };
+    delete copy[STRATEGY_PARAMETER_REF];
+    for (const column of STRATEGY_PARAMETER_COLUMNS) copy[column] = entry[column];
+    return copy;
+  });
+}
 
 /**
  * Tables the admin export carries that this one deliberately does not, with the
@@ -320,6 +471,33 @@ export function normalizeClientIds(value) {
     throw badRequest(`Requested ${unique.length} clients; the maximum is ${MAX_CLIENTS}.`);
   }
   return unique;
+}
+
+/**
+ * The optional "this is part N of M" label on a batched export.
+ *
+ * It is a LABEL. It selects nothing, authorizes nothing and changes no filter —
+ * the clients in a part are the clients the caller named in `clientIds`, checked
+ * the same way as any other request. What it buys is that five files in a
+ * downloads folder can be told apart and counted: an analysis handed parts 1, 2
+ * and 4 of 5 can see that it is short, which is the same property the truncation
+ * block gives a single payload. Without it, splitting an export by bytes would
+ * reintroduce, across files, exactly the silent truncation this module refuses
+ * to do inside one.
+ *
+ * Absent is the normal case and means an unbatched export.
+ */
+export function normalizeBatch(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw badRequest('"batch" must be an object like { index, of }.');
+  }
+  const { index, of } = value;
+  const whole = (n) => typeof n === 'number' && Number.isInteger(n);
+  if (!whole(index) || !whole(of)) throw badRequest('"batch.index" and "batch.of" must be whole numbers.');
+  if (of < 1 || of > MAX_BATCHES) throw badRequest(`"batch.of" must be between 1 and ${MAX_BATCHES}.`);
+  if (index < 1 || index > of) throw badRequest('"batch.index" must be between 1 and "batch.of".');
+  return { index, of };
 }
 
 function chunk(values, size) {
@@ -677,6 +855,7 @@ export function createHandler({
       const requestedIds = normalizeClientIds(body?.clientIds);
       const range = resolveRange({ from: body?.from, to: body?.to }, now());
       const includeTradeHistory = body?.includeTradeHistory === true;
+      const batch = normalizeBatch(body?.batch);
       // requireClientAssignments runs requireClientAssignment over EVERY id in
       // the list — an explicit list is exactly the request where checking only
       // the first id would hand over another CAM's book.
@@ -722,8 +901,16 @@ export function createHandler({
         rangeFrom: range.from,
       });
 
+      // After buildClientSeries, which counts the same rows and must not see a
+      // shape it does not know, and after redaction, which is about what leaves
+      // the CRM rather than about what it costs to say.
+      const parameters = hoistStrategyParameters(loaded.tables[STRATEGY_PARAMETER_TABLE] || []);
+      const tables = STRATEGY_PARAMETER_TABLE in loaded.tables
+        ? { ...loaded.tables, [STRATEGY_PARAMETER_TABLE]: parameters.rows }
+        : loaded.tables;
+
       const rowCounts = Object.fromEntries(
-        Object.entries(loaded.tables).map(([table, rows]) => [table, rows.length]),
+        Object.entries(tables).map(([table, rows]) => [table, rows.length]),
       );
       const totalRows = Object.values(rowCounts).reduce((sum, count) => sum + count, 0);
       const truncated = loaded.truncation.length > 0;
@@ -732,12 +919,19 @@ export function createHandler({
         exportedAt: now().toISOString(),
         source: 'cam-crm-supabase',
         kind: 'client-scoped-export',
-        version: 1,
+        // 2, not 1: strategy_snapshots no longer carries params_parsed and
+        // parameters_raw on the row. See `dictionaries` below. A consumer that
+        // reads this field learns the shape changed without having to notice a
+        // column that is simply not there any more.
+        version: 2,
         requestedBy: { appUserId: actor.id, role: actor.role },
         scope: {
           selection: scope.selection,
           clientIds: scope.clientIds,
           requestedClientCount: scope.clientIds.length,
+          // null on an ordinary export. On a batched one, which part this is and
+          // how many there are, so a folder of parts can be counted.
+          batch,
           // Fewer rows than ids means an id resolved to no client row. Reported,
           // not silently dropped: an analysis that expected 19 clients and got
           // 18 needs to know which one is missing.
@@ -786,6 +980,23 @@ export function createHandler({
           ],
           reason,
         })),
+        // Columns moved out of the rows and stored once. Declared the same way a
+        // redaction is, and in the same envelope, because from a consumer's side
+        // they are the same event: a column it expected on a row is not there.
+        // The difference is that this one is reversible, and `rehydrate` is the
+        // whole reversal.
+        dictionaries: {
+          strategyParameters: {
+            appliesTo: `tables.${STRATEGY_PARAMETER_TABLE}`,
+            movedColumns: STRATEGY_PARAMETER_COLUMNS,
+            referenceColumn: STRATEGY_PARAMETER_REF,
+            rows: (tables[STRATEGY_PARAMETER_TABLE] || []).length,
+            distinctValues: parameters.entries.length,
+            reason: 'The same handful of strategy configurations, restated once per account per day, were 38.8% of the 4 MiB a single response can carry. Stored once here and referenced per row instead.',
+            rehydrate: `For each row in tables.${STRATEGY_PARAMETER_TABLE}, find the entry whose \`ref\` equals row.${STRATEGY_PARAMETER_REF} (entries are in ref order, so entries[ref] works too) and copy ${STRATEGY_PARAMETER_COLUMNS.join(' and ')} back onto the row. Every row has a ref, including rows whose configuration is null on both columns, so a row without one is a damaged payload rather than an unconfigured strategy.`,
+            entries: parameters.entries,
+          },
+        },
         // The legend for series[].days[].absentAccounts[].reason, emitted once.
         // Carrying the sentence on every row instead cost 67 KB on the busiest
         // CAM's default pull for five constant strings.
@@ -828,13 +1039,23 @@ export function createHandler({
             note: 'An account is only counted as absent from a day it could have filed on. The start date used is min(date_added, the first day the account was actually observed filing), because neither column is trustworthy alone: on the real book 229 of the 720 accounts that ever appear in a close carry a date_added LATER than the first close they appear in, and created_at is the CRM migration timestamp (all 764 values fall in one month, 573 of them on three days) and is later than the first observed close for 246 of them. created_at is not used. The two fields are not interchangeable: series[].days[].notYetRegisteredAccountIds is a bare array of trading_accounts.id for that one day, and the decided start date and its provenance live once per client in series[].summary.coverage.accountStarts, as { tradingAccountId, accountName, dateAdded, existsFrom, existsFromBasis }. Join the day\'s ids to that block. Accounts with no usable start date carry existsFromBasis "unknown" there and are never counted as absent; on the real book that case is 0 accounts.',
           },
           {
+            field: 'strategy_snapshots.params_parsed / strategy_snapshots.parameters_raw',
+            affects: ['tables.strategy_snapshots'],
+            note: 'NOT on the row in version 2 of this payload. Each row carries parameters_ref instead, into dictionaries.strategyParameters.entries. Reading row.parameters_raw without rehydrating gives undefined, which every parser in the CRM would read as "this strategy had no configuration" — join the ref first. version was 1 while the columns were inline.',
+          },
+          {
+            field: 'scope.batch',
+            affects: ['the whole payload'],
+            note: 'Null unless this export was taken in parts. When set, this file is part `index` of `of` and carries ONLY the clients in scope.clientIds; the other parts carry the rest. Parts are sized by measured bytes, not by client count, so they hold different numbers of clients. An analysis is only complete when it holds every part from 1 to `of` for the same range.',
+          },
+          {
             field: 'daily_imports.status',
             affects: ['series[].summary.closedSessions'],
             note: 'A session may be Closed, Ready to close or Needs review. Counting green sessions without reading status mixes signed-off days with unreviewed ones.',
           },
         ],
         series,
-        tables: loaded.tables,
+        tables,
       };
 
       // Measured before it is handed back, because past 4.5 MB the platform
@@ -855,9 +1076,18 @@ export function createHandler({
           range: { from: range.from, to: range.to, days: range.days },
           includeTradeHistory,
           totalRows,
+          batch,
         };
         await auditDenial(admin, writeAudit, actor, detail);
-        throw new ApiError(413, `This export is ${(responseBytes / 1048576).toFixed(2)} MB, over the ${(maxResponseBytes / 1048576).toFixed(2)} MB a single response can carry (${totalRows} rows, ${scope.clientIds.length} clients, ${range.days} days${includeTradeHistory ? ', with trade history' : ''}). Narrow the range, export fewer clients at a time, or turn trade history off.`);
+        // The remedy named first depends on whether splitting the client list
+        // can possibly help. It cannot when there is one client in it: the same
+        // advice on a single-client pull ("export fewer clients at a time") is
+        // advice to do nothing, and this endpoint's whole point is that a
+        // refusal says what to do next.
+        const remedy = scope.clientIds.length > 1
+          ? 'Export these clients in parts, shorten the range,'
+          : 'Shorten the range';
+        throw new ApiError(413, `This export is ${(responseBytes / 1048576).toFixed(2)} MB, over the ${(maxResponseBytes / 1048576).toFixed(2)} MB a single response can carry (${totalRows} rows, ${scope.clientIds.length} client${scope.clientIds.length === 1 ? '' : 's'}, ${range.days} days${includeTradeHistory ? ', with trade history' : ''}). ${remedy}${includeTradeHistory ? ' or turn trade history off.' : '.'}`);
       }
 
       await writeAudit(admin, actor.id, {
@@ -877,6 +1107,10 @@ export function createHandler({
         responseBytes,
         truncated,
         truncation: loaded.truncation,
+        // So a batched pull reads as one intent across N rows rather than as N
+        // unexplained exports minutes apart, which is the shape this log exists
+        // to be able to tell apart from a walk through the book.
+        batch,
       });
 
       return sendJson(res, 200, payload);

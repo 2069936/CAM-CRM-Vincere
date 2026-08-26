@@ -15,9 +15,33 @@
 //   node scripts/redact-export.mjs export.json public/local-snapshot.json
 //
 // Not reversible: no key, no mapping file.
+//
+// AND SAFE IS NOT THE SAME AS USABLE. Failing closed protects the client and
+// says nothing about whether the book that comes out can still answer a
+// question. It could not, and the gap cost three separate investigations and one
+// $76,283.25 phantom defect.
+//
+// `external_order_id` — the join key the whole fill pipeline resolves each leg's
+// Strategy through — was absent from ID_FIELDS and fell through to the generic
+// `[redacted N]` marker, which keeps a string's LENGTH and nothing else. 30,955
+// distinct order ids came out as FOUR values. The book still looked perfect:
+// every table, every row, every price, every timestamp. Replaying the shipped
+// per-strategy derivation over it produced 185 disagreements against the
+// Strategies grid, $77,876.25, 54 of them on accounts the derivation certifies
+// publishable ($22,899.25) — every one of which vanishes when the same module is
+// run over the same fills with the join intact (11 disagreements, $2,814.25,
+// none publishable). Nothing in the derivation was wrong. The evidence was.
+//
+// Two rules follow, and both are enforced below rather than remembered:
+//
+//   1. An id column joins something. It goes in ID_FIELDS, in the same commit
+//      that adds the column, so it becomes a stable 1:1 token.
+//   2. Before writing, PROVE the book still joins to itself — verifyJoins().
+//      A merged join key is not a censored book, it is a wrong one.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { collapsedJoins, summarizeJoins } from './lib/redactionJoins.mjs';
 
 const [, , inputPath, outputPath] = process.argv;
 if (!inputPath || !outputPath) {
@@ -39,6 +63,16 @@ const DROP_TABLES = new Set(['app_users', 'audit_logs', 'client_credentials']);
 const KEEP_FIELDS = new Set([
   // Classifications the app branches on.
   'status', 'stage', 'account_type', 'payout_state', 'risk_level', 'severity',
+  // churn_reason is one of the seven codes in CHURN_REASONS — 'cost',
+  // 'unresponsive', and so on. It is the countable half of why a client left,
+  // and a redacted book where every reason is `[redacted 4]` cannot answer the
+  // question the column was added for.
+  //
+  // Its neighbour churn_note is DELIBERATELY ABSENT from this list and must stay
+  // absent. It is a sentence a CAM wrote about a person and is exactly the kind
+  // of free text this script fails closed on. `churned_at` is a date and passes
+  // through the type check below like every other date.
+  'churn_reason',
   // simulation_mode is a two-value enum ('simulation' | 'live') and the whole
   // point of the redacted book is that classification behaviour can be checked
   // against it. Note the standing trap this file creates for that check:
@@ -54,6 +88,15 @@ const KEEP_FIELDS = new Set([
   // Strategy identity: the algo charts are the point of running this locally.
   'strategy_name', 'strategy_family', 'strategy_version', 'instrument',
   'data_series', 'algo_stack', 'name_on_chart',
+  // Fill mechanics. These are the fields per-strategy P&L is derived from, and
+  // redacting them is not a neutral loss: with time_text and entry_exit blanked,
+  // executions cannot be ordered or paired, and a measurement taken against such
+  // a book concluded that deriving the split was impossible. It is not. The book
+  // was censored in exactly the place the question lives.
+  //
+  // None of the three names anyone. time_text is a clock time, entry_exit is
+  // Entry/Exit, position is a contract count and side ("2 L", "-").
+  'time_text', 'entry_exit', 'position',
   // Dates and everything numeric pass through the type check below.
 ]);
 
@@ -71,6 +114,29 @@ const KEEP_FIELDS = new Set([
  * — which embeds an account name, which embeds a client name. No pattern scan
  * flags that, and keeping every field called "id" verbatim shipped it straight
  * through.
+ *
+ * MISSING A FIELD HERE IS NOT A COSMETIC LOSS, AND ONE OF THEM COST $22,899.25.
+ * The list below shipped without `external_order_id`, which is not one id among
+ * many: it is the join key of the entire fill pipeline. supabaseStore rehydrates
+ * `orderId: row.external_order_id` on every execution and `id:
+ * row.external_order_id` on every order, and deriveStrategyPnl reads each leg's
+ * Strategy through exactly that join. Falling through to `[redacted N]`
+ * collapsed 30,955 order ids to FOUR distinct length-bucket tokens and 14,958
+ * execution rows to five, so `strategyOf()` returned one arbitrary name for
+ * every leg of an account-day.
+ *
+ * Measured on the 2026-08-20 book (29 trading dates, 14,958 fills), replaying
+ * the shipped module per-strategy against strategy_snapshots.realized:
+ *
+ *   join key                       agree  disagree  |$| disagreement  wrong on 'exact'
+ *   collapsed (what shipped)         511       185       77,876.25    54 / $22,899.25
+ *   1:1 token (this list, fixed)   1,052        11        2,814.25     0 /      $0.00
+ *
+ * The module was never wrong; the book was. An export whose join keys have been
+ * merged looks completely intact — every row present, every number real — and
+ * silently answers "which algo made this" with a different algo. That is why
+ * verifyJoins() below now refuses to write one, and why a new id column must be
+ * added to this list in the same commit that adds the column.
  */
 const ID_FIELDS = new Set([
   'id', 'legacy_key', 'client_id', 'cam_profile_id', 'trading_account_id',
@@ -78,7 +144,19 @@ const ID_FIELDS = new Set([
   'covering_cam_id', 'sop_template_id', 'sop_section_id', 'sop_item_id',
   'batch_id', 'capture_id', 'device_id', 'order_id', 'parent_order_id',
   'strategy_id', 'oco',
+  // The fill pipeline's own keys. `external_order_id` joins executions to
+  // orders; `external_execution_id` is what orderExecutions prefers as its
+  // ordering basis. Neither names anybody — they are broker sequence numbers.
+  'external_order_id', 'external_execution_id',
 ]);
+
+// A token() id is stable and 1:1, so a join across two of these fields survives
+// redaction unchanged. That is a property worth ASSERTING rather than assuming
+// — the collapse described above went unnoticed for a whole book because
+// nothing checked, and verify() below only ever looked for identity getting
+// OUT. JOIN_KEYS names the columns a replay has to be able to join on, and
+// collapsedJoins() reports every one redaction merged; see that file for the
+// measurement and for the one question a redacted book still cannot answer.
 
 const token = (value) => `x${digest(`id:${value}`).slice(0, 14)}`;
 
@@ -113,8 +191,23 @@ function pseudonym(value) {
  * Character classes are preserved so a column that held eighteen characters
  * still holds eighteen and the tables lay out the same.
  */
-function maskAccount(value) {
-  const hash = digest(`account:${value}`);
+/**
+ * Every real account name and alias in the source, so a mask can be checked
+ * against them before it is emitted. Populated once the export is parsed.
+ *
+ * This exists because masking is character-wise and length-preserving: a purely
+ * numeric account name becomes another number of the same length, drawn from the
+ * same small space the real ones live in. On a 999-account book that collided —
+ * a masked account came out equal to a DIFFERENT account's real number, and
+ * verify() correctly refused to write. A masked value that happens to be a real
+ * prop-firm account number is a leak whether or not it belongs to the row it
+ * sits on, and retrying with a salt is cheaper than reasoning about how likely
+ * it is.
+ */
+const REAL_IDENTIFIERS = new Set();
+
+function maskOnce(value, salt) {
+  const hash = digest(salt ? `account:${salt}:${value}` : `account:${value}`);
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   let index = 0;
   return String(value).replace(/[A-Za-z0-9]/g, (char) => {
@@ -123,6 +216,16 @@ function maskAccount(value) {
     const replacement = letters[byte % letters.length];
     return char === char.toLowerCase() ? replacement.toLowerCase() : replacement;
   });
+}
+
+function maskAccount(value) {
+  // Deterministic: the same input always lands on the same salt, so the book
+  // stays joinable across runs.
+  for (let salt = 0; salt < 1000; salt += 1) {
+    const masked = maskOnce(value, salt);
+    if (!REAL_IDENTIFIERS.has(masked)) return masked;
+  }
+  throw new Error(`maskAccount could not find a non-colliding mask for a ${String(value).length}-character value`);
 }
 
 // Person-shaped fields get a readable pseudonym so the book stays navigable;
@@ -252,6 +355,18 @@ function redactString(key, value) {
 
 function walk(node, key = '') {
   if (typeof node === 'string') return redactString(key, node);
+  // A NUMBER in an identifying field is redacted too, because Postgres exports a
+  // numeric column as a JSON number and numbers never reached redactString at
+  // all. One account here stores its own account number in legacy_key as a
+  // number, and it shipped verbatim through every rule above it: the field was
+  // on the ID list, the value was on the leak list, and neither mattered because
+  // the type check upstream had already waved it through. Numeric account names
+  // are ordinary (Tradovate and cash accounts look like 1745458), so this is the
+  // normal case, not an exotic one.
+  if (typeof node === 'number' && Number.isFinite(node)
+      && (ID_FIELDS.has(key) || ACCOUNT_FIELDS.has(key) || PERSON_FIELDS.has(key))) {
+    return redactString(key, String(node));
+  }
   if (Array.isArray(node)) return node.map((item) => walk(item, key));
   if (node && typeof node === 'object') {
     const out = {};
@@ -263,6 +378,15 @@ function walk(node, key = '') {
 
 const parsed = JSON.parse(readFileSync(inputPath, 'utf8'));
 const source = parsed?.tables && typeof parsed.tables === 'object' ? parsed.tables : parsed;
+
+// Load the real identifiers before anything is masked, so maskAccount can avoid
+// landing on one. Same fields verify() checks, so the two cannot drift apart.
+for (const row of source.trading_accounts || []) {
+  for (const field of ['account_name', 'alias']) {
+    const value = row?.[field];
+    if (typeof value === 'string' && value.trim()) REAL_IDENTIFIERS.add(value);
+  }
+}
 
 const tables = {};
 let rows = 0;
@@ -282,8 +406,82 @@ for (const [table, value] of Object.entries(source)) {
  * grepping does not scale to the next schema change, so the check runs here and
  * refuses to write on a hit.
  */
+/**
+ * A generated id token: 'x' plus 14 hex characters, from token() above.
+ *
+ * These have to be excluded from the leak scan by shape, because the scan is a
+ * substring test and a hex digest is drawn from an alphabet that includes every
+ * digit. A seven-digit account number turned up inside the token
+ * "xcb1784047c2343" — which belongs to a different account, carries no identity,
+ * and cannot be reversed — and the scan refused to write on it. Left in, the
+ * check cries wolf on a book this size and the next real leak gets waved past
+ * by whoever is tired of it.
+ *
+ * The exclusion is deliberately narrow: only a whole string of exactly this
+ * shape. A token EMBEDDED in longer text is still scanned, and every other
+ * field, including masked account names, is scanned as before.
+ */
+const GENERATED_TOKEN = /^x[0-9a-f]{14}$/;
+
+/**
+ * Every string in the redacted output, paired with the path it sits at.
+ *
+ * The scan used to run against JSON.stringify(everything), which cannot tell a
+ * value that survived from a digest that happens to contain the same digits, and
+ * cannot say where it is. Walking gives both.
+ */
+function* strings(node, path = '') {
+  if (typeof node === 'string') { yield [path, node]; return; }
+  if (typeof node === 'number') { yield [path, String(node)]; return; }
+  if (Array.isArray(node)) { for (const item of node) yield* strings(item, path); return; }
+  if (node && typeof node === 'object') {
+    for (const [key, child] of Object.entries(node)) yield* strings(child, path ? `${path}.${key}` : key);
+  }
+}
+
+/**
+ * Index the redacted output ONCE, then answer every suspect against the index.
+ *
+ * Scanning the whole output per suspect is O(suspects x strings) and on this
+ * book that is hundreds of millions of substring tests. Two structures answer
+ * the same question in one pass:
+ *
+ *   exact  — a value that survived as a complete field value. This is the
+ *            ordinary leak: a name, an account number, an email.
+ *   free   — the long strings only. An identifier hidden INSIDE text (the
+ *            composite flag ids in reports.content embed an account number,
+ *            which embeds a client name) can only be found by containment, and
+ *            containment is only affordable over the few long blobs.
+ *
+ * Short strings are covered by `exact`, so nothing is lost by not scanning them
+ * for containment: a 7-character account number cannot hide inside a
+ * 7-character field without being equal to it.
+ */
+const FREE_TEXT_MIN = 40;
+
+function indexOutput(redacted) {
+  const exact = new Map();
+  const free = [];
+  for (const [path, text] of strings(redacted, '')) {
+    if (GENERATED_TOKEN.test(text)) continue;
+    if (!exact.has(text)) exact.set(text, path);
+    if (text.length >= FREE_TEXT_MIN) free.push([path, text]);
+  }
+  return { exact, free };
+}
+
+function findLeaks(index, value) {
+  const where = new Map();
+  const hit = index.exact.get(value);
+  if (hit !== undefined) where.set(hit, 1);
+  for (const [path, text] of index.free) {
+    if (text.includes(value)) where.set(path, (where.get(path) || 0) + 1);
+  }
+  return where;
+}
+
 function verify(source, redacted) {
-  const blob = JSON.stringify(redacted);
+  const index = indexOutput(redacted);
   const suspects = [];
   const collect = (rows, field) => {
     for (const row of rows || []) {
@@ -296,6 +494,11 @@ function verify(source, redacted) {
   collect(source.clients, 'product_key');
   collect(source.clients, 'messenger');
   collect(source.clients, 'notes');
+  // Same class as `notes`: prose a CAM wrote about a client, which is where a
+  // client's own name turns up written by hand. Scanned for survival like the
+  // rest, so adding churn_note to KEEP_FIELDS by mistake refuses the write
+  // instead of shipping.
+  collect(source.clients, 'churn_note');
   collect(source.clients, 'phone');
   collect(source.cam_profiles, 'name');
   collect(source.cam_profiles, 'email');
@@ -303,19 +506,52 @@ function verify(source, redacted) {
   collect(source.trading_accounts, 'alias');
   collect(source.trading_accounts, 'notes');
 
-  const leaks = suspects.filter(([, value]) => blob.includes(value));
+  const leaks = suspects
+    .map(([field, value]) => [field, value, findLeaks(index, value)])
+    .filter(([, , where]) => where.size > 0);
   if (!leaks.length) return;
 
   console.error(`\nREFUSING TO WRITE: ${leaks.length} identifying value(s) survived redaction.`);
-  for (const [field, value] of leaks.slice(0, 5)) {
+  for (const [field, value, where] of leaks.slice(0, 5)) {
     console.error(`  ${field}: ${value.slice(0, 40)}`);
+    // Naming the value without naming where it survived sends the reader back
+    // to grep the whole export. Say which column kept it.
+    for (const [path, count] of [...where.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
+      console.error(`      survives at ${path} x${count}`);
+    }
   }
   console.error('\nAdd the field to KEEP_FIELDS only if it is an enum. Otherwise it needs');
   console.error('a rule in redactString. Check both snake_case and camelCase spellings.');
   process.exit(1);
 }
 
+/**
+ * Refuses to write a book whose joins redaction has merged.
+ *
+ * `verify()` above asks "did any identity get out". This asks the opposite
+ * question, which nothing asked before and which a whole book failed silently:
+ * is what is left still able to answer anything. The rule and the measured cost
+ * of not having had it are in scripts/lib/redactionJoins.mjs.
+ */
+function verifyJoins(source, redacted) {
+  const failures = collapsedJoins(source, redacted);
+  if (failures.length) {
+    console.error('\nREFUSING TO WRITE: redaction merged a join key.');
+    for (const failure of failures) console.error(`  ${failure}`);
+    console.error('\nThe book would look intact and answer per-strategy questions with the');
+    console.error('wrong strategy. Add the field to ID_FIELDS so it becomes a stable 1:1');
+    console.error('token instead of a [redacted N] length bucket.');
+    process.exit(1);
+  }
+  // Said out loud on success, on purpose. A guard whose only output is silence
+  // is a guard whose removal nobody notices, and this one exists because a
+  // silent failure shipped a whole book.
+  const summary = summarizeJoins(redacted);
+  console.log(`joins verified: ${summary.orderIds} order ids, ${summary.executionIds} execution ids, ${summary.resolved} of ${summary.fills} fills resolve to an order`);
+}
+
 verify(source, tables);
+verifyJoins(source, tables);
 
 writeFileSync(outputPath, JSON.stringify({ tables }, null, 2));
 

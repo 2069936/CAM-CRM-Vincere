@@ -191,6 +191,19 @@ export function createHandler({
       stage = 'registry';
       const registry = await store.loadRegistry(device.clientId);
       stage = 'reconcile';
+      // NO `priorImports` HERE, AND THAT IS A KNOWN GAP, NOT A DECISION THAT
+      // NOTHING WAS OPEN. reconcileDailyImport uses the client's previous closes
+      // to price a lot opened yesterday and closed today (carryForwardLots.js).
+      // The browser paths pass them because supabaseStore already loads each
+      // daily_import's executions; this path holds only a device batch, so
+      // supplying them needs a new store read over `daily_imports` -> `executions`
+      // / `orders` for the days before `normalized.date`.
+      //
+      // The effect of the gap is a REFUSAL, never a wrong number: an account with
+      // a carried-in book comes back status 'refused' and publishes no per-algo
+      // split, exactly as it did before carry-in was handled at all. No real
+      // export has yet contained such a book (0 of 25 on 2026-08-18, 0 of 31 on
+      // 2026-08-19), so nothing observed is currently being refused here.
       const importResult = reconcile({
         clientId: device.clientId,
         date: normalized.date,

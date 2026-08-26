@@ -1,8 +1,23 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap");
+/* The two families the whole product — and every printed and downloaded report —
+   is set in, self-hosted. They were fetched from fonts.googleapis.com until the
+   report PDF endpoint made them a SERVER's runtime dependency: server/report/
+   reportPdf.js runs a headless Chrome that had to reach Google on every render,
+   and a family that did not arrive repaginates a client's report (measured: Gray
+   Birch's close is one sheet with them and two without). Same design and same
+   versions — Inter v20 and Outfit v15 — but re-built binaries, not Google's
+   bytes, and declared differently: that `css2?family=…:wght@400;500;…` URL
+   returns DISCRETE faces (Inter 400-800, Outfit 500-800) while these declare one
+   variable face a subset at `font-weight: 100 900`. Pagination is unchanged
+   across the swap; the wider range is not free, and what it cost is written
+   down at `.report-sheet h1, h2` below.
+   `wght.css` is named rather than the package root — they are the same file
+   today — because Inter also ships an `opsz` slice, and that one is a different
+   font (72 KB a subset against 48 KB) that Google was never serving here. */
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/outfit/wght.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -57,6 +72,7 @@
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
   color: var(--text);
   font-family:
+    "Inter Variable",
     Inter,
     system-ui,
     -apple-system,
@@ -64,6 +80,7 @@
     "Segoe UI",
     sans-serif;
   --font-sans:
+    "Inter Variable",
     Inter,
     system-ui,
     -apple-system,
@@ -71,7 +88,9 @@
     "Segoe UI",
     sans-serif;
   --font-heading:
+    "Outfit Variable",
     Outfit,
+    "Inter Variable",
     Inter,
     system-ui,
     sans-serif;
@@ -456,6 +475,16 @@ h6 {
   display: block;
 }
 
+/* The sentence a stale or failed connection actually says. It is a full
+   sentence on purpose — "your change is safe" is the half of it the user needs
+   — so it wraps rather than being clipped to the width of a badge. */
+.sidebar-data-detail {
+  margin-top: 4px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .manager-sidebar-header {
   padding: 18px 16px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.07);
@@ -577,6 +606,12 @@ textarea {
 
 .manager-sidebar-main {
   display: grid;
+  /* An implicit `auto` column is max-content sized and never shrinks, so one
+     long client name made every row in here as wide as that name: a 29-char
+     name plus its kind chip measured 366px of row inside a 251px column, and
+     the sidebar's own overflow did the cutting. minmax(0, 1fr) lets the track
+     shrink so `width: 100%` on the rows below actually means the sidebar. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   width: 100%;
   padding: 0 8px;
@@ -592,14 +627,29 @@ textarea {
   font-size: 12px;
 }
 
-/* Global search results */
+/* Global search results.
+   `display: flex` is load-bearing, not decoration: .client-link is a 3-column
+   grid (16px | 1fr | auto) sized for the close dot, and the four declarations
+   below were all flex properties being applied to a grid, so they did nothing.
+   A search row has no close dot, so its first child — the client name plus the
+   kind chip — was landing in the 16px column and rendering as an empty sliver.
+   The manager search result for a 29-character client read as "( Oakley Ash":
+   the CAM name, and nothing else. */
 .client-link-search {
+  display: flex !important;
   flex-direction: column !important;
   align-items: flex-start !important;
   gap: 3px !important;
   height: auto !important;
   min-height: 36px;
   padding: 7px 12px !important;
+}
+
+/* align-items: flex-start sizes each row of a search result to fit-content, and
+   a 29-character client name is 261px of fit-content in a 239px row. Capping at
+   the row width is what lets `.client-link span`'s ellipsis actually fire. */
+.client-link-search > * {
+  max-width: 100%;
 }
 
 .search-matches {
@@ -670,6 +720,89 @@ textarea {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+}
+
+/* Client row label: the NAME truncates, the chips beside it never do.
+   The rule above (`.client-link span`) makes every span in the row an ellipsing
+   box. When the name and the chips shared one such span, the ellipsis measured
+   them as a single run of text and ate the chips off the end — rows showed
+   "Ca..." and "...". These three rules override it for the label only: the
+   label is a flex line that does not ellipse, the name is the one flexible item
+   in it, and everything else (kind chip, Covering pill, last-contact dot, task
+   count) is fixed width.
+
+   Numbers this has to hold at: 280px sidebar -> 201.5px name column; the widest
+   real chip set is ~163px ("Cash + Prop" 72 + "Covering" 62 + dot 11 + task
+   count 18), which leaves the name ~38px rather than leaving the chip 0. */
+.client-link .client-row-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  /* In the sidebar list the label is a grid item in a minmax(0, 1fr) column and
+     is capped already. In .client-link-search it is a flex-column item sized to
+     fit-content, which a 29-character name would push past the sidebar edge. */
+  max-width: 100%;
+  /* Kept hidden so a pathological narrow row clips instead of spilling over the
+     IP column, but `clip` rather than `ellipsis`: no "..." is ever painted at
+     this level, which is what made the chips look truncated. */
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.client-link .client-row-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-link .client-row-label > :not(.client-row-name) {
+  flex: 0 0 auto;
+  /* `.client-link span` lands on the chips too. It was inert while they were
+     inline boxes — overflow does not apply to a non-replaced inline — but a flex
+     item is blockified, so without this the chips would inherit an ellipsis of
+     their own the moment they became flex children. They are never the part of
+     the row that should be cut. */
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* The NEW badge sits inside the label rather than beside it, so it no longer
+   gets the row grid's 8px gap and has to carry its own separation from the name.
+   6px, not 8px, because the badge already has 4px of its own padding. */
+.client-link .client-row-label > .new-data-badge {
+  margin-right: 6px;
+}
+
+/* Former clients (stage "Inactive"), parked under a disclosure below the working
+   list. It carries .nav-label as well so it picks up whatever the sidebar
+   section headings are themed to; this rule only adds the layout and the hit
+   target. When nobody is Inactive — which is the whole real book today, Active
+   132 / Onboarding 3 / Paused 1 / Inactive 0 — none of this renders. */
+.former-clients-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.former-clients-toggle:hover {
+  color: var(--text);
+}
+
+.former-clients-count {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+/* Dimmed, not hidden: a former client is still one click from their history. */
+.client-link-former .client-row-name {
+  opacity: 0.7;
 }
 
 .client-link em {
@@ -2183,11 +2316,78 @@ textarea {
   resize: vertical;
 }
 
+/* Lists as long as the book.
+   One treatment, applied wherever a list grows with the client count: a fixed
+   height, its own scroll, and a note saying so. See components/BookList.jsx —
+   the note is the part that matters, because a bounded box with no affordance
+   looks exactly like a truncated one. */
+.book-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.book-list-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 26rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Room for the scrollbar so a card's border is never under it. */
+  padding-right: 2px;
+}
+/* One wrapper per entry. It is what BookList.test.jsx counts to prove nothing
+   was dropped, so it exists whether or not the entry needs a box. */
+.book-list-item {
+  min-width: 0;
+}
+.book-list-inline > .book-list-body {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 12rem;
+}
+.book-list-note {
+  font-size: 10px;
+  margin: 0;
+}
+.book-list-empty {
+  gap: 0;
+}
+/* The table shape of the same bound: fixed height, sticky column names. 96 rows
+   of roster used to push everything below them off the page and take the header
+   with them. */
+.book-table {
+  max-height: 30rem;
+  overflow-y: auto;
+}
+.book-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
+}
+.bulk-task-target {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.bulk-task-targets {
+  grid-column: 1/-1;
+}
+
 .pipeline-board {
   display: flex;
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 4px;
+}
+.pipeline-total {
+  font-size: 11px;
+  margin: 0 0 8px;
 }
 .pipeline-column {
   flex: 1;
@@ -2195,6 +2395,13 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+/* Each lane scrolls inside its own bound, so the board is as tall as its
+   tallest visible column instead of as tall as its biggest stage. On the export
+   in the repo that is 95 of 96 clients in Active against four lanes holding one
+   card between them. */
+.pipeline-column .book-list-body {
+  max-height: 22rem;
 }
 .pipeline-col-header {
   display: flex;
@@ -2454,6 +2661,26 @@ textarea {
   padding: 34px;
 }
 
+/*
+  Why a download can fail, said on the sheet.
+
+  IT GETS ITS OWN ROW, and that is the whole rule. `.report-actions` is a flex
+  row with `flex-wrap: wrap`; sharing the row, this message is long enough to
+  push Print and the close button onto a second line — which is a poor way to
+  deliver a message whose text is "use Print to save this one". `flex-basis:
+  100%` gives it a line of its own and `order: 1` puts that line last, after the
+  close button, whatever order the panels render their children in.
+
+  `.report-actions` carries `.no-print`, so none of this reaches a client's
+  paper — printed or downloaded.
+*/
+.report-download-error {
+  flex: 0 0 100%;
+  order: 1;
+  white-space: normal;
+  line-height: 1.35;
+}
+
 .report-actions {
   position: sticky;
   top: -34px;
@@ -2610,6 +2837,25 @@ textarea {
   justify-content: space-between;
   border-bottom: 2px solid #d8e2ea;
   padding-bottom: 18px;
+}
+
+/* The weight every report heading has always printed at, said out loud.
+   It used to be an accident of what Google served. Tailwind preflight sets
+   `h1..h6 { font-weight: inherit }`, so a report's <h1> and <h2> compute to 400
+   — and the `css2?family=Outfit:wght@500;600;700;800` this sheet used to import
+   declared no 400 face, so the browser matched 400 up to the 500 one. Every
+   client name and every section title on every report has printed at Medium
+   since the day the report existed.
+   Self-hosting through @fontsource replaced those discrete faces with one
+   variable face declared `font-weight: 100 900`, which HAS a real 400 — so the
+   same CSS silently began printing those 36 headings 16.8% lighter. Pagination
+   was unaffected (identical sheet counts, identical mm), which is exactly why
+   nothing caught it: only the ink changed, on paper a client receives.
+   Scoped to `.report-sheet` and not to the global h1..h6 block above, which is
+   product-wide. server/tests/report/reportHeadingWeight.test.js pins it. */
+.report-sheet h1,
+.report-sheet h2 {
+  font-weight: 500;
 }
 
 .report-header h1 {
@@ -4286,7 +4532,7 @@ tr:nth-child(2) .rank-badge {
   border-radius: 10px;
   background: var(--surface);
 }
-.collector-summary strong { font: 700 24px/1 "Outfit", sans-serif; }
+.collector-summary strong { font: 700 24px/1 "Outfit Variable", "Outfit", sans-serif; }
 .collector-summary span { color: var(--text-muted); font-size: 12px; }
 .collector-summary .attention strong { color: var(--warning); }
 .collector-toolbar, .collector-toolbar form, .collector-pagination {
@@ -5240,7 +5486,17 @@ tr:nth-child(2) .rank-badge {
 }
 
 @page {
-  size: A4;
+  /*
+    No `size` on purpose.
+
+    This said `size: A4` and never once produced an A4 page. Every one of the
+    eleven reports the desk sent on 2026-08-21 is 215.9 x 279.4mm — US Letter —
+    because the paper comes from the print dialog, not from here, and the desk's
+    dialog is set to Letter. A stylesheet that asserts a geometry it does not
+    get is worse than one that asserts none: the layout below was budgeted
+    against A4's 273mm of usable height while the paper only ever gave 255.4mm,
+    so every calculation was 17.6mm optimistic. The margin is real and stays.
+  */
   margin: 12mm;
 }
 @media print {
@@ -5268,26 +5524,152 @@ tr:nth-child(2) .rank-badge {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  /* keep rows, sections and per-client blocks from splitting across pages */
+  /*
+    WHERE THE PAGE IS ALLOWED TO BREAK.
+
+    `break-inside: avoid` used to sit on `.report-section` as well as on `tr`.
+    A section is a heading plus a whole account table, so "keep it whole" means
+    a section taller than the space left on the sheet is pushed to the next one
+    entire and the rest of the current sheet is thrown away. That is not a
+    hypothetical: on 2026-08-21 the desk sent a two-page report whose first page
+    carried nothing but the header and the three metric tiles — 50mm of ink on a
+    255mm sheet, 80% of it blank, with a six-row table waiting on page two.
+
+    Measured the same way, 13 book clients printed to PDF at Letter/12mm through
+    this stylesheet: 23 sides, 4 of the 13 first pages under 250 characters, one
+    sheet holding nothing but the footer, and 1,031mm of blank space on sheets
+    that still had content queued behind them. Sections break now, and the same
+    corpus is 18 sides, no near-empty first page, no footer-only sheet, and
+    208mm of that mid-report blank space left. scripts/verify-report-print-layout.mjs
+    prints it and measures it; src/printLayout.test.js pins the rules.
+
+    What must NOT break is spelled out below rather than left to `avoid` on a
+    container, because the two are not the same thing: keeping a table ROW whole
+    is almost always right, keeping a whole multi-row SECTION whole is what
+    wasted the sheet.
+  */
   .report-section,
-  .report-sheet section,
-  .cam-day-client,
+  .report-sheet section {
+    break-inside: auto;
+  }
+  /*
+    The CAM's own day sheet is a list of short per-client blocks, four lines
+    each, and splitting one across sheets would separate a client's name from
+    that client's numbers. It stays whole. (App.jsx also sets this inline; the
+    rule is here so the intent is stated where the other break rules are, and it
+    is scoped through `.report-sheet` so it outranks the `section` rule above.)
+  */
+  .report-sheet .cam-day-client {
+    break-inside: avoid;
+  }
+  /* Half a row is unreadable, so a row is the atom. */
   tr {
     break-inside: avoid;
   }
+  /*
+    Nothing that only introduces something else may be the last thing on a
+    sheet: not a heading, not a table's header row, and not a heading plus a
+    header row with no data under them. Chrome has no `orphans`/`widows` for
+    table rows, so "never strand one line" has to be said row by row — the first
+    body row travels with the heading above it, the last one with the row above
+    it.
+  */
   h1,
   h2 {
     break-after: avoid;
   }
   thead {
+    /*
+      This rule was already here and was dead code: a header only repeats when a
+      table splits, and nothing was ever allowed to split. Now that sections
+      break, a continued table opens with its own column headings again.
+    */
     display: table-header-group;
+    break-after: avoid;
+  }
+  .report-table tbody tr:first-child {
+    break-after: avoid;
+  }
+  .report-table tbody tr:last-child {
+    break-before: avoid;
+  }
+  /*
+    The other half of the complaint. A sheet that is full, plus a footer whose
+    margin, rule and single line come to another 74px, overflows by a couple of
+    points — and the client gets a second sheet holding that one line. That
+    shipped too, on 2026-08-21, 96.7% blank; one of the 13 book clients did the
+    same. The footer is never split and never opens a sheet of its own.
+
+    It is not free. Tying the footer to what precedes it also drags the last
+    unbreakable group with it, which is why one book client's first sheet ends
+    63mm short. A sheet 63mm short beats a sheet with one line on it.
+  */
+  .report-footer {
+    break-inside: avoid;
+    break-before: avoid;
+    margin-top: 14px;
+  }
+  /*
+    Fixed inter-block whitespace, tightened for paper only.
+
+    On screen the report is a scrolling sheet and the air is free. On paper the
+    22px above and below the metrics, the 20px above every section and the 32px
+    above the footer come to 138px — 36.5mm, 14% of a sheet — of margin before a
+    single figure is printed, and it is what pushed three of the 13 reports onto
+    a trailing sheet that then held almost nothing. Screen values are untouched.
+  */
+  .report-metrics {
+    margin: 12px 0;
+    /*
+      Paper is 192mm wide whatever the screen breakpoints think it is.
+
+      `@media (max-width: 980px)` (index.css:4676) collapses this grid to a
+      single column, and the printed page box is 725 CSS px, so on any print
+      path that evaluates width media queries against the page the three metric
+      tiles stack into a 302px tower — 80mm of sheet for three numbers. The
+      eleven reports the desk sent on 2026-08-21 do NOT show that: their tiles
+      sit side by side on a 138pt pitch, four columns across a 677px layout. So
+      the desk's own print path and a print-to-PDF of the same page disagree
+      about the report's shape, and only one of them is right for paper.
+
+      Pinning the column count here settles it: print does not care about screen
+      breakpoints, and every path now produces the row the desk already gets.
+    */
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .report-section {
+    margin-top: 12px;
   }
   .report-table,
   .report-sheet .ops-table {
-    table-layout: fixed;
+    /*
+      `table-layout: fixed` with no column widths splits the width equally, so
+      the Account column — an alias plus a connection name — wrapped while six
+      numeric columns sat half empty. Measured over the 95 account rows the 13
+      book clients print: 82.8px a row on average under `fixed` against 60.7px
+      under `auto`, worst row 115px against 76px. That is 5.8mm of paper per
+      account row. `auto` lets the columns take what they need; the guarantee
+      `fixed` was there for (a pathological account id cannot widen the table
+      past the page) is kept by `overflow-wrap: anywhere` below, which holds
+      min-content width down to one character.
+    */
+    table-layout: auto;
     width: 100%;
-    word-break: break-word;
+    /* `word-break: break-word` was a legacy alias for exactly the next line. */
     overflow-wrap: anywhere;
+  }
+  .report-table th,
+  .report-sheet .ops-table th {
+    /*
+      `anywhere` is for a pathological account id, not for a column heading.
+      Under `auto` it also lowers a column's min-content width to one character,
+      which let the algorithm make the Status and Balance columns narrower than
+      their own headings and print them as "STATU / S" and "BALANC / E". The
+      first print of this change did exactly that. Headings wrap between words
+      or not at all.
+    */
+    overflow-wrap: normal;
+    word-break: normal;
   }
 }
 
@@ -5695,63 +6077,53 @@ tr:nth-child(2) .rank-badge {
   font-weight: 600;
   color: var(--text-muted);
 }
-.insight-group .insight-item {
+/* One row per signal, in a table, because everything the rows share has already
+   been hoisted into .insight-constants above them. The old card layout is gone:
+   it spent three lines per signal restating a rule that is now stated once. */
+.insight-group-body {
   margin-left: 22px;
+  display: grid;
+  gap: 8px;
 }
-.insight-item {
+.insight-constants {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 8px 12px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 12px 14px;
-  text-align: left;
-  width: 100%;
-  cursor: pointer;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
-  transition:
-    background 0.15s,
-    border-color 0.15s,
-    transform 0.15s;
 }
-.insight-item:hover {
-  background: var(--surface-3);
-  border-color: rgba(var(--info-rgb), 0.28);
-  transform: translateY(-1px);
-}
-.insight-critical {
-  border-left: 3px solid var(--error);
-}
-.insight-warning {
-  border-left: 3px solid var(--warning);
-  background: linear-gradient(90deg, rgba(var(--warning-rgb), 0.08), transparent 36%), var(--surface-2);
-}
-.insight-opportunity {
-  border-left: 3px solid var(--success);
-}
-.insight-info {
-  border-left: 3px solid var(--blue);
-}
-
-.insight-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  margin-top: 6px;
-}
-.insight-body {
-  flex: 1;
+.insight-constants > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
 }
-.insight-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 3px;
+.insight-constants dt {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
+.insight-constants dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.insight-constant-action {
+  /* The one line a reader acts on, so it takes the whole width rather than
+     competing for space with the counts beside it. */
+  flex-basis: 100%;
+}
+.insight-constant-action dd {
+  font-style: italic;
+  color: var(--text-muted);
+}
+/* The rule's name on the group row. Uppercased and tracked so a reader scanning
+   a collapsed feed is reading rule names, not sentences. */
 .insight-type {
   font-size: 11px;
   font-weight: 800;
@@ -5759,49 +6131,58 @@ tr:nth-child(2) .rank-badge {
   letter-spacing: 0.06em;
   color: var(--muted);
 }
-.insight-client {
-  font-weight: 700;
-  font-size: 13px;
-  color: #fff;
-  opacity: 1;
+.insight-table {
+  font-size: 12px;
+}
+.insight-table th[scope='row'] {
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.insight-table td {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* A signal with no value for a column keeps the cell, so every column below a
+   heading holds that heading's quantity and nothing else. */
+.insight-cell-empty {
+  color: var(--muted);
+}
+.insight-row-critical th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--error);
+  padding-left: 10px;
+}
+.insight-row-warning th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--warning);
+  padding-left: 10px;
+}
+.insight-row-info-green th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--success);
+  padding-left: 10px;
+}
+.insight-row-info th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--blue);
+  padding-left: 10px;
 }
 .insight-account {
   font-size: 12px;
   color: var(--muted);
 }
-.insight-message {
-  margin: 0 0 3px;
-  font-size: 13px;
-  color: var(--text);
-  line-height: 1.4;
-}
-.insight-action {
+.insight-sev-text {
   font-size: 11px;
-  color: var(--muted);
-  font-style: italic;
+  font-weight: 700;
 }
 
-.insight-severity-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 20px;
-  flex-shrink: 0;
-}
 .insight-sev-critical {
-  background: rgba(var(--error-rgb), 0.15);
   color: var(--error);
 }
 .insight-sev-warning {
-  background: rgba(var(--warning-rgb), 0.15);
   color: var(--warning);
 }
 .insight-sev-info-green {
-  background: rgba(var(--success-rgb), 0.15);
   color: var(--success);
 }
 .insight-sev-info {
-  background: rgba(var(--info-rgb), 0.15);
   color: var(--blue);
 }
 
@@ -6760,8 +7141,8 @@ tr:nth-child(2) .rank-badge {
 }
 
 @theme inline {
-  --font-heading: Outfit, Inter, system-ui, sans-serif;
-  --font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "Outfit Variable", Outfit, "Inter Variable", Inter, system-ui, sans-serif;
+  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --color-info: var(--info);
   --color-info-foreground: var(--background);
   --color-success: var(--success);
@@ -7025,6 +7406,57 @@ tr:nth-child(2) .rank-badge {
 }
 @media (max-width: 640px) {
   .lifecycle-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* The one stat that opens: Churned. Same box as its siblings so the grid does
+   not break, plus a hint line so the affordance is visible without a hover. */
+.lifecycle-stat-button {
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.lifecycle-stat-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.lifecycle-stat-hint {
+  font-size: 11px;
+}
+
+/* Churn drill-down: filters this panel owns, then the rows. */
+.churn-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.churn-filter-row select,
+.churn-filter-row input[type="date"] {
+  font-size: 12px;
+}
+.churn-count,
+.churn-note-line,
+.churn-empty {
+  font-size: 12px;
+}
+.churn-note-line { margin: 0 0 8px; }
+.churn-reason-options {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 10px;
+}
+.churn-reason-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.churn-reason-note {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* Collapsible panel heading: chevron + title + count act as one toggle. */
@@ -7465,49 +7897,187 @@ tr:nth-child(2) .rank-badge {
 .plan-picker small { font-size: 10px; line-height: 1.3; }
 .plan-fallback { color: var(--warning); }
 
-/* Breakdown under the headline P&L tile. Excluded rows are struck through and
-   dimmed: present so the data problem is visible, clearly not part of the sum. */
-.segment-breakdown { margin-top: 8px; font-size: 11px; }
-.segment-split {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-  margin-bottom: 6px; font-size: 12px;
-}
-.segment-split > span { display: flex; flex-direction: column; }
-/* The 22px comes from .metric strong, which this sits inside. Inheriting it
-   clipped the second column: 105px of text in a 105px cell. */
-.segment-split strong { white-space: nowrap; font-size: 13px; font-weight: 600; }
-.segment-split > span > span:first-child { color: var(--muted); font-size: 10px; }
-.segment-split em { font-style: normal; color: var(--muted); }
-.segment-list { list-style: none; margin: 0; padding: 0; }
-.segment-list li {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto 24px; gap: 6px;
-  padding: 1px 0; color: var(--muted); white-space: nowrap;
-}
-.segment-list li > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.segment-list li span:nth-child(2) { font-variant-numeric: tabular-nums; }
-.segment-list em { font-style: normal; text-align: right; opacity: 0.65; }
-.segment-excluded { opacity: 0.45; text-decoration: line-through; }
+/* The desk-money panel: four businesses, one row each, and no total anywhere.
 
-/* A segment row that opens its capital detail.
-   The li hands its grid over to the button so the row keeps reading as three
-   aligned columns — label, P&L, account count — with one 11px chevron column
-   in front. The chevron is the whole reason this is legible as a control at
-   11px: a hover tint alone is invisible until the pointer is already on it,
-   and this list sits inside a 160px-wide metric tile where there is no room
-   for the word "open". */
-.segment-list li.segment-clickable { display: block; padding: 0; }
-.segment-list .segment-row {
-  display: grid; grid-template-columns: 11px minmax(0, 1fr) auto 24px; gap: 6px;
-  align-items: center; width: 100%; padding: 1px 3px 1px 0;
-  background: none; border: 0; border-radius: 4px;
-  color: inherit; font: inherit; text-align: left; cursor: pointer;
+   There is deliberately no large single figure in this block. The panel it
+   replaced had one — "Team daily P&L" at 22px — and it was a cash desk's real
+   client money added to a prop desk's simulated plan size. The four rows are
+   given equal visual weight for the same reason: none of them is the headline. */
+.desk-money-panel { padding: 14px; margin-bottom: 14px; }
+.desk-money-panel .panel-heading h3 { margin: 0; }
+.desk-basis {
+  display: flex; align-items: center; gap: 6px;
+  margin: 6px 0 2px; color: var(--text); font-size: 12px; font-weight: 600;
 }
-.segment-list .segment-row .chevron { margin-right: 0; vertical-align: 0; }
-.segment-list .segment-row > span:nth-of-type(1) { overflow: hidden; text-overflow: ellipsis; }
-.segment-list .segment-row > span:nth-of-type(2) { font-variant-numeric: tabular-nums; }
-.segment-list .segment-row:hover { background: rgba(var(--info-rgb), 0.1); color: var(--text); }
-.segment-list .segment-row.open { background: rgba(var(--info-rgb), 0.16); color: var(--text); }
-.segment-list .segment-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.desk-basis-note { margin: 0 0 10px; font-size: 11px; line-height: 1.5; }
+.desk-reconciliation { margin: 10px 0 0; font-size: 11px; line-height: 1.5; }
+.desk-money-table td, .desk-history-table td { font-variant-numeric: tabular-nums; }
+.desk-money-table th[scope="row"] strong { display: block; }
+.desk-segment-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+/* The drill-down chip. It carries the long domain segment name because that is
+   what buildCapitalDetail keys on; a short label would open a segment reading
+   $0. */
+.desk-segment-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 6px 1px 3px; border: 1px solid var(--line); border-radius: 10px;
+  background: none; color: var(--muted); font: inherit; font-size: 10px;
+  cursor: pointer; white-space: nowrap;
+}
+.desk-segment-chip .chevron { vertical-align: 0; }
+.desk-segment-chip:hover { background: rgba(var(--info-rgb), 0.1); color: var(--text); }
+.desk-segment-chip.open {
+  background: rgba(var(--info-rgb), 0.16); color: var(--text); border-color: var(--accent);
+}
+.desk-segment-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A figure this panel refuses to produce. Dotted underline rather than a dash:
+   the reason is in the title attribute and the reader has to be able to see
+   there is one. */
+.desk-refusal {
+  color: var(--muted); font-size: 11px;
+  text-decoration: underline dotted; text-underline-offset: 2px; cursor: help;
+}
+.desk-month { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.desk-month h4 { margin: 0 0 2px; font-size: 13px; }
+.desk-history-table small { color: var(--muted); }
+
+/* The algorithm boards: one table per business, no headline, no score.
+
+   Each board is its own block with its own heading and its own coverage line,
+   and there is deliberately no visual device that reads across two of them —
+   no shared rank column, no continuing numbering, no summary row underneath.
+   The panel this replaced was a single fifteen-row table in which a cash
+   algorithm, a Bullet-Bot evaluation and a funded prop account were the same
+   row type. */
+.strategy-boards-panel { padding: 14px; margin-bottom: 14px; }
+.strategy-boards-panel .panel-heading h3 { margin: 0; }
+.board-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+.board-block:first-of-type { border-top: none; padding-top: 4px; }
+.board-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.board-head h4 { margin: 0; font-size: 13px; }
+.board-note { margin: 3px 0 8px; font-size: 11px; line-height: 1.5; }
+.board-table { font-variant-numeric: tabular-nums; }
+.board-table th[scope="row"] strong,
+.board-table th[scope="row"] small { display: block; }
+.board-table td small { display: block; }
+.board-rank { width: 1%; white-space: nowrap; }
+.board-mean strong { display: block; }
+.board-mean small { display: block; font-size: 10px; }
+.board-days { white-space: nowrap; }
+/* A row the evidence gate did not rank. Dimmed rather than hidden — the desk
+   still needs to see that the algorithm exists and how little is behind it. */
+.board-unranked { opacity: 0.72; }
+.board-unranked th[scope="row"] strong { font-weight: 500; }
+/* The programme's row. It sits at the foot of the table it used to be RANKED
+   in, separated by a rule and given its own tint, so that it reads as a
+   different kind of thing rather than as row sixteen. Not dimmed like an
+   unranked row: nothing about it is short of evidence — it answers a different
+   question, and a faded row would say the opposite. */
+.board-programme > * { border-top: 2px solid var(--line); }
+.board-programme td[colspan] { font-size: 11px; line-height: 1.55; white-space: normal; }
+.board-programme td[colspan] small { margin-top: 4px; }
+.board-coverage { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
+.board-refusals { margin-top: 16px; font-size: 11px; }
+.board-refusals summary { cursor: pointer; color: var(--muted); }
+.board-refusals > ul { margin-top: 8px; }
+
+/* The algorithm name is the way into that algorithm's own side of the book, so
+   it has to look like a control. Underlined rather than coloured: the board's
+   colours already mean profit and loss and a blue algorithm name would read as a
+   third state. */
+.board-open-algo {
+  background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: pointer; text-align: left;
+  text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;
+}
+.board-open-algo:hover { text-decoration-style: solid; }
+.board-open-algo[aria-pressed="true"] { text-decoration-style: solid; }
+.board-row-open { background: var(--surface-2, rgba(127, 127, 127, 0.09)); }
+
+/* One algorithm, looking outward. Full width under the boards: an algorithm on
+   this book runs on up to four of them and this panel carries a block each. */
+.algo-detail-panel { padding: 14px; margin-bottom: 14px; }
+.algo-detail-panel .panel-heading h3 { margin: 0; }
+.algo-detail-segment { font-variant-numeric: tabular-nums; }
+
+.algo-detail-stats {
+  display: grid; gap: 10px; margin: 10px 0 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.algo-detail-stat { display: flex; flex-direction: column; gap: 1px; }
+.algo-detail-stat > span:first-child { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.algo-detail-stat strong { font-size: 15px; font-weight: 600; }
+.algo-detail-stat small { font-size: 10px; line-height: 1.4; }
+
+.algo-detail-series { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
+.algo-detail-series svg { width: 100%; height: 72px; display: block; }
+.algo-detail-zero { stroke: var(--border, var(--line)); stroke-width: 0.6; stroke-dasharray: 2 2; }
+.algo-detail-bar-up { fill: var(--success, #2f9e5f); }
+.algo-detail-bar-down { fill: var(--error, #d0453b); }
+/* A close nothing measured. Drawn on the zero line and muted, never as a bar of
+   height zero: "made nothing" and "did not run" are different claims, and 976 of
+   the 1,402 measured observations on this book are genuine zeroes. */
+.algo-detail-gap { fill: var(--muted); opacity: 0.35; }
+.algo-detail-series-ends {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 10px; color: var(--muted);
+}
+.algo-detail-series-refusal { margin: 0 0 12px; font-size: 11px; line-height: 1.5; }
+.algo-detail-note { margin: 4px 0 0; font-size: 10px; line-height: 1.5; }
+.algo-detail-closes { font-size: 11px; }
+.algo-detail-closes summary { cursor: pointer; color: var(--muted); }
+.algo-detail-closes[open] > .table-wrap { margin-top: 6px; }
+
+.algo-detail-table { font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+.algo-detail-table th[scope="row"] strong,
+.algo-detail-table th[scope="row"] small,
+.algo-detail-table td small { display: block; }
+.algo-detail-table td small { font-size: 10px; }
+.algo-detail-caption { text-align: left; font-size: 11px; color: var(--muted); padding-bottom: 4px; }
+.algo-detail-source { font-size: 11px; }
+.algo-detail-accounts { font-size: 11px; margin-bottom: 8px; }
+.algo-detail-accounts summary { cursor: pointer; color: var(--muted); }
+.algo-detail-accounts[open] > .table-wrap { margin-top: 6px; }
+
+/* NO MONEY STYLES FOR AN ALGORITHM OR A CONFIGURATION, ON PURPOSE.
+
+   `.algo-money-list` styled a list of named per-business figures — cash beside
+   prop, never added — on the ranking row and inside every configuration block.
+   The list is gone, and these rules went with it so that re-adding the markup
+   is a visible change and not a one-line restoration of something that already
+   has a stylesheet waiting for it. A dollar per business, printed beside the
+   deployment table that holds the account-days of each business, is a P&L per
+   account type with the division left to the reader. The desk's own money, per
+   business, is in `.board-coverage` under both panels. */
+
+/* Deployment context: counts only. The refusal above the table is not
+   decoration — it is the sentence that stops the table being read as a verdict
+   on an account type. */
+.algo-deployment { margin: 10px 0 12px; }
+.algo-business { margin-bottom: 10px; }
+.algo-business .board-note { margin-top: 2px; }
+.algo-configurations { margin-top: 18px; }
+.algo-configuration { margin-top: 14px; padding-left: 10px; border-left: 2px solid var(--line); }
+.algo-detail-overall { margin-top: 4px; }
+
+/* Accounts whose type names an algorithm they are not running. Borrows the
+   configuration review's voice deliberately — the two are the same kind of ask
+   and sit in the same collapsible. */
+.type-mismatch { display: flex; flex-direction: column; gap: 10px; }
+.type-mismatch-table { font-size: 11px; font-variant-numeric: tabular-nums; }
+.type-mismatch-table td small { display: block; font-size: 10px; }
+.type-mismatch-family { display: block; white-space: nowrap; }
+.type-mismatch-families { margin: 0; font-size: 11px; line-height: 1.7; }
+.type-mismatch-elsewhere { margin: 0; font-size: 11px; line-height: 1.5; }
+
+/* The second finding in the same panel: the desk's own rule about where a
+   programme runs, checked against the book. Ruled off from the labelling
+   question above it because they are two findings and a manager acting on one
+   should not read the other's counts as its denominator. */
+.programme-standing-block { border-top: 1px solid var(--line); padding-top: 10px; }
+.programme-standing-block > h5 { margin: 0 0 8px; font-size: 12px; }
+.programme-standing { display: flex; flex-direction: column; gap: 10px; }
+.programme-standing-groups { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.6; }
+.programme-standing-groups > li { margin-bottom: 3px; }
 
 /* The panel the tiles open. Full width under the metric grid, because the tile
    it belongs to is one cell of a repeat(4, minmax(160px, 1fr)) grid and this
@@ -7546,6 +8116,29 @@ tr:nth-child(2) .rank-badge {
   font-size: 11px; padding: 1px 5px; border-radius: 4px;
   background: var(--surface-alt, rgba(127, 127, 127, 0.12));
 }
+
+/* The algorithm row as a disclosure.
+   Scoped to `details.drift-row` on purpose: LiveAccountsPanel,
+   QuietAccountsPanel, SetFileMatchPanel and AccountLifecyclePanel all render
+   .drift-row as a plain <section> and must not pick any of this up. */
+details.drift-row > summary {
+  display: flex; flex-direction: column; gap: 2px; list-style: none;
+  cursor: pointer; padding: 5px 6px 6px 0; border-radius: 5px;
+}
+details.drift-row > summary::-webkit-details-marker { display: none; }
+details.drift-row > summary:hover { background: var(--surface-alt, rgba(127, 127, 127, 0.1)); }
+details.drift-row + details.drift-row { margin-top: 4px; }
+details.drift-row > summary .drift-head::before {
+  content: "▸"; color: var(--muted); font-size: 10px; margin-right: 4px;
+  display: inline-block; transition: transform 0.12s ease;
+}
+details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg); }
+.drift-findings { font-size: 11px; white-space: nowrap; }
+/* What a closed row says about itself. Without it, ten collapsed algorithms are
+   ten names and a reader has to open all of them to find the one worth opening. */
+.drift-worst { font-size: 12px; line-height: 1.4; }
+.drift-key { font-size: 11px; line-height: 1.5; margin: 4px 0 0; }
+.drift-list-note { font-size: 11px; margin: 10px 0 6px; }
 
 /* The findings. Indented and rule-marked so the eye can tell a group from the
    cohort line above it, which flat 11px grey never allowed. */
@@ -7611,6 +8204,18 @@ tr:nth-child(2) .rank-badge {
 }
 .drift-table td { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .drift-here { font-weight: 600; }
+/* The row the headline is about. A group can differ in 22 settings and the
+   sentence above the table names exactly one of them; nothing connected the two,
+   so the reader re-derived the link on every group they opened. */
+.drift-change-lead > th { font-weight: 600; }
+.drift-lead-mark { color: var(--warning); margin-right: 4px; }
+.drift-lead-note { color: var(--muted); font-size: 10px; font-weight: 400; }
+/* Parameters with no established meaning, captioned once as a block. Ranked 99
+   by describeParameter and therefore always the tail of the table. */
+.drift-unnamed > tr:first-child > th {
+  font-size: 10px; color: var(--muted); font-weight: 400; font-style: italic;
+  white-space: normal; padding-top: 7px;
+}
 /* "absent" read as "someone deleted this setting". 94 of 267 changes on the real
    book are one side missing, and every one of them is a build that does not
    carry the parameter — both sides reported the same version string. */
@@ -7670,6 +8275,47 @@ tr:nth-child(2) .rank-badge {
   color: var(--info); background: transparent;
   border: 1px dashed var(--info-border);
 }
+
+/* Accounts that went quiet, and the simulation accounts beside them.
+
+   Built on the .drift-* language above because it is the same promise — a review
+   list, never a verdict — with one addition it genuinely needs: the two shapes a
+   CAM confuses have to be one GLANCE apart, not one sentence apart. 122 accounts
+   on the real book went quiet for two or more of their client's closes; 80 were
+   inside their trailing drawdown on the last close they filed and 42 were past
+   it, and reading those two as the same thing is what makes "missing means
+   failed" feel true when it is wrong 143 times out of 195.
+
+   So colour carries the shape and nothing else does: red rule and red chip for a
+   reading that was already negative, amber for a reading that was healthy, a
+   dashed muted rule for a buffer that was never measured. The chip repeats the
+   shape in words on every row, because colour alone is not a label — a red left
+   border says "look" and only the words say what was seen. Nothing here is
+   green: no row on this list is a clean bill. */
+.quiet-shape-past { border-left-color: var(--danger, #ef4444); }
+.quiet-shape-healthy { border-left-color: var(--warning, #f59e0b); }
+.quiet-shape-unmeasured { border-left: 2px dashed var(--muted); }
+.quiet-chip {
+  font-size: 10px; line-height: 1.5; padding: 0 6px; border-radius: 999px;
+  white-space: nowrap; border: 1px solid var(--border); color: var(--muted);
+}
+.quiet-chip-past { color: var(--danger, #ef4444); border-color: var(--danger, #ef4444); }
+.quiet-chip-healthy { color: var(--warning, #f59e0b); border-color: var(--warning, #f59e0b); }
+.quiet-chip-unmeasured { border-style: dashed; font-style: italic; }
+/* Collection sits above the accounts and is deliberately NOT one of the shape
+   colours: "nobody collected this client" is a different kind of fact from
+   anything a reading can say, and 24 of the 96 clients here are in it. */
+.quiet-collection { border-left: 2px solid var(--info, #3b82f6); }
+.quiet-cohorts { border-left: 2px dashed var(--warning, #f59e0b); }
+.quiet-simulation { border-left: 2px dashed var(--border); }
+.quiet-simulation .drift-count { color: var(--muted); }
+
+/* Flag rows that carry read-back evidence. The queue's own row prints the flag's
+   stored message; this is the line the message never had, indented under it so
+   nothing suggests the CRM rewrote what was written at the time. */
+.flag-evidence { display: block; font-size: 11px; line-height: 1.45; margin-top: 3px; }
+.flag-evidence-past { color: var(--danger, #ef4444); }
+.flag-evidence-noop { color: var(--muted); font-style: italic; }
 
 /* Capital detail. The caveats are not decoration here: on the real book one
    capital movement is nameable across 36 days and 584 accounts, held capital is
@@ -7795,3 +8441,14 @@ tr:nth-child(2) .rank-badge {
   font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .capital-chart-ends span:nth-child(2) { font-size: 12px; font-weight: 600; }
+
+/* Stack Playbook - per-algo contribution */
+.algo-contrib { margin-top: 10px; }
+.algo-contrib-toggle { background: none; border: none; padding: 0; font-size: 12px; color: var(--muted); cursor: pointer; }
+.algo-contrib-toggle:hover { color: var(--text); }
+.algo-contrib-body { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.algo-contrib-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.algo-contrib-table th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); padding: 3px 8px 3px 0; }
+.algo-contrib-table td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); }
+.algo-contrib-table .nums { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.algo-contrib-note { font-size: 11px; }

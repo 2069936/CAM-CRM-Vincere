@@ -63,10 +63,10 @@ function figuresOf(html) {
 }
 
 /** Renders with a hand-supplied detail object instead of the real domain. */
-function renderWithDetail(detail) {
+function renderWithDetail(detail, segment = null) {
   control.detail = detail;
   try {
-    return renderToStaticMarkup(<CapitalDetailPanel clients={clients} />);
+    return renderToStaticMarkup(<CapitalDetailPanel clients={clients} segment={segment} />);
   } finally {
     control.detail = null;
   }
@@ -75,36 +75,72 @@ function renderWithDetail(detail) {
 const desk = renderToStaticMarkup(<CapitalDetailPanel clients={clients} />);
 const deskFigures = figuresOf(desk);
 
-describe('CapitalDetailPanel — the two capital numbers stay two numbers', () => {
-  it('renders held capital and the single-close cross-section as different figures', () => {
-    // The whole reason the panel exists. Held capital is each account's LAST
-    // observed balance, summed across 13 different closes; the cross-section is
-    // the one close everybody in it reported on. On this book they are
-    // $32,244,234 over 584 accounts against $16,591,870 over 311 — a factor of
-    // nearly two. An implementation that fed one number to both figures, or that
-    // dropped the second, would look entirely reasonable on screen.
-    const held = deskFigures.get('Capital held');
-    const cross = deskFigures.get('Reported on 2026-07-30');
+describe('CapitalDetailPanel — the desk publishes no capital figure at all', () => {
+  it('prints the refusal where $32,244,234 used to be', () => {
+    // This panel used to head the desk view "Capital held $32,244,234" over 584
+    // accounts. $30,287,682.82 of that — 93.93% — was prop plan size, a product
+    // the firm simulates, and at most $1,956,551.34 was money anyone could
+    // withdraw. There is no whole here, so there is no number: a count, and the
+    // sentence saying why.
+    const text = strip(desk);
 
-    expect(held.value).toBe('$32,244,234');
-    expect(held.rests).toBe('584 accounts');
-    expect(cross.value).toBe('$16,591,870');
-    expect(cross.rests).toBe('311 accounts');
+    expect(deskFigures.get('Capital held')).toBeUndefined();
+    // The number is allowed to appear once, inside the sentence explaining why
+    // it is no longer published. It must not appear as a FIGURE.
+    expect([...deskFigures.values()].map((figure) => figure.value))
+      .not.toContain('$32,244,234');
+    expect(text.match(/\$32,244,234/g) || []).toHaveLength(1);
+    expect(text).toContain('two kinds of money that must not be added');
+    expect(deskFigures.get('Accounts with a balance on record').value).toBe('584');
+    expect(deskFigures.get('Accounts with a balance on record').rests)
+      .toBe('311 of them reported on 2026-07-30');
+  });
 
+  it('keeps the two account counts two counts on the segment that does hold capital', () => {
+    // The original point of the panel, now on the one segment entitled to the
+    // word: held capital is each account's LAST observed balance across several
+    // closes, and the cross-section is the one close everybody in it reported on.
+    const cash = figuresOf(
+      renderToStaticMarkup(<CapitalDetailPanel clients={clients} segment="Cash" />),
+    );
+    const held = cash.get('Capital held');
+    const cross = cash.get('Reported on 2026-07-30');
+
+    expect(held.value).toBe('$1,897,596');
+    expect(held.rests).toBe('47 accounts');
+    expect(cross.value).toBe('$1,369,036');
+    expect(cross.rests).toBe('33 accounts');
     expect(cross.value).not.toBe(held.value);
-    expect(cross.rests).not.toBe(held.rests);
   });
 
   it('says on the held figure that it is not one date, next to the number', () => {
-    // 273 of the 584 accounts carry a balance from an earlier close. The caveat
-    // is inline rather than a footnote because a reader who scrolls past it has
-    // been told the desk holds $32.2m as of 2026-07-30, which it does not.
-    const held = deskFigures.get('Capital held');
+    // 14 of the 47 cash accounts carry a balance from an earlier close. The
+    // caveat is inline rather than a footnote because a reader who scrolls past
+    // it has been told the desk holds $1.9m as of 2026-07-30, which it does not.
+    const cash = figuresOf(
+      renderToStaticMarkup(<CapitalDetailPanel clients={clients} segment="Cash" />),
+    );
+    const held = cash.get('Capital held');
     expect(held.caveat).toContain('Not one date');
-    expect(held.caveat).toContain('13 different closes');
-    expect(held.caveat).toContain('273 of 584 accounts did not report on 2026-07-30');
-    expect(deskFigures.get('Reported on 2026-07-30').caveat)
+    expect(held.caveat).toContain('different closes');
+    expect(held.caveat).toContain('did not report on 2026-07-30');
+    expect(cash.get('Reported on 2026-07-30').caveat)
       .toContain('one close, no carried-forward balances');
+  });
+
+  it('reports a prop segment as a plan size with its refusal, and gives it a movement', () => {
+    // "A prop balance is never shown as capital. Prop gets movement."
+    const bullet = figuresOf(renderToStaticMarkup(
+      <CapitalDetailPanel clients={clients} segment="Evaluations - Bullet Bot" />,
+    ));
+
+    expect(bullet.get('Capital held')).toBeUndefined();
+    const planSize = bullet.get('Plan size (not capital)');
+    expect(planSize.value).toBe('$11,909,327');
+    expect(planSize.rests).toBe('236 accounts');
+    expect(planSize.caveat).toContain('plan size the firm simulates');
+    expect(bullet.get('What it moved').value).toBe('−$118,039');
+    expect(bullet.get('What it moved').rests).toContain('175 accounts of 236');
   });
 
   it('counts accounts with no balance on record instead of adding them as $0', () => {
@@ -153,14 +189,14 @@ describe('CapitalDetailPanel — a missing figure is never a zero', () => {
     // here: three money figures set to null, nothing else changed. A manager
     // reading "$0 paid out" against "no payout recorded" draws the opposite
     // conclusion, and the em-dash is the only thing standing between them.
-    const detail = structuredClone(buildCapitalDetail(clients));
+    const detail = structuredClone(buildCapitalDetail(clients, { segment: 'Cash' }));
     detail.selected.held.capital = null;
     detail.selected.held.atLatestClose.capital = null;
     detail.selected.movement.payouts.recorded = {
       amount: null, events: 3, accounts: 2, firstDate: '2026-07-14', lastDate: '2026-07-28',
     };
 
-    const figures = figuresOf(renderWithDetail(detail));
+    const figures = figuresOf(renderWithDetail(detail, 'Cash'));
     const nulled = [
       figures.get('Capital held'),
       figures.get('Reported on 2026-07-30'),
@@ -233,7 +269,8 @@ describe('CapitalDetailPanel — refusals render as sentences', () => {
 
   it('lists the figures it will not produce, with the reason for each', () => {
     const text = strip(desk);
-    expect(text).toContain('6 figures this panel will not produce, and why');
+    expect(text).toContain('7 figures this panel will not produce, and why');
+    expect(text).toContain('One capital figure for the desk');
     expect(text).toContain('Money in — deposits, withdrawals, funding fees');
     expect(text).toContain('Payouts paid, and payouts over time');
     expect(text).toContain('What the unexplained movements are');
@@ -251,17 +288,31 @@ describe('CapitalDetailPanel — a segment is not the desk', () => {
     expect(text).toContain('$11,909,327 236 accounts');
     expect(text).toContain('Funded');
     expect(text).toContain('$11,839,896 180 accounts');
+    // Every row carries the kind of money it is, so the two prop rows above are
+    // not read as $23.7m of capital.
+    expect(text).toContain('Plan size (not capital)');
+    expect(text).toContain('$1,897,596 47 accounts Capital held');
+    expect(text).toContain('NOT parts of a whole');
 
     const cash = renderToStaticMarkup(<CapitalDetailPanel clients={clients} segment="Cash" />);
     const cashFigures = figuresOf(cash);
     expect(cashFigures.get('Capital held').value).toBe('$1,897,596');
-    expect(cashFigures.get('Capital held').rests).toBe('47 accounts');
-    expect(cashFigures.get('Reported on 2026-07-30').value).toBe('$1,369,036');
-    expect(cashFigures.get('Reported on 2026-07-30').rests).toBe('33 accounts');
 
-    // A segment's figures are its own, not the desk's.
-    expect(cashFigures.get('Capital held').value)
-      .not.toBe(deskFigures.get('Capital held').value);
+    // A segment's figures are its own, and the desk has none to borrow.
+    expect(deskFigures.get('Capital held')).toBeUndefined();
+  });
+
+  it('lists trading P&L per business and never nets one figure across them', () => {
+    // -$118,039 of Bullet Bot, -$90,711 of cash and the rest are five different
+    // quantities. Summing them is the arithmetic that printed the desk green on
+    // 2026-07-21 while the prop desk had lost $5,505.46.
+    const text = strip(desk);
+
+    expect(text).toContain('one line per business, never added together');
+    expect(text).toContain('Evaluations - Bullet BotPlan size (not capital)−$118,039');
+    expect(text).toContain('CashCapital held−$90,711');
+    // The netted figure those five would produce must not be anywhere on screen.
+    expect(text).not.toContain('−$337,931');
   });
 
   it('names the one movement it can name and refuses to classify the rest', () => {
@@ -271,6 +322,12 @@ describe('CapitalDetailPanel — a segment is not the desk', () => {
     expect(text).toContain(
       '8 balance changes across 7 accounts that trading does not account for',
     );
-    expect(text).toContain('+$364 unaccounted in, −$3,367 out');
+    // No in/out total across businesses: it would add a cash withdrawal to a
+    // prop plan-size adjustment. The per-segment view still gives both.
+    expect(text).toContain('No in/out total is given across businesses');
+    const cashText = strip(
+      renderToStaticMarkup(<CapitalDetailPanel clients={clients} segment="Cash" />),
+    );
+    expect(cashText).toMatch(/unaccounted in, .*out\./);
   });
 });

@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { buildCapitalDetail } from '../domain/capitalDetail';
+import { MONEY_KINDS, MONEY_KIND_LABELS, buildCapitalDetail } from '../domain/capitalDetail';
 
 /**
  * The detail behind a capital tile: what the desk holds, how it is composed, and
@@ -55,7 +55,7 @@ export default function CapitalDetailPanel({ clients = [], segment = null, asOfD
         </span>
       </header>
 
-      <HeldCapital block={block} asOfDate={detail.asOfDate} />
+      <HeldCapital block={block} asOfDate={detail.asOfDate} isDesk={isDesk} />
       {/* isDesk decides the axis, and it has to be passed: without it the desk
           view falls through to composition.byStatus, which is empty on the desk
           block (statuses are tallied per segment), so "How it is composed" —
@@ -112,31 +112,89 @@ function Derived({ children }) {
   );
 }
 
-function HeldCapital({ block, asOfDate }) {
-  const { held } = block;
+/**
+ * What the segment holds — and for every segment but cash, the sentence that
+ * says why the number beside it is not capital.
+ *
+ * The desk manager's review, in his words: prop-firm account balances ARE NOT
+ * REAL MONEY, they are a plan size the prop firm simulates. So this section asks
+ * `held.moneyKind` before it prints anything. Cash gets "Capital held". A prop
+ * pool gets its plan size under that name, the refusal underneath, and the
+ * figure it is actually entitled to — what it MOVED. The desk gets no money
+ * figure at all, because its two kinds must not be added.
+ */
+function HeldCapital({ block, asOfDate, isDesk = false }) {
+  const { held, movement } = block;
   const carried = held.accounts - held.atLatestClose.accounts;
+  const isCash = held.moneyKind === MONEY_KINDS.CLIENT_CASH;
+  const dateCaveat = held.asOfDates.length > 1 ? (
+    <>
+      Not one date. Each account&apos;s last observed balance, landing on{' '}
+      {held.asOfDates.length} different closes — {carried} of {held.accounts} accounts did
+      not report on {asOfDate} and their balance is carried forward, not refreshed.
+    </>
+  ) : null;
 
   return (
     <section className="capital-section">
+      {isDesk ? (
+        <p className="capital-note capital-warn">{held.capitalRefusal}</p>
+      ) : null}
       <div className="capital-figures">
-        <Figure
-          label="Capital held"
-          value={money(held.capital)}
-          rests={plural(held.accounts, 'account')}
-          caveat={held.asOfDates.length > 1 ? (
-            <>
-              Not one date. Each account&apos;s last observed balance, landing on{' '}
-              {held.asOfDates.length} different closes — {carried} of {held.accounts} accounts did
-              not report on {asOfDate} and their balance is carried forward, not refreshed.
-            </>
-          ) : null}
-        />
-        <Figure
-          label={`Reported on ${asOfDate}`}
-          value={money(held.atLatestClose.capital)}
-          rests={plural(held.atLatestClose.accounts, 'account')}
-          caveat="The clean cross-section: one close, no carried-forward balances."
-        />
+        {isDesk ? (
+          <Figure
+            label="Accounts with a balance on record"
+            value={String(held.accounts)}
+            rests={`${held.atLatestClose.accounts} of them reported on ${asOfDate}`}
+            caveat="A count, not a sum. The dollars behind it are two different kinds of money."
+          />
+        ) : (
+          <Figure
+            label={MONEY_KIND_LABELS[held.moneyKind] || 'Balance observed'}
+            value={money(isCash ? held.capital : held.balanceObserved)}
+            rests={plural(held.accounts, 'account')}
+            caveat={isCash ? dateCaveat : (
+              <>
+                {held.capitalRefusal}
+                {dateCaveat ? <> {dateCaveat}</> : null}
+              </>
+            )}
+          />
+        )}
+        {isDesk ? null : (
+          <Figure
+            label={`Reported on ${asOfDate}`}
+            value={money(isCash ? held.atLatestClose.capital : held.atLatestClose.balanceObserved)}
+            rests={plural(held.atLatestClose.accounts, 'account')}
+            caveat="The clean cross-section: one close, no carried-forward balances."
+          />
+        )}
+        {/* The movement, next to the balance, for every segment — and it is the
+            ONLY place this figure is printed. It used to appear a second time
+            under "How it moved" with the same number from the same field, which
+            on a page whose subject is one-computation-one-answer reads as two
+            sources agreeing. */}
+        {isDesk ? null : (
+          <Figure
+            label="What it moved"
+            value={signed(movement.tradingPnl?.net)}
+            tone={movement.tradingPnl && movement.tradingPnl.net < 0 ? 'capital-negative' : ''}
+            rests={movement.tradingPnl
+              ? `${plural(movement.tradingPnl.accounts, 'account')} of ${held.accounts} · ${movement.tradingPnl.pairs} close-pairs · ${movement.tradingPnl.from} to ${movement.tradingPnl.to}`
+              : 'no comparable pair of closes'}
+            caveat={movement.tradingPnl && movement.tradingPnl.coverageShare < 0.5 ? (
+              <>
+                This rests on {Math.round(movement.tradingPnl.coverageShare * 100)}% of the
+                segment. True for those accounts; not a segment total.
+              </>
+            ) : isCash ? (
+              'Net of what trading accounts for, read from the weekly accumulator.'
+            ) : (
+              "The figure a prop pool is entitled to. The balance above is the firm's plan size; "
+              + 'this is what the accounts did with it.'
+            )}
+          />
+        )}
       </div>
 
       <ul className="capital-staleness">
@@ -165,7 +223,7 @@ function HeldCapital({ block, asOfDate }) {
                 <tr>
                   <th scope="col">Close</th>
                   <th scope="col">Accounts</th>
-                  <th scope="col">Capital</th>
+                  <th scope="col">{MONEY_KIND_LABELS[held.moneyKind] || 'Balance observed'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -173,7 +231,7 @@ function HeldCapital({ block, asOfDate }) {
                   <tr key={row.date}>
                     <th scope="row">{row.date}</th>
                     <td>{row.accounts}</td>
-                    <td>{money(row.capital)}</td>
+                    <td>{row.balance === undefined ? '—' : money(row.balance)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -185,6 +243,16 @@ function HeldCapital({ block, asOfDate }) {
   );
 }
 
+/**
+ * The composition, with no denominator.
+ *
+ * The bars used to be drawn as a share of `held.capital`, and the note above
+ * them printed "X% of the desk total". There is no desk total any more and there
+ * should never have been one: the whole it divided by was 93.93% prop plan size
+ * with the cash desk's real client money inside it. The bars are now scaled to
+ * the LARGEST ROW, which is a comparison rather than a claim about a whole, and
+ * the label says so.
+ */
 function Composition({ block, isDesk }) {
   const { composition, held } = block;
   // The desk breaks down by segment; a segment breaks down by account status.
@@ -192,23 +260,26 @@ function Composition({ block, isDesk }) {
   // "Active / Failed / Reserve" is the wrong axis for the desk.
   const rows = isDesk && composition.bySegment.length
     ? composition.bySegment.map((row) => ({ ...row, label: row.segment }))
-    : composition.byStatus.map((row) => ({ ...row, label: row.status }));
+    : composition.byStatus.map((row) => ({
+      ...row, label: row.status, moneyKind: held.moneyKind,
+    }));
   if (!rows.length) return null;
+  const widest = Math.max(...rows.map((row) => Math.abs(row.balance)), 0);
 
   return (
     <section className="capital-section">
       <h5>How it is composed</h5>
       {isDesk ? (
         <p className="capital-note">
-          Accounts marked Inactive / Ignore, and closes whose account is no longer on record, are
-          reported separately rather than folded in — open their own tile to see them.
+          One row per business, and they are NOT parts of a whole. Cash is real client money; a
+          prop balance is the plan size the firm simulates. The bars are scaled to the largest row
+          so the rows can be compared, not summed. Accounts marked Inactive / Ignore, and closes
+          whose account is no longer on record, are reported separately — open their own tile.
         </p>
-      ) : composition.shareOfDesk !== null ? (
-        <p className="capital-note">{composition.shareOfDesk}% of the desk total.</p>
       ) : (
         <p className="capital-note">
-          Not part of the desk total — this segment is reported on its own so the capital is visible
-          rather than hidden.
+          Bars are scaled to the largest row here, not to a desk total. There is no desk total:
+          this segment&apos;s money and another segment&apos;s are not the same kind of money.
         </p>
       )}
       <ul className="capital-bars">
@@ -218,11 +289,17 @@ function Composition({ block, isDesk }) {
             <span className="capital-bar-track">
               <span
                 className="capital-bar-fill"
-                style={{ width: `${held.capital ? Math.max(1, (row.capital / held.capital) * 100) : 0}%` }}
+                style={{ width: `${widest ? Math.max(1, (Math.abs(row.balance) / widest) * 100) : 0}%` }}
               />
             </span>
             <span className="capital-bar-value">
-              {money(row.capital)} <em>{plural(row.accounts, 'account')}</em>
+              {money(row.balance)} <em>{plural(row.accounts, 'account')}</em>
+              {isDesk ? (
+                <em title={row.capitalRefusal || undefined}>
+                  {' '}{MONEY_KIND_LABELS[row.moneyKind] || 'Balance observed'}
+                  {row.netPnl !== null ? <> · moved {signed(row.netPnl)}</> : null}
+                </em>
+              ) : null}
             </span>
           </li>
         ))}
@@ -267,7 +344,7 @@ function Composition({ block, isDesk }) {
 }
 
 function Movements({ block, detail }) {
-  const { movement, coverage, held } = block;
+  const { movement, coverage } = block;
   const skipped = coverage.pairsSkipped;
   const notLookedAt = skipped.gap + skipped.closeDistrusted
     + skipped.accumulatorBlanked + skipped.staleRow;
@@ -284,21 +361,42 @@ function Movements({ block, detail }) {
         </span>.
       </p>
 
+      {movement.tradingPnlBySegment.length ? (
+        <div className="capital-found">
+          <strong>Trading P&amp;L, net — one line per business, never added together.</strong>
+          <p className="capital-note">
+            A cash desk&apos;s result and a prop desk&apos;s result are not the same quantity: one
+            is client money, the other is what a simulated plan size did. Summing them printed the
+            headline green on 2026-07-21 while the prop desk had lost $5,505.46.
+          </p>
+          <div className="capital-table-wrap">
+            <table className="capital-table">
+              <thead>
+                <tr>
+                  <th scope="col">Business</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Net P&amp;L</th>
+                  <th scope="col">Rests on</th>
+                </tr>
+              </thead>
+              <tbody>
+                {movement.tradingPnlBySegment.map((row) => (
+                  <tr key={row.segment}>
+                    <th scope="row">{row.segment}</th>
+                    <td>{MONEY_KIND_LABELS[row.moneyKind] || 'Balance observed'}</td>
+                    <td className={row.net < 0 ? 'capital-negative' : 'capital-positive'}>
+                      {signed(row.net)}
+                    </td>
+                    <td>{plural(row.accounts, 'account')} · {row.pairs} close-pairs</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
       <div className="capital-figures">
-        <Figure
-          label="Trading P&L, net"
-          value={signed(movement.tradingPnl?.net)}
-          tone={movement.tradingPnl && movement.tradingPnl.net < 0 ? 'capital-negative' : ''}
-          rests={movement.tradingPnl
-            ? `${plural(movement.tradingPnl.accounts, 'account')} of ${held.accounts} · ${movement.tradingPnl.pairs} close-pairs`
-            : 'no comparable pair of closes'}
-          caveat={movement.tradingPnl && movement.tradingPnl.coverageShare < 0.5 ? (
-            <>
-              This rests on {Math.round(movement.tradingPnl.coverageShare * 100)}% of the segment.
-              True for those accounts; not a segment total.
-            </>
-          ) : null}
-        />
         <Figure
           label="Money in"
           value="Not recorded"
@@ -365,9 +463,14 @@ function Movements({ block, detail }) {
           </strong>
           <p className="capital-note">
             A withdrawal and a trading loss the accumulator missed look identical here. Booking
-            either one as the other is worse than leaving it open, so they are listed as they are:{' '}
-            {signed(movement.unexplainedTotals.in)} unaccounted in,{' '}
-            {signed(movement.unexplainedTotals.out)} out.
+            either one as the other is worse than leaving it open, so they are listed as they are
+            {movement.unexplainedTotals.in === null ? (
+              <>. No in/out total is given across businesses: it would add a cash withdrawal to a
+              prop plan-size adjustment. Open a segment for its own figures.</>
+            ) : (
+              <>: {signed(movement.unexplainedTotals.in)} unaccounted in,{' '}
+              {signed(movement.unexplainedTotals.out)} out.</>
+            )}
           </p>
           <div className="capital-table-wrap">
             <table className="capital-table">
@@ -501,6 +604,43 @@ function Timeline({ block }) {
     );
   }
 
+  // The desk roll-up nulls every money column on this timeline, because one line
+  // for the desk would be the cash desk's result added to the prop desk's. When
+  // that happens the chart is withheld and the reason is printed instead.
+  if (points.every((point) => point.cumulativeNetPnl === null)) {
+    return (
+      <section className="capital-section">
+        <h5>Over time</h5>
+        <p className="capital-note capital-warn">{block.timelineRefusal}</p>
+        <div className="capital-table-wrap">
+          <table className="capital-table">
+            <thead>
+              <tr>
+                <th scope="col">Close</th>
+                <th scope="col">Accounts reporting</th>
+                <th scope="col">With a comparable pair</th>
+                <th scope="col">Unaccounted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {points.map((point) => (
+                <tr key={point.date} className={point.trusted ? '' : 'capital-distrusted'}>
+                  <th scope="row">{point.date}</th>
+                  <td>
+                    {point.accounts}
+                    {point.coverage !== null ? <em> {Math.round(point.coverage * 100)}%</em> : null}
+                  </td>
+                  <td>{point.netPnlAccounts}</td>
+                  <td>{point.unexplainedAccounts || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    );
+  }
+
   const values = points.map((point) => point.cumulativeNetPnl);
   const min = Math.min(0, ...values);
   const max = Math.max(0, ...values);
@@ -559,7 +699,7 @@ function Timeline({ block }) {
                   {point.accounts}
                   {point.coverage !== null ? <em> {Math.round(point.coverage * 100)}%</em> : null}
                 </td>
-                <td>{money(point.capitalObserved)}</td>
+                <td>{money(point.balanceObserved)}</td>
                 <td className={point.netPnl < 0 ? 'capital-negative' : ''}>
                   {point.netPnlAccounts ? signed(point.netPnl) : '—'}
                   {point.netPnlAccounts ? <em> {point.netPnlAccounts} acct</em> : null}

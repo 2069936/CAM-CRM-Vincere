@@ -39,6 +39,60 @@ function approvedUrl(value, { production, origin } = {}) {
   return url;
 }
 
+/**
+ * Hosts a redirect may never send us to.
+ *
+ * This is the reason `redirect: 'error'` existed, and it is the part worth
+ * keeping. A server that follows an arbitrary redirect is a request forwarder:
+ * point it at 169.254.169.254 and it fetches the cloud instance's credentials on
+ * your behalf. The content check downstream would reject the bytes, but the
+ * request has already been made and that is the whole attack.
+ *
+ * Literal-address forms only. A hostname that RESOLVES to a private address is
+ * not caught here, and cannot be without resolving it ourselves and pinning the
+ * socket to that answer. The first hop is a hardcoded constant, so reaching this
+ * requires whoever serves that constant to be redirecting us somewhere hostile,
+ * and at that point the release itself is compromised.
+ */
+const BLOCKED_REDIRECT_HOST = /^(?:localhost|(?:10|127)\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|\[?(?:::1|fc|fd|fe80)|0\.0\.0\.0$)/i;
+
+/**
+ * GET a manifest, following redirects by hand instead of refusing them.
+ *
+ * GitHub Releases answer a download URL with a 302 to a signed, time-limited
+ * object host, so `redirect: 'error'` cannot fetch one at all. Hosting the
+ * manifest somewhere that serves it directly is the alternative, and it costs a
+ * per-release upload step by whoever holds those credentials — which is exactly
+ * the handoff that left this feature sitting unusable for weeks.
+ *
+ * Following redirects is safe HERE for a reason that does not generalise: the
+ * bytes are pinned by SHA-256 against a digest committed in this repository, so
+ * a redirect cannot change WHAT is installed, only where the request goes. Every
+ * hop is re-validated through approvedUrl (https, no credentials, no fragment)
+ * and screened against the private ranges above, and the chain is bounded.
+ */
+async function fetchManifestFollowingRedirects(fetchImpl, startUrl, { production, maxHops = 5 }) {
+  let url = startUrl;
+  for (let hop = 0; hop <= maxHops; hop += 1) {
+    const response = await fetchImpl(url.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    const location = response.status >= 300 && response.status < 400
+      ? response.headers?.get?.('location')
+      : null;
+    if (!location) return response;
+    // Relative Location headers are legal, so resolve against the current hop
+    // rather than assuming an absolute URL.
+    const next = approvedUrl(new URL(location, url).toString(), { production });
+    if (BLOCKED_REDIRECT_HOST.test(next.hostname)) throw new Error('redirect-host');
+    url = next;
+  }
+  throw new Error('redirect-loop');
+}
+
 async function boundedResponseBytes(response) {
   if (!response?.ok) throw new Error('response');
   const declaredHeader = response.headers?.get?.('content-length');
@@ -132,16 +186,62 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
   });
 }
 
+/**
+ * The published agent, committed rather than configured.
+ *
+ * Neither value is a secret. The URL is public by definition — it is where a
+ * client VPS downloads from — and the SHA-256 is the digest of a file anyone can
+ * fetch. Nothing was protected by holding them in environment variables, and
+ * holding them there cost a deployment step owned by whoever administers Vercel.
+ * That handoff is why the card told every CAM it was "waiting for an approved
+ * Windows release" for weeks, waiting on an approval nobody performs.
+ *
+ * The digest is what makes committing them safe. The manifest is rejected unless
+ * it matches this byte for byte, and every artifact inside carries its own
+ * SHA-256, so replacing the file at that URL does not replace what the desk
+ * installs — it breaks the check and the card reports no release. Changing what
+ * ships means changing this constant, in a commit, in review.
+ *
+ * Environment variables still win when set, so another deployment can point
+ * elsewhere without touching code.
+ *
+ * Built by run 31595748544 of the Collector Windows workflow, published as
+ * release agent-v1.0.0.
+ */
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.0/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = 'bf55101284f29588e7c75c0fa2fa8ea69b37e9af9a31127292a81f6b2aaa17a3';
+
 export async function resolveInstallerRelease(env = process.env, {
   production = env.NODE_ENV === 'production',
   fetchImpl = globalThis.fetch,
 } = {}) {
+  // Whether the values came from configuration or from the constants above, and
+  // it decides what a failure MEANS.
+  //
+  // A configured URL that will not resolve is a mistake someone made and has to
+  // hear about, so it throws. The committed default failing is a different
+  // event: GitHub is unreachable, or the release was pulled. Throwing there
+  // turns a third party's outage into a 500 that takes the whole Auto Collection
+  // card down for every client, when the honest answer is the one this function
+  // already has a shape for — no release available right now.
+  const configured = Boolean(
+    String(env.AUTO_COLLECTION_RELEASE_MANIFEST_URL || '').trim()
+    || String(env.AUTO_COLLECTION_RELEASE_MANIFEST_SHA256 || '').trim(),
+  );
   const values = [
-    env.AUTO_COLLECTION_RELEASE_MANIFEST_URL,
-    env.AUTO_COLLECTION_RELEASE_MANIFEST_SHA256,
+    env.AUTO_COLLECTION_RELEASE_MANIFEST_URL || DEFAULT_RELEASE_MANIFEST_URL,
+    env.AUTO_COLLECTION_RELEASE_MANIFEST_SHA256 || DEFAULT_RELEASE_MANIFEST_SHA256,
   ];
   if (values.every((value) => !String(value || '').trim())) return null;
   if (values.some((value) => !String(value || '').trim())) {
+    throw new Error('Invalid auto-collection installer manifest configuration.');
+  }
+  if (configured
+    && (!String(env.AUTO_COLLECTION_RELEASE_MANIFEST_URL || '').trim()
+      || !String(env.AUTO_COLLECTION_RELEASE_MANIFEST_SHA256 || '').trim())) {
+    // Half-configured: someone set the url and not the digest, or the reverse.
+    // Falling back to the committed default here would install something other
+    // than what they were reaching for, silently.
     throw new Error('Invalid auto-collection installer manifest configuration.');
   }
 
@@ -157,12 +257,11 @@ export async function resolveInstallerRelease(env = process.env, {
     const cacheKey = `${production ? 'production' : 'development'}\0${url}\0${sha256}`;
     if (!cache.has(cacheKey)) {
       const pending = (async () => {
-        const response = await fetchImpl(url.toString(), {
-          method: 'GET',
-          redirect: 'error',
-          headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(5_000),
-        });
+        const response = await fetchManifestFollowingRedirects(fetchImpl, url, { production });
+        // Verified against the ORIGINAL url, not the hop the bytes came from.
+        // The artifact URLs inside must share the origin the manifest was
+        // published at; a redirect to a signed object host must not silently
+        // widen what counts as same-origin.
         return verifiedManifest(await boundedResponseBytes(response), sha256, url, production);
       })();
       cache.set(cacheKey, pending);
@@ -172,6 +271,9 @@ export async function resolveInstallerRelease(env = process.env, {
     }
     return await cache.get(cacheKey);
   } catch {
+    // See `configured` above: an outage on the committed default degrades to
+    // "no release", a broken configuration is reported.
+    if (!configured) return null;
     throw new Error('Invalid auto-collection installer manifest configuration.');
   }
 }

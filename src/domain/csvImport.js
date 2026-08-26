@@ -242,6 +242,14 @@ function mapAccount(row) {
     connection: row.connection || row.connectionName || '',
     accountName: row.accountName || row.displayName || '',
     grossRealizedPnl: realizedPnl !== 0 ? realizedPnl : grossRealizedPnl,
+    // The 'Gross realized PnL' column exactly as exported, kept apart from the
+    // field above. That one prefers 'Realized PnL' when the grid carried both,
+    // and 'Realized PnL' is NET of commissions — it differed from gross on 19 of
+    // 21 traded accounts on the export this was measured against. A FIFO
+    // derivation reproduces GROSS, so reconciling it against the blended field
+    // would reject nearly every account. Absent stays null: an accounts grid
+    // exported without the column must not be read as a confident zero.
+    grossRealizedPnlReported: parseOptionalCurrency(row.grossRealizedPnl),
     trailingMaxDrawdown: parseOptionalCurrency(row.trailingMaxDrawdown),
     accountBalance: parseCurrency(row.cashValue),
     weeklyPnl: parseOptionalCurrency(row.weeklyPnl),
@@ -262,8 +270,15 @@ function mapStrategy(row) {
     parametersRaw,
     params,
     direction: params.parsed && params.direction ? params.direction : inferDirection(parametersRaw),
-    unrealized: parseCurrency(row.unrealized ?? row.unrealizedPnl),
-    realized: parseCurrency(row.realized ?? row.realizedPnl),
+    // Optional, not zero-by-default. Both columns can be switched off in the
+    // Strategies grid, and one client folder in a real export had no 'Realized'
+    // column at all. parseCurrency turned that absence into a confident 0, and a
+    // reported 0 is a claim: it said "this strategy made nothing" about a
+    // strategy that had in fact lost $1,115, and a cross-check read the absence
+    // as a disagreement with the derivation that got it right. Absent has to
+    // stay absent so the UI can say "not reported" instead of "$0".
+    unrealized: parseOptionalCurrency(row.unrealized ?? row.unrealizedPnl),
+    realized: parseOptionalCurrency(row.realized ?? row.realizedPnl),
     connection: row.connection || '',
     enabled: parseBool(row.enabled),
   };

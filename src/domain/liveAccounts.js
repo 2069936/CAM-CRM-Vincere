@@ -27,7 +27,7 @@
 // Nothing in this file reads `todayIsoDate()`. That is deliberate.
 
 import { isLiveOrderState } from './tradingDayScope';
-import { strategyFamilyOf } from './strategyRiskProfile';
+import { strategyFamilyOf } from './strategyFamily';
 import { parseStrategyVersion } from './csvImport';
 
 /* ── Period ───────────────────────────────────────────────────────────────── */
@@ -35,7 +35,7 @@ import { parseStrategyVersion } from './csvImport';
 /**
  * The period a strategy is running: `0 - URGO-4.5` → 0.
  *
- * The leading number IS the period. `strategyRiskProfile.strategyFamilyOf`
+ * The leading number IS the period. `strategyFamily.strategyFamilyOf`
  * calls it "the NinjaTrader grid's row index"; that comment is wrong, and it is
  * the reason this number appears nowhere in the UI today.
  *

@@ -5,6 +5,58 @@ import {
   flagGroupActivityEntry,
   flagResolutionPlan,
 } from '../domain/camFlagQueue';
+import { QUIET_SHAPES, buildQuietAccounts, quietEvidenceForFlag } from '../domain/quietAccounts';
+
+/** The one flag type this file reads evidence back for. reconcile.js:582. */
+const MISSING_ACCOUNT = 'Missing account';
+
+/**
+ * How a shape renders on a flag row.
+ *
+ * `noop` is the important one and it is not cosmetic. 26 of the 106 open
+ * Missing account problems on this book are flags with nothing behind them — 20
+ * stand on a close the account did not yet exist on, and 6 are on accounts that
+ * are back in their client's latest close. They read as work and they are not.
+ */
+const EVIDENCE_TONE = {
+  [QUIET_SHAPES.PAST_DRAWDOWN]: 'past',
+  [QUIET_SHAPES.NOT_YET_REGISTERED]: 'noop',
+  [QUIET_SHAPES.REPORTING_AGAIN]: 'noop',
+  [QUIET_SHAPES.NEVER_REPORTED]: 'noop',
+};
+
+/**
+ * The record behind a `Missing account` flag, read back out of the closes.
+ *
+ * WHY THE EVIDENCE IS READ BACK HERE. The flag carries one sentence — "<alias>
+ * existed before but did not appear in this close" — and nothing to act on,
+ * which is how 106 of them stay open across 19 clients on this book, held in 309
+ * flag rows. Everything needed to tell them apart is already in
+ * account_snapshots. Rewriting reconcile's message instead would only reach
+ * imports reconciled after the change: the 309 rows already in operational_flags
+ * keep the sentence they were stored with, and buildCamFlagQueue groups by
+ * message, so a reworded flag would split every live problem into an old row and
+ * a new one and leave the historical half exactly as unreadable as it is now.
+ *
+ * A MODULE CACHE AND NOT useMemo, deliberately. This component is called as a
+ * plain function by its own tests — no DOM, no renderer — precisely because the
+ * defect it was written for is about which ids a click sends, and that cannot be
+ * read off markup. A hook here would throw on every one of those calls. The
+ * WeakMap is keyed on the `clients` array itself, so it holds for as long as the
+ * caller's array identity does and never keeps a client alive.
+ *
+ * The sweep behind it is 51 ms for 96 clients and 485 closes on this book.
+ */
+const EVIDENCE_CACHE = new WeakMap();
+
+function quietEvidenceModel(clients, asOfDate) {
+  if (!Array.isArray(clients)) return null;
+  const cached = EVIDENCE_CACHE.get(clients);
+  if (cached && cached.asOfDate === asOfDate) return cached.model;
+  const entry = { asOfDate, model: buildQuietAccounts(clients, { asOf: asOfDate }) };
+  EVIDENCE_CACHE.set(clients, entry);
+  return entry.model;
+}
 
 /**
  * The CAM's own flag queue: every open flag they hold, closable from here.
@@ -42,6 +94,11 @@ export default function CamFlagQueue({
   const model = queue || buildCamFlagQueue(clients, { today: asOfDate });
   const { totals, groups, buckets } = model;
 
+  // Only built when there is a Missing account group to answer at all.
+  const evidence = groups.some((group) => group.type === MISSING_ACCOUNT)
+    ? quietEvidenceModel(clients, asOfDate)
+    : null;
+
   /**
    * Fire an activity write without letting it become an unhandled rejection.
    *
@@ -62,30 +119,36 @@ export default function CamFlagQueue({
     }
   }
 
-  function applyRow(row, status) {
+  // Resolve is the only thing these buttons do. There used to be an Acknowledge
+  // beside each one — "seen, hide for now" — and the desk manager took it out:
+  // it wrote a second status that every count in the app already treated as
+  // Resolved, so the two buttons closed the flag in the same way while looking
+  // like a choice. Neither function takes a status any more, so there is nothing
+  // for a future caller to pass.
+  function applyRow(row) {
     if (!onResolveFlag) return;
     // One call per open occurrence. A problem still open on eleven closes has
     // eleven rows in operational_flags with eleven different uuids, and
     // updateSupabaseOperationalFlag patches one uuid per call. Closing only the
     // newest is what leaves 597 historical copies Open in Postgres and keeps
     // the all-history counter reading 1,952 for a book with 253 live problems.
-    for (const call of flagResolutionPlan(row, status)) {
-      onResolveFlag(call.clientId, call.importId, call.flagId, call.status);
+    for (const call of flagResolutionPlan(row)) {
+      onResolveFlag(call.clientId, call.importId, call.flagId);
     }
-    logActivity(row.clientId, flagActivityEntry(row, status));
+    logActivity(row.clientId, flagActivityEntry(row));
   }
 
-  function applyGroup(group, status) {
+  function applyGroup(group) {
     if (!onResolveFlag) return;
     for (const row of group.rows) {
-      for (const call of flagResolutionPlan(row, status)) {
-        onResolveFlag(call.clientId, call.importId, call.flagId, call.status);
+      for (const call of flagResolutionPlan(row)) {
+        onResolveFlag(call.clientId, call.importId, call.flagId);
       }
     }
     // One summary line per group, the same shape handleBulkResolveFlags writes
     // for a whole import. Nineteen separate "flag resolved" entries for one
     // click would bury the client's log under the tool that made them.
-    logActivity(group.clientId, flagGroupActivityEntry(group, status));
+    logActivity(group.clientId, flagGroupActivityEntry(group));
   }
 
   if (!totals.rows) {
@@ -183,20 +246,9 @@ export default function CamFlagQueue({
               data-group-key={group.key}
               data-write-calls={group.occurrences}
               style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-              onClick={() => applyGroup(group, 'Resolved')}
+              onClick={() => applyGroup(group)}
             >
               <CheckCircle2 size={13} /> Resolve all {group.total}
-            </button>
-            <button
-              type="button"
-              className="resolve-button"
-              data-action="acknowledge-group"
-              data-group-key={group.key}
-              data-write-calls={group.occurrences}
-              style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-              onClick={() => applyGroup(group, 'Acknowledged')}
-            >
-              Acknowledge all {group.total}
             </button>
             <span className="muted" style={{ fontSize: 11 }}>
               {group.occurrences === group.total
@@ -234,7 +286,10 @@ export default function CamFlagQueue({
                       </span>
                     </td>
                     <td className="muted">{row.accountName || '—'}</td>
-                    <td>{row.message || row.type}</td>
+                    <td>
+                      {row.message || row.type}
+                      <FlagEvidence group={group} row={row} model={evidence} />
+                    </td>
                     <td className="muted">
                       {/* null is "could not be dated", not "raised today". */}
                       {row.ageDays === null ? 'not measured' : `${row.ageDays}d`}
@@ -253,20 +308,9 @@ export default function CamFlagQueue({
                         data-row-key={row.key}
                         data-client-id={row.clientId}
                         style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-                        onClick={() => applyRow(row, 'Resolved')}
+                        onClick={() => applyRow(row)}
                       >
                         <CheckCircle2 size={13} /> Resolve
-                      </button>{' '}
-                      <button
-                        type="button"
-                        className="resolve-button"
-                        data-action="acknowledge-row"
-                        data-row-key={row.key}
-                        data-client-id={row.clientId}
-                        style={{ fontSize: 11, whiteSpace: 'nowrap' }}
-                        onClick={() => applyRow(row, 'Acknowledged')}
-                      >
-                        Acknowledge
                       </button>
                     </td>
                   </tr>
@@ -317,5 +361,35 @@ export default function CamFlagQueue({
         ) : null}
       </p>
     </section>
+  );
+}
+
+/**
+ * The line the `Missing account` flag never carried.
+ *
+ * Rendered UNDER the stored message, never in place of it: the message is what
+ * was written into operational_flags at the time and rewriting it on screen
+ * would hide the fact that the flag itself says nothing. This is the read-back.
+ *
+ * Silent when there is nothing to read. 2 of the 106 open problems here name an
+ * account with no registry row and no snapshot under that name, and a line
+ * saying "nothing found" would be a claim about an account we cannot see.
+ */
+function FlagEvidence({ group, row, model }) {
+  if (!model || group.type !== MISSING_ACCOUNT) return null;
+  const evidence = quietEvidenceForFlag(model, row);
+  if (!evidence) return null;
+  const tone = EVIDENCE_TONE[evidence.shape] || 'healthy';
+  return (
+    <span className={`flag-evidence flag-evidence-${tone}`} data-shape={evidence.shape}>
+      <strong>{evidence.label}.</strong> {evidence.evidenceLine}
+      {/* The collection fact travels beside the account fact, never instead of
+          it. On this book all 7 flags that sit on a zero-row close are also
+          flags on accounts that did not exist that day, and printing only one of
+          the two would leave a CAM chasing the other. */}
+      {evidence.collection && evidence.shape !== QUIET_SHAPES.CLIENT_FILED_NOTHING ? (
+        <> The {evidence.collection.date} close for this client carried no account rows at all.</>
+      ) : null}
+    </span>
   );
 }

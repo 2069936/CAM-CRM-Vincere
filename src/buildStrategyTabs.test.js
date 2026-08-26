@@ -47,14 +47,22 @@ describe('buildStrategyAnalyzer', () => {
     expect(row.avgDaily).toBe(200); // 400/2
   });
 
-  it('computes score between 0 and 10', () => {
+  it('publishes no composite score', () => {
+    // This test used to assert `Number(row.score)` was between 0 and 10, and
+    // read NaN as soon as the field went: `Number(undefined)` is NaN, and NaN
+    // fails both comparisons, so the assertion could only ever have been
+    // pinning a field that existed. The field was removed with
+    // buildStrategyEffectiveness (see the note in App.jsx) because a single
+    // 0-10 number over the whole desk ranks deployment size, not performance.
+    // What is pinned now is its absence.
     const client = makeAnalyzerClient([
       { account: 'A1', pnl: 100, weeklyPnl: 0, strategies: [{ strategyFamily: 'RBO', enabled: true, realized: 100 }] },
     ]);
     const [row] = buildStrategyAnalyzer([client]);
-    const score = Number(row.score);
-    expect(score).toBeGreaterThanOrEqual(0);
-    expect(score).toBeLessThanOrEqual(10);
+    expect(row).not.toHaveProperty('score');
+    expect(Object.keys(row).sort()).toEqual(
+      ['accounts', 'avgDaily', 'count', 'name', 'totalRealized'],
+    );
   });
 
   it('sorts by totalRealized descending', () => {

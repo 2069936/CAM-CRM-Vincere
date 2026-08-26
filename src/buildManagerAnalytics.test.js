@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildManagerSummary, buildTeamHistory } from './App';
+import { buildManagerSummary } from './App';
 
 function makeClient({ id = 'c1', snapshots = [], flags = [], extraImports = [] } = {}) {
   const latestImport = snapshots.length || flags.length
@@ -85,47 +85,12 @@ describe('buildManagerSummary', () => {
   });
 });
 
-// ── buildTeamHistory ──────────────────────────────────────────────────────────
-
-describe('buildTeamHistory', () => {
-  it('returns empty array for empty client list', () => {
-    expect(buildTeamHistory([])).toHaveLength(0);
-  });
-
-  it('aggregates P&L across clients for the same date', () => {
-    const clients = [
-      makeClient({ id: 'c1', extraImports: [{ id: 'd1', date: '2026-06-24', accounts: {}, snapshots: [makeSnapshot('A1', 200, 800)], flags: [] }] }),
-      makeClient({ id: 'c2', extraImports: [{ id: 'd2', date: '2026-06-24', accounts: {}, snapshots: [makeSnapshot('B1', 100, 400)], flags: [] }] }),
-    ];
-    const history = buildTeamHistory(clients);
-    const entry = history.find(h => h.date === '2026-06-24');
-    expect(entry).toBeDefined();
-    expect(entry.dailyPnl).toBe(300);
-    expect(entry.weeklyPnl).toBe(1200);
-    expect(entry.accounts).toBe(2);
-  });
-
-  it('returns entries sorted ascending by date', () => {
-    const clients = [
-      {
-        id: 'c1', name: 'C', accountRegistry: {}, dailyImports: [
-          { id: 'd3', date: '2026-06-25', accounts: {}, snapshots: [makeSnapshot('A', 100)], flags: [] },
-          { id: 'd1', date: '2026-06-23', accounts: {}, snapshots: [makeSnapshot('A', 200)], flags: [] },
-          { id: 'd2', date: '2026-06-24', accounts: {}, snapshots: [makeSnapshot('A', 150)], flags: [] },
-        ],
-      },
-    ];
-    const dates = buildTeamHistory(clients).map(h => h.date);
-    expect(dates).toEqual(['2026-06-23', '2026-06-24', '2026-06-25']);
-  });
-
-  it('tracks account count as sum across all clients for a given date', () => {
-    const make = (id, date, count) => ({
-      id, name: id, accountRegistry: {},
-      dailyImports: [{ id: `${id}-d`, date, accounts: {}, flags: [],
-        snapshots: Array.from({ length: count }, (_, i) => makeSnapshot(`${id}-A${i}`, 0)) }],
-    });
-    const history = buildTeamHistory([make('c1', '2026-06-25', 3), make('c2', '2026-06-25', 2)]);
-    expect(history[0].accounts).toBe(5);
-  });
-});
+// buildTeamHistory's tests used to be here. The function is gone.
+//
+// It was the second of three answers to "team daily P&L" that the Operations
+// screen carried at once, and the only one that filtered nothing: its last cell
+// read -$172,979.64 over 333 accounts against a tile reading -$169,926.90 over
+// 427, and the per-day gap between the two decomposed exactly to Ignored +
+// Orphan on all fourteen closes. The history strip now renders
+// buildDeskMoneyHistory, whose guards live in src/domain/deskMoney.test.js
+// (synthetic, ungated) and src/domain/deskMoney.book.test.js (the real book).

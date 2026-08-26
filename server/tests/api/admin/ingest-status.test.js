@@ -153,7 +153,11 @@ describe('installer release manifest validation', () => {
       size: 300,
       signingThumbprint: 'A'.repeat(40),
     });
-    expect(fetchRelease).toHaveBeenCalledWith(releaseEnv.AUTO_COLLECTION_RELEASE_MANIFEST_URL, expect.objectContaining({ redirect: 'error' }));
+    // 'manual', not 'error'. GitHub Releases answer a download URL with a 302 to
+    // a signed object host, so refusing redirects outright could not fetch one at
+    // all. The chain is now followed by hand, with every hop revalidated and
+    // private address ranges refused; see collectorReleaseRedirect.test.js.
+    expect(fetchRelease).toHaveBeenCalledWith(releaseEnv.AUTO_COLLECTION_RELEASE_MANIFEST_URL, expect.objectContaining({ redirect: 'manual' }));
   });
 
   it('accepts an unsigned package release and reports it as a zip', async () => {

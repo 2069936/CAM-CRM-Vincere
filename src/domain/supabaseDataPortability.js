@@ -45,11 +45,16 @@ export async function loadClientScopedExport({
   from = '',
   to = '',
   includeTradeHistory = false,
+  batch = null,
 } = {}) {
   const payload = { includeTradeHistory: Boolean(includeTradeHistory) };
   if (Array.isArray(clientIds) && clientIds.length) payload.clientIds = clientIds;
   if (from) payload.from = from;
   if (to) payload.to = to;
+  // Sent only when this pull really is one part of several. Absent means an
+  // unbatched export, and the server echoes it back into the file and the audit
+  // row so the parts can be counted afterwards.
+  if (batch) payload.batch = batch;
 
   const response = await fetch('/api/admin/client-export', {
     method: 'POST',

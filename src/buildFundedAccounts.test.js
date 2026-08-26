@@ -1,5 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildAllFundedAccounts, buildStrategyEffectiveness } from './App';
+import { describe, expect, it } from 'vitest';
+import { buildAllFundedAccounts } from './App';
+
+// buildStrategyEffectiveness used to be tested below this file's funded-account
+// suite. The function is deleted; its evidence rules — never split an account's
+// day across the algorithms that were running, treat an absent Realized column
+// exactly like a grid that reported zero, prefer a derived figure over a
+// reported one — moved to src/domain/algorithmRanking.test.js, which is ungated so
+// CI pins them.
 
 // ── buildAllFundedAccounts ────────────────────────────────────────────────────
 
@@ -85,76 +92,5 @@ describe('buildAllFundedAccounts', () => {
     const rows = buildAllFundedAccounts(clients, []);
     expect(rows[0].clientName).toBe('AtRisk');
     expect(rows[1].clientName).toBe('Safe');
-  });
-});
-
-// ── buildStrategyEffectiveness ────────────────────────────────────────────────
-
-describe('buildStrategyEffectiveness', () => {
-  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-06-25T12:00:00')); });
-  afterEach(() => { vi.useRealTimers(); });
-
-  function makeStratClient(stratName, dailyData) {
-    return {
-      id: 'c1', name: 'Pedro',
-      accountRegistry: {},
-      dailyImports: dailyData.map(({ date, pnl }) => ({
-        id: `di-${date}`, date, accounts: {},
-        snapshots: [{
-          accountName: 'ACC1', grossRealizedPnl: pnl, weeklyPnl: 0,
-          strategies: [{ strategyFamily: stratName, strategyName: `0-${stratName}`, enabled: true, realized: pnl }],
-        }],
-        flags: [],
-      })),
-    };
-  }
-
-  it('returns empty for clients with no imports', () => {
-    expect(buildStrategyEffectiveness([])).toHaveLength(0);
-  });
-
-  it('aggregates total P&L and win/loss days per strategy', () => {
-    const client = makeStratClient('RBO', [
-      { date: '2026-06-20', pnl: 200 },
-      { date: '2026-06-21', pnl: -100 },
-      { date: '2026-06-22', pnl: 300 },
-    ]);
-    const [row] = buildStrategyEffectiveness([client]);
-    expect(row.name).toBe('RBO');
-    expect(row.totalPnl).toBe(400);
-    expect(row.winDays).toBe(2);
-    expect(row.lossDays).toBe(1);
-    expect(row.winRate).toBe(67); // round(2/3 * 100)
-  });
-
-  it('counts unique accounts and clients per strategy', () => {
-    const clients = [
-      {
-        id: 'c1', name: 'Alice', accountRegistry: {},
-        dailyImports: [{ id: 'd1', date: '2026-06-25', accounts: {}, flags: [],
-          snapshots: [{ accountName: 'A1', grossRealizedPnl: 100, weeklyPnl: 0,
-            strategies: [{ strategyFamily: 'RBO', enabled: true, realized: 100 }] }] }],
-      },
-      {
-        id: 'c2', name: 'Bob', accountRegistry: {},
-        dailyImports: [{ id: 'd2', date: '2026-06-25', accounts: {}, flags: [],
-          snapshots: [{ accountName: 'B1', grossRealizedPnl: 200, weeklyPnl: 0,
-            strategies: [{ strategyFamily: 'RBO', enabled: true, realized: 200 }] }] }],
-      },
-    ];
-    const [row] = buildStrategyEffectiveness(clients);
-    expect(row.accounts).toBe(2);
-    expect(row.clients).toBe(2);
-  });
-
-  it('sorts by totalPnl descending', () => {
-    const clients = [
-      makeStratClient('RBO', [{ date: '2026-06-25', pnl: 100 }]),
-      makeStratClient('IFSP', [{ date: '2026-06-25', pnl: 500 }]),
-    ];
-    // Override second client to use IFSP
-    clients[1].dailyImports[0].snapshots[0].strategies[0].strategyFamily = 'IFSP';
-    const results = buildStrategyEffectiveness(clients);
-    expect(results[0].totalPnl).toBeGreaterThanOrEqual(results[1].totalPnl);
   });
 });

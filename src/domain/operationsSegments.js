@@ -88,10 +88,49 @@ export function segmentForAccount(meta, accountName = '') {
   return segmentFor(meta);
 }
 
+/**
+ * The businesses the desk runs, as keys. Re-exported by deskMoney.js as
+ * DESK_BUSINESS so there is one set of strings, not two that agree today.
+ */
+export const BUSINESS_KEYS = {
+  BULLET: 'bulletBot',
+  PROP_OTHER: 'propOther',
+  CASH: 'cash',
+  UNCLASSIFIED: 'unclassified',
+};
+
+/**
+ * Which business a segment belongs to, or null when it belongs to none.
+ *
+ * THE ONLY DEFINITION. rollUpByBusiness sums segment rows with it and
+ * algorithmRanking routes account-days with it, so a coverage line and the tile
+ * above it cannot disagree about where a Funded account's money goes. When this
+ * was two filters written twice, the second one was free to drift.
+ *
+ * `propOther` is defined by exclusion — anything counted that is not cash, not
+ * unclassified and not Bullet Bot — so an account type nobody has taught
+ * segmentFor() about lands in a reported row instead of silently vanishing from
+ * every figure on the page.
+ *
+ * null means Ignored, orphan, simulated or undetermined: counted somewhere as a
+ * reconciliation line, never rolled into a business.
+ */
+export function businessForSegment(segment) {
+  if (EXCLUDED_FROM_TOTAL.has(segment)) return null;
+  if (segment === SEGMENTS.EVAL_BULLET) return BUSINESS_KEYS.BULLET;
+  if (segment === SEGMENTS.CASH) return BUSINESS_KEYS.CASH;
+  if (segment === SEGMENTS.UNCLASSIFIED) return BUSINESS_KEYS.UNCLASSIFIED;
+  return BUSINESS_KEYS.PROP_OTHER;
+}
+
 function emptyRow(segment) {
   return {
     segment,
     accounts: 0,
+    // Distinct clients contributing to this row. Never added across rows: one
+    // client holds cash AND bullet-bot evaluations, so the column sums to more
+    // than the desk has clients.
+    clients: 0,
     dailyPnl: 0,
     weeklyPnl: 0,
     balance: 0,
@@ -107,27 +146,32 @@ function emptyRow(segment) {
  */
 export function buildSegmentTotals(imports = []) {
   const rows = new Map();
+  const clientsPerSegment = new Map();
   const add = (segment) => {
     if (!rows.has(segment)) rows.set(segment, emptyRow(segment));
+    if (!clientsPerSegment.has(segment)) clientsPerSegment.set(segment, new Set());
     return rows.get(segment);
   };
 
   for (const entry of imports) {
     const registry = entry?.client?.accountRegistry || {};
+    const clientId = entry?.client?.id ?? entry?.client?.name ?? '';
     const sim = entry?.dailyImport?.simulation;
     // `dailyImport.snapshots` is live-money-only by construction (reconcile.js
     // and buildCrmStateFromTables both split before anyone reads it). The
     // simulated and undetermined closes are appended explicitly so they are
     // COUNTED and visible as their own rows — dropping them would hide the sim
     // engagement the desk is being paid to run — while EXCLUDED_FROM_TOTAL keeps
-    // them out of `total`.
+    // them out of the businesses deskMoney reports.
     const rows = [
       ...(entry?.dailyImport?.snapshots || []),
       ...(sim?.snapshots || []),
       ...(sim?.undetermined?.snapshots || []),
     ];
     for (const snapshot of rows) {
-      const row = add(segmentForAccount(registry[snapshot.accountName], snapshot.accountName));
+      const segment = segmentForAccount(registry[snapshot.accountName], snapshot.accountName);
+      const row = add(segment);
+      clientsPerSegment.get(segment).add(clientId);
       row.accounts += 1;
       row.dailyPnl += Number(snapshot.grossRealizedPnl || 0);
       row.weeklyPnl += Number(snapshot.weeklyPnl || 0);
@@ -135,18 +179,31 @@ export function buildSegmentTotals(imports = []) {
     }
   }
 
+  for (const [segment, ids] of clientsPerSegment) rows.get(segment).clients = ids.size;
+
   const segments = [...rows.values()].sort((a, b) => a.dailyPnl - b.dailyPnl);
-  const counted = segments.filter((row) => row.countedInTotal);
 
   return {
     segments,
-    // The figure that belongs on a tile: trading accounts only.
-    total: {
-      accounts: counted.reduce((sum, row) => sum + row.accounts, 0),
-      dailyPnl: counted.reduce((sum, row) => sum + row.dailyPnl, 0),
-      weeklyPnl: counted.reduce((sum, row) => sum + row.weeklyPnl, 0),
-      balance: counted.reduce((sum, row) => sum + row.balance, 0),
-    },
+    // Plumbing, so that a roll-up of several segments can count the clients
+    // behind them by union rather than by adding counts. One client holds cash
+    // and Bullet Bot evaluations at once; adding the two counts would report
+    // more clients than the desk has.
+    clientIdsBySegment: clientsPerSegment,
+    // THERE IS NO `total` HERE, AND ADDING ONE BACK IS THE DEFECT.
+    //
+    // There used to be: `total` summed every counted segment into one figure and
+    // the headline tile printed it. On the real book that read -$169,926.90,
+    // which is a cash desk's real client money added to a prop desk's simulated
+    // plan-size result, with Bullet Bot netted against the ordinary algorithms
+    // inside it. Twice in fourteen days the sign was wrong — 2026-07-21 read
+    // +$605.79 green while the prop desk had lost $5,505.46 — and on nine of
+    // thirteen non-zero days Bullet Bot and the rest of prop moved in opposite
+    // directions.
+    //
+    // deskMoney.js is the only thing that should group these rows, and it groups
+    // them into four that never add. A caller wanting one number for "the desk"
+    // must not find one here.
     excluded: segments.filter((row) => !row.countedInTotal),
     // Surfaced by name rather than left for a caller to find inside `excluded`
     // by string-matching a label. A tile that has to guess which excluded row is
@@ -159,25 +216,61 @@ export function buildSegmentTotals(imports = []) {
   };
 }
 
-/** Prop and cash rolled up, because that is the split the desk reports on. */
+/**
+ * The businesses the desk actually runs, rolled up so that none of them adds to
+ * another.
+ *
+ * THERE IS NO `prop` KEY AND THERE MUST NOT BE ONE. It was here, covering
+ * Evaluations-standard + Bullet Bot + Funded, and it hid the largest single fact
+ * on the screen: on the 2026-07-13 close "prop -$5,070.50" was Bullet Bot
+ * +$14,861.50 netted against the ordinary algorithms -$19,932.00, and the two
+ * carried opposite signs on 9 of the 13 non-zero days in the book. Bullet Bot is
+ * a different business — high risk, pass or fail inside three days — and on the
+ * 2026-07-30 close it is 71.0% of everything prop did.
+ *
+ * Documenting "do not fold Bullet Bot into prop" instead of removing the key
+ * would not have held: a key named `prop` gets summed by the next caller who
+ * needs a number, which is exactly how the deleted `total` came back the first
+ * time.
+ *
+ * `propOther` is defined by exclusion — every counted segment that is not cash,
+ * not unclassified and not Bullet Bot — so an account type nobody has taught
+ * segmentFor() about lands in a reported row instead of silently vanishing from
+ * every figure on the page.
+ */
 export function rollUpByBusiness(totals) {
-  const propSegments = [SEGMENTS.EVAL_STANDARD, SEGMENTS.EVAL_BULLET, SEGMENTS.FUNDED];
-  const pick = (names) => (totals?.segments || [])
-    .filter((row) => names.includes(row.segment))
-    .reduce((acc, row) => ({
+  const rows = totals?.segments || [];
+  const clientIds = totals?.clientIdsBySegment || new Map();
+  const sum = (matching) => {
+    const rolled = matching.reduce((acc, row) => ({
       accounts: acc.accounts + row.accounts,
       dailyPnl: acc.dailyPnl + row.dailyPnl,
       weeklyPnl: acc.weeklyPnl + row.weeklyPnl,
       balance: acc.balance + row.balance,
-    }), { accounts: 0, dailyPnl: 0, weeklyPnl: 0, balance: 0 });
+      segments: [...acc.segments, row.segment],
+    }), { accounts: 0, dailyPnl: 0, weeklyPnl: 0, balance: 0, segments: [] });
+    const union = new Set();
+    for (const row of matching) for (const id of clientIds.get(row.segment) || []) union.add(id);
+    return { ...rolled, clients: union.size };
+  };
+  const pick = (names) => sum(rows.filter((row) => names.includes(row.segment)));
+  // Through businessForSegment rather than a second filter written here, so the
+  // leaderboards below the tiles route an account-day the same way the tile
+  // routes its money.
+  const inBusiness = (key) => sum(rows.filter((row) => businessForSegment(row.segment) === key));
 
   return {
-    prop: pick(propSegments),
-    cash: pick([SEGMENTS.CASH]),
-    // Returned alongside, never added to either. A caller that wants one number
-    // for "the desk" adds prop + cash; simulation is here so it can be shown, in
-    // its own tile, with its own label.
+    bulletBot: inBusiness(BUSINESS_KEYS.BULLET),
+    propOther: inBusiness(BUSINESS_KEYS.PROP_OTHER),
+    cash: inBusiness(BUSINESS_KEYS.CASH),
+    // Its own row, never folded into prop and never into cash. 51 accounts and
+    // -$4,894.44 on the real book is a classification backlog, not a result.
+    unclassified: inBusiness(BUSINESS_KEYS.UNCLASSIFIED),
+    // Returned alongside, never added to any of the above. Simulation is here so
+    // it can be shown, in its own place, with its own label.
     simulation: pick([SEGMENTS.SIMULATION]),
     undetermined: pick([SEGMENTS.UNDETERMINED]),
+    ignored: pick([SEGMENTS.IGNORED]),
+    orphan: pick([SEGMENTS.ORPHAN]),
   };
 }

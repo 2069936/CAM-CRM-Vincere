@@ -83,6 +83,45 @@ describe('buildBatchImportPlan', () => {
     expect(day21.clientMatches[0].result.date).toBe('2026-07-21');
   });
 
+  describe('a position opened on one day of the batch and closed on another', () => {
+    // The only way a multi-day upload can price such a lot is for each day it
+    // reconciles to become the carry-in history of the day after it. Day one
+    // opens 2 MNQ long at 100 and holds them; day two sells them at 110.
+    const twoDayBatch = (accountRow2) => [
+      { fileName: 'NinjaTrader Grid 2026-07-20 04-00 PM1.csv', type: 'accounts', rows: [{ accountName: 'ACC1', accountBalance: 50000, grossRealizedPnl: 0, grossRealizedPnlReported: 0 }] },
+      { fileName: 'NinjaTrader Grid 2026-07-20 04-00 PM2.csv', type: 'strategies', rows: [{ accountName: 'ACC1', strategyName: 'Alpha-1.0', realized: null, enabled: true }] },
+      { fileName: 'NinjaTrader Grid 2026-07-20 04-00 PM3.csv', type: 'orders', rows: [{ id: 'D1', accountName: 'ACC1', strategyName: 'Alpha-1.0', name: '' }] },
+      { fileName: 'NinjaTrader Grid 2026-07-20 04-00 PM4.csv', type: 'executions', rows: [{ id: '1_1', accountName: 'ACC1', instrument: 'MNQ SEP26', action: 'Buy', quantity: 2, price: 100, position: '2 L', orderId: 'D1', time: '7/20/2026 9:30:01 AM' }] },
+      { fileName: 'NinjaTrader Grid 2026-07-21 04-00 PM1.csv', type: 'accounts', rows: [accountRow2] },
+      { fileName: 'NinjaTrader Grid 2026-07-21 04-00 PM2.csv', type: 'strategies', rows: [{ accountName: 'ACC1', strategyName: 'Alpha-1.0', realized: null, enabled: true }] },
+      { fileName: 'NinjaTrader Grid 2026-07-21 04-00 PM3.csv', type: 'orders', rows: [{ id: 'D2', accountName: 'ACC1', strategyName: 'Alpha-1.0', name: '' }] },
+      { fileName: 'NinjaTrader Grid 2026-07-21 04-00 PM4.csv', type: 'executions', rows: [{ id: '9_1', accountName: 'ACC1', instrument: 'MNQ SEP26', action: 'Sell', quantity: 2, price: 110, position: '-', orderId: 'D2', time: '7/21/2026 9:35:01 AM' }] },
+    ];
+
+    it('prices it, because the earlier day of the batch became the later day\'s history', () => {
+      const plan = buildBatchImportPlan({
+        parsedFiles: twoDayBatch({ accountName: 'ACC1', accountBalance: 51000, grossRealizedPnl: 40, grossRealizedPnlReported: 40 }),
+        clients,
+        fallbackDate: '2026-07-21',
+      });
+      const day21 = plan.dates.find((d) => d.date === '2026-07-21');
+      const snapshot = day21.clientMatches[0].result.snapshots[0];
+      expect(snapshot.derivation.status).toBe('exact');
+      expect(snapshot.strategies[0].derivedRealized).toBe(40);
+    });
+
+    it('still refuses the day whose own opening position nothing in the batch explains', () => {
+      // Day one is dropped from the upload. Day two now sells 2 contracts that
+      // no day in the batch and no stored close ever opened.
+      const files = twoDayBatch({ accountName: 'ACC1', accountBalance: 51000, grossRealizedPnl: 40, grossRealizedPnlReported: 40 })
+        .filter((file) => !file.fileName.includes('2026-07-20'));
+      const plan = buildBatchImportPlan({ parsedFiles: files, clients, fallbackDate: '2026-07-21' });
+      const snapshot = plan.dates[0].clientMatches[0].result.snapshots[0];
+      expect(snapshot.derivation.status).toBe('refused');
+      expect(snapshot.strategies[0].derivedRealized).toBeNull();
+    });
+  });
+
   it('reports accounts that match no client as unmatched', () => {
     const parsedFiles = [
       { fileName: 'NinjaTrader Grid 2026-07-21 04-00 PM1.csv', type: 'accounts', rows: [{ accountName: 'GHOST', accountBalance: 1, grossRealizedPnl: 0 }] },

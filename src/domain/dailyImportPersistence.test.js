@@ -245,12 +245,22 @@ describe('persistDailyImportWithClient', () => {
       daily_import_id: 'import-1', trading_account_id: 'account-1', account_name: 'acc-one',
       connection: 'Lucid', gross_realized_pnl: 125, trailing_max_drawdown: 450,
       account_balance: 50125, weekly_pnl: 600, unrealized_pnl: -10,
+      // Null because this fixture's snapshot carries no derivation. The column
+      // has to be written even so: an account-day whose derivation is absent
+      // must read back as absent, not inherit whatever the previous row had.
+      derivation: null,
     }]);
     expect(db.insertRows).toHaveBeenNthCalledWith(1, 'strategy_snapshots', [{
       daily_import_id: 'import-1', trading_account_id: 'account-1', account_snapshot_id: 'snapshot-1',
       strategy_name: 'RBO-1.8', strategy_family: 'RBO', strategy_version: '1.8',
       instrument: 'MNQ SEP26', data_series: '1 Minute', parameters_raw: '{}',
       params_parsed: { parsed: true }, direction: 'Long', enabled: true, realized: 125, unrealized: -10,
+      // ONE derived column, and this assertion is an exact object match, so it
+      // is also the guard that the two cut ones do not come back. The account-day
+      // verdict and the per-row join reason are answerable from
+      // account_snapshots.derivation, which stores them once instead of once per
+      // roster row; see step 37 for the measurement that decided it.
+      derived_realized: null,
     }]);
     expect(db.insertRows).toHaveBeenNthCalledWith(2, 'orders', [{
       daily_import_id: 'import-1', trading_account_id: 'account-1', external_order_id: 'order-1',

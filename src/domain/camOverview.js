@@ -117,6 +117,12 @@ export function buildCamOverview(clients = []) {
       .map((item) => ({
         id: `cam-deviation-${group.key}-${item.clientId}-${item.accountName}`,
         severity: 'Warning',
+        // Carried on the flag, not left to be recovered from the id. The
+        // manager's consolidated panel attributes each alert to a CAM, and
+        // parsing a client id back out of a template string that also contains
+        // an algorithm name and an account name is not a thing to build a
+        // routing decision on.
+        clientId: item.clientId,
         algorithm: group.version ? `${group.algorithm} ${group.version}` : group.algorithm,
         clientName: item.clientName,
         accountName: item.accountName,
@@ -148,6 +154,7 @@ export function buildCamOverview(clients = []) {
         .map((item) => ({
           id: `execution-drift-${group.key}-${instrument}-${item.clientId}-${item.accountName}`,
           severity: 'Warning',
+          clientId: item.clientId,
           algorithm: group.version ? `${group.algorithm} ${group.version}` : group.algorithm,
           clientName: item.clientName,
           accountName: item.accountName,

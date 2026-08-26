@@ -15,6 +15,7 @@ function makeClient({ id, name = id, accounts = [] }) {
       ...(account.target === undefined ? {} : { targetProfit: account.target }),
       ...(account.startBalance === undefined ? {} : { startBalance: account.startBalance }),
       ...(account.column === undefined ? {} : { bulletBotDirection: account.column }),
+      ...(account.passType === undefined ? {} : { bulletBotPassType: account.passType }),
     };
   }
 
@@ -369,5 +370,44 @@ describe('buildBulletBotDeskStats — refusals', () => {
       accounts: [{ name: 'FUNDED', type: 'Funded', target: 107300, days: [{ date: d(1), balance: 110000, direction: 'Long' }] }],
     })]);
     expect(stats.cohort.accounts).toBe(0);
+  });
+});
+
+/**
+ * The columns the book has for this question and does not fill in.
+ *
+ * bullet_bot_pass_type and bullet_bot_direction are named for exactly what this
+ * module reports. Nothing reads them, and the reason a manager has to be told is
+ * that the names promise otherwise.
+ */
+describe('buildBulletBotDeskStats — what the book does not record', () => {
+  const clients = [makeClient({
+    id: 'c1',
+    accounts: [
+      { name: 'A1', target: 53000, passType: '2 Day Pass', column: 'Long', days: [{ date: d(1), balance: 50000, direction: 'Long' }] },
+      { name: 'A2', target: 53000, days: [{ date: d(1), balance: 50000, direction: 'Short' }] },
+      { name: 'A3', target: 53000, days: [{ date: d(1), balance: 50000, direction: 'Short' }] },
+      { name: 'A4', target: 53000, days: [{ date: d(1), balance: 50000, direction: 'Long' }] },
+    ],
+  })];
+
+  it('counts how blank the two columns are over the cohort it is scoring', () => {
+    const { columns } = buildBulletBotDeskStats(clients);
+    expect(columns.accounts).toBe(4);
+    expect(columns.passType).toEqual({ set: 1, blank: 3, blankShare: 75 });
+    expect(columns.direction).toEqual({ set: 1, blank: 3, blankShare: 75 });
+  });
+
+  it('builds no rate on them and infers no value for them', () => {
+    const { columns, direction } = buildBulletBotDeskStats(clients);
+    expect(columns.refusal).toMatch(/a blank is not a failure/);
+    expect(columns.refusal).toMatch(/Nothing here fills either column in/);
+    expect(columns.reads).toMatch(/observed balance at or above the account’s own target/);
+    // The three accounts with no pass type are scored exactly as the one with
+    // it: on their balances. None of them is a pass and none is a failure for
+    // want of a typed field.
+    expect(direction.overall.passed).toBe(0);
+    expect(direction.overall.unscorable).toBe(0);
+    expect(direction.overall.running).toBe(4);
   });
 });

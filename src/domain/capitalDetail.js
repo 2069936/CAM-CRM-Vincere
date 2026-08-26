@@ -16,7 +16,63 @@
 // in the 19 tables. "What came in" is not recorded, so it is returned as null and
 // said so, never as 0.
 
-import { EXCLUDED_FROM_TOTAL, segmentForAccount } from './operationsSegments';
+import { EXCLUDED_FROM_TOTAL, SEGMENTS, segmentForAccount } from './operationsSegments';
+
+/**
+ * What kind of money a segment's balances are, which decides whether a balance
+ * may be called capital at all.
+ *
+ * The desk's own review of this screen: prop-firm account balances ARE NOT REAL
+ * MONEY. They are a plan size the prop firm simulates, and 195 accounts on this
+ * book carry exactly 50,000 because that is the product, not because anyone
+ * deposited it. Of the $32,244,234.16 this module used to publish as "capital
+ * held", $30,287,682.82 — 93.93% — was that plan size. Real money is at most
+ * $1,956,551.34.
+ *
+ * So a balance is capital only when it is CLIENT_CASH. Everywhere else the
+ * figure is still computed and still shown, under a name that cannot be printed
+ * as capital by mistake, with the refusal next to it.
+ */
+export const MONEY_KINDS = {
+  CLIENT_CASH: 'client-cash',
+  PROP_PLAN_SIZE: 'prop-plan-size',
+  UNCLASSIFIED: 'unclassified',
+  SIMULATED: 'simulated',
+  UNKNOWN: 'unknown',
+};
+
+const CAPITAL_REFUSALS = {
+  [MONEY_KINDS.PROP_PLAN_SIZE]: 'Not capital. A prop account balance is the plan size the firm '
+    + 'simulates — no client and no desk ever deposited it — so it is reported as plan size, and '
+    + 'the movement below is what this segment actually did.',
+  [MONEY_KINDS.UNCLASSIFIED]: 'Not capital. Nobody has classified these accounts, and on this '
+    + 'book 67 of the 68 that carry a balance also carry a prop-firm connection, so this is prop '
+    + 'plan size under a label that has not been set yet.',
+  [MONEY_KINDS.SIMULATED]: 'Not capital, and not money. These accounts trade simulated funds.',
+  [MONEY_KINDS.UNKNOWN]: 'Not reported as capital. Nothing here establishes whether these '
+    + 'balances are client money or a simulated plan size.',
+};
+
+export function moneyKindFor(segment) {
+  if (segment === SEGMENTS.CASH) return MONEY_KINDS.CLIENT_CASH;
+  if (segment === SEGMENTS.SIMULATION) return MONEY_KINDS.SIMULATED;
+  if (segment === SEGMENTS.UNCLASSIFIED) return MONEY_KINDS.UNCLASSIFIED;
+  if (segment === SEGMENTS.IGNORED
+    || segment === SEGMENTS.ORPHAN
+    || segment === SEGMENTS.UNDETERMINED) return MONEY_KINDS.UNKNOWN;
+  // Everything else on this book is a prop pool: the two evaluation kinds,
+  // Funded, and any account type segmentFor() has not been taught.
+  return MONEY_KINDS.PROP_PLAN_SIZE;
+}
+
+/** The word a UI puts above the column, so the number is never bare. */
+export const MONEY_KIND_LABELS = {
+  [MONEY_KINDS.CLIENT_CASH]: 'Capital held',
+  [MONEY_KINDS.PROP_PLAN_SIZE]: 'Plan size (not capital)',
+  [MONEY_KINDS.UNCLASSIFIED]: 'Balance observed (unclassified)',
+  [MONEY_KINDS.SIMULATED]: 'Simulated balance (not money)',
+  [MONEY_KINDS.UNKNOWN]: 'Balance observed',
+};
 
 /**
  * Field separator for the account key.
@@ -433,20 +489,32 @@ function roundGap(gap) {
 }
 
 function emptyBlock(segment) {
+  const moneyKind = moneyKindFor(segment);
   return {
     segment,
     countedInTotal: !EXCLUDED_FROM_TOTAL.has(segment),
+    moneyKind,
     held: {
-      capital: 0,
+      moneyKind,
+      // The raw sum of last-observed balances. Named for what it is — an
+      // observation — so that reading it does not imply it is money.
+      balanceObserved: 0,
+      // Filled in at the finalisation step, and ONLY for client cash. Every
+      // other segment gets null here and its reason in capitalRefusal.
+      capital: null,
+      planSize: null,
+      capitalRefusal: moneyKind === MONEY_KINDS.CLIENT_CASH ? null : CAPITAL_REFUSALS[moneyKind],
       accounts: 0,
       accountsWithoutBalance: 0,
-      atLatestClose: { capital: 0, accounts: 0 },
+      atLatestClose: { balanceObserved: 0, capital: null, accounts: 0 },
       asOfDates: [],
       staleness: { current: 0, withinThreeDays: 0, withinSevenDays: 0, older: 0 },
     },
-    composition: { byStatus: [], bySegment: [], largest: [], shareOfDesk: null },
+    composition: { byStatus: [], bySegment: [], largest: [] },
     movement: {
       tradingPnl: null,
+      // Only the desk roll-up fills this: one entry per segment, never netted.
+      tradingPnlBySegment: [],
       grossToBalanceGap: null,
       transfers: [],
       unexplained: [],
@@ -503,7 +571,7 @@ export function buildCapitalDetail(clients = [], {
       perDate.set(date, {
         date,
         accounts: 0,
-        capitalObserved: 0,
+        balanceObserved: 0,
         netPnl: 0,
         netPnlAccounts: 0,
         unexplainedAmount: 0,
@@ -530,12 +598,12 @@ export function buildCapitalDetail(clients = [], {
     }
 
     block.held.accounts += 1;
-    block.held.capital += last.balance;
+    block.held.balanceObserved += last.balance;
     const staleDays = latestClose ? daysBetween(last.date, latestClose) : 0;
     if (staleDays <= 0) {
       block.held.staleness.current += 1;
       block.held.atLatestClose.accounts += 1;
-      block.held.atLatestClose.capital += last.balance;
+      block.held.atLatestClose.balanceObserved += last.balance;
     } else if (staleDays <= 3) block.held.staleness.withinThreeDays += 1;
     else if (staleDays <= 7) block.held.staleness.withinSevenDays += 1;
     else block.held.staleness.older += 1;
@@ -554,7 +622,7 @@ export function buildCapitalDetail(clients = [], {
     for (const point of account.series) {
       const cell = timelineFor(account.segment, point.date);
       cell.accounts += 1;
-      cell.capitalObserved += point.balance;
+      cell.balanceObserved += point.balance;
     }
 
     const { reconciled, unexplained, skipped } = classifyPairs(account, distrusted, maxGapDays);
@@ -727,29 +795,43 @@ export function buildCapitalDetail(clients = [], {
     const byDate = new Map();
     for (const row of rows) {
       const status = row.status || 'No status';
-      const statusRow = byStatus.get(status) || { status, accounts: 0, capital: 0 };
+      const statusRow = byStatus.get(status) || { status, accounts: 0, balance: 0 };
       statusRow.accounts += 1;
-      statusRow.capital += row.balance;
+      statusRow.balance += row.balance;
       byStatus.set(status, statusRow);
 
-      const dateRow = byDate.get(row.asOf) || { date: row.asOf, accounts: 0, capital: 0 };
+      const dateRow = byDate.get(row.asOf) || { date: row.asOf, accounts: 0, balance: 0 };
       dateRow.accounts += 1;
-      dateRow.capital += row.balance;
+      dateRow.balance += row.balance;
       byDate.set(row.asOf, dateRow);
     }
+    // `balance`, not `capital`. These rows are a sum of observed balances; only
+    // the client-cash block is entitled to call that capital, and it does so
+    // once, on held.capital, where the refusal for every other kind sits beside
+    // it. A column named `capital` on every block is how a plan size gets
+    // printed as money by a renderer that never asked what kind it was.
     block.composition.byStatus = [...byStatus.values()]
-      .map((row) => ({ ...row, capital: round2(row.capital) }))
-      .sort((a, b) => b.capital - a.capital);
+      .map((row) => ({ ...row, balance: round2(row.balance) }))
+      .sort((a, b) => b.balance - a.balance);
     block.held.asOfDates = [...byDate.values()]
-      .map((row) => ({ ...row, capital: round2(row.capital) }))
+      .map((row) => ({ ...row, balance: round2(row.balance) }))
       .sort((a, b) => b.date.localeCompare(a.date));
     block.composition.largest = rows
       .slice()
       .sort((a, b) => b.balance - a.balance)
       .slice(0, largestCount);
 
-    block.held.capital = round2(block.held.capital);
-    block.held.atLatestClose.capital = round2(block.held.atLatestClose.capital);
+    block.held.balanceObserved = round2(block.held.balanceObserved);
+    block.held.atLatestClose.balanceObserved = round2(block.held.atLatestClose.balanceObserved);
+    // The one place a balance becomes capital, and it is one segment kind wide.
+    const isCash = block.moneyKind === MONEY_KINDS.CLIENT_CASH;
+    block.held.capital = isCash ? block.held.balanceObserved : null;
+    block.held.atLatestClose.capital = isCash
+      ? block.held.atLatestClose.balanceObserved
+      : null;
+    block.held.planSize = block.moneyKind === MONEY_KINDS.PROP_PLAN_SIZE
+      ? block.held.balanceObserved
+      : null;
     block.movement.unexplainedTotals.in = round2(block.movement.unexplainedTotals.in);
     block.movement.unexplainedTotals.out = round2(block.movement.unexplainedTotals.out);
     block.movement.unexplainedTotals.accounts = new Set(
@@ -779,7 +861,7 @@ export function buildCapitalDetail(clients = [], {
         running += cell.netPnl;
         return {
           ...cell,
-          capitalObserved: round2(cell.capitalObserved),
+          balanceObserved: round2(cell.balanceObserved),
           netPnl: round2(cell.netPnl),
           unexplainedAmount: round2(cell.unexplainedAmount),
           cumulativeNetPnl: round2(running),
@@ -792,17 +874,19 @@ export function buildCapitalDetail(clients = [], {
       });
   }
 
-  const segments = [...blocks.values()].sort((a, b) => b.held.capital - a.held.capital);
+  const segments = [...blocks.values()]
+    .sort((a, b) => b.held.balanceObserved - a.held.balanceObserved);
   const counted = segments.filter((block) => block.countedInTotal);
   const desk = rollUp(counted, timelines, distrusted);
-  for (const block of segments) {
-    // A segment the desk total excludes has no share of it. Ignored accounts
-    // hold 4,129,781.66 and orphan snapshots 1,682,305.73 — printing those as
-    // "12.8% of the desk" would put them inside a total they are not in.
-    block.composition.shareOfDesk = block.countedInTotal && desk.held.capital
-      ? round2((block.held.capital / desk.held.capital) * 100)
-      : null;
-  }
+  // THERE IS NO shareOfDesk, AND THERE IS NO DESK CAPITAL TO BE A SHARE OF.
+  //
+  // It used to read `block.held.capital / desk.held.capital * 100`, so the cash
+  // segment was reported as "5.89% of the desk" — 5.89% of a total that was
+  // 93.93% simulated plan size. There is no defensible whole here: the cash
+  // block is client money, the prop blocks are a product the firm sells, and a
+  // percentage of the two added together describes nothing. What replaces it is
+  // the composition list below, where every row carries its own money kind.
+  //
   // The desk's composition is its segments, not its account statuses. A cash
   // account and a bullet-bot evaluation are different businesses, which is the
   // premise operationsSegments.js was written on.
@@ -810,10 +894,18 @@ export function buildCapitalDetail(clients = [], {
     .map((block) => ({
       segment: block.segment,
       accounts: block.held.accounts,
+      // Each row carries its own kind and its own refusal, and no row is a share
+      // of any other. A renderer must read moneyKind before it prints balance.
+      moneyKind: block.moneyKind,
+      balance: block.held.balanceObserved,
       capital: block.held.capital,
+      capitalRefusal: block.held.capitalRefusal,
+      // What this segment DID, which is the figure a prop pool is entitled to.
+      netPnl: block.movement.tradingPnl ? block.movement.tradingPnl.net : null,
+      netPnlAccounts: block.movement.tradingPnl ? block.movement.tradingPnl.accounts : 0,
       accountsWithoutBalance: block.held.accountsWithoutBalance,
     }))
-    .sort((a, b) => b.capital - a.capital);
+    .sort((a, b) => b.balance - a.balance);
 
   return {
     asOfDate: latestClose,
@@ -832,24 +924,44 @@ export function buildCapitalDetail(clients = [], {
   };
 }
 
+/**
+ * The desk, WITH NO DESK MONEY IN IT.
+ *
+ * This function used to add every counted segment's balance into one figure and
+ * hand it to a tile headed "Capital held": $32,244,234.16 over 584 accounts, of
+ * which $30,287,682.82 was prop plan size and at most $1,956,551.34 was money
+ * anyone could withdraw. It also added the segments' trading P&L into one net,
+ * which is a cash desk's result added to a prop desk's — the arithmetic that
+ * printed the tile green on 2026-07-21 while the prop desk lost $5,505.46.
+ *
+ * What survives here is everything that is a COUNT (accounts, staleness,
+ * coverage, close-pairs), the per-segment composition where each row carries its
+ * own money kind, and the per-account movement lists, which are individual
+ * observations rather than sums. Every cross-kind money field is null and says
+ * why, so the panel prints a sentence where it used to print a number.
+ */
 function rollUp(blocks, timelines, distrusted) {
   const desk = emptyBlock('Desk');
   desk.countedInTotal = true;
+  desk.moneyKind = MONEY_KINDS.UNKNOWN;
+  desk.held.moneyKind = MONEY_KINDS.UNKNOWN;
+  desk.held.capitalRefusal = 'The desk holds two kinds of money that must not be added: real '
+    + 'client cash, and a plan size the prop firm simulates. There is no defensible total, so no '
+    + 'total is produced — see the per-segment rows, each with its own kind.';
   const dates = new Map();
 
   for (const block of blocks) {
-    desk.held.capital += block.held.capital;
     desk.held.accounts += block.held.accounts;
     desk.held.accountsWithoutBalance += block.held.accountsWithoutBalance;
-    desk.held.atLatestClose.capital += block.held.atLatestClose.capital;
     desk.held.atLatestClose.accounts += block.held.atLatestClose.accounts;
     for (const key of Object.keys(desk.held.staleness)) {
       desk.held.staleness[key] += block.held.staleness[key];
     }
     for (const row of block.held.asOfDates) {
-      const cell = dates.get(row.date) || { date: row.date, accounts: 0, capital: 0 };
+      // Accounts per close, never dollars per close. The dollars on one date are
+      // cash and plan size added together.
+      const cell = dates.get(row.date) || { date: row.date, accounts: 0 };
       cell.accounts += row.accounts;
-      cell.capital += row.capital;
       dates.set(row.date, cell);
     }
     for (const key of Object.keys(desk.coverage.pairsSkipped)) {
@@ -862,16 +974,19 @@ function rollUp(blocks, timelines, distrusted) {
     desk.coverage.pairsReconciled += block.coverage.pairsReconciled;
 
     if (block.movement.tradingPnl) {
-      const pnl = desk.movement.tradingPnl || {
-        net: 0, accounts: 0, pairs: 0,
-        from: block.movement.tradingPnl.from, to: block.movement.tradingPnl.to,
-      };
-      pnl.net += block.movement.tradingPnl.net;
-      pnl.accounts += block.movement.tradingPnl.accounts;
-      pnl.pairs += block.movement.tradingPnl.pairs;
-      if (block.movement.tradingPnl.from < pnl.from) pnl.from = block.movement.tradingPnl.from;
-      if (block.movement.tradingPnl.to > pnl.to) pnl.to = block.movement.tradingPnl.to;
-      desk.movement.tradingPnl = pnl;
+      // Listed per segment, never netted into one. `desk.movement.tradingPnl`
+      // stays null on purpose: adding the cash desk's result to the prop desk's
+      // is the arithmetic this whole review was about.
+      desk.movement.tradingPnlBySegment.push({
+        segment: block.segment,
+        moneyKind: block.moneyKind,
+        net: block.movement.tradingPnl.net,
+        accounts: block.movement.tradingPnl.accounts,
+        pairs: block.movement.tradingPnl.pairs,
+        from: block.movement.tradingPnl.from,
+        to: block.movement.tradingPnl.to,
+        coverageShare: block.movement.tradingPnl.coverageShare,
+      });
     }
     if (block.movement.grossToBalanceGap) {
       const gap = desk.movement.grossToBalanceGap || emptyGap();
@@ -943,25 +1058,17 @@ function rollUp(blocks, timelines, distrusted) {
     desk.movement.unexplained.push(...block.movement.unexplained);
   }
 
-  desk.held.capital = round2(desk.held.capital);
-  desk.held.atLatestClose.capital = round2(desk.held.atLatestClose.capital);
-  desk.held.asOfDates = [...dates.values()]
-    .map((row) => ({ ...row, capital: round2(row.capital) }))
-    .sort((a, b) => b.date.localeCompare(a.date));
+  desk.held.asOfDates = [...dates.values()].sort((a, b) => b.date.localeCompare(a.date));
   desk.movement.unexplained.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
   desk.movement.unexplainedTotals = {
-    in: round2(desk.movement.unexplained.filter((row) => row.amount > 0)
-      .reduce((sum, row) => sum + row.amount, 0)),
-    out: round2(desk.movement.unexplained.filter((row) => row.amount < 0)
-      .reduce((sum, row) => sum + row.amount, 0)),
+    // A count, which is the only part of this that is comparable across kinds.
+    // `in` and `out` are per segment; at desk level they would be a cash
+    // withdrawal added to a prop plan-size adjustment.
+    in: null,
+    out: null,
     accounts: new Set(desk.movement.unexplained.map((row) => row.key)).size,
   };
-  if (desk.movement.tradingPnl) {
-    desk.movement.tradingPnl.net = round2(desk.movement.tradingPnl.net);
-    desk.movement.tradingPnl.coverageShare = desk.held.accounts
-      ? desk.movement.tradingPnl.accounts / desk.held.accounts
-      : null;
-  }
+  desk.movement.tradingPnlBySegment.sort((a, b) => a.net - b.net);
   if (desk.movement.grossToBalanceGap) roundGap(desk.movement.grossToBalanceGap);
   if (desk.movement.payouts?.recorded) {
     desk.movement.payouts.recorded.amount = round2(desk.movement.payouts.recorded.amount);
@@ -972,34 +1079,38 @@ function rollUp(blocks, timelines, distrusted) {
   for (const [name, perDate] of timelines) {
     if (!counted.has(name)) continue;
     for (const cell of perDate.values()) {
+      // Counts only. The money columns of these cells are deliberately not
+      // accumulated: one date's balances and P&L across segments are client cash
+      // and prop plan size added together.
       const row = merged.get(cell.date) || {
-        date: cell.date, accounts: 0, capitalObserved: 0, netPnl: 0,
-        netPnlAccounts: 0, unexplainedAmount: 0, unexplainedAccounts: 0,
+        date: cell.date, accounts: 0, netPnlAccounts: 0, unexplainedAccounts: 0,
         trusted: !distrusted.has(cell.date),
       };
       row.accounts += cell.accounts;
-      row.capitalObserved += cell.capitalObserved;
-      row.netPnl += cell.netPnl;
       row.netPnlAccounts += cell.netPnlAccounts;
-      row.unexplainedAmount += cell.unexplainedAmount;
       row.unexplainedAccounts += cell.unexplainedAccounts;
       merged.set(cell.date, row);
     }
   }
-  let running = 0;
   desk.timeline = [...merged.values()]
     .sort((a, b) => a.date.localeCompare(b.date))
-    .map((cell) => {
-      running += cell.netPnl;
-      return {
-        ...cell,
-        capitalObserved: round2(cell.capitalObserved),
-        netPnl: round2(cell.netPnl),
-        unexplainedAmount: round2(cell.unexplainedAmount),
-        cumulativeNetPnl: round2(running),
-        coverage: desk.held.accounts ? cell.accounts / desk.held.accounts : null,
-      };
-    });
+    .map((cell) => ({
+      date: cell.date,
+      accounts: cell.accounts,
+      netPnlAccounts: cell.netPnlAccounts,
+      unexplainedAccounts: cell.unexplainedAccounts,
+      trusted: cell.trusted,
+      // Nulled, not omitted, so a renderer reaching for them finds an explicit
+      // refusal rather than undefined. Each of these adds client cash to a
+      // simulated plan size across the segments that reported on the date.
+      balanceObserved: null,
+      netPnl: null,
+      cumulativeNetPnl: null,
+      unexplainedAmount: null,
+      coverage: desk.held.accounts ? cell.accounts / desk.held.accounts : null,
+    }));
+  desk.timelineRefusal = 'One line for the desk would add the cash desk\u2019s result to the prop '
+    + 'desk\u2019s. Open a segment to see its own line.';
 
   return desk;
 }
@@ -1019,6 +1130,15 @@ function declinedFigures(desk, closes) {
   const withoutHistory = payouts?.accountsWithoutHistory ?? 0;
   const gap = desk.movement.grossToBalanceGap;
   const rows = [
+    {
+      figure: 'One capital figure for the desk',
+      value: null,
+      reason: 'The desk holds two kinds of money. Cash accounts are real client money; a prop '
+        + 'account balance is the plan size the firm simulates, which nobody deposited and nobody '
+        + 'can withdraw. This module used to add them into $32,244,234.16 of "capital held", '
+        + '93.93% of which was that plan size. Each segment now reports its own kind, and the '
+        + 'rows are never summed.',
+    },
     {
       figure: 'Money in — deposits, withdrawals, funding fees',
       value: null,

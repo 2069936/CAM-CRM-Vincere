@@ -28,6 +28,12 @@
 // "2 Day Pass" are the same thing typed twice); date_funded, date_last_payout
 // and payout_count are empty on all 244, and payout_events holds 11 rows of
 // which 0 belong to a Bullet Bot account.
+//
+// THAT LAST PARAGRAPH IS NOW A FIGURE ON THE SCREEN AND NOT ONLY A COMMENT HERE.
+// `columns` counts how blank those two columns are over this cohort, and the
+// panel prints it above every rate it draws. A comment explaining why a column
+// is unusable is read by whoever next edits this file; the desk that owns the
+// column reads the panel. See buildColumnCoverage.
 
 import { buildBulletBotAccountRecords } from './bulletBotStats';
 import { ACCOUNT_STATUSES } from './reconcile';
@@ -61,6 +67,48 @@ export const STREAKS_UNAVAILABLE =
   + 'Bullet Bot payout events. date_added has only 14 distinct values across 244 '
   + 'accounts, so 41 of the 43 multi-account clients cannot be ordered at all. '
   + 'The per-client tallies below are counts, not sequences.';
+
+/**
+ * How much of the book's own Bullet Bot bookkeeping is actually filled in.
+ *
+ * WHY THIS IS COMPUTED AND PRINTED RATHER THAN QUIETLY WORKED AROUND. This panel
+ * answers "who passes, long or short, how fast". `trading_accounts` has columns
+ * with exactly those names — bullet_bot_pass_type and bullet_bot_direction — and
+ * they are blank on almost every account that has ever run the programme. A
+ * reader who knows those columns exist is entitled to know that nothing here is
+ * read from them, and a desk that does not know they are empty will keep
+ * assuming somebody is filling them in.
+ *
+ * A pass rate computed over the handful of accounts that do carry a pass type
+ * would be a rate over a few per cent of the desk, and a blank is not a failure.
+ * So no value is inferred for either column, no rate is built on them, and the
+ * coverage is stated as a number the ops team can act on.
+ *
+ * What the panel uses instead: an observed balance at or above the account's
+ * target (a pass), and the direction on the strategy rows the imports carry.
+ * Both are events, not typing.
+ */
+function buildColumnCoverage(records) {
+  const accounts = records.length;
+  const count = (field) => records.filter((record) => record[field]).length;
+  const passTypeSet = count('passTypeColumn');
+  const directionSet = count('directionColumnRaw');
+  const pct = (n) => (accounts ? Math.round((n / accounts) * 1000) / 10 : null);
+  return {
+    accounts,
+    passType: { set: passTypeSet, blank: accounts - passTypeSet, blankShare: pct(accounts - passTypeSet) },
+    direction: { set: directionSet, blank: accounts - directionSet, blankShare: pct(accounts - directionSet) },
+    // Deliberately not a rate over the accounts that DO carry a pass type. That
+    // figure is computable and it is not a pass rate.
+    refusal: 'No pass rate is computed from bullet_bot_pass_type, and no direction is taken '
+      + 'from bullet_bot_direction where the strategy rows are silent. A rate over the accounts '
+      + 'that happen to carry a pass type would be a rate over a few per cent of the desk, and a '
+      + 'blank is not a failure. Nothing here fills either column in.',
+    reads: 'Everything on this panel is derived instead: a pass is an observed balance at or '
+      + 'above the account’s own target, and a direction is the one the imported strategy rows '
+      + 'carry. Both are events in the book rather than fields somebody remembered to type.',
+  };
+}
 
 function normalizeDirectionValue(value) {
   const v = String(value || '').toLowerCase();
@@ -331,6 +379,7 @@ export function buildBulletBotDeskStats(clients = [], {
   const clientRows = buildClientRows(records, minClientCohort);
   const days = buildDaysToPass(records, minDaysSample);
 
+  const columns = buildColumnCoverage(records);
   const unavailable = { streaks: STREAKS_UNAVAILABLE };
   if (!days.value) {
     unavailable.daysToPass = `Only ${days.n} account${days.n === 1 ? '' : 's'} reached target on a day after we first saw it`
@@ -366,6 +415,9 @@ export function buildBulletBotDeskStats(clients = [], {
       byFailures: rankBy(clientRows, 'failed', 'failRate'),
       minClientCohort,
     },
+    // How much of the book's own Bullet Bot bookkeeping is filled in, and what
+    // this panel reads instead. Surfaced, never fixed silently.
+    columns,
     // See STREAKS_UNAVAILABLE. Null is the answer, not a placeholder.
     streaks: null,
     daysToPass: days.value,

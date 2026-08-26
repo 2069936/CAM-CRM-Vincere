@@ -377,6 +377,11 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
   // Flags are account-level, so a Funded-account flag used to be invisible on the
   // Evaluations/Cash tab — the header could say "3 flags" with an empty list and
   // no way to act on them. Each row shows its account so the CAM knows where it is.
+  // 'Acknowledged' is still filtered out with a purpose. The Acknowledge button
+  // that used to sit beside Resolve on each row below is gone — the desk manager
+  // wanted one way to close a flag — but the status it wrote is on 460 rows of
+  // the book, and this list has always hidden them. Reading only `!== 'Resolved'`
+  // here would reopen every one of them on the client's own screen.
   const flags = (dailyImport.flags || [])
     .filter((flag) => flag.status !== 'Acknowledged' && flag.status !== 'Resolved');
   const criticalFlags = flags.filter((flag) => flag.severity === 'Critical');
@@ -396,7 +401,7 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
           <h3>Action required</h3>
           <div className="inline-actions">
             {onBulkResolveFlags && flags.length ? (
-              <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags('Resolved')}>
+              <button className="ghost-button" style={{fontSize:12}} title="Resolve all open flags" onClick={() => onBulkResolveFlags()}>
                 Resolve all
               </button>
             ) : null}
@@ -411,28 +416,17 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
         {flags.length ? (
           <div className="flag-list">
             {flags.map((flag) => (
-              <div className={flag.status === 'Resolved' ? 'flag resolved' : flag.status === 'Acknowledged' ? 'flag acknowledged' : `flag ${flag.severity.toLowerCase()}`} key={flag.id}>
+              <div className={flag.status === 'Resolved' ? 'flag resolved' : `flag ${flag.severity.toLowerCase()}`} key={flag.id}>
                 {flag.severity === 'Critical' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
                 <div>
                   <strong>{flag.type}
                     {flag.status === 'Resolved' ? <span className="flag-resolved-badge">Resolved</span> : null}
-                    {flag.status === 'Acknowledged' ? <span className="flag-resolved-badge" style={{background:'var(--surface-3)',color:'var(--text-muted)'}}>Ack'd</span> : null}
                   </strong>
                   <span>{flag.message}</span>
                 </div>
                 <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                  {onResolveFlag && flag.severity !== 'Critical' ? (
-                    <button
-                      className="ghost-button"
-                      title="Acknowledge - seen, hide for now. Reappears on the next close if still true."
-                      style={{ fontSize: 11, padding: '2px 6px' }}
-                      onClick={() => onResolveFlag(flag.id, 'Acknowledged')}
-                    >
-                      Ack
-                    </button>
-                  ) : null}
                   {onResolveFlag ? (
-                    <button className="ghost-button icon-only flag-resolve-btn" title="Resolve - dismiss this flag" onClick={() => onResolveFlag(flag.id, 'Resolved')}>
+                    <button className="ghost-button icon-only flag-resolve-btn" title="Resolve - dismiss this flag" onClick={() => onResolveFlag(flag.id)}>
                       <X size={14} />
                     </button>
                   ) : null}

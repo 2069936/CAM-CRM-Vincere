@@ -18,6 +18,14 @@ needed to switch on the automatic collector; the CRM is fully usable without it.
   `Cash` value keeps working and is reported as unclassified.
 - A report designer: each CAM sets a default layout for their reports, and any
   client can override it.
+- **Reports download instead of printing.** The report sheet's first action is
+  now **Download PDF**: one click, no operating-system print dialog, and the file
+  arrives in the browser's downloads folder already named
+  `<Client> - <date> daily report.pdf`. It is rendered by a new function,
+  `/api/report/pdf`, which loads the same report DOM against the same
+  `@media print` stylesheet in a headless Chrome — so the downloaded file is the
+  printed file. **Print** is still there, demoted to a ghost button: it is the
+  only path that works when the function or the network is down.
 - CAM time off and temporary client coverage: a CAM requests time off, a manager
   approves it and assigns cover in the same action. Cover adds access without
   removing it and expires on its own end date.
@@ -52,6 +60,9 @@ supabase/step_31_report_config.sql
 supabase/step_32_client_order.sql
 supabase/step_33_tradovate_account_id.sql
 supabase/step_34_cam_time_off_and_coverage.sql
+supabase/step_35_prop_firm_plan.sql
+supabase/step_36_simulation_accounts.sql
+supabase/step_37_derived_strategy_pnl.sql
 ```
 
 All are additive and idempotent. None drops or rewrites existing data, so
@@ -64,12 +75,33 @@ re-running is safe.
   upload fails with `snapshot_ingest_unavailable` and every pairing fails with
   `pairing_unavailable`. The rest of the CRM is unaffected — nothing else reads
   those tables.
-- **31–34 degrade gracefully.** Each feature reads its column as an empty
+- **31–37 degrade gracefully.** Each feature reads its column as an empty
   default when missing, so the code can deploy first and the feature simply
   stays dormant: no 31 → the report designer can't save; no 32 → the sidebar
   keeps its automatic sort; no 33 → the Tradovate ID field has nowhere to save;
   no 34 → time off and coverage are unavailable and everyone sees only their own
-  clients, exactly as before.
+  clients, exactly as before; no 35 → an account runs on the tightest drawdown
+  its firm sells at that size; no 36 → a CAM's simulation/live override has
+  nowhere to save and the heuristic decides alone.
+- **37 degrades gracefully but visibly, so run it.** The per-algo P&L split is
+  derived from the fills at import time and stored in the two columns this step
+  adds — `strategy_snapshots.derived_realized`, one figure per roster row, and
+  `account_snapshots.derivation`, the account-day's verdict and join report
+  stored once. Without them a CAM sees the split on the close they just imported
+  and nothing after a refresh: the panel falls back to the combination history,
+  which is exact, and shows no per-algo figures. Nothing wrong is displayed —
+  a figure that cannot be checked is refused rather than shown — but the feature
+  is invisible to everyone who did not run the import themselves.
+
+  Two further `strategy_snapshots` columns were drafted into this step and cut
+  before it ran, because both repeated the account-day verdict on every roster
+  row of that account: 72.5 of the 96.4 bytes a strategy row was about to grow
+  by, measured through the shipped write mapper on a real export, and ~73 KiB on
+  the busiest CAM's export pull against a ceiling that pull is already over. Both
+  are answerable from `account_snapshots.derivation`; nothing computed or shown
+  changed. If you ran an earlier draft of step 37 against a database, the two
+  extra columns are harmless — nothing reads or writes them any more — and can be
+  dropped at leisure.
 
 Reference: [`supabase/MIGRATIONS_TO_RUN.md`](../supabase/MIGRATIONS_TO_RUN.md)
 
@@ -86,6 +118,12 @@ Add:
 | Variable | Value |
 |---|---|
 | `INGEST_TOKEN_PEPPER` | A secret: `openssl rand -hex 32`. Generate it in Vercel and keep it there — it must not be committed or sent over chat. Device authentication has nothing to hash without it. |
+
+Optional, and normally left unset:
+
+| Variable | Value |
+|---|---|
+| `REPORT_PDF_BASE_URL` | Where `/api/report/pdf` fetches this build's stylesheet and fonts. Unset, it uses `VERCEL_URL`, which is correct for a normal project. Set it to the CRM's public origin (`https://host`, no path) **only if Deployment Protection is on** — with SSO in front of `VERCEL_URL` the function gets a login page instead of `index.html` and every download fails with `report_stylesheet_missing`. |
 
 The three below come out of step 3 and are only needed for the collector. Leave
 them unset until then — the CRM does not need them.
@@ -152,8 +190,41 @@ Reference: [`docs/publish-collector-release.md`](publish-collector-release.md)
   pairing code the card generates. Details in
   [`collector/docs/installing.md`](../collector/docs/installing.md).
 
+- Open any client's close and click **Download PDF**. The file must arrive named
+  `<Client> - <date> daily report.pdf`. A **502 `report_font_missing`** means the
+  deployment is not sending `Access-Control-Allow-Origin` on `/assets/*.woff2` —
+  see [The one header the report PDF needs](#the-one-header-the-report-pdf-needs).
+  Nothing local can catch this: no test and no script observes the real platform
+  emitting that header, and until someone clicks this button once, nobody knows.
+
+  ```bash
+  curl -sI -H 'Origin: null' "https://<deployment>/assets/$(basename "$(ls dist/assets/*.woff2 | head -1)")" | grep -i access-control-allow-origin
+  ```
+
 Install on **one** VPS and confirm a scheduled capture lands as that client's
 daily close before rolling out further.
+
+---
+
+## The one header the report PDF needs
+
+`vercel.json` sends `Access-Control-Allow-Origin: *` on `/assets/(.*).woff2`.
+**Without it there is no Download PDF at all** — measured, all 13 book reports and
+all 39 boundary-sweep positions came back 502 `report_font_missing`, not a wrong
+layout but no layout.
+
+A font fetch is always CORS-mode, and the document the function renders is built
+with `setContent`, so it has an opaque origin and asks for the deployment's own
+woff2 with `Origin: null`. `fonts.gstatic.com` sent that header for free; a static
+host does not.
+
+This is the one thing in the branch that cannot be proved before it is deployed.
+`server/tests/report/reportFontOrigin.test.js` fails if the rule leaves
+`vercel.json`, and `scripts/verify-report-print-layout.mjs` compiles the rule's
+own `source` pattern through Vercel's router rather than assuming what it
+matches — but neither of them observes the real platform. That is what the
+Download PDF click in Step 4 is for. Serving the CRM from anything other than
+this `vercel.json` means sending that header there too.
 
 ---
 
@@ -185,6 +256,50 @@ with licensed NinjaTrader. `install-agent.ps1` warns and continues when it is
 absent, so the service installs and pairs first; NinjaTrader capture begins once
 the AddOn is in place.
 
+**The report PDF function has not been timed on Lambda.** `/api/report/pdf`
+takes the 6th of Vercel Hobby's 12 serverless functions and carries ~75 MB of
+`@sparticuz/chromium` + `puppeteer-core`, which is why it is its own file rather
+than another key in `api/admin/[action].js` — putting it there would attach that
+weight, and its cold-start decompression, to client-export and all seven
+`ingest-*` endpoints. Warm renders measured 0.8–1.5s each with a real Chrome;
+the cold start on Lambda (brotli-decompressing chromium, then launching it) was
+not measured here and is the number to watch after the first deploy.
+`vercel.json` sets `maxDuration: 60` for this route so a cold start has room.
+If it is too slow in practice, Print still works and is one click away.
+
+**The report's fonts are a pagination input, and they are now this
+deployment's.** The report is set in Inter and Outfit. Both were `@import`ed from
+`fonts.googleapis.com`, which made Google a runtime dependency of a SERVER once
+`/api/report/pdf` started rendering there; they are now self-hosted through
+`@fontsource` and served from the deployment's own `/assets`, and the render
+document's CSP no longer names `fonts.googleapis.com` or `fonts.gstatic.com` at
+all. Same design and same versions — Inter v20, Outfit v15 — but re-built
+binaries, not Google's bytes, and declared differently: that `css2` URL returned
+discrete faces at Inter 400-800 and Outfit 500-800, while `@fontsource` declares
+one variable face a subset at `font-weight: 100 900`. The pinned layout is
+unchanged across the swap: 18 sheets, 208mm of 300mm blank, 39 of 39 clean
+boundary positions. The build ships 266 KB of woff2 for it and no longer ships
+the 76 KB of `@fontsource-variable/geist`, which declared five `@font-face` rules
+that no declaration in the stylesheet ever selected.
+
+That wider weight range cost one thing, and it is written down here because it
+reached client paper before anyone chose it. Report headings inherit weight 400
+through Tailwind preflight; Outfit had **no** 400 face at Google, so 400 matched
+the 500 one and every client name and section title has always printed at Medium.
+The variable face has a real 400, so the same CSS silently began printing those
+36 headings 16.8% lighter — identical sheet counts, identical millimetres, only
+ink. `src/index.css` now states `font-weight: 500` on `.report-sheet h1, h2`
+instead of inheriting it from whatever a font vendor happens to serve, and
+`server/tests/report/reportHeadingWeight.test.js` fails if it goes away.
+
+What the swap did **not** change is that a font that does not load repaginates a
+client's report (measured: a real close is one sheet with the two families and
+two without). So the guard stays — a render whose fonts did not arrive is
+**refused** with `report_font_missing` rather than sent — and it now fires on a
+woff2 that 404s after a bad deploy rather than on a Google origin the function
+cannot reach. `scripts/verify-report-print-layout.mjs` proves it by blocking the
+deployment's own font URLs and requiring the 502.
+
 **The agent package is unsigned.** Distribution deliberately does not depend on a
 code-signing certificate. Integrity is still enforced — the manifest is pinned by
 SHA-256 through the environment variable, and it carries the package's own
@@ -198,7 +313,7 @@ signature, so Windows warns when a script downloaded from the internet is run;
 
 ```bash
 npm install
-npm test        # 979 passing, 5 skipped
+npm test        # 2488 passing, 5 skipped (without the local snapshot)
 npm run build
 npm run lint
 ```

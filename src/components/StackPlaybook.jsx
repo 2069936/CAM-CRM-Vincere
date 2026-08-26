@@ -4,12 +4,12 @@ import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcil
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
 import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
 import { buildAccountLifecycle } from '../domain/accountLifecycle';
-import LifecycleByAlgo from './LifecycleByAlgo';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
 import { buildBulletBotDeskStats } from '../domain/bulletBotDeskStats';
 import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
+import AlgoContributionPanel from './AlgoContributionPanel';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
@@ -274,7 +274,6 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [bbOpen, setBbOpen] = useState(false);
   const [heatOpen, setHeatOpen] = useState(false);
   const [logHistOpen, setLogHistOpen] = useState(false);
-  const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const [classDraft, setClassDraft] = useState({});
   const [windowDays, setWindowDays] = useState(30);
 
@@ -387,6 +386,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                       </small>
                     </div>
                     <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName)} />
+                    <AlgoContributionPanel client={client} accountName={account.accountName} />
                   </div>
                 );
               })}
@@ -624,23 +624,6 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           ) : null}
         </section>
       ) : null}
-
-      {/* ── Lifecycle by algo ──────────────────────────────── */}
-      <section className="panel">
-        <button className="registry-toggle" onClick={() => setLifecycleOpen((v) => !v)}>
-          <ChevronDown className={lifecycleOpen ? 'chevron open' : 'chevron'} size={16} />
-          <h3>Lifecycle by algo</h3>
-          <span className="muted">Which combo gets accounts funded, lasts longer, survives</span>
-        </button>
-        {lifecycleOpen ? (
-          <>
-            <LifecycleByAlgo clients={teamClients} />
-            <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
-              Funded rate + lifespan by the algo stack set on each account. F / X / Active = funded / failed / still active. Set an account&apos;s algo stack below to feed this.
-            </p>
-          </>
-        ) : null}
-      </section>
 
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">

@@ -52,7 +52,20 @@ const DATE = /^\d{4}-\d{2}-\d{2}/;
 
 /** Statuses that mean the CAM still has work to do. Same rule as buildFlagAging
  * and the manager's open-flags table: a missing status is Open, and Ignored is
- * deliberately still open — it was never a triage state anyone chose here. */
+ * deliberately still open — it was never a triage state anyone chose here.
+ *
+ * 'Acknowledged' is still excluded even though nothing writes it any more. The
+ * desk manager removed the Acknowledge action, not the 460 rows already carrying
+ * that status (409 Warning, 51 Critical, against 4,141 Resolved and 1,952 Open on
+ * the book). Every one of them was a CAM deciding he had seen the thing and it
+ * needed no further work, and every read path in the app has always treated the
+ * status exactly as it treats Resolved. Dropping the check here would put those
+ * 460 back into this queue — the one screen that can reach flags stranded behind
+ * a client's latest close — as if the work had never been done. supabase/
+ * step_38_flag_acknowledged_to_resolved.sql converts them in Postgres and records
+ * what they were; this line is what keeps an un-migrated database honest in the
+ * meantime, and what keeps an old export (public/local-snapshot.json included)
+ * readable afterwards. */
 export function isFlagOpen(flag) {
   const status = flag?.status || 'Open';
   return status !== 'Resolved' && status !== 'Acknowledged';
@@ -314,20 +327,19 @@ export function buildCamFlagQueue(clients = [], options = {}) {
  * its own import.
  *
  * This is the whole point of the module. The manager's callback signature —
- * onResolveFlag(clientId, importId, flagId, status) — already takes the ids
+ * onResolveFlag(clientId, importId, flagId) — already takes the ids
  * explicitly; what was missing was somewhere to get them from other than the
  * screen the user happens to be on. A row that appeared on eleven closes
  * produces eleven calls with eleven different importIds, and the flagId in each
  * is the uuid of the row in that import — never the latest one's, which is what
  * a "resolve what's on screen" handler would send.
  */
-export function flagResolutionPlan(row, status = 'Resolved') {
+export function flagResolutionPlan(row) {
   if (!row || !Array.isArray(row.occurrences)) return [];
   return row.occurrences.map((occurrence) => ({
     clientId: occurrence.clientId || row.clientId,
     importId: occurrence.importId,
     flagId: occurrence.flagId,
-    status,
   }));
 }
 
@@ -340,15 +352,14 @@ export function flagResolutionPlan(row, status = 'Resolved') {
  * does not say which close it refers to is unreadable a fortnight later — which
  * is the median age here.
  */
-export function flagActivityEntry(row, status = 'Resolved', options = {}) {
-  if (!row || (status !== 'Resolved' && status !== 'Acknowledged')) return null;
+export function flagActivityEntry(row, options = {}) {
+  if (!row) return null;
   const now = options.now || new Date().toISOString();
-  const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
   const raised = row.firstSeen ? ` (raised ${row.firstSeen})` : '';
   return {
     id: options.id || `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     type: 'Alert',
-    text: `Flag ${verb}: [${row.type}] ${row.message}${raised}`,
+    text: `Flag resolved: [${row.type}] ${row.message}${raised}`,
     accountName: row.accountName || '',
     createdAt: now,
   };
@@ -363,10 +374,8 @@ export function flagActivityEntry(row, status = 'Resolved', options = {}) {
  * client's activity log under the tool that made them. The date range is in the
  * text because the group spans closes the CAM was never standing on.
  */
-export function flagGroupActivityEntry(group, status = 'Resolved', options = {}) {
+export function flagGroupActivityEntry(group, options = {}) {
   if (!group || !group.rows?.length) return null;
-  if (status !== 'Resolved' && status !== 'Acknowledged') return null;
-  const verb = status === 'Resolved' ? 'resolved' : 'acknowledged';
   const count = group.rows.length;
   const span = group.lastSeen && group.lastSeen !== group.firstSeen
     ? `${group.firstSeen} → ${group.lastSeen}`
@@ -374,7 +383,7 @@ export function flagGroupActivityEntry(group, status = 'Resolved', options = {})
   return {
     id: options.id || `act-${Date.now()}-bulk`,
     type: 'Alert',
-    text: `Bulk ${verb} ${count} flag${count === 1 ? '' : 's'} [${group.type}] raised ${span}`,
+    text: `Bulk resolved ${count} flag${count === 1 ? '' : 's'} [${group.type}] raised ${span}`,
     accountName: '',
     createdAt: options.now || new Date().toISOString(),
   };
@@ -404,7 +413,7 @@ export function createCamFlagResolver({
   onError = null,
   source = 'cam-overview',
 } = {}) {
-  return function resolveFlag(clientId, importId, flagId, status = 'Resolved') {
+  return function resolveFlag(clientId, importId, flagId) {
     if (!clientId || !importId || !flagId) {
       // Silence here would look exactly like a resolution that worked: the row
       // would vanish from the queue and come back on the next load. The three
@@ -419,15 +428,15 @@ export function createCamFlagResolver({
     const patch = (next) => {
       if (setState && patchState) setState((current) => patchState(current, clientId, importId, flagId, next));
     };
-    patch(status);
-    return Promise.resolve(updateFlag(flagId, status))
+    patch('Resolved');
+    return Promise.resolve(updateFlag(flagId, 'Resolved'))
       .then((result) => {
         if (audit) {
           audit({
             entityType: 'operational_flag',
             entityId: flagId,
-            action: status === 'Resolved' ? 'flag.resolve' : 'flag.acknowledge',
-            afterData: { clientId, importId, flagId, status, source },
+            action: 'flag.resolve',
+            afterData: { clientId, importId, flagId, status: 'Resolved', source },
           });
         }
         return result;
@@ -444,7 +453,8 @@ export function createCamFlagResolver({
         // 'Open' is exact rather than approximate here: isFlagOpen also treats
         // 'Ignored' as open, but operational_flags.status holds only Open,
         // Resolved and Acknowledged on the real book (1,952 / 4,141 / 460 of
-        // 6,553) and nothing in the product writes any other value.
+        // 6,553), the queue only ever offers rows isFlagOpen called open, and
+        // Resolved is now the only status the product writes at all.
         patch('Open');
         if (onError) onError(error);
         else throw error;

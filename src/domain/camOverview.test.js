@@ -76,6 +76,33 @@ describe('buildCamOverview', () => {
     ]));
   });
 
+  it('keeps two versions of one family in separate peer groups', () => {
+    // Every case above runs a single version, so `key: version ? `${family}
+    // ${version}` : family` could be reduced to `key: family` without any of
+    // them noticing — which is the whole peer group, not a detail. The manager's
+    // consolidated deviation panel is read against the CAM's, and its
+    // reconciliation sentence is written around how wide a peer group is; a
+    // silently wider one moves the mean and the 1.5-sigma threshold under it,
+    // and 4.5 versus 1.8 of the same algorithm is a different animal.
+    const clients = [
+      makeClient({
+        id: 'client-a',
+        name: 'Amanda',
+        registry: { ACC1: { alias: 'Lucid - 1001' }, ACC2: { alias: 'Lucid - 1002' } },
+        snapshots: [
+          makeSnapshot({ accountName: 'ACC1', strategies: [makeStrategy({ version: '1.8', realized: 100 })] }),
+          makeSnapshot({ accountName: 'ACC2', strategies: [makeStrategy({ version: '4.5', realized: -100 })] }),
+        ],
+      }),
+    ];
+
+    const overview = buildCamOverview(clients);
+
+    expect(overview.algorithms.map((group) => group.key).sort()).toEqual(['RBO 1.8', 'RBO 4.5']);
+    expect(overview.algorithms.every((group) => group.instances === 1)).toBe(true);
+    expect(overview.totals.algorithms).toBe(2);
+  });
+
   it('falls back to the strategy name when family and version are unknown', () => {
     const overview = buildCamOverview([
       makeClient({

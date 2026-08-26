@@ -83,6 +83,15 @@ function blankRecord(client, meta, accountName, firstDate) {
     // strategy rows: it is populated on 11 of 244 accounts and disagrees with
     // the strategy rows on 3 of those 11.
     directionColumn: normalizeDirection(meta.bulletBotDirection),
+    // The raw columns, carried unparsed and used by NOTHING that computes a
+    // rate. They are here so the desk module can report how empty they are:
+    // the panel is asked "who passes, long or short, how fast", the book has
+    // columns with those names, and a reader is entitled to know that the
+    // answers on screen are derived from balances and strategy rows because
+    // those columns are blank on almost every account. Nothing is inferred for
+    // them and no value is invented.
+    passTypeColumn: String(meta.bulletBotPassType || '').trim(),
+    directionColumnRaw: String(meta.bulletBotDirection || '').trim(),
     // Every direction the strategy rows show for this account over time. 7 real
     // accounts carry both Long and Short rows, which the first-row-wins
     // `direction` field silently reports as whichever came first.

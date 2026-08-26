@@ -56,7 +56,6 @@ import DailySOP from "./components/DailySOP";
 import ProfilePanel from "./components/ProfilePanel";
 import PerformanceCharts from './components/PerformanceCharts';
 import StackPlaybook from "./components/StackPlaybook";
-import LifecycleByAlgo from "./components/LifecycleByAlgo";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
 import AutoCollectionManager from "./components/AutoCollectionManager";
@@ -73,7 +72,15 @@ import { Switch } from "@/components/ui/switch";
 import {
   addActivityEntry,
   addClient,
+  addTimeOffRequest,
+  adoptSavedClient,
+  adoptSavedDailyImport,
   removeClient,
+  removeCoverageEntry,
+  replaceCoverageForRequest,
+  restoreClient,
+  updateTimeOffRequest,
+  upsertCoverageEntry,
   transferClient,
   togglePinClient,
   addTask,
@@ -96,6 +103,8 @@ import {
   removeAccountFromRegistry,
 } from "./domain/crmStateStore";
 import { buildCamOverview } from "./domain/camOverview";
+import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
+import { daysBetween } from "./domain/overviewCharts";
 import {
   recalculateDailyImport,
   reconcileDailyImport,
@@ -113,12 +122,20 @@ import {
   buildClientMessageReport,
   buildWeeklyMessageReport,
   buildDailyReportSummary,
-  buildTeamWeeklyReport,
   buildCamDayReport,
   formatCurrency,
 } from "./domain/report";
 import { buildClientSegments } from "./domain/clientSegments";
-import { buildClientLifecycle, buildLifecycleRollup } from "./domain/clientLifecycle";
+import {
+  CLIENT_STAGES,
+  CLIENT_STAGE_INACTIVE,
+  CLIENT_STAGE_NEW,
+  buildClientLifecycle,
+  buildLifecycleRollup,
+  isChurnedClient,
+  partitionSidebarClients,
+  pipelineColumns,
+} from "./domain/clientLifecycle";
 import {
   TIME_OFF_KINDS,
   buildCamRecord,
@@ -127,27 +144,44 @@ import {
   pendingTimeOffAlert,
 } from "./domain/camCoverage";
 import { ClientLifecyclePanel, LifecycleRollupPanel } from "./components/ClientLifecyclePanel";
+import ChurnReasonDialog from "./components/ChurnReasonDialog";
 import TimeOffPanel, {
   PendingTimeOffNotice,
   TimeOffRequestForm,
 } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
-import { EXCLUDED_FROM_TOTAL, SEGMENTS, buildSegmentTotals, rollUpByBusiness } from "./domain/operationsSegments";
+import BookList from "./components/BookList";
+import DeskMoneyPanel, { CAPITAL_DETAIL_ID } from "./components/DeskMoneyPanel";
+import { SEGMENTS } from "./domain/operationsSegments";
+import {
+  buildDeskMoney,
+  buildDeskMoneyForMonth,
+  buildDeskMoneyHistory,
+  closeAsOf,
+  deskBusinessColumns,
+  formatDeskReport,
+  monthFor,
+} from "./domain/deskMoney";
+import AlgorithmDetailPanel from "./components/AlgorithmDetailPanel";
+import AlgorithmRankingPanel from "./components/AlgorithmRankingPanel";
+import { buildAlgorithmDetail, buildStrategyRanking } from "./domain/algorithmRanking";
+import AccountTypeMismatchPanel from "./components/AccountTypeMismatchPanel";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
+import ReportSheetActions from "./components/ReportSheetActions";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
+import QuietAccountsPanel from "./components/QuietAccountsPanel";
 import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
 import LiveAccountsPanel from "./components/LiveAccountsPanel";
 import CamFlagQueue from "./components/CamFlagQueue";
 import { buildCamFlagQueue, createCamFlagResolver } from "./domain/camFlagQueue";
 import BulletBotDeskPanel from "./components/BulletBotDeskPanel";
+import DeviationAlertList from "./components/DeviationAlertList";
 import CapitalDetailPanel from "./components/CapitalDetailPanel";
-import StrategyRiskScatter from "./components/StrategyRiskScatter";
-import { buildStrategyRiskProfile } from "./domain/strategyRiskProfile";
 import {
   AlgoContributionChart,
   BookMixBar,
@@ -160,6 +194,7 @@ import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovate
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import { buildReportReasons } from "./domain/reportReasons";
 import ClientKindBadge from "./components/ClientKindBadge";
+import ClientRowLabel from "./components/ClientRowLabel";
 import {
   USER_ROLES,
 } from "./domain/userStore";
@@ -224,8 +259,17 @@ import {
   decideSupabaseTimeOff,
   replaceSupabaseCoverage,
   deleteSupabaseCoverage,
+  timeOffEntryFromRow,
   upsertSupabaseTradingAccount,
 } from "./domain/supabaseStore";
+import {
+  persistEdit,
+  refreshFailedMessage,
+  saveFailedMessage,
+} from "./domain/persistEdit";
+import { createCoalescingRefresh } from "./domain/backgroundRefresh";
+import { carryTradeHistoryForward, mergeRefreshedDays } from "./domain/refreshMerge";
+import { describeRemoteStatus } from "./domain/remoteStatus";
 
 function InlineSpinner({ size = 14 }) {
   return <LoaderCircle className="spin" size={size} aria-hidden="true" />;
@@ -552,10 +596,14 @@ function tabMode(tab) {
 // The close a client had on a given date, or their most recent one when no date
 // is pinned. Every date-sensitive read on the Operations page goes through this,
 // so moving the date re-scopes the whole view instead of one panel.
+//
+// One line, delegating: the implementation lives in deskMoney.js so that the
+// close the tiles read and the date basis deskMoney reports for them cannot
+// drift apart. They did drift — the tile summed each client's LAST close
+// whatever date that was, 427 accounts from 8 different dates, and printed the
+// result under one day's heading.
 export function importAsOf(client, asOfDate = "") {
-  const imports = client?.dailyImports || [];
-  if (!asOfDate) return imports.at(-1) || null;
-  return imports.find((di) => di.date === asOfDate) || null;
+  return closeAsOf(client, asOfDate);
 }
 
 function latestImports(clients = [], asOfDate = "") {
@@ -602,26 +650,16 @@ export function buildManagerSummary(clients = [], asOfDate = "") {
   };
 }
 
-export function buildTeamHistory(clients = []) {
-  const byDate = new Map();
-  for (const client of clients) {
-    for (const dailyImport of client.dailyImports || []) {
-      const existing = byDate.get(dailyImport.date) || {
-        date: dailyImport.date,
-        dailyPnl: 0,
-        weeklyPnl: 0,
-        accounts: 0,
-      };
-      for (const snapshot of dailyImport.snapshots || []) {
-        existing.dailyPnl += Number(snapshot.grossRealizedPnl || 0);
-        existing.weeklyPnl += Number(snapshot.weeklyPnl || 0);
-        existing.accounts += 1;
-      }
-      byDate.set(dailyImport.date, existing);
-    }
-  }
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
+// buildTeamHistory USED TO BE HERE, and it was the second of the three answers
+// to "team daily P&L" that this screen carried at once. It summed every snapshot
+// on a date with NO segment filter, so its last cell read -$172,979.64 over 333
+// accounts against the tile's -$169,926.90 over 427 — and the per-day gap
+// decomposed exactly to Ignored + Orphan, residual $0.00 on all 14 days. On
+// 2026-07-24 the two disagreed on the SIGN of the week.
+//
+// The strip now renders buildDeskMoneyHistory, which is buildDeskMoney pinned to
+// each close, so a day on the strip and the same day on the tile are the same
+// arithmetic rather than two loops that happen to look alike.
 
 export function clientDailyTotals(client) {
   return (client?.dailyImports || [])
@@ -667,9 +705,13 @@ export function buildClientOverview(client, dailyImport) {
           days: 0,
           lastThree: [],
         };
-        current.realized += Number(strategy.realized || 0);
+        // Derived where the fills could say, reported otherwise. Absent stays 0
+        // here, as it always did — this roll-up counts days, so a missing figure
+        // must not shift the total.
+        const contribution = Number(strategy.derivedRealized ?? strategy.realized ?? 0);
+        current.realized += contribution;
         current.days += 1;
-        current.lastThree.push(Number(strategy.realized || 0));
+        current.lastThree.push(contribution);
         if (current.lastThree.length > 3) current.lastThree.shift();
         strategyTotals.set(key, current);
       }
@@ -848,14 +890,34 @@ export function buildMonthlyTotals(client) {
   return Object.values(byMonth).sort((a, b) => a.month.localeCompare(b.month));
 }
 
+// The latest close, per strategy family. NO SCORE, AND NO WEEKLY.
+//
+// `score` was 0-10, and it was min-max normalised against the largest absolute
+// total on the board: `(total + maxAbs) / (2 * maxAbs) * 10`. Two consequences,
+// both of them fatal to the thing a score is for.
+//
+// The scale moved. `maxAbs` is whatever the biggest deployment did that day, so
+// an algorithm that traded identically on two days scored differently on them
+// because a DIFFERENT algorithm's day changed the denominator. Nothing scored
+// here could be compared with the same thing last week.
+//
+// And it was one number over deployment size, on a book where every algorithm
+// loses, which is the same defect the leaderboard had one panel down: the
+// largest deployment scored 0.0 and a two-observation algorithm scored 10.0.
+// src/domain/algorithmRanking.js replaces it with measured columns that are
+// allowed to disagree with each other.
+//
+// `avgWeekly` went with it. It was `snapshot.weeklyPnl / enabledCount` — the
+// account's weekly accumulator divided evenly across whatever was running,
+// which is the fabrication buildStrategyEffectiveness had already dropped for
+// the daily figure. It rendered nowhere; a field of that name left on the object
+// is one the next caller renders.
 export function buildStrategyAnalyzer(clients = []) {
   const stratMap = new Map();
   for (const client of clients) {
     const latest = client.dailyImports?.at(-1);
     if (!latest) continue;
     for (const snapshot of latest.snapshots || []) {
-      const enabledCount =
-        (snapshot.strategies || []).filter((s) => s.enabled).length || 1;
       for (const strategy of snapshot.strategies || []) {
         const key =
           strategy.strategyFamily || strategy.strategyName || "Unknown";
@@ -863,113 +925,59 @@ export function buildStrategyAnalyzer(clients = []) {
           name: key,
           count: 0,
           totalRealized: 0,
-          totalWeekly: 0,
           accountSet: new Set(),
         };
         entry.count += 1;
-        entry.totalRealized += Number(strategy.realized || 0);
-        entry.totalWeekly += Number(snapshot.weeklyPnl || 0) / enabledCount;
+        // Derived where the fills could say, reported otherwise. Both are real
+        // measurements of the same quantity; neither is invented here.
+        entry.totalRealized += Number(strategy.derivedRealized ?? strategy.realized ?? 0);
         entry.accountSet.add(snapshot.accountName);
         stratMap.set(key, entry);
       }
     }
   }
-  const entries = [...stratMap.values()];
-  const maxAbs = Math.max(...entries.map((e) => Math.abs(e.totalRealized)), 1);
-  return entries
+  return [...stratMap.values()]
     .map((e) => ({
       name: e.name,
       count: e.count,
       accounts: e.accountSet.size,
       totalRealized: e.totalRealized,
       avgDaily: e.count ? e.totalRealized / e.count : 0,
-      avgWeekly: e.accountSet.size ? e.totalWeekly / e.accountSet.size : 0,
-      score: Math.max(
-        0,
-        Math.min(10, ((e.totalRealized + maxAbs) / (2 * maxAbs)) * 10),
-      ).toFixed(1),
     }))
     .sort((a, b) => b.totalRealized - a.totalRealized);
 }
 
-// Full historical strategy effectiveness - aggregates across all dailyImports
-export function buildStrategyEffectiveness(clients = []) {
-  // stratName → { totalPnl, days: [{date,pnl}], winDays, lossDays, accountSet, clientSet, last7Pnl }
-  const stratMap = new Map();
-
-  for (const client of clients) {
-    for (const di of client.dailyImports || []) {
-      for (const snapshot of di.snapshots || []) {
-        const enabledCount =
-          (snapshot.strategies || []).filter((s) => s.enabled).length || 1;
-        for (const strategy of snapshot.strategies || []) {
-          if (!strategy.enabled) continue;
-          const key =
-            strategy.strategyFamily || strategy.strategyName || "Unknown";
-          const realized = Number(strategy.realized || 0);
-          const accountContrib =
-            Number(snapshot.grossRealizedPnl || 0) / enabledCount;
-          if (!stratMap.has(key)) {
-            stratMap.set(key, {
-              name: key,
-              totalPnl: 0,
-              contributions: [],
-              winDays: 0,
-              lossDays: 0,
-              accountSet: new Set(),
-              clientSet: new Set(),
-            });
-          }
-          const entry = stratMap.get(key);
-          const pnl = strategy.realized != null ? realized : accountContrib;
-          entry.totalPnl += pnl;
-          entry.contributions.push({ date: di.date, pnl });
-          if (pnl > 0) entry.winDays += 1;
-          else if (pnl < 0) entry.lossDays += 1;
-          entry.accountSet.add(snapshot.accountName);
-          entry.clientSet.add(client.name);
-        }
-      }
-    }
-  }
-
-  const cutoff7 = new Date();
-  cutoff7.setDate(cutoff7.getDate() - 7);
-  const cutoff7Str = cutoff7.toISOString().slice(0, 10);
-
-  return [...stratMap.values()]
-    .map((e) => {
-      const last7 = e.contributions
-        .filter((c) => c.date >= cutoff7Str)
-        .reduce((s, c) => s + c.pnl, 0);
-      const total = e.winDays + e.lossDays;
-      const winRate = total ? Math.round((e.winDays / total) * 100) : 0;
-      const avgPerDay = total ? e.totalPnl / total : 0;
-      // trend: last7 vs prior 7
-      const cutoff14Str = new Date(cutoff7.getTime() - 7 * 86400000)
-        .toISOString()
-        .slice(0, 10);
-      const prior7 = e.contributions
-        .filter((c) => c.date >= cutoff14Str && c.date < cutoff7Str)
-        .reduce((s, c) => s + c.pnl, 0);
-      const trend = last7 - prior7;
-      return {
-        name: e.name,
-        totalPnl: e.totalPnl,
-        last7Pnl: last7,
-        prior7Pnl: prior7,
-        trend,
-        winDays: e.winDays,
-        lossDays: e.lossDays,
-        winRate,
-        avgPerDay,
-        accounts: e.accountSet.size,
-        clients: e.clientSet.size,
-        days: total,
-      };
-    })
-    .sort((a, b) => b.totalPnl - a.totalPnl);
-}
+// buildStrategyEffectiveness IS GONE, AND IT IS NOT DEPRECATED - IT IS DELETED.
+//
+// It aggregated every enabled strategy row on the book into one list sorted by
+// total P&L. Two things were wrong with that and neither is fixable in place.
+//
+// It ranked deployment size. Everything on this book loses, so a bigger total is
+// simply a bigger deployment: Spearman(total, account-days) = -0.807. The desk’s
+// largest deployment sorted LAST (Bullet Bot, 340 account-days over 117
+// accounts) and a two-observation algorithm sorted FIRST (ARPD_PF, 2
+// account-days, +$864).
+//
+// And it published one dollar total across the desk: 30.0% of the -$92,669.75 it
+// ranked was not prop money - cash -$23,113.00, Ignored -$2,630.50, Unclassified
+// -$2,082.00 - which is a cash desk's real client money added to a prop desk's
+// movement on a simulated plan size.
+//
+// src/domain/algorithmRanking.js replaces it with one rank per algorithm, ordered
+// by mean P&L per reported account-day with an account-clustered interval and an
+// evidence gate, and with the MONEY reported per business and never added. Note
+// what is and is not split there: the rate is pooled over every account-day,
+// because the account type is a property of the account and does not change what
+// a tick pays; the dollars are not, because those are an accounting figure. A
+// function that returns one ranked list with one dollar total over the whole desk
+// must not exist here, because the next caller renders it.
+//
+// One thing on that list is no longer ranked on it: Bullet Bot is a PROGRAMME
+// for passing an evaluation, and "what did it make per account-day" is not the
+// question asked of it. It keeps a row at the foot of the table saying what it
+// is and pointing at "Bullet Bot across the desk", which measures passes. See
+// src/domain/algorithmProgrammes.js for why the boundary is a named family and
+// not a solo-versus-stacked ratio.
 
 export function buildLifecycleMetrics(clients = []) {
   const evalFails = [];
@@ -1074,7 +1082,7 @@ export function buildPnlVarianceAnalysis(client, allClients = []) {
           if (!strat.enabled) continue;
           const key = strat.strategyFamily || strat.strategyName || "Unknown";
           if (!stratAvg[key]) stratAvg[key] = { total: 0, count: 0 };
-          stratAvg[key].total += Number(strat.realized || 0);
+          stratAvg[key].total += Number(strat.derivedRealized ?? strat.realized ?? 0);
           stratAvg[key].count += 1;
         }
       }
@@ -1670,48 +1678,16 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
   return rows;
 }
 
-function buildTeamMessageReport(clients, camProfiles, totals, cams, coverage = []) {
-  const today = todayIsoDate();
-  const sign = (n) => (n >= 0 ? "+" : "");
-  const fmt = (n) =>
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    }).format(Number(n || 0));
-  const lines = [];
-  lines.push(`📊 *Team Daily Report - ${today}*`);
-  lines.push("");
-  lines.push(
-    `💰 *Team daily P&L:* ${sign(totals.dailyPnl)}${fmt(totals.dailyPnl)}`,
-  );
-  lines.push(
-    `📅 *Team weekly P&L:* ${sign(totals.weeklyPnl)}${fmt(totals.weeklyPnl)}`,
-  );
-  lines.push(
-    `👥 *Clients:* ${totals.clients} · *Accounts:* ${totals.accounts} · *Open flags:* ${totals.flags}`,
-  );
-  lines.push("");
-  for (const cam of cams) {
-    lines.push(`*${cam.name}* (${cam.clients} clients · ${cam.accounts} accs)`);
-    lines.push(
-      `  Daily: ${sign(cam.dailyPnl)}${fmt(cam.dailyPnl)} · Weekly: ${sign(cam.weeklyPnl)}${fmt(cam.weeklyPnl)}${cam.flags ? ` · ⚠️ ${cam.flags} flags` : ""}`,
-    );
-    const camClients = clientsForCam(clients, cam, coverage);
-    for (const c of camClients) {
-      const latest = c.dailyImports?.at(-1);
-      if (!latest) continue;
-      const pnl = (latest.snapshots || []).reduce(
-        (s, sn) => s + Number(sn.grossRealizedPnl || 0),
-        0,
-      );
-      lines.push(`    • ${c.name}: ${sign(pnl)}${fmt(pnl)}`);
-    }
-  }
-  lines.push("");
-  lines.push(`_Generated by Vincere CRM · Drive Insight_`);
-  return lines.join("\n");
-}
+// buildTeamMessageReport USED TO BE HERE. It was the THIRD answer to "team daily
+// P&L" on the same screen: -$175,206.02 over 457 accounts, against the tile's
+// -$169,926.90 over 427 and the history strip's -$172,979.64 over 333. It
+// filtered no segment at all, so accounts marked Inactive / Ignore and closes
+// whose account is gone were inside the figure the desk pasted into WhatsApp,
+// and it headed the message with TODAY'S DATE over figures drawn from eight
+// different closes, the oldest seventeen days earlier.
+//
+// The clipboard text is now formatDeskReport() in deskMoney.js, rendering the
+// same object the tiles render.
 
 function auditSilently(entry) {
   createSupabaseAuditLog(entry).catch((error) => {
@@ -1719,18 +1695,16 @@ function auditSilently(entry) {
   });
 }
 
-// Print-to-PDF uses document.title as the default filename, so set it to the
-// client + date before printing and restore it after — no more manual renaming.
-function printWithTitle(title) {
-  const safe = String(title || "report").replace(/[\\/:*?"<>|]+/g, "-").trim();
-  const prev = document.title;
-  document.title = safe;
-  const restore = () => {
-    document.title = prev;
-    window.removeEventListener("afterprint", restore);
-  };
-  window.addEventListener("afterprint", restore);
-  window.print();
+/**
+ * An id for a row that has been shown but not yet written.
+ *
+ * A create is the one edit the server has to answer before the real id exists,
+ * so the placeholder needs a name the reconcile step can find again — see
+ * adoptSavedClient. The "pending" prefix is deliberate: if one of these ever
+ * shows up in a Supabase error or an audit row, it says what it is.
+ */
+function pendingClientId() {
+  return `pending-client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function downloadTextFile(fileName, text, type = "application/json") {
@@ -1824,7 +1798,7 @@ function intakeCsvRowToClient(row = {}) {
   return {
     name: fullName,
     cam: "",
-    stage: "Onboarding",
+    stage: CLIENT_STAGE_NEW,
     email,
     phone: getCsvField(row, ["Phone", "Phone Number"]),
     timezone: getCsvField(row, ["Time Zone", "Timezone"]) || "America/New_York",
@@ -2993,7 +2967,7 @@ function DataToolsPanel({
                         <strong>{row.name}</strong>
                       </td>
                       <td className="muted">{row.email || "-"}</td>
-                      <td>{row.stage || "Onboarding"}</td>
+                      <td>{row.stage || CLIENT_STAGE_NEW}</td>
                       <td>
                         {row.duplicateReason ? (
                           <span className="badge warning">
@@ -3794,117 +3768,9 @@ function SopBuilderPanel() {
   );
 }
 
-/**
- * What the headline figure is made of.
- *
- * A cash account and a prop evaluation are different businesses, and Bullet Bot
- * evaluations alone were 58% of one day's trading loss — invisible in a single
- * number. The split also shows what the headline leaves out: accounts marked
- * Inactive / Ignore, and snapshots whose account no longer resolves at all.
- * Those are excluded from the total but shown, because hiding them replaces one
- * wrong figure with another and buries the data problem behind it.
- */
-// Short labels for a narrow tile. The domain names stay long because they have
-// to be unambiguous in data; the tile has about eleven characters before the
-// column collapses and a figure gets clipped.
-const SEGMENT_LABELS = {
-  "Evaluations - Bullet Bot": "Bullet Bot",
-  "Evaluations - standard": "Evals",
-  "No account on record": "Orphaned",
-  Unclassified: "Unclassed",
-};
-
-// The id of the panel a segment row opens, so aria-expanded has something to
-// point at: the detail cannot render inside the tile and lands further down the
-// document, which a screen reader cannot associate on its own.
-const CAPITAL_DETAIL_ID = "manager-capital-detail";
-
-/**
- * One segment row.
- *
- * Declared at module scope, NOT inside SegmentBreakdown. A component defined in
- * a render body gets a new function identity every render, React treats that as
- * a different element type, and the whole <li> subtree is unmounted and
- * remounted — so the button the user just pressed is destroyed, focus falls back
- * to <body>, and a keyboard user loses their place in the list on every toggle.
- *
- * The key handed back is `row.segment`, the long domain name, never
- * `SEGMENT_LABELS[row.segment]`. buildCapitalDetail keys its blocks off
- * segmentFor(), the same function buildSegmentTotals uses, so
- * "Evaluations - Bullet Bot" matches and "Bullet Bot" (what the tile prints)
- * would match nothing and silently open a segment reading $0.
- */
-function SegmentRow({ row, excluded = false, open = false, onToggleSegment = null }) {
-  const cells = (
-    <>
-      <span title={row.segment}>{SEGMENT_LABELS[row.segment] || row.segment}</span>
-      <span className={excluded ? undefined : row.dailyPnl >= 0 ? "positive" : "negative"}>
-        {formatCurrency(row.dailyPnl)}
-      </span>
-      <em>{row.accounts}</em>
-    </>
-  );
-  if (!onToggleSegment) {
-    return <li className={excluded ? "segment-excluded" : undefined}>{cells}</li>;
-  }
-  return (
-    <li className={excluded ? "segment-clickable segment-excluded" : "segment-clickable"}>
-      <button
-        type="button"
-        className={open ? "segment-row open" : "segment-row"}
-        aria-expanded={open}
-        aria-controls={open ? CAPITAL_DETAIL_ID : undefined}
-        title={open ? `Hide capital detail for ${row.segment}` : `Capital detail for ${row.segment}`}
-        onClick={() => onToggleSegment(open ? null : row.segment)}
-      >
-        <ChevronDown className={open ? "chevron open" : "chevron"} size={11} />
-        {cells}
-      </button>
-    </li>
-  );
-}
-
-function SegmentBreakdown({ segments, openSegment = null, onToggleSegment = null }) {
-  const rows = segments?.segments || [];
-  if (!rows.length) return null;
-  const business = rollUpByBusiness(segments);
-
-  return (
-    <div className="segment-breakdown">
-      <div className="segment-split">
-        <span>
-          prop <strong className={business.prop.dailyPnl >= 0 ? "positive" : "negative"}>
-            {formatCurrency(business.prop.dailyPnl)}
-          </strong> <em>{business.prop.accounts}</em>
-        </span>
-        <span>
-          cash <strong className={business.cash.dailyPnl >= 0 ? "positive" : "negative"}>
-            {formatCurrency(business.cash.dailyPnl)}
-          </strong> <em>{business.cash.accounts}</em>
-        </span>
-      </div>
-      <ul className="segment-list">
-        {rows.filter((row) => row.countedInTotal).map((row) => (
-          <SegmentRow
-            key={row.segment}
-            row={row}
-            open={openSegment === row.segment}
-            onToggleSegment={onToggleSegment}
-          />
-        ))}
-        {rows.filter((row) => EXCLUDED_FROM_TOTAL.has(row.segment)).map((row) => (
-          <SegmentRow
-            key={row.segment}
-            row={row}
-            excluded
-            open={openSegment === row.segment}
-            onToggleSegment={onToggleSegment}
-          />
-        ))}
-      </ul>
-    </div>
-  );
-}
+// Derived, never typed out here: a column whose key drifts from a row key
+// renders an empty column for every close and reports nothing, silently.
+const DESK_HISTORY_COLUMNS = deskBusinessColumns();
 
 function ManagerOverview({
   clients,
@@ -4019,15 +3885,21 @@ function ManagerOverview({
   const [managerConfirmAction, setManagerConfirmAction] = useState(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managerRenderedAt] = useState(() => Date.now());
-  // Which segment tile has its capital detail open. Held here rather than in
-  // SegmentBreakdown because the detail cannot render inside the tile: the tile
-  // is one cell of a repeat(4, minmax(160px, 1fr)) grid and CapitalDetailPanel
-  // carries four tables. The tile is the control; the panel opens full width
-  // directly under the grid.
+  // Which segment has its capital detail open. Held here rather than in
+  // DeskMoneyPanel because the detail cannot render inside the row: the row is
+  // one line of a table and CapitalDetailPanel carries four tables. The chip in
+  // the row is the control; the panel opens full width directly under it.
   const [openCapitalSegment, setOpenCapitalSegment] = useState(null);
+  // Which algorithm has its own side of the book open. Held here for the same
+  // reason as the capital segment above: the detail cannot render inside the
+  // board row, because it carries one block per board the algorithm runs on and
+  // the row it is opened from is one line of one of them.
+  const [openAlgorithm, setOpenAlgorithm] = useState(null);
   const closeMobileSidebar = () => setMobileSidebarOpen(false);
-  const teamHistory = useMemo(
-    () => buildTeamHistory(clients).slice(-10),
+  // Every cell of the strip is buildDeskMoney pinned to that close, so a day on
+  // the strip is the same arithmetic as the same day on the panel above it.
+  const deskHistory = useMemo(
+    () => buildDeskMoneyHistory(clients, { limit: 10 }),
     [clients],
   );
   const activeCamProfiles = useMemo(
@@ -4042,52 +3914,123 @@ function ManagerOverview({
       }),
     [clients, activeCamProfiles, asOfDate, coverage],
   );
-  // The headline tiles summed every snapshot together, so one figure quietly
-  // carried cash accounts, accounts marked Inactive / Ignore, and snapshots
-  // whose account no longer resolves. A cash account and a prop evaluation are
-  // not the same business.
-  const segments = useMemo(
-    () => buildSegmentTotals(latestImports(clients, asOfDate)),
+  // THE source for every money figure on this page: the panel, the history strip
+  // and the two clipboard buttons all render this object. Three separate loops
+  // used to answer the same question three different ways on the same screen.
+  const deskMoney = useMemo(
+    () => buildDeskMoney(clients, { asOfDate }),
     [clients, asOfDate],
   );
-  // The tile row behind the open capital panel, so the panel can say what the
-  // tile counted. Null when the open segment has no snapshot on anybody's
+  // The month the page is looking at, from the date on screen and never from the
+  // wall clock. `new Date()` put "Monthly P&L (2026-08) $0.00" over a book whose
+  // last close is 2026-07-30, with July unreachable at any as-of date.
+  const deskMonthKey = useMemo(() => monthFor(clients, asOfDate), [clients, asOfDate]);
+  const deskMonth = useMemo(
+    () => buildDeskMoneyForMonth(clients, { month: deskMonthKey }),
+    [clients, deskMonthKey],
+  );
+  // The segment row behind the open capital panel, so the panel can say what the
+  // row counted. Null when the open segment has no snapshot on anybody's
   // latest close — which happens as soon as the as-of picker moves — and the
   // sentence is then withheld rather than printed with a 0 in it.
   const openCapitalTileRow = openCapitalSegment
-    ? segments.segments.find((row) => row.segment === openCapitalSegment) || null
+    ? deskMoney.segments.find((row) => row.segment === openCapitalSegment) || null
     : null;
   // Same reason, for the desk-level Bullet Bot panel further down: it reports
-  // 240 accounts where the tile reports 168, and the two are counted from
+  // 240 accounts where the row reports 168, and the two are counted from
   // different cohorts rather than in disagreement.
-  const bulletBotTileRow = segments.segments.find(
+  const bulletBotTileRow = deskMoney.segments.find(
     (row) => row.segment === SEGMENTS.EVAL_BULLET,
   ) || null;
-  // Firm-wide rather than one CAM's book: the manager's question is which
-  // configurations carry exposure across everyone, not what a single client runs.
-  const riskProfile = useMemo(
-    () => buildStrategyRiskProfile(clients, { asOfDate }),
-    [clients, asOfDate],
-  );
+  // The desk-wide deviation alerts, from the SAME buildCamOverview the CAM
+  // overview has always run. The manager asked for the alert his CAMs already
+  // have; giving the consolidated screen its own peer comparison is how two
+  // screens end up disagreeing about which account is the odd one out, so this
+  // calls the one function and hands the result to the one row component.
+  //
+  // Note what it is NOT pinned to. buildCamOverview reads each client's own
+  // latest close (getLatestClientImport) and takes no as-of date, so this panel
+  // ignores the date picker at the top of the page. That is stated on the panel
+  // rather than papered over: the "Latest close snapshot" panel further down
+  // carries the same caveat and the same badge.
+  const deskDeviation = useMemo(() => buildCamOverview(clients), [clients]);
+  // Why the desk figure is not the sum of the eight CAM figures, computed
+  // instead of asserted. A peer group is every account running the same
+  // algorithm and version in whatever book is being looked at, so widening the
+  // book from one CAM to the desk moves the mean and the 1.5-sigma threshold
+  // under it. On the real book that is 74 desk alerts against 30 across the
+  // eight CAM views, of which 25 appear on both — the manager's list is a
+  // different question, not a bigger copy of theirs, and a manager who has just
+  // been told "12" by a CAM needs to see that in writing.
+  const deviationVsCams = useMemo(() => {
+    const deskIds = new Set(deskDeviation.deviationFlags.map((flag) => flag.id));
+    let camTotal = 0;
+    let onBoth = 0;
+    for (const profile of activeCamProfiles) {
+      const book = clientsForCam(clients, profile, coverage, asOfDate);
+      for (const flag of buildCamOverview(book).deviationFlags) {
+        camTotal += 1;
+        if (deskIds.has(flag.id)) onBoth += 1;
+      }
+    }
+    return {
+      cams: activeCamProfiles.length,
+      camTotal,
+      onBoth,
+      deskOnly: deskDeviation.deviationFlags.length - onBoth,
+    };
+  }, [deskDeviation, clients, activeCamProfiles, coverage, asOfDate]);
+  const camNameByClientId = useMemo(() => {
+    const byClient = {};
+    for (const profile of activeCamProfiles) {
+      for (const clientId of profile.clientIds || []) byClient[clientId] = profile.name;
+    }
+    return byClient;
+  }, [activeCamProfiles]);
+  // COUNTS ONLY. `dailyPnl` and `weeklyPnl` used to be in here — one number for
+  // the desk, reached by adding every CAM's book together — and the clipboard
+  // report printed them. They are gone rather than left unused: a field named
+  // `totals.dailyPnl` is one that the next caller will render.
   const totals = useMemo(
     () =>
       cams.reduce(
         (acc, cam) => ({
           clients: acc.clients + cam.clients,
           accounts: acc.accounts + cam.accounts,
-          weeklyPnl: acc.weeklyPnl + cam.weeklyPnl,
-          dailyPnl: acc.dailyPnl + cam.dailyPnl,
           flags: acc.flags + cam.flags,
         }),
-        { clients: 0, accounts: 0, weeklyPnl: 0, dailyPnl: 0, flags: 0 },
+        { clients: 0, accounts: 0, flags: 0 },
       ),
     [cams],
   );
+  // Each CAM's book through the same function, so the by-CAM lines in the
+  // clipboard report are the same arithmetic as the desk rows above them.
+  const camDesks = useMemo(
+    () => cams.map((cam) => ({
+      name: cam.name,
+      clients: cam.clients,
+      desk: buildDeskMoney(clientsForCam(clients, cam, coverage, asOfDate), { asOfDate }),
+    })),
+    [cams, clients, coverage, asOfDate],
+  );
 
   const strategies = useMemo(() => buildStrategyAnalyzer(clients), [clients]);
-  const strategyEffectiveness = useMemo(
-    () => buildStrategyEffectiveness(clients),
-    [clients],
+  // One rank per algorithm, keyed off the same asOfDate the tiles are pinned to.
+  // The board it replaced took no date at all and compared its seven-day windows
+  // against `new Date()`, so on 2026-08-20 over a book ending 2026-07-30 every
+  // "Last 7d" cell read $0.00 and every trend arrow pointed up.
+  const strategyRanking = useMemo(
+    () => buildStrategyRanking(clients, { asOfDate }),
+    [clients, asOfDate],
+  );
+  // One algorithm's record, pinned to the same close as the ranking it is opened
+  // from. It is the ranking's own row sliced to one name — not a second
+  // measurement — so the detail and the row above it cannot disagree.
+  const algorithmDetail = useMemo(
+    () => (openAlgorithm
+      ? buildAlgorithmDetail(clients, { algorithm: openAlgorithm, asOfDate })
+      : null),
+    [clients, openAlgorithm, asOfDate],
   );
   const lifecycle = useMemo(() => buildLifecycleMetrics(clients), [clients]);
   const riskDist = useMemo(
@@ -4165,26 +4108,29 @@ function ManagerOverview({
     [timeOff, asOfDate],
   );
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
+  // THE DAY THIS PAGE IS ABOUT, never the wall clock.
+  //
+  // Everything below used to key off `new Date()` while the figures beside it
+  // came from the book. On 2026-08-20 against a book whose last close is
+  // 2026-07-30 that rendered "Closes today 0 / 0" and "Monthly P&L (2026-08)
+  // $0.00", and no as-of date the picker could reach would have shown July's.
+  const dayOnScreen = asOfDate || deskMoney.basis.latestClose || todayIsoDate();
+  const currentMonth = deskMonthKey;
+  // Counts and payouts only. The month's P&L is `deskMonth`, which goes through
+  // the segment path like every other figure on this page; this hook used to
+  // compute it with no segment filter at all, so Ignored and Orphan were inside
+  // it (-$8,385.58 of July) and cash was 26.0% of a figure printed as one number.
   const monthlyKpis = useMemo(() => {
-    let monthlyPnl = 0,
-      payoutAmount = 0,
+    let payoutAmount = 0,
       payoutCount = 0,
       fundedActive = 0;
-    const today = todayIsoDate();
-    let closedToday = 0,
-      withUploadToday = 0;
+    let closedOnDay = 0,
+      withUploadOnDay = 0;
     for (const client of clients) {
       for (const di of client.dailyImports || []) {
-        if (di.date?.startsWith(currentMonth)) {
-          monthlyPnl += (di.snapshots || []).reduce(
-            (s, sn) => s + Number(sn.grossRealizedPnl || 0),
-            0,
-          );
-        }
-        if (di.date === today) {
-          withUploadToday++;
-          if (di.status === "Closed") closedToday++;
+        if (di.date === dayOnScreen) {
+          withUploadOnDay++;
+          if (di.status === "Closed") closedOnDay++;
         }
       }
       for (const acct of Object.values(client.accountRegistry || {})) {
@@ -4203,14 +4149,13 @@ function ManagerOverview({
       }
     }
     return {
-      monthlyPnl,
       payoutAmount,
       payoutCount,
       fundedActive,
-      closedToday,
-      withUploadToday,
+      closedOnDay,
+      withUploadOnDay,
     };
-  }, [clients, currentMonth]);
+  }, [clients, currentMonth, dayOnScreen]);
 
   // Built here, not only inside the panel, so the reconciliation line the panel
   // renders is computed from the same classifier the panel renders — with the
@@ -4233,10 +4178,14 @@ function ManagerOverview({
         account.status !== "Failed" &&
         account.status !== "Inactive",
     );
+    const count = (state) => inTile.filter((account) => account.state === state).length;
     return {
       total: inTile.length,
-      finished: inTile.filter((account) => account.state === "finished").length,
-      stale: inTile.filter((account) => account.state === "stale").length,
+      running: count("running"),
+      finished: count("finished"),
+      stale: count("stale"),
+      quiet: count("quiet"),
+      unknown: count("unknown"),
     };
   }, [lifecycleStates]);
 
@@ -4250,11 +4199,19 @@ function ManagerOverview({
   const healthScore = (() => {
     if (!clients.length) return null;
     let score = 100;
+    // THE DAY ON SCREEN, not the wall clock. This arm compared against
+    // `todayIsoDate()` while every other arm read the book, so on any day after
+    // the last import `withUpload.length` was 0, the branch never fired, and a
+    // quarter of the gauge's range was dead weight — the score sat at 55 / Fair
+    // and barely moved. The tasks arm below is deliberately still on the wall
+    // clock: a task is overdue against real time, not against the close being
+    // reviewed.
     const today = todayIsoDate();
+    const closeDay = dayOnScreen;
     // Deduct for unclosed clients with uploads
-    const withUpload = clients.filter((c) => getClientImportByDate(c, today));
+    const withUpload = clients.filter((c) => getClientImportByDate(c, closeDay));
     const unclosed = withUpload.filter(
-      (c) => getClientImportByDate(c, today)?.status !== "Closed",
+      (c) => getClientImportByDate(c, closeDay)?.status !== "Closed",
     ).length;
     if (withUpload.length)
       score -= Math.round((unclosed / withUpload.length) * 25);
@@ -4391,10 +4348,9 @@ function ManagerOverview({
                         closeMobileSidebar();
                       }}
                     >
-                      <span>
-                        {client.name}
+                      <ClientRowLabel name={client.name}>
                         <ClientKindBadge client={client} />
-                      </span>
+                      </ClientRowLabel>
                       <small className="muted">{cam?.name || "-"}</small>
                     </button>
                   ))
@@ -4519,24 +4475,29 @@ function ManagerOverview({
           <>
         <div className="page-header">
           <div>
+            {/* The day the FIGURES come from, not the day the browser is open
+                on. This read `asOfDate || todayIsoDate()`, so with nothing
+                pinned it headed a page of July closes with today's date. */}
             <span className="eyebrow">
               Vincere Trading ·{" "}
-              {new Date(
-                (asOfDate || todayIsoDate()) + "T12:00:00",
-              ).toLocaleDateString("en-US", {
+              {new Date(dayOnScreen + "T12:00:00").toLocaleDateString("en-US", {
                 weekday: "long",
                 year: "numeric",
                 month: "long",
                 day: "numeric",
               })}
-              {asOfDate ? " · as of" : ""}
+              {asOfDate ? " · as of" : " · newest close"}
             </span>
             <h1>Operations Command Center</h1>
             <div className="occ-status-row">
               <span className="occ-live-dot" />
               <span>
                 {cams.length} CAMs active · {totals.clients} clients ·{" "}
-                {totals.accounts} accounts tracked
+                {deskMoney.rows.reduce((count, row) => count + row.accounts, 0)} accounts in the
+                desk rows
+                {deskMoney.reconciliation.accounts
+                  ? ` · ${deskMoney.reconciliation.accounts} in reconciliation`
+                  : ""}
               </span>
               {totals.flags > 0 && (
                 <span className="badge danger">
@@ -4593,13 +4554,30 @@ function ManagerOverview({
                   onClick={() => setAsOfDate("")}
                   title="Back to each client's latest close"
                 >
-                  Latest
+                  Latest per client
                 </button>
               ) : (
                 <span className="muted" style={{ fontSize: 11 }}>
-                  Latest close
+                  Latest close per client
                 </span>
               )}
+              {/* One click out of the mixed-date default. With nothing pinned,
+                  the page reads each client's LAST close whatever date that is —
+                  on the real book 8 different dates, 26 of 84 clients last
+                  closed before the newest one. The button is only offered when
+                  that is actually happening, and it names the date. */}
+              {!asOfDate
+                && deskMoney.basis.latestClose
+                && deskMoney.basis.clientsOffLatestClose > 0 ? (
+                <button
+                  className="ghost-button"
+                  style={{ fontSize: 11 }}
+                  onClick={() => setAsOfDate(deskMoney.basis.latestClose)}
+                  title={`Pin every figure to ${deskMoney.basis.latestClose}, the newest close on the book`}
+                >
+                  Pin {deskMoney.basis.latestClose}
+                </button>
+              ) : null}
             </div>
           </div>
           <div className="header-actions operations-primary-actions">
@@ -4641,10 +4619,20 @@ function ManagerOverview({
           >
             <Download size={14} /> Data Tools
           </button>
+          {/* Both buttons render `deskMoney` — the same object the panel above
+              renders. They used to be two more independent computations: the
+              weekly one summed a wall-clock week with no segment filter, and the
+              daily one summed each client's last close with no segment filter,
+              which is how the desk pasted -$175,206.02 into WhatsApp under a tile
+              that read -$169,926.90. */}
           <button
             className="ghost-button"
             onClick={() => {
-              const txt = buildTeamWeeklyReport(clients, activeCamProfiles);
+              const txt = formatDeskReport(deskMoney, {
+                title: "Desk weekly report",
+                cams: camDesks,
+                openFlags: totals.flags,
+              });
               navigator.clipboard.writeText(txt).then(() => {
                 setWeeklyCopyDone(true);
                 setTimeout(() => setWeeklyCopyDone(false), 2000);
@@ -4658,13 +4646,12 @@ function ManagerOverview({
           <button
             className="ghost-button"
             onClick={() => {
-              const report = buildTeamMessageReport(
-                clients,
-                activeCamProfiles,
-                totals,
-                cams,
-                coverage,
-              );
+              const report = formatDeskReport(deskMoney, {
+                title: "Desk daily report",
+                month: deskMonth,
+                cams: camDesks,
+                openFlags: totals.flags,
+              });
               navigator.clipboard.writeText(report).then(() => {
                 setTeamCopyDone(true);
                 setTimeout(() => setTeamCopyDone(false), 2000);
@@ -4684,8 +4671,21 @@ function ManagerOverview({
             <AlertTriangle size={16} />
             <span>
               <strong>{unassignedClients.length} client{unassignedClients.length !== 1 ? "s" : ""} unassigned</strong>
-              {" "}- no active CAM assigned. Reassign in the Client roster below:{" "}
-              {unassignedClients.map((client) => client.name).join(", ")}
+              {" "}- no active CAM assigned. Reassign in the Client roster below.
+              {/* This can be the whole book. Nothing bounds how many clients sit
+                  without an active CAM — a desk between hires, or every CAM
+                  profile deactivated at once, and it is every name — and they
+                  were joined with commas into one run of prose inside a warning
+                  banner. Same treatment as the pipeline: bounded, scrolling, and
+                  it says so. */}
+              <BookList
+                items={unassignedClients}
+                keyOf={(client) => client.id}
+                className="book-list-inline"
+                fits={12}
+              >
+                {(client) => <span className="badge muted">{client.name}</span>}
+              </BookList>
             </span>
           </div>
         )}
@@ -4745,13 +4745,7 @@ function ManagerOverview({
                     setNewClientForm((f) => ({ ...f, stage: e.target.value }))
                   }
                 >
-                  {[
-                    "Onboarding",
-                    "Active",
-                    "At Risk",
-                    "Paused",
-                    "Inactive",
-                  ].map((s) => (
+                  {CLIENT_STAGES.map((s) => (
                     <option key={s}>{s}</option>
                   ))}
                 </select>
@@ -4797,17 +4791,18 @@ function ManagerOverview({
 
         {showPipeline &&
           (() => {
-            const STAGES = [
-              "Onboarding",
-              "Active",
-              "At Risk",
-              "Paused",
-              "Inactive",
-            ];
-            const byStage = {};
-            STAGES.forEach((s) => (byStage[s] = []));
-            for (const client of clients) {
-              const stage = client.profile?.stage || "Active";
+            // Buckets, one per known stage, plus one for anything else.
+            //
+            // The board used to render a column per name in a list of five it
+            // held privately, and push cards into `byStage[stage]` — so a client
+            // whose stage was not one of those five got a bucket that was never
+            // rendered and vanished from the board with no count anywhere saying
+            // it had. Today's book cannot produce that (95 Active, 1 Paused),
+            // which is exactly why the list is now one shared constant AND why
+            // an unrecognised stage still gets a column of its own rather than
+            // being trusted not to happen.
+            const { columns, placed, unknown } = pipelineColumns(clients);
+            const cardFor = (client) => {
               const cam = activeCamProfiles.find((p) =>
                 (p.clientIds || []).includes(client.id),
               );
@@ -4822,86 +4817,96 @@ function ManagerOverview({
               const openFlags = (latest?.flags || []).filter(
                 (f) => f.status !== "Resolved" && f.status !== "Acknowledged",
               ).length;
-              (byStage[stage] || (byStage[stage] = [])).push({
-                client,
-                cam,
-                pnl,
-                openTasks,
-                openFlags,
-              });
-            }
+              return { client, cam, pnl, openTasks, openFlags };
+            };
+            const filled = columns.filter((column) => column.clients.length).length;
             return (
               <section className="panel">
                 <div className="panel-heading">
                   <h3>Client pipeline</h3>
                   <span className="badge muted">by stage · click to open</span>
                 </div>
+                {/* The columns add up to the roster, in writing. A board whose
+                    lanes silently drop a client is the failure this panel is
+                    being fixed for, and a total that reconciles is the cheapest
+                    way for a reader to see that they do not. */}
+                <p className="muted pipeline-total">
+                  {placed} client{placed === 1 ? "" : "s"} across {filled} stage
+                  {filled === 1 ? "" : "s"}
+                  {unknown ? (
+                    <span className="negative">
+                      {" "}
+                      · {unknown} at a stage this board does not know
+                    </span>
+                  ) : null}
+                </p>
                 <div className="pipeline-board">
-                  {STAGES.map((stage) => {
-                    const cards = byStage[stage] || [];
-                    return (
-                      <div key={stage} className="pipeline-column">
-                        <div className="pipeline-col-header">
-                          <span>{stage}</span>
-                          <span className="count">{cards.length}</span>
-                        </div>
-                        {cards.length === 0 ? (
-                          <div className="pipeline-empty muted">-</div>
-                        ) : (
-                          cards.map(
-                            ({ client, cam, pnl, openTasks, openFlags }) => (
-                              <div
-                                key={client.id}
-                                role="button"
-                                tabIndex={0}
-                                className={`pipeline-card${openFlags > 0 ? " pipeline-card-flag" : ""}`}
-                                onClick={() => onOpenCam(cam?.id, client.id)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    onOpenCam(cam?.id, client.id);
-                                  }
-                                }}
-                              >
-                                <strong>{client.name}</strong>
-                                <small className="muted">
-                                  {cam?.name || "Unassigned"}
-                                </small>
-                                <div className="pipeline-card-chips">
-                                  <span
-                                    className={
-                                      pnl >= 0 ? "positive" : "negative"
-                                    }
-                                    style={{ fontSize: 11 }}
-                                  >
-                                    {formatCurrency(pnl)}
-                                  </span>
-                                  {openFlags > 0 && (
-                                    <span
-                                      className="task-chip task-chip-high"
-                                      style={{ fontSize: 10 }}
-                                    >
-                                      {openFlags} flag
-                                      {openFlags !== 1 ? "s" : ""}
-                                    </span>
-                                  )}
-                                  {openTasks > 0 && (
-                                    <span
-                                      className="task-chip"
-                                      style={{ fontSize: 10 }}
-                                    >
-                                      {openTasks} task
-                                      {openTasks !== 1 ? "s" : ""}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ),
-                          )
-                        )}
+                  {columns.map(({ stage, clients: members, known }) => (
+                    <div
+                      key={stage}
+                      className={known ? "pipeline-column" : "pipeline-column pipeline-column-other"}
+                    >
+                      <div className="pipeline-col-header">
+                        <span>{stage}</span>
+                        <span className="count">{members.length}</span>
                       </div>
-                    );
-                  })}
+                      <BookList
+                        items={members}
+                        keyOf={(client) => client.id}
+                        fits={6}
+                        empty={<div className="pipeline-empty muted">-</div>}
+                      >
+                        {(member) => {
+                          const { client, cam, pnl, openTasks, openFlags } = cardFor(member);
+                          return (
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            className={`pipeline-card${openFlags > 0 ? " pipeline-card-flag" : ""}`}
+                            onClick={() => onOpenCam(cam?.id, client.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                onOpenCam(cam?.id, client.id);
+                              }
+                            }}
+                          >
+                            <strong>{client.name}</strong>
+                            <small className="muted">
+                              {cam?.name || "Unassigned"}
+                            </small>
+                            <div className="pipeline-card-chips">
+                              <span
+                                className={pnl >= 0 ? "positive" : "negative"}
+                                style={{ fontSize: 11 }}
+                              >
+                                {formatCurrency(pnl)}
+                              </span>
+                              {openFlags > 0 && (
+                                <span
+                                  className="task-chip task-chip-high"
+                                  style={{ fontSize: 10 }}
+                                >
+                                  {openFlags} flag
+                                  {openFlags !== 1 ? "s" : ""}
+                                </span>
+                              )}
+                              {openTasks > 0 && (
+                                <span
+                                  className="task-chip"
+                                  style={{ fontSize: 10 }}
+                                >
+                                  {openTasks} task
+                                  {openTasks !== 1 ? "s" : ""}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          );
+                        }}
+                      </BookList>
+                    </div>
+                  ))}
                 </div>
               </section>
             );
@@ -5055,14 +5060,23 @@ function ManagerOverview({
                   <button
                     className="secondary-button"
                     style={{ marginTop: 12 }}
-                    onClick={() => {
-                      batchImportResult.dates.forEach((day) =>
-                        day.clientMatches.forEach(({ clientId, result }) =>
-                          onAppendDailyImport?.(clientId, result),
-                        ),
+                    // Serialised, one close at a time. This was a forEach, so
+                    // one click fired N uploads at once and each of them asked
+                    // for its own detached full reload; with five closes, four
+                    // disappeared off the screen as the reloads landed out of
+                    // order. persistDailyImport settles on the WRITE, so
+                    // awaiting it queues the next close behind the last one
+                    // that is actually stored — and the refreshes behind them
+                    // coalesce into one (see backgroundRefresh.js).
+                    onClick={async () => {
+                      const pending = batchImportResult.dates.flatMap((day) =>
+                        day.clientMatches.map(({ clientId, result }) => ({ clientId, result })),
                       );
                       setBatchImportResult(null);
                       setShowBatchImport(false);
+                      for (const { clientId, result } of pending) {
+                        await onAppendDailyImport?.(clientId, result);
+                      }
                     }}
                   >
                     Import all {batchImportResult.totalMatches} closes
@@ -5073,61 +5087,61 @@ function ManagerOverview({
           </section>
         )}
 
+        {/* Money first, and never as one number. The four rows below replaced
+            three tiles — Team daily P&L, Team weekly P&L and Monthly P&L — each
+            of which printed a single figure that added a cash desk's real client
+            money to a prop desk's simulated plan size. */}
+        <DeskMoneyPanel
+          desk={deskMoney}
+          month={deskMonth}
+          openSegment={openCapitalSegment}
+          onToggleSegment={setOpenCapitalSegment}
+        />
+
         <div className="metric-grid">
           <div className="metric">
-            <span>Team daily P&L</span>
-            <strong
-              className={segments.total.dailyPnl >= 0 ? "positive" : "negative"}
-              style={{ fontSize: 22 }}
-            >
-              {formatCurrency(segments.total.dailyPnl)}
-            </strong>
-            <SegmentBreakdown
-              segments={segments}
-              openSegment={openCapitalSegment}
-              onToggleSegment={setOpenCapitalSegment}
-            />
-          </div>
-          <div className="metric">
-            <span>Team weekly P&L</span>
-            <strong
-              className={segments.total.weeklyPnl >= 0 ? "positive" : "negative"}
-              style={{ fontSize: 22 }}
-            >
-              {formatCurrency(segments.total.weeklyPnl)}
-            </strong>
-          </div>
-          <div className="metric">
-            <span>Monthly P&L ({currentMonth})</span>
-            <strong
-              className={monthlyKpis.monthlyPnl >= 0 ? "positive" : "negative"}
-              style={{ fontSize: 22 }}
-            >
-              {formatCurrency(monthlyKpis.monthlyPnl)}
-            </strong>
-          </div>
-          <div className="metric">
-            <span>Payouts this month</span>
+            <span>Payouts in {currentMonth}</span>
             <strong className="positive" style={{ fontSize: 22 }}>
               {formatCurrency(monthlyKpis.payoutAmount)}
             </strong>
             <small className="muted">×{monthlyKpis.payoutCount}</small>
           </div>
           <div className="metric">
-            <span>Funded accounts active</span>
-            <strong style={{ fontSize: 22 }}>{monthlyKpis.fundedActive}</strong>
-          </div>
-          <div className="metric">
-            <span>Closes today</span>
+            {/* The registry count on its own said 178 and never read a close.
+                Of those 178 the closes put 39 past their trailing drawdown, 16
+                silent for five closes and 14 quiet — 38.8% not active in any
+                operational sense — so the headline is now the number that IS
+                running and the registry count is the denominator beside it. */}
+            <span>Funded accounts running</span>
             <strong style={{ fontSize: 22 }}>
-              {monthlyKpis.closedToday}
+              {fundedActiveLifecycle.running}
               <span
                 style={{ fontSize: 14, fontWeight: 400, color: "var(--muted)" }}
               >
                 {" "}
-                / {monthlyKpis.withUploadToday}
+                / {monthlyKpis.fundedActive} on the registry
               </span>
             </strong>
+            <small className="muted">
+              {fundedActiveLifecycle.finished} breached · {fundedActiveLifecycle.stale} stale ·{" "}
+              {fundedActiveLifecycle.quiet} quiet · {fundedActiveLifecycle.unknown} not enough to
+              say
+            </small>
+          </div>
+          <div className="metric">
+            <span>Closes on {dayOnScreen}</span>
+            <strong style={{ fontSize: 22 }}>
+              {monthlyKpis.closedOnDay}
+              <span
+                style={{ fontSize: 14, fontWeight: 400, color: "var(--muted)" }}
+              >
+                {" "}
+                / {monthlyKpis.withUploadOnDay}
+              </span>
+            </strong>
+            <small className="muted">
+              {asOfDate ? "the day pinned above" : "the newest close on the book"}
+            </small>
           </div>
           <div className="metric">
             <span>Clients</span>
@@ -5158,14 +5172,14 @@ function ManagerOverview({
           )}
         </div>
 
-        {/* The capital behind whichever segment tile is open.
-            The tile's account count and this panel's are two different counts
-            and both are right: the tile counts snapshots on each client's most
+        {/* The capital behind whichever segment row is open.
+            The row's account count and this panel's are two different counts
+            and both are right: the row counts snapshots on each client's most
             recent close (168 Bullet Bot accounts, 9 Ignored ones), while this
             panel counts every account that has a balance on record on any of
             the imported closes (236 and 72). The gap is 8x on Ignored, so the
             bridge is RENDERED, not left in this comment — a manager reading
-            "9" on the tile and "72 accounts" in the panel it opens has no way
+            "9" on the row and "72 accounts" in the panel it opens has no way
             to reach that reconciliation from a source file. */}
         {openCapitalSegment ? (
           <section className="panel capital-detail-panel" id={CAPITAL_DETAIL_ID}>
@@ -5181,10 +5195,10 @@ function ManagerOverview({
             </div>
             {openCapitalTileRow ? (
               <p className="muted capital-note">
-                The tile above counts the {openCapitalTileRow.accounts} accounts in this segment
-                that reported on their client&apos;s most recent close. Everything below counts
-                every account with a balance on any imported close, so where the two account
-                counts differ, neither is wrong.
+                The desk-money row above counts the {openCapitalTileRow.accounts} accounts in
+                this segment that reported on the close in view. Everything below counts every
+                account with a balance on any imported close, so where the two account counts
+                differ, neither is wrong.
               </p>
             ) : null}
             <CapitalDetailPanel
@@ -5367,17 +5381,73 @@ function ManagerOverview({
           <BulletBotDeskPanel clients={clients} />
         </CollapsiblePanel>
 
+        {/* One column, not a pair. "Exposure by algorithm" — the reward:risk
+            against fills-per-day scatter — sat on the right until the desk
+            manager asked twice for it to go: he could not read it, and a chart
+            nobody can read is a chart that gets believed or ignored at random.
+            buildStrategyRiskProfile existed only to feed it and went with it. */}
         <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
-          <div className="ov-pair">
-            <div>
-              <h4>Settings against the cohort</h4>
-              <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
-            </div>
-            <div>
-              <h4>Exposure by algorithm</h4>
-              <StrategyRiskScatter rows={riskProfile} limit={10} />
-            </div>
-          </div>
+          <h4>Settings against the cohort</h4>
+          <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
+
+          {/* Second review in the same panel, and in the same register: a list
+              to verify, not a fault list. It lives here rather than on the
+              ranking above because it is an OPERATIONAL finding about a label,
+              not a reading of any algorithm — which is exactly what the board
+              named after an account type made it look like. */}
+          <h4>Account type against the algorithm running</h4>
+          <AccountTypeMismatchPanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Directly under the configuration review, because the two ask the same
+          shape of question about the same peer groups: that one compares an
+          account's SETTINGS against the cohort running the same algorithm, this
+          one compares what those settings then DID. A manager who has just seen
+          an account called out for a stop nobody else runs wants the next line
+          to say whether it also lost money nobody else lost.
+
+          Every CAM already has this panel on his own overview and keeps it. This
+          is the desk-wide read of the same function, and the two reconcile on
+          screen rather than in a comment.
+        */}
+        <CollapsiblePanel
+          title="Deviation alerts"
+          count={deskDeviation.deviationFlags.length}
+          tone={deskDeviation.deviationFlags.length ? "danger-panel" : ""}
+          badges={
+            <span className="badge muted">
+              Peer groups across the whole desk · each client&apos;s own latest close
+            </span>
+          }
+        >
+          <p className="muted chart-empty">
+            Accounts below their peers on the same algorithm, and accounts whose fills
+            ran opposite to their peers, over{" "}
+            {deskDeviation.totals.algorithms} algorithm
+            {deskDeviation.totals.algorithms === 1 ? "" : "s"} and{" "}
+            {deskDeviation.totals.accounts} accounts. The {deviationVsCams.cams} CAM
+            overview{deviationVsCams.cams === 1 ? "" : "s"} show {deviationVsCams.camTotal}{" "}
+            between them and {deviationVsCams.onBoth} of those appear here: a peer group is
+            every account running that algorithm in the book being looked at, so widening
+            the book from one CAM to the desk moves the threshold.{" "}
+            {deviationVsCams.deskOnly} of the alerts below are visible on no CAM&apos;s own
+            page.
+          </p>
+          {/* Only said when there is something to disagree with. With nothing
+              pinned the page is already on each client's latest close, and the
+              sentence would be warning about a difference that does not exist. */}
+          {asOfDate ? (
+            <p className="muted chart-empty">
+              Read off each client&apos;s own latest close, not the {asOfDate} pinned at the
+              top of this page — the same basis as the &ldquo;Latest close snapshot&rdquo;
+              panel below.
+            </p>
+          ) : null}
+          <DeviationAlertList
+            flags={deskDeviation.deviationFlags}
+            camNameByClientId={camNameByClientId}
+          />
         </CollapsiblePanel>
 
         {/*
@@ -5428,6 +5498,23 @@ function ManagerOverview({
             more. The tile counts what the registry says; this counts what the book shows.
           </p>
           <AccountLifecyclePanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Directly after the retirement panel, because the two answer opposite
+          halves of the same question and are read one after the other. That one
+          asks "is this account finished"; this one asks "why has this account
+          stopped talking to us", and refuses to let the second be answered with
+          the first. Of the accounts that stopped reporting for two or more of
+          their client's closes, roughly seven in ten were inside their trailing
+          drawdown on the last close they filed.
+
+          It is also the only place in the app where a simulation account appears
+          in an account view at all — SimulationReportSection renders them into a
+          client-facing report behind an opt-in toggle and nothing else does.
+        */}
+        <CollapsiblePanel title="Accounts that have gone quiet" tone="ops-charts-panel">
+          <QuietAccountsPanel clients={clients} asOfDate={asOfDate} />
         </CollapsiblePanel>
 
         <CollapsiblePanel title="Workload and flag ageing" tone="ops-charts-panel">
@@ -5875,106 +5962,112 @@ function ManagerOverview({
           </CollapsiblePanel>
         )}
 
+        {/* One column per business, never one figure per day.
+            The strip printed a single number per close and it was the second of
+            three answers to "team daily P&L" on this screen: it filtered no
+            segment, so its gap against the tile decomposed exactly to Ignored +
+            Orphan on all fourteen closes, and on 2026-07-24 it disagreed with the
+            tile about the SIGN of the week. Each row here is buildDeskMoney
+            pinned to that date, so the day on this table and the day on the panel
+            above are the same arithmetic. */}
         <section className="panel">
           <div className="panel-heading">
             <h3>Recent team history</h3>
-            <span className="badge muted">Last 10 trading days</span>
+            <span className="badge muted">Last 10 closes · by business, never added</span>
           </div>
-          <div className="history-strip">
-            {teamHistory.map((day) => (
-              <div className="history-day" key={day.date}>
-                <span>{day.date.slice(5)}</span>
-                <strong className={day.dailyPnl >= 0 ? "positive" : "negative"}>
-                  {formatCurrency(day.dailyPnl)}
-                </strong>
-                <small>
-                  {day.accounts} acc · {formatCurrency(day.weeklyPnl)} weekly
-                </small>
-              </div>
-            ))}
+          <div className="table-wrap">
+            <table className="ops-table desk-history-table">
+              <thead>
+                <tr>
+                  <th scope="col">Close</th>
+                  {DESK_HISTORY_COLUMNS.map((column) => (
+                    <th scope="col" key={column.key}>{column.label}</th>
+                  ))}
+                  <th scope="col">Accounts</th>
+                  <th scope="col">Not money</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deskHistory.map(({ date, desk }) => (
+                  <tr key={date}>
+                    <th scope="row">{date}</th>
+                    {DESK_HISTORY_COLUMNS.map((column) => {
+                      const row = desk.rows.find((item) => item.key === column.key);
+                      return (
+                        <td key={column.key}>
+                          {row && row.accounts ? (
+                            <>
+                              <span className={row.dailyPnl >= 0 ? "positive" : "negative"}>
+                                {formatCurrency(row.dailyPnl)}
+                              </span>
+                              <small className="muted"> {row.accounts}</small>
+                            </>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td>
+                      {desk.rows.reduce((count, row) => count + row.accounts, 0)}
+                    </td>
+                    <td>
+                      {desk.reconciliation.accounts ? (
+                        <span
+                          className="muted"
+                          title={desk.reconciliation.rows
+                            .map((row) => `${row.accounts} ${row.label.toLowerCase()}`)
+                            .join(" · ")}
+                        >
+                          {desk.reconciliation.accounts}
+                        </span>
+                      ) : (
+                        <span className="muted">-</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+          <p className="muted desk-basis-note">
+            The four money columns are four businesses and are never added. The last column counts
+            closes on accounts marked Inactive / Ignore or with no account on record — a
+            reconciliation backlog, carrying no money on this table.
+          </p>
         </section>
 
-        <section className="panel">
-          <div className="panel-heading">
-            <h3>Strategy Effectiveness Leaderboard</h3>
-            <span className="badge muted">
-              All history - total P&amp;L, win rate, 7-day trend
-            </span>
-          </div>
-          {strategyEffectiveness.length ? (
-            <div className="table-wrap">
-              <table className="ops-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Strategy</th>
-                    <th>Total P&amp;L</th>
-                    <th>Avg/Day</th>
-                    <th>Win Rate</th>
-                    <th>Days</th>
-                    <th>Accounts</th>
-                    <th>Last 7d</th>
-                    <th>Trend</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {strategyEffectiveness.map((s, i) => (
-                    <tr key={s.name}>
-                      <td className="muted">{i + 1}</td>
-                      <td>
-                        <strong>{s.name}</strong>
-                        <small>
-                          {s.clients} client{s.clients !== 1 ? "s" : ""}
-                        </small>
-                      </td>
-                      <td className={s.totalPnl >= 0 ? "positive" : "negative"}>
-                        {formatCurrency(s.totalPnl)}
-                      </td>
-                      <td
-                        className={s.avgPerDay >= 0 ? "positive" : "negative"}
-                      >
-                        {formatCurrency(s.avgPerDay)}
-                      </td>
-                      <td
-                        className={
-                          s.winRate >= 60
-                            ? "positive"
-                            : s.winRate >= 40
-                              ? ""
-                              : "negative"
-                        }
-                      >
-                        {s.winRate}%
-                      </td>
-                      <td>{s.days}</td>
-                      <td>{s.accounts}</td>
-                      <td className={s.last7Pnl >= 0 ? "positive" : "negative"}>
-                        {s.last7Pnl >= 0 ? "+" : ""}
-                        {formatCurrency(s.last7Pnl)}
-                      </td>
-                      <td className={s.trend >= 0 ? "positive" : "negative"}>
-                        {s.trend >= 0 ? "▲" : "▼"}{" "}
-                        {formatCurrency(Math.abs(s.trend))}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="muted" style={{ padding: "16px" }}>
-              No strategy history available yet.
-            </p>
-          )}
-        </section>
+        <AlgorithmRankingPanel
+          result={strategyRanking}
+          selectedAlgorithm={openAlgorithm}
+          onSelectAlgorithm={setOpenAlgorithm}
+        />
+
+        {/* Opened from a ranking row and rendered full width directly under it:
+            an algorithm on this book runs up to three configurations and the
+            page carries a block per configuration, plus the algorithm's own. */}
+        {algorithmDetail ? (
+          <AlgorithmDetailPanel
+            detail={algorithmDetail}
+            onClose={() => setOpenAlgorithm(null)}
+          />
+        ) : null}
 
         <section className="overview-grid">
           <div className="panel">
             <div className="panel-heading">
               <h3>Latest close snapshot</h3>
-              <span className="count">Score 0–10</span>
+              <span className="badge muted">
+                Each client&rsquo;s own last close
+              </span>
             </div>
+            {/* No score column. The 0-10 one that used to sit on the right was
+                min-max normalised against the largest deployment on the board,
+                so the scale moved when another algorithm had a big day. What is
+                left is measured: the total, the instances behind it, and the
+                mean of the two. Ranking lives on the algorithm boards, which
+                split by business and gate on evidence; this block is a snapshot
+                of one close and is not a ranking. */}
             <div className="strategy-rank-list">
               {strategies.length ? (
                 strategies.map((s) => (
@@ -5982,14 +6075,16 @@ function ManagerOverview({
                     <div className="strategy-snapshot-main">
                       <strong>{s.name}</strong>
                       <em className={s.avgDaily >= 0 ? "positive" : "negative"}>
-                        {formatCurrency(s.avgDaily)} avg daily
+                        {formatCurrency(s.avgDaily)} per instance
                       </em>
                     </div>
                     <div className="strategy-snapshot-meta">
                       <small>
                         {s.count} instances · {s.accounts} accts
                       </small>
-                      <span>{s.score}/10</span>
+                      <span className={s.totalRealized >= 0 ? "positive" : "negative"}>
+                        {formatCurrency(s.totalRealized)}
+                      </span>
                     </div>
                   </div>
                 ))
@@ -6025,8 +6120,6 @@ function ManagerOverview({
                 <strong>{lifecycle.avgDaysToPayout}</strong>
               </div>
             </div>
-            <h4 className="muted" style={{ margin: "14px 0 6px" }}>By algo combo — funded rate, lifespan, survival</h4>
-            <LifecycleByAlgo clients={clients} />
           </div>
         </section>
 
@@ -6116,9 +6209,17 @@ function ManagerOverview({
           onEditCoverage={onEditCoverage}
         />
 
+        {/* camNameByClientId is what makes the churn drill-down answerable for a
+            manager: eight books, and "which CAM was this" is the first thing he
+            asked to filter on. Same map the deviation list uses, same rule —
+            omitted on the CAM's own page below, where the answer is always him. */}
         <LifecycleRollupPanel
-          rollup={buildLifecycleRollup(clients || [])}
+          rollup={buildLifecycleRollup(clients || [], { camNameByClientId })}
           title="Team lifecycle & retention"
+          onSelectClient={(clientId) => onOpenCam(
+            activeCamProfiles.find((p) => (p.clientIds || []).includes(clientId))?.id,
+            clientId,
+          )}
         />
 
         {camPerf.length > 0 ? (
@@ -6269,7 +6370,12 @@ function ManagerOverview({
                   </>
                 }
               >
-                <div className="table-wrap">
+                {/* The same bound as the pipeline, in the shape a table can
+                    take: a fixed height with a sticky header, so 96 rows of
+                    roster do not push everything below them off the page and the
+                    column names stay attached to the numbers under them. Every
+                    row is still rendered — the count above says how many. */}
+                <div className="table-wrap book-table">
                   <table className="ops-table">
                     <thead>
                       <tr>
@@ -6348,133 +6454,6 @@ function ManagerOverview({
               </CollapsiblePanel>
             );
           })()}
-
-        <section className="panel">
-          <div className="panel-heading">
-            <h3>Historical date drill-down</h3>
-            <input
-              type="date"
-              value={asOfDate}
-              onChange={(e) => setAsOfDate(e.target.value)}
-              style={{
-                marginLeft: "auto",
-                fontSize: 12,
-                padding: "3px 8px",
-                borderRadius: 6,
-                border: "1px solid var(--line)",
-                background: "var(--surface)",
-                color: "var(--text)",
-              }}
-            />
-            {asOfDate && (
-              <button
-                className="ghost-button"
-                style={{ fontSize: 11 }}
-                onClick={() => setAsOfDate("")}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          {!asOfDate && (
-            <p className="muted" style={{ fontSize: 12 }}>
-              Pick a date to see every client's P&L, accounts, and flags for
-              that day.
-            </p>
-          )}
-          {asOfDate &&
-            (() => {
-              const drillRows = clients
-                .map((client) => {
-                  const imp = (client.dailyImports || []).find(
-                    (d) => d.date === asOfDate,
-                  );
-                  if (!imp) return null;
-                  const pnl = (imp.snapshots || []).reduce(
-                    (s, sn) => s + Number(sn.grossRealizedPnl || 0),
-                    0,
-                  );
-                  const cam = camProfiles.find((p) =>
-                    (p.clientIds || []).includes(client.id),
-                  );
-                  return {
-                    client,
-                    cam,
-                    pnl,
-                    accounts: (imp.snapshots || []).length,
-                    flags: (imp.flags || []).filter(
-                      (f) => f.severity === "Critical",
-                    ).length,
-                  };
-                })
-                .filter(Boolean);
-              if (!drillRows.length)
-                return (
-                  <p className="muted" style={{ fontSize: 12 }}>
-                    No data uploaded for {asOfDate}.
-                  </p>
-                );
-              const total = drillRows.reduce((s, r) => s + r.pnl, 0);
-              return (
-                <div className="table-wrap">
-                  <table className="ops-table">
-                    <thead>
-                      <tr>
-                        <th>Client</th>
-                        <th>CAM</th>
-                        <th>Accounts</th>
-                        <th>Daily P&L</th>
-                        <th>Critical flags</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {drillRows
-                        .sort((a, b) => b.pnl - a.pnl)
-                        .map(({ client, cam, pnl, accounts, flags }) => (
-                          <tr
-                            key={client.id}
-                            style={{ cursor: "pointer" }}
-                            onClick={() => onOpenCam(cam?.id, client.id)}
-                          >
-                            <td>
-                              <strong>{client.name}</strong>
-                            </td>
-                            <td className="muted">{cam?.name || "-"}</td>
-                            <td>{accounts}</td>
-                            <td className={pnl >= 0 ? "positive" : "negative"}>
-                              <strong>
-                                {pnl >= 0 ? "+" : ""}
-                                {formatCurrency(pnl)}
-                              </strong>
-                            </td>
-                            <td>
-                              {flags > 0 ? (
-                                <span className="negative">{flags}</span>
-                              ) : (
-                                <span className="muted">0</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      <tr
-                        style={{
-                          borderTop: "2px solid var(--line)",
-                          fontWeight: 700,
-                        }}
-                      >
-                        <td colSpan={3}>Total - {drillRows.length} clients</td>
-                        <td className={total >= 0 ? "positive" : "negative"}>
-                          {total >= 0 ? "+" : ""}
-                          {formatCurrency(total)}
-                        </td>
-                        <td />
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })()}
-        </section>
 
         <section className="panel">
           <div className="panel-heading">
@@ -6737,6 +6716,10 @@ function ManagerOverview({
 }
 
 function MonthlyReportPanel({ client, month, onClose }) {
+  // The live sheet, so ReportSheetActions can send its outerHTML to
+  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
+  // is the whole reason the downloaded file and the printed one agree.
+  const sheetRef = useRef(null);
   // month = 'YYYY-MM'
   const lastMonthImport = (client?.dailyImports || [])
     .filter((di) => di.date?.startsWith(month))
@@ -6801,14 +6784,9 @@ function MonthlyReportPanel({ client, month, onClose }) {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="report-sheet">
+      <div className="report-sheet" ref={sheetRef}>
         <div className="report-actions no-print">
-          <button
-            className="secondary-button"
-            onClick={() => printWithTitle(`${client?.name || "Client"} - ${monthLabel} monthly report`)}
-          >
-            <FileText size={14} /> Print / Save PDF
-          </button>
+          <ReportSheetActions title={`${client?.name || "Client"} - ${monthLabel} monthly report`} sheetRef={sheetRef} />
           <button
             className="report-close-button"
             type="button"
@@ -7036,6 +7014,10 @@ function ReportPanel({
   onSaveConfig,
   onClose,
 }) {
+  // The live sheet, so ReportSheetActions can send its outerHTML to
+  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
+  // is the whole reason the downloaded file and the printed one agree.
+  const sheetRef = useRef(null);
   const report = useMemo(() => buildDailyReportSummary(client, dailyImport), [client, dailyImport]);
   // Same two inputs as the summary above: everything this needs is already on
   // the reconciled import (orders, executions, the import-level strategies) and
@@ -7175,7 +7157,7 @@ function ReportPanel({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="report-sheet">
+      <div className="report-sheet" ref={sheetRef}>
         <div className="report-actions no-print">
           <span className={`remote-pill ${saveStatus === "error" ? "error" : saveStatus === "saved" ? "connected" : ""}`}>
             {saveStatus === "saving"
@@ -7196,12 +7178,7 @@ function ReportPanel({
           >
             <Settings2 size={14} /> {designOpen ? "Done designing" : "Design"}
           </button>
-          <button
-            className="secondary-button"
-            onClick={() => printWithTitle(`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`)}
-          >
-            <FileText size={14} /> Print / Save PDF
-          </button>
+          <ReportSheetActions title={`${client?.name || "Client"} - ${dailyImport?.date || ""} daily report`} sheetRef={sheetRef} />
           <button
             className="report-close-button"
             type="button"
@@ -7528,6 +7505,10 @@ function ReportPanel({
 }
 
 function CamDayReportPanel({ clients, date, camName, onClose }) {
+  // The live sheet, so ReportSheetActions can send its outerHTML to
+  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
+  // is the whole reason the downloaded file and the printed one agree.
+  const sheetRef = useRef(null);
   const rows = useMemo(() => buildCamDayReport(clients, date), [clients, date]);
   const totalPnl = rows.reduce((s, r) => s + Number(r.report.totals.grossRealizedPnl || 0), 0);
   const sign = (n) => (n >= 0 ? "+" : "");
@@ -7538,14 +7519,9 @@ function CamDayReportPanel({ clients, date, camName, onClose }) {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="report-sheet">
+      <div className="report-sheet" ref={sheetRef}>
         <div className="report-actions no-print">
-          <button
-            className="secondary-button"
-            onClick={() => printWithTitle(`Day report ${date}${camName ? ` - ${camName}` : ""}`)}
-          >
-            <FileText size={14} /> Print / Save PDF
-          </button>
+          <ReportSheetActions title={`Day report ${date}${camName ? ` - ${camName}` : ""}`} sheetRef={sheetRef} />
           <button
             className="report-close-button"
             type="button"
@@ -8853,6 +8829,22 @@ export function buildTodayBriefing(clients) {
 
 // ── Insight Feed ─────────────────────────────────────────────────────────────
 // Aggregates all notable signals across a CAM's portfolio into one prioritized list
+//
+// Every signal carries three things beyond its prose:
+//
+//   `facts`   the numbers of the message as {label, value} pairs, already
+//             formatted, in reading order. The message string is kept — it is
+//             what a reader hovers and what the existing tests assert — but a
+//             panel cannot lay out numbers that are already glued into a
+//             sentence, and re-parsing prose to get them back is exactly the
+//             wrong move. The producer states them once, in both forms.
+//   `urgency` the number that makes this signal urgent, higher being worse, and
+//             comparable ONLY against other signals of the same rule. See
+//             domain/insightFeed.js, which sorts inside a group and never across
+//             one.
+//   `action`  unchanged, still per signal. It happens to be constant per rule on
+//             every rule today, which is why the panel hoists it — but it hoists
+//             it by testing the values, not by assuming they agree.
 export function remainingBuffer(s, m) {
   const ddLimit = Number(m?.maxDrawdownLimit || 0);
   const rawDD = Number(s?.trailingMaxDrawdown || 0);
@@ -8907,6 +8899,23 @@ export function buildPortfolioInsights(clients) {
           clientName: client.name,
           accountAlias: meta.alias || snap.accountName,
           message: `Buffer ${formatCurrency(buffer)} depleting ~${formatCurrency(Math.abs(dailyChange))}/day - projected breach in ${daysToBreech} trading day${daysToBreech !== 1 ? "s" : ""}`,
+          // Sooner is worse, so the urgency is the negated projection: -1 sorts
+          // above -5. No magic constant, and nothing to re-tune if the rule's
+          // 5-day window moves.
+          urgency: -daysToBreech,
+          facts: [
+            {
+              label: "Breach in",
+              value: `${daysToBreech} trading day${daysToBreech !== 1 ? "s" : ""}`,
+              tone: "bad",
+            },
+            { label: "Buffer left", value: formatCurrency(buffer) },
+            {
+              label: "Depleting",
+              value: `${formatCurrency(Math.abs(dailyChange))}/day`,
+              tone: "bad",
+            },
+          ],
           action: "Review stack or reduce position size",
         });
       }
@@ -8922,6 +8931,13 @@ export function buildPortfolioInsights(clients) {
         clientName: client.name,
         accountAlias: w.alias,
         message: `Best day (${formatCurrency(w.bestDayPnl)} on ${w.bestDayDate}) is ${w.ratio}% of total gains - consistency rule at risk`,
+        urgency: w.ratio,
+        facts: [
+          { label: "Share of gains", value: `${w.ratio}%`, tone: "bad" },
+          { label: "Best day", value: formatCurrency(w.bestDayPnl) },
+          { label: "On", value: w.bestDayDate },
+          { label: "Total gains", value: formatCurrency(w.totalPositive) },
+        ],
         action: "Consider reducing position on strong days",
       });
     }
@@ -8939,6 +8955,19 @@ export function buildPortfolioInsights(clients) {
           message: a.ready
             ? `Target reached - ${formatCurrency(a.profit)} profit vs ${formatCurrency(a.target)} goal. Request payout.`
             : `${a.pct}% of payout target - ${formatCurrency(a.target - a.profit)} remaining`,
+          // Closest to the money first. A ready account is at or past 100 by
+          // construction, so it leads without needing a separate rule.
+          urgency: Number(a.pct) || 0,
+          facts: [
+            { label: "Of target", value: `${a.pct}%`, tone: a.ready ? "good" : "" },
+            { label: "Profit", value: formatCurrency(a.profit) },
+            { label: "Target", value: formatCurrency(a.target) },
+            {
+              label: "Remaining",
+              value: a.ready ? "reached" : formatCurrency(a.target - a.profit),
+              tone: a.ready ? "good" : "",
+            },
+          ],
           action: a.ready ? "Request payout now" : "Monitor until target",
         });
       }
@@ -8978,6 +9007,24 @@ export function buildPortfolioInsights(clients) {
             clientName: client.name,
             accountAlias: meta.alias || snap.accountName,
             message: `Performance shift: avg was ${formatCurrency(priorAvg)}/day, now ${formatCurrency(recentAvg)}/day (${negativeDays} negative days recently)`,
+            // The size of the swing, not the number of red days: two accounts
+            // with 3 negative days each are not equally cold if one gave back
+            // $80/day and the other $900.
+            urgency: priorAvg - recentAvg,
+            facts: [
+              {
+                label: "Swing",
+                value: `${formatCurrency(priorAvg - recentAvg)}/day`,
+                tone: "bad",
+              },
+              { label: "Was", value: `${formatCurrency(priorAvg)}/day` },
+              {
+                label: "Now",
+                value: `${formatCurrency(recentAvg)}/day`,
+                tone: "bad",
+              },
+              { label: "Negative days", value: String(negativeDays) },
+            ],
             action: "Review in Stack Playbook - consider algo change",
           });
         }
@@ -8998,6 +9045,18 @@ export function buildPortfolioInsights(clients) {
         const yest = prevTradingDay.toISOString().slice(0, 10);
         const yesterdayImport = getClientImportByDate(client, yest);
         if (!yesterdayImport && imports.length > 0) {
+          // This rule fires per client and its sentence never varies, so on the
+          // real book it produced 84 rows of identical text — the group said
+          // "Missing Close 84" and then said the same thing 84 times with only a
+          // name to tell one row from another. The date of the last close, and
+          // how long ago that was, are the facts that separate a client who
+          // missed yesterday from one who has not uploaded in three weeks. They
+          // are read off the imports rather than asserted: `daysBetween` counts
+          // calendar days, and the label says calendar days, because the 2-day
+          // window this rule tests is in TRADING days and quietly reporting one
+          // as the other is the kind of wrong answer that arrives silently.
+          const lastClose = imports.at(-1)?.date || null;
+          const calendarDays = lastClose ? daysBetween(lastClose, today) : null;
           insights.push({
             severity: "warning",
             type: "Missing Close",
@@ -9005,6 +9064,15 @@ export function buildPortfolioInsights(clients) {
             clientName: client.name,
             accountAlias: null,
             message: `No daily close uploaded in the last 2 trading days`,
+            urgency: calendarDays ?? 0,
+            facts: [
+              { label: "Last close", value: lastClose || "never" },
+              {
+                label: "Calendar days ago",
+                value: calendarDays === null ? "—" : String(calendarDays),
+                tone: "bad",
+              },
+            ],
             action: "Check VPS connection and upload NT CSV",
           });
         }
@@ -9018,11 +9086,34 @@ export function buildPortfolioInsights(clients) {
   );
 }
 
-function InsightFeedPanel({ insights, onSelectClient }) {
+/**
+ * The Insight Feed, as a table per rule instead of a card per signal.
+ *
+ * The CAM was asked whether to keep this panel and chose "keep it, simplify
+ * it". Nothing is dropped: every signal buildPortfolioInsights produces is still
+ * rendered, still clickable, still carries its own sentence. What changed is
+ * where the words live.
+ *
+ * On the manager's book the old shape printed 192 signals as 192 three-line
+ * cards — client and account, the message, then "→ what to do". Those 192 action
+ * lines carried three distinct sentences between them, and one group of 84 was
+ * the same message 84 times over. A reader had to scan 576 lines to find the
+ * account with one day of buffer left, and could not, because rows inside a
+ * group were left in whatever order the clients were walked in.
+ *
+ * So: domain/insightFeed.js hoists anything constant across a group into a
+ * heading, sorts what is left by the number that makes it urgent, and hands back
+ * the columns that actually vary. This renders that. The prose message stays on
+ * the row as its title, so the sentence is one hover away and no wording is
+ * lost.
+ */
+export function InsightFeedPanel({ insights = [], onSelectClient }) {
   // Collapsed by default. A portfolio can produce hundreds of signals and the
   // same rule repeats across clients, so the feed shows one row per signal type
   // and the CAM opens only the group they're actually working.
   const [expandedTypes, setExpandedTypes] = useState(() => new Set());
+  const { groups, totals } = useMemo(() => groupInsights(insights), [insights]);
+
   if (!insights.length) {
     return (
       <section className="panel">
@@ -9038,40 +9129,6 @@ function InsightFeedPanel({ insights, onSelectClient }) {
     );
   }
 
-  const criticalCount = insights.filter(
-    (i) => i.severity === "critical",
-  ).length;
-  const warningCount = insights.filter((i) => i.severity === "warning").length;
-
-  const severityConfig = {
-    critical: { label: "Critical", cls: "insight-critical", dot: "var(--error)" },
-    warning: { label: "Warning", cls: "insight-warning", dot: "var(--warning)" },
-    "info-green": {
-      label: "Opportunity",
-      cls: "insight-opportunity",
-      dot: "var(--success)",
-    },
-    info: { label: "Info", cls: "insight-info", dot: "var(--info)" },
-  };
-
-  // One group per signal type, worst severity first, then biggest group.
-  const severityRank = { critical: 0, warning: 1, "info-green": 2, info: 3 };
-  const groupsByType = new Map();
-  for (const item of insights) {
-    const key = item.type || "Other";
-    if (!groupsByType.has(key)) groupsByType.set(key, []);
-    groupsByType.get(key).push(item);
-  }
-  const groups = [...groupsByType.entries()]
-    .map(([type, items]) => ({
-      type,
-      items,
-      critical: items.filter((i) => i.severity === "critical").length,
-      warning: items.filter((i) => i.severity === "warning").length,
-      rank: Math.min(...items.map((i) => severityRank[i.severity] ?? 3)),
-    }))
-    .sort((a, b) => a.rank - b.rank || b.items.length - a.items.length);
-
   function toggleType(type) {
     setExpandedTypes((prev) => {
       const next = new Set(prev);
@@ -9082,92 +9139,180 @@ function InsightFeedPanel({ insights, onSelectClient }) {
   }
 
   return (
-    <section className={`panel ${criticalCount ? "danger-panel" : ""}`}>
+    <section className={`panel ${totals.critical ? "danger-panel" : ""}`}>
       <div className="panel-heading">
         <h3>Insight Feed</h3>
         <div style={{ display: "flex", gap: 8 }}>
-          {criticalCount ? (
-            <span className="badge danger">{criticalCount} critical</span>
+          {totals.critical ? (
+            <span className="badge danger">{totals.critical} critical</span>
           ) : null}
-          {warningCount ? (
-            <span className="badge warning">{warningCount} warning</span>
+          {totals.warning ? (
+            <span className="badge warning">{totals.warning} warning</span>
           ) : null}
-          <span className="badge muted">{insights.length} signals</span>
+          <span className="badge muted">
+            {totals.signals} signal{totals.signals === 1 ? "" : "s"} ·{" "}
+            {totals.clients} client{totals.clients === 1 ? "" : "s"}
+          </span>
         </div>
       </div>
       <div className="insight-feed">
-        {groups.map((group) => {
-          const isOpen = expandedTypes.has(group.type);
-          return (
-            <div className="insight-group" key={group.type}>
-              <button
-                className="insight-group-head"
-                onClick={() => toggleType(group.type)}
-                aria-expanded={isOpen}
-                title={isOpen ? "Collapse" : "Expand"}
-              >
-                <ChevronDown
-                  className={isOpen ? "chevron open" : "chevron"}
-                  size={14}
-                />
-                <span className="insight-type">{group.type}</span>
-                <span className="insight-group-count">
-                  {group.items.length}
-                </span>
-                {group.critical ? (
-                  <span className="badge danger">{group.critical} critical</span>
-                ) : null}
-                {group.warning ? (
-                  <span className="badge warning">{group.warning} warning</span>
-                ) : null}
-              </button>
-              {isOpen
-                ? group.items.map((item, i) => {
-                    const cfg =
-                      severityConfig[item.severity] || severityConfig.info;
-                    return (
+        {groups.map((group) => (
+          <InsightGroup
+            key={group.type}
+            group={group}
+            open={expandedTypes.has(group.type)}
+            onToggle={() => toggleType(group.type)}
+            onSelectClient={onSelectClient}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One rule: its name and counts on the closed row, and — when opened — the one
+ * line that is true of every signal under it, then the table of what differs.
+ */
+function InsightGroup({ group, open, onToggle, onSelectClient }) {
+  const columns = group.columns;
+  return (
+    <div className="insight-group">
+      <button
+        className="insight-group-head"
+        onClick={onToggle}
+        aria-expanded={open}
+        title={open ? "Collapse" : "Expand"}
+      >
+        <ChevronDown className={open ? "chevron open" : "chevron"} size={14} />
+        <span className="insight-type">{group.type}</span>
+        <span className="insight-group-count">{group.count}</span>
+        {group.critical ? (
+          <span className="badge danger">{group.critical} critical</span>
+        ) : null}
+        {group.warning ? (
+          <span className="badge warning">{group.warning} warning</span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="insight-group-body">
+          {/* Said once, because it is the same on every row underneath. The
+              hoist is decided in domain/insightFeed.js by comparing the values,
+              never by assuming a rule's action or severity is fixed — a group
+              whose rows disagree keeps its column and states nothing here. */}
+          <dl className="insight-constants">
+            {group.severity ? (
+              <div>
+                <dt>Severity</dt>
+                <dd className={`insight-sev-text insight-sev-${group.severity}`}>
+                  {SEVERITY_LABEL[group.severity] || group.severity}
+                  <span className="muted"> · all {group.count}</span>
+                </dd>
+              </div>
+            ) : null}
+            {group.accountConstant ? (
+              <div>
+                <dt>Account</dt>
+                <dd>{group.accountConstant}</dd>
+              </div>
+            ) : null}
+            {group.constants.map((constant) => (
+              <div key={constant.label}>
+                <dt>{constant.label}</dt>
+                <dd>{constant.value}</dd>
+              </div>
+            ))}
+            {group.action ? (
+              <div className="insight-constant-action">
+                <dt>What to do</dt>
+                <dd>{group.action}</dd>
+              </div>
+            ) : null}
+          </dl>
+          {/* Bounded and sticky-headed by `book-table`, the same treatment the
+              client roster and the pipeline lanes get: a rule can fire 65 times
+              on this book, and a 65-row table that pushes the next group off the
+              page is the long-list problem again inside the panel that was just
+              shortened. The group header above states the total. */}
+          <div className="table-wrap book-table">
+            <table className="ops-table insight-table">
+              <thead>
+                <tr>
+                  <th scope="col">Client</th>
+                  {group.showAccount ? <th scope="col">Account</th> : null}
+                  {columns.map((label) => (
+                    <th scope="col" key={label}>
+                      {label}
+                    </th>
+                  ))}
+                  {group.severity ? null : <th scope="col">Severity</th>}
+                  {group.action ? null : <th scope="col">What to do</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {group.items.map((item, index) => (
+                  <tr
+                    key={`${item.clientId}-${item.accountAlias || ""}-${index}`}
+                    className={`insight-row insight-row-${item.severity}`}
+                    title={item.message}
+                  >
+                    <th scope="row">
                       <button
-                        key={i}
-                        className={`insight-item ${cfg.cls}`}
+                        type="button"
+                        className="link-button"
                         onClick={() =>
                           onSelectClient && onSelectClient(item.clientId)
                         }
                         title={`Open ${item.clientName}`}
                       >
-                        <span
-                          className="insight-dot"
-                          style={{ background: cfg.dot }}
-                        />
-                        <div className="insight-body">
-                          <div className="insight-head">
-                            <span className="insight-client">
-                              {item.clientName}
-                            </span>
-                            {item.accountAlias ? (
-                              <span className="insight-account">
-                                · {item.accountAlias}
-                              </span>
-                            ) : null}
-                          </div>
-                          <p className="insight-message">{item.message}</p>
-                          <small className="insight-action">
-                            → {item.action}
-                          </small>
-                        </div>
-                        <span
-                          className={`insight-severity-badge insight-sev-${item.severity}`}
-                        >
-                          {cfg.label}
-                        </span>
+                        {item.clientName}
                       </button>
-                    );
-                  })
-                : null}
-            </div>
-          );
-        })}
-      </div>
-    </section>
+                    </th>
+                    {group.showAccount ? (
+                      <td className="insight-account">
+                        {item.accountAlias || ""}
+                      </td>
+                    ) : null}
+                    {/* Read by label, never by position. A signal that carries
+                        no value for a column gets an empty cell in that column
+                        rather than the next value sliding into it — the failure
+                        that prints a stop loss under "Profit target". */}
+                    {columns.map((label) => {
+                      const value = factValue(item, label);
+                      const fact = (item.facts || []).find(
+                        (f) => f && f.label === label,
+                      );
+                      return (
+                        <td
+                          key={label}
+                          className={
+                            value === null
+                              ? "insight-cell-empty"
+                              : fact?.tone === "bad"
+                                ? "negative"
+                                : fact?.tone === "good"
+                                  ? "positive"
+                                  : undefined
+                          }
+                        >
+                          {value === null ? "" : value}
+                        </td>
+                      );
+                    })}
+                    {group.severity ? null : (
+                      <td className={`insight-sev-text insight-sev-${item.severity}`}>
+                        {SEVERITY_LABEL[item.severity] || item.severity}
+                      </td>
+                    )}
+                    {group.action ? null : <td>{item.action}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -9285,25 +9430,39 @@ function CamOverview({
   });
 
   const today = todayIsoDate();
-  // Exposure is frequency divided by reward:risk — a family that fires ten times
-  // a day for less than it risks carries more than one that fires twice for
-  // three times its stop.
-  const riskProfile = useMemo(
-    () => buildStrategyRiskProfile(clients, { asOfDate: today }),
-    [clients, today],
+  // The two per-client counters on this page count the CAM's WORKING book, the
+  // same set the sidebar lists above the "Former clients" disclosure. Counting
+  // churned clients here produced the header-disagrees-with-the-list defect this
+  // codebase keeps re-growing: on Oakley Ash's book with two Inactive clients the
+  // page read "0/12 clients closed today" over a sidebar showing 10 rows. It is
+  // also a target nobody can hit — a churned client never uploads a close, so the
+  // completion bar caps at 10/12 forever — and "no contact 7d+" nags about people
+  // who are not coming back. formerCount keeps the other two on screen rather
+  // than silently shrinking the book.
+  const workingClients = useMemo(
+    () => clients.filter((c) => !isChurnedClient(c)),
+    [clients],
   );
-
-  const closeStats = (() => {
-    const withUpload = clients.filter((c) => getClientImportByDate(c, today));
+  const formerCount = clients.length - workingClients.length;
+  // Memoised rather than the bare IIFE it was, on the same inputs it already
+  // read: two full passes over the CAM's book per render, and the React
+  // Compiler refused to compile this component at all without a reactive scope
+  // holding `today` between its declaration and the flag-queue memo below. The
+  // scope that used to hold it was the risk-profile memo behind the "Algorithm
+  // risk profile" scatter, which is gone.
+  const closeStats = useMemo(() => {
+    const withUpload = workingClients.filter((c) =>
+      getClientImportByDate(c, today),
+    );
     const closed = withUpload.filter(
       (c) => getClientImportByDate(c, today)?.status === "Closed",
     );
     return {
-      total: clients.length,
+      total: workingClients.length,
       withUpload: withUpload.length,
       closed: closed.length,
     };
-  })();
+  }, [workingClients, today]);
   const closePct = closeStats.total
     ? Math.round((closeStats.closed / closeStats.total) * 100)
     : 0;
@@ -9345,7 +9504,7 @@ function CamOverview({
     [clients, today],
   );
   const criticalFlagsOpen = flagQueue.totals.critical;
-  const staleContactClients = clients.filter((c) => {
+  const staleContactClients = workingClients.filter((c) => {
     const d = lastContactDaysAgo(c);
     return d === null || d >= 7;
   }).length;
@@ -9370,6 +9529,14 @@ function CamOverview({
             {closeStats.total > closeStats.withUpload && (
               <span className="negative">
                 · {closeStats.total - closeStats.withUpload} no upload
+              </span>
+            )}
+            {formerCount > 0 && (
+              <span
+                className="muted"
+                title="Stage Inactive. Listed under Former clients in the sidebar and left out of the counts above."
+              >
+                · {formerCount} former
               </span>
             )}
           </div>
@@ -9564,10 +9731,6 @@ function CamOverview({
         onSelectClient={onSelectClient}
       />
 
-      <CollapsiblePanel title="Algorithm risk profile" tone="cam-charts-panel">
-        <StrategyRiskScatter rows={riskProfile} />
-      </CollapsiblePanel>
-
       <CollapsiblePanel title="Book coverage and mix" tone="cam-charts-panel">
         <div className="ov-pair">
           <div>
@@ -9682,25 +9845,19 @@ function CamOverview({
                   <option>High</option>
                   <option>Low</option>
                 </select>
-                <div
-                  style={{
-                    gridColumn: "1/-1",
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 6,
-                  }}
+                {/* One checkbox per client in the book. Same treatment as the
+                    pipeline: bounded, scrolling, and it says how many are in
+                    there — the form's submit button counts what is TICKED, so
+                    the total has to be visible somewhere or the two numbers look
+                    like a contradiction. */}
+                <BookList
+                  items={clients}
+                  keyOf={(c) => c.id}
+                  className="book-list-inline bulk-task-targets"
+                  fits={12}
                 >
-                  {clients.map((c) => (
-                    <label
-                      key={c.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        fontSize: 12,
-                        cursor: "pointer",
-                      }}
-                    >
+                  {(c) => (
+                    <label className="bulk-task-target">
                       <input
                         type="checkbox"
                         checked={bulkTaskTargets.includes(c.id)}
@@ -9714,8 +9871,8 @@ function CamOverview({
                       />
                       {c.name}
                     </label>
-                  ))}
-                </div>
+                  )}
+                </BookList>
                 <button
                   type="submit"
                   className="primary-button"
@@ -10102,46 +10259,25 @@ function CamOverview({
         </div>
       </div>
 
+      {/* No camNameByClientId: this book is his, so the CAM column and its
+          filter would be one repeated value. The churn rows still open. */}
       <LifecycleRollupPanel
         rollup={buildLifecycleRollup(clients || [])}
         title="My book - lifecycle & retention"
+        onSelectClient={onSelectClient}
       />
-
-      <CollapsiblePanel
-        title="Lifecycle by algo"
-        badges={<span className="badge muted">Which combo funds / survives</span>}
-      >
-        <LifecycleByAlgo clients={clients} />
-      </CollapsiblePanel>
 
       <CollapsiblePanel
         title="Deviation alerts"
         count={overview.deviationFlags.length}
         tone={overview.deviationFlags.length ? "danger-panel" : ""}
       >
-        {overview.deviationFlags.length ? (
-          <div className="flag-list">
-            {overview.deviationFlags.map((flag) => (
-              <div className="flag warning" key={flag.id}>
-                <AlertTriangle size={16} />
-                <div>
-                  <strong>{flag.algorithm}</strong>
-                  <span>
-                    {flag.message} Daily realized:{" "}
-                    {formatCurrency(flag.realized)}.
-                    {flag.executionMove !== undefined
-                      ? ` Execution move: ${flag.executionMove > 0 ? "+" : ""}${flag.executionMove.toFixed(2)} vs peer direction ${flag.peerDirection}.`
-                      : ""}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="notice success">
-            <CheckCircle2 size={16} /> No cross-account deviation alerts.
-          </div>
-        )}
+        {/* The rows moved into DeviationAlertList when the manager's
+            consolidated view got this panel too. Same component, same
+            buildCamOverview behind it — the CAM's list and the desk's list
+            cannot word an alert differently. No CAM attribution here: this book
+            is his. */}
+        <DeviationAlertList flags={overview.deviationFlags} />
       </CollapsiblePanel>
 
       {(() => {
@@ -10872,7 +11008,12 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
     setEditPriority(task.priority || "Normal");
   }
 
-  function saveEdit(taskId) {
+  // Renamed off `saveEdit` when the Supabase save helper took that name. Two
+  // functions called saveEdit in one 15,000-line file, one of them editing a
+  // task's text in local component state and the other the single chokepoint
+  // every Supabase write now goes through, is a collision worth spending eleven
+  // characters to avoid.
+  function saveTaskEdit(taskId) {
     if (editText.trim()) {
       onUpdateTask(taskId, {
         text: editText.trim(),
@@ -11059,7 +11200,7 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") saveEdit(task.id);
+                        if (e.key === "Enter") saveTaskEdit(task.id);
                         if (e.key === "Escape") cancelEdit();
                       }}
                       autoFocus
@@ -11080,7 +11221,7 @@ function TasksTab({ client, onAddTask, onUpdateTask, onDeleteTask }) {
                       </select>
                       <button
                         className="primary-button"
-                        onClick={() => saveEdit(task.id)}
+                        onClick={() => saveTaskEdit(task.id)}
                       >
                         Save
                       </button>
@@ -11252,9 +11393,31 @@ function CredentialsTab({
   const countryListId = `country-options-${String(client?.id || "client").replace(/[^a-z0-9_-]/gi, "-")}`;
   const [showPasswords, setShowPasswords] = useState(false);
   const [additionalEmailDraft, setAdditionalEmailDraft] = useState("");
+  const [churnPrompt, setChurnPrompt] = useState(false);
 
   function updateProfile(patch) {
     onUpdateClient({ profile: { ...profile, ...patch } });
+  }
+  /**
+   * Files the client as Inactive and says why, in ONE patch.
+   *
+   * `churn` rides beside `profile` rather than inside it: clientPatchToDb maps
+   * the churn columns only when the patch carries that key, so this is the only
+   * save in the app that writes them, and every other profile edit is unchanged.
+   * Both halves reach the database in the same UPDATE, so there is no window in
+   * which a client is churned with no reason — the state step 39 exists to stop
+   * growing.
+   *
+   * The date is today rather than a field to fill in. It is the moment the CAM
+   * classified them, which is the thing the panel filters on and the only date
+   * anyone here can actually attest to.
+   */
+  function commitChurn({ reason, note }) {
+    setChurnPrompt(false);
+    onUpdateClient({
+      profile: { ...profile, stage: CLIENT_STAGE_INACTIVE },
+      churn: { reason, note, at: todayIsoDate() },
+    });
   }
   function updateCredentials(patch) {
     onUpdateClient({ credentials: { ...credentials, ...patch } });
@@ -11455,15 +11618,29 @@ function CredentialsTab({
           </label>
           <label>
             Client stage
+            {/* The one write in the app that produces a churned client, so it is
+                the one place the reason can be captured AT classification. Every
+                other stage goes straight through; Inactive asks first, and the
+                stage is written by the dialog's confirm together with the reason
+                in a single patch, never separately. Cancelling writes nothing,
+                which is why the select still reads the stored stage below. */}
             <select
               value={profile.stage || "Active"}
-              onChange={(e) => updateProfile({ stage: e.target.value })}
+              onChange={(e) => {
+                const nextStage = e.target.value;
+                if (
+                  nextStage === CLIENT_STAGE_INACTIVE &&
+                  profile.stage !== CLIENT_STAGE_INACTIVE
+                ) {
+                  setChurnPrompt(true);
+                  return;
+                }
+                updateProfile({ stage: nextStage });
+              }}
             >
-              <option>Onboarding</option>
-              <option>Active</option>
-              <option>At Risk</option>
-              <option>Paused</option>
-              <option>Inactive</option>
+              {CLIENT_STAGES.map((stage) => (
+                <option key={stage}>{stage}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -11789,6 +11966,13 @@ function CredentialsTab({
           </div>
         </section>
       ) : null}
+
+      <ChurnReasonDialog
+        clientName={client.name}
+        open={churnPrompt}
+        onCancel={() => setChurnPrompt(false)}
+        onConfirm={commitChurn}
+      />
     </div>
   );
 }
@@ -12101,6 +12285,9 @@ export default function App() {
           message: "Supabase environment is required.",
       },
   );
+  // The four states, told apart in words. remoteStatus.message existed for a
+  // whole pass without appearing anywhere in src/; this is where it lands.
+  const remoteDataStatus = describeRemoteStatus(remoteStatus);
   const [session, setSession] = useState(() => {
     // Local snapshot mode signs itself in as a Manager. There is nothing to
     // authenticate against — app_users is dropped from the snapshot on purpose,
@@ -12126,34 +12313,77 @@ export default function App() {
     open: false,
     focusClientId: "",
     busy: false,
+    progress: null,
     error: "",
     result: null,
   });
   function openClientExport(focusClientId = "") {
-    setClientExport({ open: true, focusClientId, busy: false, error: "", result: null });
+    setClientExport({ open: true, focusClientId, busy: false, progress: null, error: "", result: null });
   }
-  async function runClientExport(request) {
-    setClientExport((prev) => ({ ...prev, busy: true, error: "", result: null }));
+  /**
+   * Runs the parts the dialog planned, in order, one file each.
+   *
+   * A pull that fits is one part and behaves exactly as it always did. A pull
+   * that does not is several, and the two properties that matter are that a
+   * failure STOPS the walk and that what did arrive is reported as incomplete:
+   * the parts that already downloaded are real files sitting in a folder, and
+   * the only place anyone can be told they are not the whole range is here.
+   */
+  async function runClientExport(requests) {
+    const parts = Array.isArray(requests) ? requests : [requests];
+    setClientExport((prev) => ({
+      ...prev,
+      busy: true,
+      progress: { done: 0, total: parts.length },
+      error: "",
+      result: null,
+    }));
+    const payloads = [];
     try {
-      const payload = await loadClientScopedExport(request);
-      const stamp = `${payload.range.from}_${payload.range.to}`;
-      const label = payload.scope.includedClientCount === 1
-        ? (payload.scope.includedClients[0]?.name || "client")
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .replace(/^-|-$/g, "")
-        : `${payload.scope.includedClientCount}-clients`;
-      downloadTextFile(
-        `cam-crm-export-${label}-${stamp}.json`,
-        JSON.stringify(payload, null, 2),
-      );
-      setClientExport((prev) => ({ ...prev, busy: false, result: payload }));
+      for (const request of parts) {
+        const payload = await loadClientScopedExport(request);
+        const stamp = `${payload.range.from}_${payload.range.to}`;
+        const label = payload.scope.includedClientCount === 1
+          ? (payload.scope.includedClients[0]?.name || "client")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-|-$/g, "")
+          : `${payload.scope.includedClientCount}-clients`;
+        // The part number goes in the FILENAME as well as in the payload. A
+        // folder of five files named alike is the one place the envelope's own
+        // `scope.batch` cannot be read without opening them.
+        const part = payload.scope?.batch
+          ? `-part${payload.scope.batch.index}of${payload.scope.batch.of}`
+          : "";
+        downloadTextFile(
+          `cam-crm-export-${label}-${stamp}${part}.json`,
+          JSON.stringify(payload, null, 2),
+        );
+        payloads.push(payload);
+        setClientExport((prev) => ({
+          ...prev,
+          progress: { done: payloads.length, total: parts.length },
+        }));
+      }
+      setClientExport((prev) => ({
+        ...prev,
+        busy: false,
+        progress: null,
+        result: { payloads, expectedParts: parts.length },
+      }));
     } catch (error) {
       console.error("[CRM] Client export failed:", error);
       setClientExport((prev) => ({
         ...prev,
         busy: false,
-        error: error.message || "Could not export client data.",
+        progress: null,
+        // The parts that did arrive are kept, so the dialog can say how many of
+        // how many are on disk. Dropping them here would leave real files with
+        // nothing on screen admitting they are a fragment.
+        result: payloads.length ? { payloads, expectedParts: parts.length } : null,
+        error: parts.length > 1
+          ? `Part ${payloads.length + 1} of ${parts.length} failed: ${error.message || "could not export client data."}`
+          : (error.message || "Could not export client data."),
       }));
     }
   }
@@ -12262,6 +12492,9 @@ export default function App() {
   const [quickLogAccount, setQuickLogAccount] = useState("");
   const [reportImport, setReportImport] = useState(null);
   const [draggingClientId, setDraggingClientId] = useState(null);
+  // Collapsed by default: the point of moving Inactive clients out of the
+  // working list is that the CAM stops scrolling past them every morning.
+  const [showFormerClients, setShowFormerClients] = useState(false);
   const [showCamDayReport, setShowCamDayReport] = useState(false);
   const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
@@ -12275,13 +12508,75 @@ export default function App() {
     setRemoteStatus({ source: "supabase", status: "loading", message });
   }
 
-  function hydrateTradeHistory() {
-    loadSupabaseTradeHistory()
+  function markConnected() {
+    setRemoteStatus({
+      source: "supabase",
+      status: "connected",
+      message: "Connected to Supabase",
+    });
+  }
+
+  /**
+   * A background refresh failed. The data on screen is the user's own work plus
+   * the last good load, all of it still true — it just may not include what
+   * other people have done since. "stale", not "error": an error empties the
+   * client list and reads as "Supabase required", which is what made a rate
+   * limit look like a total outage.
+   *
+   * Nothing here touches `state`. A refresh that could not fetch a replacement
+   * has nothing to replace state WITH, and reverting to a placeholder is how
+   * this whole class of bug looked to the desk: an edit thrown away.
+   */
+  function markRefreshFailed(what, error) {
+    console.error("[CRM] Background refresh failed:", error);
+    setRemoteStatus({
+      source: "supabase",
+      status: "stale",
+      message: refreshFailedMessage(what, error),
+    });
+  }
+
+  /**
+   * Orders and executions are 24,000 rows and roughly a third of every load's
+   * requests, and most screens never render them. They are fetched once per
+   * session, lazily, after the dashboard shell — never again on an edit.
+   *
+   * The guard is the point. This used to run inside reloadSupabaseState, so
+   * every flag, every close and every client rename re-downloaded the entire
+   * trade history behind it. Surfaces that read trade history already handle
+   * "not loaded yet" as distinct from "no trades" (see accountLifecycle.js and
+   * reportReasons.js), and a fresh upload carries its own orders and executions
+   * in local state, so nothing waits on a second pull to be correct.
+   *
+   * WHAT THE GUARD USED TO HIDE. Every refresh still WIPED trade history —
+   * loadSupabaseCrmState defaults includeTradeHistory=false, so
+   * buildCrmStateFromTables rebuilds every day with orders:[] executions:[] —
+   * and with `force` never passed anywhere, nothing put it back. The manager
+   * Refresh button, opening a workspace and every upload each dropped ~24,000
+   * rows off the screen with no recovery short of a browser reload. The wipe is
+   * gone: every refresh now carries the fills it already holds across (see
+   * carryTradeHistoryForward). `force` is reached only when a refresh turns up
+   * a day this session has never seen, which is the one case where the fills
+   * were not there to carry.
+   */
+  const tradeHistoryLoad = useRef("idle");
+  function hydrateTradeHistory({ force = false } = {}) {
+    if (!force && tradeHistoryLoad.current !== "idle") return Promise.resolve(null);
+    if (force && tradeHistoryLoad.current === "loading") return Promise.resolve(null);
+    tradeHistoryLoad.current = "loading";
+    return loadSupabaseTradeHistory()
       .then((history) => {
+        tradeHistoryLoad.current = "loaded";
         setState((current) => mergeSupabaseTradeHistory(current, history));
+        return history;
       })
       .catch((error) => {
+        // Back to idle so the next screen that wants trade history can try
+        // again. Deliberately not surfaced as a failed save or a failed load:
+        // the dashboard is complete without it.
+        tradeHistoryLoad.current = "idle";
         console.error("[CRM] Trade history loaded after dashboard shell failed:", error);
+        return null;
       });
   }
 
@@ -12382,6 +12677,19 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  /**
+   * Re-read the whole database and replace the screen with it.
+   *
+   * This is a LOADING operation and it is now only reachable from the two
+   * places where that is what the user asked for: opening a workspace, and the
+   * manager's explicit Refresh button. It used to sit behind eighteen edits as
+   * well, which is what made every flag click cost a full re-download and let a
+   * failed refetch be reported as a failed save.
+   *
+   * Nothing that saves something calls this. Use refreshInBackground below when
+   * a write genuinely fans out server-side and the client cannot name the rows
+   * it produced.
+   */
   async function reloadSupabaseState(preferredCamProfileId = null, selectedClientId = null) {
     if (!isSupabaseConfigured) return null;
     beginDashboardLoad("Refreshing dashboard data...");
@@ -12396,14 +12704,96 @@ export default function App() {
     const nextState = selectedClientId
       ? selectClient(remoteState, selectedClientId)
       : remoteState;
-    setState(nextState);
-    setRemoteStatus({
-      source: "supabase",
-      status: "connected",
-      message: "Connected to Supabase",
+    // A shell load carries no orders or executions, so assigning it outright
+    // wiped the 24,000 rows this session had already paid for and left the
+    // screen reading "no trades" — indistinguishable, on most surfaces, from a
+    // client who did not trade. The fills already in memory come across.
+    // Computed against the state this load started from rather than inside a
+    // setState updater: an updater that assigns to a closure variable runs at
+    // React's convenience, not here, and the decision below would read an empty
+    // list every time. This path replaces state wholesale by design — it is the
+    // load the user asked for, behind a loading state — so the two are the same
+    // state in every case that matters.
+    const carried = carryTradeHistoryForward(state, nextState);
+    setState(carried.state);
+    markConnected();
+    // Only when it was ACTUALLY lost: a day nobody on this machine has seen
+    // before (another CAM's upload) has no fills to carry, and this is the one
+    // path that re-fetches them — through the same bounded gate, and never for
+    // a day that merely traded nothing.
+    if (carried.missingImportIds.length && tradeHistoryLoad.current === "loaded") {
+      hydrateTradeHistory({ force: true });
+    }
+    return carried.state;
+  }
+
+  /**
+   * The refresh a save is allowed to ask for.
+   *
+   * Differs from reloadSupabaseState in three ways that matter. It never puts
+   * the dashboard into a loading state (the edit is already on screen and the
+   * user is still working). Its rejection is the caller's problem to report as
+   * a REFRESH failure — persistEdit will not let it reach the save path. And it
+   * MERGES rather than replaces.
+   *
+   * That last one was a defect, not a design: this function used to end in
+   * setState(nextState) with nextState built from reads that started before the
+   * edit. Upload a day, resolve a flag while the refresh is in flight, and the
+   * refresh landed carrying the pre-write snapshot — the flag read Open again,
+   * with no alert and no stale notice. See refreshMerge.js for the merge rule,
+   * and backgroundRefresh.js for why N of these are one load and not N.
+   */
+  const backgroundRefresh = useRef(null);
+  if (!backgroundRefresh.current) {
+    backgroundRefresh.current = createCoalescingRefresh({
+      run: async (targets) => {
+        const remoteState = await loadSupabaseCrmState({
+          preferredCamProfileId:
+            targets.map((target) => target.preferredCamProfileId).find(Boolean) || null,
+        });
+        setState((current) => mergeRefreshedDays(current, remoteState, targets));
+        markConnected();
+        return remoteState;
+      },
     });
-    hydrateTradeHistory();
-    return nextState;
+  }
+
+  async function refreshInBackground(preferredCamProfileId = null, selectedClientId = null, date = null) {
+    if (!isSupabaseConfigured) return null;
+    return backgroundRefresh.current.request({
+      preferredCamProfileId:
+        preferredCamProfileId ||
+        session?.camProfileId ||
+        state.accountManager?.id ||
+        state.camProfiles?.[0]?.id ||
+        null,
+      clientId: selectedClientId,
+      date,
+    });
+  }
+
+  /**
+   * Every converted call site goes through here.
+   *
+   * `what` is a noun phrase that reads correctly in both messages — "the flag",
+   * "the close" — because the same word has to finish "Could not save …" and
+   * start "… saved."
+   */
+  function saveEdit({ what, apply = null, rollback = null, write, reconcile = null, onSaved = null, refresh = null }) {
+    return persistEdit({
+      setState,
+      apply,
+      rollback,
+      write,
+      reconcile,
+      onSaved,
+      onSaveFailed: (error, { rolledBack, applied }) => {
+        console.error(`[CRM] Failed to save ${what}:`, error);
+        window.alert(saveFailedMessage(what, error, { rolledBack, applied }));
+      },
+      refresh,
+      onRefreshFailed: (error) => markRefreshFailed(what, error),
+    });
   }
 
   useEffect(() => {
@@ -12518,6 +12908,245 @@ export default function App() {
       return critOpen(b) - critOpen(a);
     });
   })();
+  // Inactive clients are not part of the daily working list, but they are not
+  // gone either — a CAM still has to open a former client to pull their history.
+  // So they move under a collapsed "Former clients (N)" heading below the list
+  // rather than being deleted, hidden, or left sitting among the live ones.
+  const { working: workingSidebarClients, former: formerSidebarClients } =
+    partitionSidebarClients(orderedSidebarClients);
+
+  // One client row in the sidebar. Pulled out of the JSX so the working list
+  // and the "Former clients" disclosure below it render the SAME row: a CAM
+  // opening a former client to pull their history needs the row they already
+  // know (close dot, kind chip, P&L, badge), not a thinner second widget.
+  function renderSidebarClientRow(client) {
+    // Stage "Inactive" only. partitionSidebarClients says why At Risk, Paused
+    // and Onboarding stay in the working list.
+    const isFormer = isChurnedClient(client);
+    const badge = deriveClientBadge(client);
+    const todayClose = getClientImportByDate(
+      client,
+      todayIsoDate(),
+    );
+    const closeStatus = !todayClose
+      ? "no-close"
+      : todayClose.status === "Closed"
+        ? "closed"
+        : "uploaded";
+    return (
+      <button
+        className={
+          (!showOverview && selectedClient?.id === client.id
+            ? "client-link active"
+            : "client-link") +
+          (draggingClientId === client.id
+            ? " client-link-dragging"
+            : "") +
+          (isFormer ? " client-link-former" : "")
+        }
+        key={client.id}
+        // Former clients sit under their own heading. Dragging one into the
+        // working list order would move a row the order cannot place.
+        draggable={!isFormer}
+        onDragStart={(e) => {
+          setDraggingClientId(client.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (!isFormer) handleReorderClients(draggingClientId, client.id);
+          setDraggingClientId(null);
+        }}
+        onDragEnd={() => setDraggingClientId(null)}
+        onClick={() => {
+          setState((current) =>
+            selectClient(current, client.id),
+          );
+          setShowProfile(false);
+          setShowOverview(false);
+          setShowSOP(false);
+          markClientViewed(client.id);
+          closeMobileSidebar();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            e.currentTarget.nextElementSibling?.focus();
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            (
+              e.currentTarget.previousElementSibling ||
+              e.currentTarget
+                .closest("aside")
+                ?.querySelector(".client-search")
+            )?.focus();
+          }
+        }}
+      >
+        <span
+          className={`close-dot close-dot-${closeStatus}`}
+          title={
+            closeStatus === "no-close"
+              ? "No files today"
+              : closeStatus === "closed"
+                ? "Closed today"
+                : "Uploaded · not closed"
+          }
+        />
+        <ClientRowLabel
+          name={client.name}
+          // Inside the label, not beside it: as a direct child of the row this
+          // badge took the row's 1fr grid column and pushed the label into the
+          // `auto` one, which starves the 1fr track. See ClientRowLabel.
+          leading={
+            closeStatus === "uploaded" && !viewedClientIds.has(client.id) ? (
+              <span
+                className="new-data-badge"
+                title="New data uploaded - not yet reviewed"
+              >
+                NEW
+              </span>
+            ) : null
+          }
+        >
+          <ClientKindBadge client={client} />
+          {(() => {
+            // Borrowed while their own CAM is away. Marked so
+            // it never reads as part of this CAM's own book.
+            const cover = coverageForClient(
+              state.coverage || [],
+              client.id,
+              todayIsoDate(),
+            );
+            if (!cover || cover.coveringCamId !== currentCamProfile?.id) return null;
+            const absent = (state.camProfiles || []).find(
+              (profile) => profile.id === cover.absentCamId,
+            );
+            return (
+              <span
+                className="client-kind client-kind-covering"
+                title={`Covering for ${absent?.name || "another CAM"} until ${cover.endDate || cover.startDate}`}
+              >
+                Covering
+              </span>
+            );
+          })()}
+          {(() => {
+            const d = lastContactDaysAgo(client);
+            return d !== null && d > 3 ? (
+              <span
+                className="last-contact-dot"
+                title={`Last contact ${d}d ago`}
+                style={{
+                  background:
+                    d > 7 ? "var(--error)" : "var(--warning)",
+                }}
+              />
+            ) : null;
+          })()}
+          {(() => {
+            const td = todayIsoDate();
+            const tasks = (client.tasks || []).filter(
+              (t) => !t.done,
+            );
+            const overdue = tasks.filter(
+              (t) => t.dueDate && t.dueDate < td,
+            ).length;
+            const dueToday = tasks.filter(
+              (t) => t.dueDate === td,
+            ).length;
+            if (overdue)
+              return (
+                <span
+                  style={{
+                    marginLeft: 3,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: "var(--negative)",
+                    background: "rgba(239,68,68,0.15)",
+                    borderRadius: 3,
+                    padding: "1px 3px",
+                  }}
+                  title={`${overdue} overdue task${overdue !== 1 ? "s" : ""}`}
+                >
+                  {overdue}
+                </span>
+              );
+            if (dueToday)
+              return (
+                <span
+                  style={{
+                    marginLeft: 3,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: "var(--warning)",
+                    background: "rgba(245,158,11,0.15)",
+                    borderRadius: 3,
+                    padding: "1px 3px",
+                  }}
+                  title={`${dueToday} task${dueToday !== 1 ? "s" : ""} due today`}
+                >
+                  {dueToday}
+                </span>
+              );
+            return null;
+          })()}
+        </ClientRowLabel>
+        {client.credentials?.ip ? (
+          <small className="sidebar-ip" title="VPS IP">
+            {client.credentials.ip}
+          </small>
+        ) : null}
+        {(() => {
+          const latest = importAsOf(client, selectedDate);
+          if (!latest) return null;
+          const pnl = (latest.snapshots || []).reduce(
+            (s, snap) =>
+              s + Number(snap.grossRealizedPnl || 0),
+            0,
+          );
+          return (
+            <small
+              className={
+                pnl >= 0
+                  ? "sidebar-pnl positive"
+                  : "sidebar-pnl negative"
+              }
+            >
+              {pnl >= 0 ? "+" : ""}
+              {formatCurrency(pnl)}
+            </small>
+          );
+        })()}
+        <span
+          className={`pin-btn${client.pinned ? " pinned" : ""}`}
+          title={
+            client.pinned ? "Unpin client" : "Pin to top"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            setState((s) => togglePinClient(s, client.id));
+            updateSupabaseClient(client.id, { pinned: !client.pinned }).then(() => {
+              auditSilently({
+                entityType: "client",
+                entityId: client.id,
+                action: client.pinned ? "client.unpin" : "client.pin",
+                beforeData: { pinned: Boolean(client.pinned) },
+                afterData: { clientId: client.id, clientName: client.name, pinned: !client.pinned },
+              });
+            }).catch((error) => {
+              console.error("[CRM] Failed to pin client:", error);
+              window.alert(`Could not update pin for "${client.name}" in Supabase: ${error.message}`);
+            });
+          }}
+        >
+          ★
+        </span>
+        <em className={badge.tone}>{badge.label}</em>
+      </button>
+    );
+  }
   const isManagerSession = session?.role === USER_ROLES.MANAGER;
   const canCreateDeleteClients =
     isManagerSession || Boolean(currentCamProfile?.canManageClients);
@@ -12534,6 +13163,25 @@ export default function App() {
     currentCamClients.find((client) => client.id === state.selectedClientId) ||
     (state.selectedClientId ? null : currentCamClients[0]) ||
     null;
+
+  // A former client can be opened without going through the disclosure — the
+  // manager's global search calls openCamWorkspace(camId, clientId) directly.
+  // Expand the section when that happens, or the workspace shows a client whose
+  // row is nowhere in the sidebar, which reads as "the sidebar lost them".
+  //
+  // Keyed on the client's ID, not on a "is the selection former" boolean: with a
+  // boolean, a former -> former change never flips it, so the effect never
+  // re-runs. Measured against the real book with two Inactive clients: open Lane
+  // Hollow from search (expands), collapse the section by hand, then search
+  // Parker Birch — the workspace read "Parker Birch · Inactive" while the
+  // sidebar showed aria-expanded="false", zero former rows and no active row
+  // anywhere. Null rather than 0/false so the dependency is the identity of the
+  // client we need a row for, and absent means absent.
+  const selectedFormerClientId =
+    selectedClient && isChurnedClient(selectedClient) ? selectedClient.id : null;
+  useEffect(() => {
+    if (selectedFormerClientId) setShowFormerClients(true);
+  }, [selectedFormerClientId]);
 
   // When switching clients, keep the date on local-today if that's where we are —
   // the CAM opens a client precisely to upload today's close, which doesn't exist
@@ -12576,29 +13224,27 @@ export default function App() {
     const clientName = newClientName.trim();
     if (!clientName) return;
     const targetCamId = currentCamProfile?.id || state.accountManager?.id || null;
-    setState((current) =>
-      addClient(current, clientName, current.accountManager?.id),
-    );
+    // Naming the placeholder is what lets the insert's own answer land on it.
+    // Without a known id the only way back to the row just added was to
+    // re-download the database and look for a client with a matching name.
+    const placeholderId = pendingClientId();
     setNewClientName("");
     setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
-    if (isSupabaseConfigured) {
-      createSupabaseClient(clientName, targetCamId, "Active")
-        .then((savedClient) => {
-          auditSilently({
-            entityType: "client",
-            entityId: savedClient?.id || null,
-            action: "client.create",
-            afterData: { clientName, camProfileId: targetCamId, stage: "Active" },
-          });
-          return reloadSupabaseState(targetCamId);
-        })
-        .catch((error) => {
-          console.error("[CRM] Failed to create client:", error);
-          window.alert(`Could not save client "${clientName}" to Supabase: ${error.message}`);
-        });
-    }
+    saveEdit({
+      what: `client "${clientName}"`,
+      apply: (current) => addClient(current, clientName, current.accountManager?.id, { id: placeholderId }),
+      rollback: (current) => removeClient(current, placeholderId),
+      write: () => createSupabaseClient(clientName, targetCamId, "Active"),
+      reconcile: (current, savedClient) => adoptSavedClient(current, placeholderId, savedClient),
+      onSaved: (savedClient) => auditSilently({
+        entityType: "client",
+        entityId: savedClient?.id || null,
+        action: "client.create",
+        afterData: { clientName, camProfileId: targetCamId, stage: "Active" },
+      }),
+    });
   }
 
   function openCamWorkspace(camId = currentCamProfile?.id, clientId = null) {
@@ -12654,118 +13300,157 @@ export default function App() {
       date: selectedDate,
       registry: selectedClient.accountRegistry,
       parsed,
+      // Yesterday's fills, so a lot opened then and closed today can be priced.
+      // Without them every carried-in book is refused and the account publishes
+      // no per-algo split — safe, but needlessly blind on the one caller that
+      // actually holds the history. See carryForwardLots.js.
+      priorImports: selectedClient.dailyImports || [],
     });
     persistDailyImport(selectedClient.id, result);
     setShowUpload(false);
   }
 
+  /**
+   * The one edit that still asks for a refresh, and the reason it is allowed to.
+   *
+   * A close fans out server-side into daily_imports, account_snapshots,
+   * strategy_snapshots, orders, executions and operational_flags, and Postgres
+   * names every one of those rows. `result` holds the same data under
+   * client-side ids, so the day is complete and correct on screen from the
+   * upload itself. So the refresh runs, DETACHED: the upload is already
+   * reported as saved, and if the refresh fails the day stays on screen and the
+   * user is told the view is stale, not that their upload was lost.
+   *
+   * It also RECONCILES now, which it did not before — the refetch was its only
+   * reconciliation, which is why a refresh that failed, or landed late, or
+   * landed carrying a snapshot read before somebody's next click, was the only
+   * thing standing between the upload and a day with no server identity on it.
+   * The daily_imports row the write returns carries the uuid that orders and
+   * executions are keyed by; that is a field copy, and it arrives whether or
+   * not the refresh ever does.
+   */
   function persistDailyImport(clientId, result) {
-    setState((current) => appendDailyImport(current, clientId, result));
-    if (!isSupabaseConfigured) return Promise.resolve(null);
-    return upsertSupabaseDailyImport(clientId, result)
-      .then((savedImport) => {
-        auditSilently({
-          entityType: "daily_import",
-          entityId: savedImport?.id || null,
-          action: "daily_import.upsert",
-          afterData: {
-            clientId,
-            reportDate: result.date,
-            status: result.status,
-            accountCount: Object.keys(result.accounts || {}).length,
-            snapshotCount: (result.snapshots || []).length,
-            flagCount: (result.flags || []).length,
-          },
-        });
-        return reloadSupabaseState(state.accountManager?.id, clientId);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to save daily import:", error);
-        window.alert(`Could not save daily import to Supabase: ${error.message}`);
-        return null;
-      });
+    return saveEdit({
+      what: "the daily import",
+      apply: (current) => appendDailyImport(current, clientId, result),
+      // No rollback: an upload is the user's whole morning, and a 429 on the
+      // write is not a reason to take the parsed day off the screen. The
+      // message says in as many words that it is showing but not saved.
+      write: () => upsertSupabaseDailyImport(clientId, result),
+      reconcile: (current, savedImport) =>
+        adoptSavedDailyImport(current, clientId, result.date, savedImport),
+      onSaved: (savedImport) => auditSilently({
+        entityType: "daily_import",
+        entityId: savedImport?.id || null,
+        action: "daily_import.upsert",
+        afterData: {
+          clientId,
+          reportDate: result.date,
+          status: result.status,
+          accountCount: Object.keys(result.accounts || {}).length,
+          snapshotCount: (result.snapshots || []).length,
+          flagCount: (result.flags || []).length,
+        },
+      }),
+      // Named down to the day. A refresh that replaced the whole screen threw
+      // away every edit made while it was in flight; one that says which day it
+      // went to fetch can fold that day in and leave the rest alone.
+      refresh: () => refreshInBackground(state.accountManager?.id, clientId, result.date),
+    });
   }
 
   function handleUndoDailyImport(importRecord) {
     if (!selectedClient || !importRecord) return;
     const clientId = selectedClient.id;
     const importId = importRecord.id;
-    // Optimistically drop it so the UI responds, then delete in Supabase and
-    // reload. The account registry is left intact — only this day's close goes.
-    setState((current) => removeDailyImport(current, clientId, importId));
-    if (!isSupabaseConfigured) return;
-    deleteSupabaseDailyImport(clientId, importId)
-      .then(() => {
-        auditSilently({
-          entityType: "daily_import",
-          entityId: importId,
-          action: "daily_import.delete",
-          afterData: { clientId, reportDate: importRecord.date },
-        });
-        return reloadSupabaseState(state.accountManager?.id, clientId);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to delete daily import:", error);
-        window.alert(`Could not undo the upload: ${error.message}`);
-        reloadSupabaseState(state.accountManager?.id, clientId);
-      });
+    saveEdit({
+      what: "the undo",
+      // The day goes the moment it is clicked. The account registry is left
+      // intact — only this day's close goes — so putting the record back is
+      // enough to undo the undo.
+      apply: (current) => removeDailyImport(current, clientId, importId),
+      rollback: (current) => appendDailyImport(current, clientId, importRecord),
+      write: () => deleteSupabaseDailyImport(clientId, importId),
+      onSaved: () => auditSilently({
+        entityType: "daily_import",
+        entityId: importId,
+        action: "daily_import.delete",
+        afterData: { clientId, reportDate: importRecord.date },
+      }),
+    });
   }
 
   function handleRequestTimeOff(request) {
     const camId = currentCamProfile?.id;
     if (!camId || !isSupabaseConfigured) return;
-    requestSupabaseTimeOff(camId, request)
-      .then(() => {
-        auditSilently({
-          entityType: "cam_time_off",
-          action: "cam_time_off.request",
-          afterData: { camId, ...request },
-        });
-        return reloadSupabaseState(camId, state.selectedClientId);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to request time off:", error);
-        window.alert(`Could not send the request: ${error.message}`);
-      });
+    saveEdit({
+      what: "the time-off request",
+      // Nothing is shown until the insert answers: Postgres owns the request id
+      // and every later decision is keyed by it, so a placeholder would be a row
+      // the Approve button could not act on. The insert is one round trip.
+      write: () => requestSupabaseTimeOff(camId, request),
+      reconcile: (current, row) => (
+        row ? addTimeOffRequest(current, timeOffEntryFromRow(row, camId)) : current
+      ),
+      onSaved: () => auditSilently({
+        entityType: "cam_time_off",
+        action: "cam_time_off.request",
+        afterData: { camId, ...request },
+      }),
+    });
   }
 
   // Approving and arranging cover are one action, so a request is never approved
   // leaving clients unwatched.
   function handleApproveTimeOff(request, assignments = []) {
     if (!isSupabaseConfigured) return;
-    decideSupabaseTimeOff(request.id, "Approved", { decidedBy: currentCamProfile?.id })
-      .then(() => replaceSupabaseCoverage(assignments, {
-        timeOffId: request.id,
-        absentCamId: request.camProfileId,
-        startDate: request.startDate,
-        endDate: request.endDate,
-      }))
-      .then(() => {
-        auditSilently({
-          entityType: "cam_time_off",
-          entityId: request.id,
-          action: "cam_time_off.approve",
-          // The assignments themselves, not just how many. This used to store
-          // `covered: 3` and nothing else, so who covered whom could not be
-          // reconstructed from history — the one place it would still exist
-          // after the coverage rows expire.
-          afterData: {
-            camId: request.camProfileId,
-            covered: assignments.length,
-            startDate: request.startDate,
-            endDate: request.endDate || request.startDate,
-            assignments: assignments.map((row) => ({
-              clientId: row.clientId,
-              coveringCamId: row.coveringCamId,
-            })),
-          },
+    const previousStatus = request.status || "Pending";
+    saveEdit({
+      what: "the approval",
+      // The decision shows at once; the cover rows cannot, because their ids
+      // come back with the insert. Both halves are idempotent — an UPDATE and a
+      // delete-then-insert keyed by time_off_id — so the rollback below leaves
+      // a retry able to finish whichever half did land.
+      apply: (current) => updateTimeOffRequest(current, request.id, { status: "Approved" }),
+      rollback: (current) => updateTimeOffRequest(current, request.id, { status: previousStatus }),
+      write: async () => {
+        const decided = await decideSupabaseTimeOff(request.id, "Approved", {
+          decidedBy: currentCamProfile?.id,
         });
-        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to approve time off:", error);
-        window.alert(`Could not approve: ${error.message}`);
-      });
+        const coverage = await replaceSupabaseCoverage(assignments, {
+          timeOffId: request.id,
+          absentCamId: request.camProfileId,
+          startDate: request.startDate,
+          endDate: request.endDate,
+        });
+        return { decided, coverage };
+      },
+      reconcile: (current, { decided, coverage }) => {
+        const withDecision = decided
+          ? updateTimeOffRequest(current, request.id, timeOffEntryFromRow(decided, request.camProfileId))
+          : current;
+        return replaceCoverageForRequest(withDecision, request.id, coverage || []);
+      },
+      onSaved: () => auditSilently({
+        entityType: "cam_time_off",
+        entityId: request.id,
+        action: "cam_time_off.approve",
+        // The assignments themselves, not just how many. This used to store
+        // `covered: 3` and nothing else, so who covered whom could not be
+        // reconstructed from history — the one place it would still exist
+        // after the coverage rows expire.
+        afterData: {
+          camId: request.camProfileId,
+          covered: assignments.length,
+          startDate: request.startDate,
+          endDate: request.endDate || request.startDate,
+          assignments: assignments.map((row) => ({
+            clientId: row.clientId,
+            coveringCamId: row.coveringCamId,
+          })),
+        },
+      }),
+    });
   }
 
   /**
@@ -12779,72 +13464,77 @@ export default function App() {
    */
   function handleEditCoverage(request, assignments = []) {
     if (!isSupabaseConfigured) return;
-    replaceSupabaseCoverage(assignments, {
-      timeOffId: request.id,
-      absentCamId: request.camProfileId,
-      startDate: request.startDate,
-      endDate: request.endDate,
-    })
-      .then(() => {
-        auditSilently({
-          entityType: "client_coverage",
-          entityId: request.id,
-          action: "client_coverage.reassign",
-          afterData: {
-            camId: request.camProfileId,
-            covered: assignments.length,
-            startDate: request.startDate,
-            endDate: request.endDate || request.startDate,
-            assignments: assignments.map((row) => ({
-              clientId: row.clientId,
-              coveringCamId: row.coveringCamId,
-            })),
-          },
-        });
-        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to reassign coverage:", error);
-        window.alert(`Could not save the cover: ${error.message}`);
-      });
+    saveEdit({
+      what: "the cover",
+      // replaceSupabaseCoverage now hands back the saved rows already mapped
+      // into the shape state.coverage holds — it is the only place that knows
+      // both the uuids and the app ids without a second round trip, which is
+      // exactly why this used to re-read the database to see its own write.
+      write: () => replaceSupabaseCoverage(assignments, {
+        timeOffId: request.id,
+        absentCamId: request.camProfileId,
+        startDate: request.startDate,
+        endDate: request.endDate,
+      }),
+      reconcile: (current, saved) => replaceCoverageForRequest(current, request.id, saved || []),
+      onSaved: () => auditSilently({
+        entityType: "client_coverage",
+        entityId: request.id,
+        action: "client_coverage.reassign",
+        afterData: {
+          camId: request.camProfileId,
+          covered: assignments.length,
+          startDate: request.startDate,
+          endDate: request.endDate || request.startDate,
+          assignments: assignments.map((row) => ({
+            clientId: row.clientId,
+            coveringCamId: row.coveringCamId,
+          })),
+        },
+      }),
+    });
   }
 
   function handleDenyTimeOff(request) {
     if (!isSupabaseConfigured) return;
-    decideSupabaseTimeOff(request.id, "Denied", { decidedBy: currentCamProfile?.id })
-      .then(() => reloadSupabaseState(state.accountManager?.id, state.selectedClientId))
-      .catch((error) => {
-        console.error("[CRM] Failed to deny time off:", error);
-        window.alert(`Could not deny: ${error.message}`);
-      });
+    const previousStatus = request.status || "Pending";
+    saveEdit({
+      what: "the denial",
+      apply: (current) => updateTimeOffRequest(current, request.id, { status: "Denied" }),
+      rollback: (current) => updateTimeOffRequest(current, request.id, { status: previousStatus }),
+      write: () => decideSupabaseTimeOff(request.id, "Denied", { decidedBy: currentCamProfile?.id }),
+      reconcile: (current, row) => (
+        row
+          ? updateTimeOffRequest(current, request.id, timeOffEntryFromRow(row, request.camProfileId))
+          : current
+      ),
+    });
   }
 
   function handleEndCoverage(entry) {
     if (!isSupabaseConfigured) return;
-    deleteSupabaseCoverage(entry.id)
-      .then(() => {
-        // Ending a cover is a hard delete of the row; without this the only
-        // record that the client was ever watched by someone else disappears
-        // with it. Audited like the approval and the reassign.
-        auditSilently({
-          entityType: "client_coverage",
-          entityId: entry.id,
-          action: "client_coverage.end",
-          afterData: {
-            clientId: entry.clientId,
-            coveringCamId: entry.coveringCamId,
-            absentCamId: entry.absentCamId,
-            timeOffId: entry.timeOffId || null,
-            startDate: entry.startDate,
-            endDate: entry.endDate || entry.startDate,
-          },
-        });
-        return reloadSupabaseState(state.accountManager?.id, state.selectedClientId);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to end coverage:", error);
-        window.alert(`Could not end the cover: ${error.message}`);
-      });
+    saveEdit({
+      what: "the end of the cover",
+      apply: (current) => removeCoverageEntry(current, entry.id),
+      rollback: (current) => upsertCoverageEntry(current, entry),
+      write: () => deleteSupabaseCoverage(entry.id),
+      // Ending a cover is a hard delete of the row; without this the only
+      // record that the client was ever watched by someone else disappears
+      // with it. Audited like the approval and the reassign.
+      onSaved: () => auditSilently({
+        entityType: "client_coverage",
+        entityId: entry.id,
+        action: "client_coverage.end",
+        afterData: {
+          clientId: entry.clientId,
+          coveringCamId: entry.coveringCamId,
+          absentCamId: entry.absentCamId,
+          timeOffId: entry.timeOffId || null,
+          startDate: entry.startDate,
+          endDate: entry.endDate || entry.startDate,
+        },
+      }),
+    });
   }
 
   function handleSaveReportConfig(scope, config) {
@@ -12872,10 +13562,16 @@ export default function App() {
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
     ids.splice(to, 0, ids.splice(from, 1)[0]);
-    setState((current) => updateCamProfile(current, camId, { clientOrder: ids }));
-    if (!isSupabaseConfigured) return;
-    updateSupabaseCamProfile(camId, { clientOrder: ids }).catch((error) => {
-      console.error("[CRM] Failed to save client order:", error);
+    // The order before the drag, so a refused write puts the row back where the
+    // CAM took it from. Previously the failure was swallowed into console.error
+    // and the new order stayed on screen unsaved until some later load replaced
+    // it — the drag "snapping back" minutes later, with nothing having said so.
+    const previousOrder = currentCamProfile?.clientOrder || null;
+    saveEdit({
+      what: "the sidebar order",
+      apply: (current) => updateCamProfile(current, camId, { clientOrder: ids }),
+      rollback: (current) => updateCamProfile(current, camId, { clientOrder: previousOrder }),
+      write: () => updateSupabaseCamProfile(camId, { clientOrder: ids }),
     });
   }
 
@@ -13084,66 +13780,81 @@ export default function App() {
   }
 
   function performDeleteClient(clientToDelete) {
-    setState((current) => removeClient(current, clientToDelete.id));
-    softDeleteSupabaseClient(clientToDelete.id)
-      .then(() => {
-        auditSilently({
-          entityType: "client",
-          entityId: clientToDelete.id,
-          action: "client.deactivate",
-          beforeData: { clientName: clientToDelete.name, status: clientToDelete.status },
-          afterData: { clientId: clientToDelete.id, clientName: clientToDelete.name, status: "Inactive" },
-        });
-        return reloadSupabaseState(currentCamProfile?.id || state.accountManager?.id);
-      })
-      .catch((error) => {
-        console.error("[CRM] Failed to delete client:", error);
-        window.alert(`Could not deactivate "${clientToDelete.name}" in Supabase: ${error.message}`);
-      });
+    // Where it sat and who owned it, read before it goes, so a refused delete
+    // can put it back exactly there rather than at the bottom of someone
+    // else's list.
+    const previousIndex = (state.clients || []).findIndex((c) => c.id === clientToDelete.id);
+    const previousOwners = (state.camProfiles || [])
+      .filter((profile) => (profile.clientIds || []).includes(clientToDelete.id))
+      .map((profile) => profile.id);
+    const previousSelected = state.selectedClientId;
+    saveEdit({
+      what: `the removal of "${clientToDelete.name}"`,
+      apply: (current) => removeClient(current, clientToDelete.id),
+      rollback: (current) => restoreClient(current, clientToDelete, {
+        index: previousIndex,
+        camProfileIds: previousOwners,
+        selectedClientId: previousSelected,
+      }),
+      write: () => softDeleteSupabaseClient(clientToDelete.id),
+      onSaved: () => auditSilently({
+        entityType: "client",
+        entityId: clientToDelete.id,
+        action: "client.deactivate",
+        beforeData: { clientName: clientToDelete.name, status: clientToDelete.status },
+        afterData: { clientId: clientToDelete.id, clientName: clientToDelete.name, status: "Inactive" },
+      }),
+    });
   }
 
-  function handleResolveFlag(flagId, status = "Resolved") {
+  // Resolve, and only Resolve. This used to take a status so the Dashboard could
+  // send "Acknowledged" from the Ack button beside each row; the desk manager
+  // removed that button, and the parameter went with it rather than being left
+  // defaulted — a status argument on a handler is an invitation to pass one.
+  // Flags ALREADY stored as Acknowledged are untouched here and stay closed: see
+  // isFlagOpen in src/domain/camFlagQueue.js and
+  // supabase/step_38_flag_acknowledged_to_resolved.sql.
+  function handleResolveFlag(flagId) {
     if (!selectedClient || !dailyImport) return;
     const flag = (dailyImport.flags || []).find((f) => f.id === flagId);
     let entry = null;
-    if (flag && (status === "Resolved" || status === "Acknowledged")) {
-      const verb = status === "Resolved" ? "resolved" : "acknowledged";
+    if (flag) {
       entry = {
         id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         type: "Alert",
-        text: `Flag ${verb}: [${flag.type}] ${flag.message}`,
+        text: `Flag resolved: [${flag.type}] ${flag.message}`,
         accountName: flag.accountName || "",
         createdAt: new Date().toISOString(),
       };
     }
-    setState((current) => {
-      let next = resolveFlagInImport(
-        current,
-        selectedClient.id,
-        dailyImport.id,
-        flagId,
-        status,
-      );
-      if (entry) next = addActivityEntry(next, selectedClient.id, entry);
-      return next;
-    });
-    updateSupabaseOperationalFlag(flagId, status).then(() => {
-      auditSilently({
+    const clientId = selectedClient.id;
+    const clientName = selectedClient.name;
+    const importId = dailyImport.id;
+    const previousStatus = flag?.status || "Open";
+    saveEdit({
+      what: "the flag",
+      apply: (current) => {
+        let next = resolveFlagInImport(current, clientId, importId, flagId, "Resolved");
+        if (entry) next = addActivityEntry(next, clientId, entry);
+        return next;
+      },
+      // Back to the status it actually had, not to a hardcoded "Open". Nothing
+      // writes Acknowledged any more, but a legacy Acknowledged row can still be
+      // resolved from this screen, and a failed write must put that status back
+      // rather than reopen it. The activity line goes with it — it says the flag
+      // was resolved, and it was not.
+      rollback: (current) => {
+        const reverted = resolveFlagInImport(current, clientId, importId, flagId, previousStatus);
+        return entry ? deleteActivityEntry(reverted, clientId, entry.id) : reverted;
+      },
+      write: () => updateSupabaseOperationalFlag(flagId, "Resolved"),
+      onSaved: () => auditSilently({
         entityType: "operational_flag",
         entityId: flagId,
-        action: status === "Resolved" ? "flag.resolve" : "flag.acknowledge",
-        beforeData: flag ? { status: flag.status || "Open", type: flag.type } : null,
-        afterData: {
-          clientId: selectedClient.id,
-          clientName: selectedClient.name,
-          dailyImportId: dailyImport.id,
-          flagId,
-          status,
-        },
-      });
-    }).catch((error) => {
-      console.error("[CRM] Failed to update flag:", error);
-      window.alert(`Could not update flag in Supabase: ${error.message}`);
+        action: "flag.resolve",
+        beforeData: flag ? { status: previousStatus, type: flag.type } : null,
+        afterData: { clientId, clientName, dailyImportId: importId, flagId, status: "Resolved" },
+      }),
     });
     if (entry)
       insertSupabaseActivity(selectedClient.id, entry).catch((error) =>
@@ -13160,7 +13871,7 @@ export default function App() {
   // `dailyImport` is null and the handler returns before doing anything. The CAM
   // flag queue lists flags from 51 different imports at once, so it has to name
   // the import per row. This is modelled on the manager's onResolveFlag, which
-  // already took (clientId, importId, flagId, status); createCamFlagResolver
+  // already took (clientId, importId, flagId); createCamFlagResolver
   // refuses a call missing any of the three rather than silently no-opping,
   // because a silent no-op looks exactly like a resolution that worked — the row
   // leaves the queue and is back on the next load.
@@ -13173,17 +13884,19 @@ export default function App() {
     },
   });
 
-  function handleBulkResolveFlags(status = "Acknowledged") {
+  // Its default used to be "Acknowledged", so the only caller — the Dashboard's
+  // "Resolve all" — was the one thing standing between this and bulk-writing a
+  // status the manager has now removed. There is no parameter left to default.
+  function handleBulkResolveFlags() {
     if (!selectedClient || !dailyImport) return;
     const openFlags = (dailyImport.flags || []).filter(
       (f) => f.status !== "Resolved" && f.status !== "Acknowledged",
     );
     if (!openFlags.length) return;
-    const verb = status === "Resolved" ? "resolved" : "acknowledged";
     const entry = {
       id: `act-${Date.now()}-bulk`,
       type: "Alert",
-      text: `Bulk ${verb} ${openFlags.length} flag${openFlags.length !== 1 ? "s" : ""}`,
+      text: `Bulk resolved ${openFlags.length} flag${openFlags.length !== 1 ? "s" : ""}`,
       accountName: "",
       createdAt: new Date().toISOString(),
     };
@@ -13195,26 +13908,26 @@ export default function App() {
           selectedClient.id,
           dailyImport.id,
           flag.id,
-          status,
+          "Resolved",
         );
       }
       return addActivityEntry(next, selectedClient.id, entry);
     });
     Promise.all(
-      openFlags.map((flag) => updateSupabaseOperationalFlag(flag.id, status)),
+      openFlags.map((flag) => updateSupabaseOperationalFlag(flag.id, "Resolved")),
     )
       .then(() => insertSupabaseActivity(selectedClient.id, entry))
       .then(() => {
         auditSilently({
           entityType: "operational_flag",
           entityId: dailyImport.id,
-          action: status === "Resolved" ? "flag.bulk_resolve" : "flag.bulk_acknowledge",
+          action: "flag.bulk_resolve",
           afterData: {
             clientId: selectedClient.id,
             clientName: selectedClient.name,
             dailyImportId: dailyImport.id,
             flagCount: openFlags.length,
-            status,
+            status: "Resolved",
           },
         });
       })
@@ -13387,20 +14100,19 @@ export default function App() {
   }
 
   function performCloseImport(client, importRecord) {
-    setState((current) =>
-      updateImportStatus(current, client.id, importRecord.id, "Closed"),
-    );
-    updateSupabaseDailyImportStatus(importRecord.id, "Closed").then(() => {
-      auditSilently({
+    const previousStatus = importRecord.status || "Needs review";
+    saveEdit({
+      what: "the close",
+      apply: (current) => updateImportStatus(current, client.id, importRecord.id, "Closed"),
+      rollback: (current) => updateImportStatus(current, client.id, importRecord.id, previousStatus),
+      write: () => updateSupabaseDailyImportStatus(importRecord.id, "Closed"),
+      onSaved: () => auditSilently({
         entityType: "daily_import",
         entityId: importRecord.id,
         action: "daily_import.close",
-        beforeData: { status: importRecord.status },
+        beforeData: { status: previousStatus },
         afterData: { clientId: client.id, clientName: client.name, dailyImportId: importRecord.id, status: "Closed" },
-      });
-    }).catch((error) => {
-      console.error("[CRM] Failed to close day:", error);
-      window.alert(`Could not close day in Supabase: ${error.message}`);
+      }),
     });
   }
 
@@ -13418,28 +14130,20 @@ export default function App() {
   }
 
   function performReopenImport(client, importRecord) {
-    setState((current) =>
-      updateImportStatus(
-        current,
-        client.id,
-        importRecord.id,
-        "Needs review",
-      ),
-    );
-    updateSupabaseDailyImportStatus(importRecord.id, "Needs review").then(() => {
-      auditSilently({
+    const previousStatus = importRecord.status || "Closed";
+    saveEdit({
+      what: "the reopen",
+      apply: (current) => updateImportStatus(current, client.id, importRecord.id, "Needs review"),
+      rollback: (current) => updateImportStatus(current, client.id, importRecord.id, previousStatus),
+      write: () => updateSupabaseDailyImportStatus(importRecord.id, "Needs review"),
+      onSaved: () => auditSilently({
         entityType: "daily_import",
         entityId: importRecord.id,
         action: "daily_import.reopen",
-        beforeData: { status: importRecord.status },
+        beforeData: { status: previousStatus },
         afterData: { clientId: client.id, clientName: client.name, dailyImportId: importRecord.id, status: "Needs review" },
-      });
-    }).catch(
-      (error) => {
-        console.error("[CRM] Failed to reopen day:", error);
-        window.alert(`Could not reopen day in Supabase: ${error.message}`);
-      },
-    );
+      }),
+    });
   }
 
   function closeAllToday() {
@@ -13588,41 +14292,44 @@ export default function App() {
             onEditCoverage={handleEditCoverage}
             onOpenCam={openCamWorkspace}
             onCreateCam={(name) => {
-              createSupabaseCamProfile(name)
-                .then((savedProfile) => {
-                  auditSilently({
-                    entityType: "cam_profile",
-                    entityId: savedProfile?.id || null,
-                    action: "cam_profile.create",
-                    afterData: { name },
-                  });
-                  return reloadSupabaseState();
-                })
-                .catch((error) => {
-                  console.error("[CRM] Failed to create CAM profile:", error);
-                  window.alert(`Could not save CAM profile to Supabase: ${error.message}`);
-                });
+              saveEdit({
+                what: "the CAM profile",
+                // createSupabaseCamProfile already returns the profile in the
+                // shape state.camProfiles holds, ids and all, so the new CAM
+                // appears from the insert's own answer.
+                write: () => createSupabaseCamProfile(name),
+                reconcile: (current, savedProfile) => (savedProfile
+                  ? { ...current, camProfiles: [...(current.camProfiles || []), savedProfile] }
+                  : current),
+                onSaved: (savedProfile) => auditSilently({
+                  entityType: "cam_profile",
+                  entityId: savedProfile?.id || null,
+                  action: "cam_profile.create",
+                  afterData: { name },
+                }),
+              });
             }}
             onUpdateCamProfile={(camProfileId, patch) => {
-              setState((current) => ({
-                ...current,
-                camProfiles: (current.camProfiles || []).map((profile) =>
-                  profile.id === camProfileId ? { ...profile, ...patch } : profile,
+              const before = (state.camProfiles || []).find((profile) => profile.id === camProfileId);
+              saveEdit({
+                what: "the CAM permission",
+                apply: (current) => updateCamProfile(current, camProfileId, patch),
+                // Only the keys this patch touched go back, so undoing a
+                // refused permission change does not also undo whatever else
+                // has been edited on that profile in the meantime.
+                rollback: (current) => updateCamProfile(
+                  current,
+                  camProfileId,
+                  Object.fromEntries(Object.keys(patch || {}).map((key) => [key, before?.[key]])),
                 ),
-              }));
-              updateSupabaseCamProfile(camProfileId, patch)
-                .then(() => {
-                  auditSilently({
-                    entityType: "cam_profile",
-                    entityId: camProfileId,
-                    action: "cam_profile.permissions.update",
-                    afterData: { camProfileId, patch, source: "manager" },
-                  });
-                })
-                .catch((error) => {
-                  console.error("[CRM] Failed to update CAM permissions:", error);
-                  window.alert(`Could not save CAM permission to Supabase: ${error.message}`);
-                });
+                write: () => updateSupabaseCamProfile(camProfileId, patch),
+                onSaved: () => auditSilently({
+                  entityType: "cam_profile",
+                  entityId: camProfileId,
+                  action: "cam_profile.permissions.update",
+                  afterData: { camProfileId, patch, source: "manager" },
+                }),
+              });
             }}
             onLogout={handleLogout}
             users={users}
@@ -13631,32 +14338,31 @@ export default function App() {
             session={session}
             onUpdateClientAccount={persistAccountUpdate}
             onTransferClient={(clientId, toCamId) => {
-              setState((current) => transferClient(current, clientId, toCamId));
-              transferSupabaseClient(clientId, toCamId)
-                .then(() => {
-                  auditSilently({
-                    entityType: "client_assignment",
-                    entityId: clientId,
-                    action: "client.transfer",
-                    afterData: { clientId, toCamId },
-                  });
-                  return reloadSupabaseState(toCamId);
-                })
-                .catch((error) => {
-                  console.error("[CRM] Failed to transfer client:", error);
-                  window.alert(`Could not transfer client in Supabase: ${error.message}`);
-                });
+              const fromCamId = (state.camProfiles || [])
+                .find((profile) => (profile.clientIds || []).includes(clientId))?.id || null;
+              saveEdit({
+                what: "the transfer",
+                apply: (current) => transferClient(current, clientId, toCamId),
+                rollback: (current) => transferClient(current, clientId, fromCamId),
+                write: () => transferSupabaseClient(clientId, toCamId),
+                onSaved: () => auditSilently({
+                  entityType: "client_assignment",
+                  entityId: clientId,
+                  action: "client.transfer",
+                  afterData: { clientId, toCamId },
+                }),
+              });
             }}
-            onResolveFlag={(clientId, importId, flagId, status = "Resolved") => {
+            onResolveFlag={(clientId, importId, flagId) => {
               setState((current) =>
-                resolveFlagInImport(current, clientId, importId, flagId, status),
+                resolveFlagInImport(current, clientId, importId, flagId, "Resolved"),
               );
-              updateSupabaseOperationalFlag(flagId, status).then(() => {
+              updateSupabaseOperationalFlag(flagId, "Resolved").then(() => {
                 auditSilently({
                   entityType: "operational_flag",
                   entityId: flagId,
-                  action: status === "Resolved" ? "flag.resolve" : "flag.acknowledge",
-                  afterData: { clientId, importId, flagId, status, source: "manager" },
+                  action: "flag.resolve",
+                  afterData: { clientId, importId, flagId, status: "Resolved", source: "manager" },
                 });
               }).catch((error) => {
                 console.error("[CRM] Failed to update manager flag:", error);
@@ -13668,39 +14374,32 @@ export default function App() {
             onAddClient={(name, camId, stage) => {
               const clientName = String(name || "").trim();
               if (!clientName) return;
-              setState((current) => {
-                const withClient = addClient(current, clientName, camId || null);
-                const newClient = withClient.clients.find(
-                  (c) =>
-                    c.name === clientName &&
-                    !current.clients.find((x) => x.id === c.id),
-                );
-                if (newClient && stage && stage !== "Active") {
-                  return {
-                    ...withClient,
-                    clients: withClient.clients.map((c) =>
-                      c.id === newClient.id
-                        ? { ...c, profile: { ...c.profile, stage } }
-                        : c,
-                    ),
-                  };
-                }
-                return withClient;
-              });
-              createSupabaseClient(clientName, camId || null, stage || "Active")
-                .then((savedClient) => {
-                  auditSilently({
-                    entityType: "client",
-                    entityId: savedClient?.id || null,
-                    action: "client.create",
-                    afterData: { clientName, camProfileId: camId || null, stage: stage || "Active", source: "manager" },
+              // Naming the placeholder replaces the old "find the client whose
+              // name matches and was not there a moment ago" search, which was
+              // the only handle this code had on the row it had just added.
+              const placeholderId = pendingClientId();
+              saveEdit({
+                what: `client "${clientName}"`,
+                apply: (current) => {
+                  const withClient = addClient(current, clientName, camId || null, { id: placeholderId });
+                  if (!stage || stage === "Active") return withClient;
+                  return updateClientDetails(withClient, placeholderId, {
+                    profile: {
+                      ...(withClient.clients.find((c) => c.id === placeholderId)?.profile || {}),
+                      stage,
+                    },
                   });
-                  return reloadSupabaseState(camId || null);
-                })
-                .catch((error) => {
-                  console.error("[CRM] Failed to create manager client:", error);
-                  window.alert(`Could not save client "${clientName}" to Supabase: ${error.message}`);
-                });
+                },
+                rollback: (current) => removeClient(current, placeholderId),
+                write: () => createSupabaseClient(clientName, camId || null, stage || "Active"),
+                reconcile: (current, savedClient) => adoptSavedClient(current, placeholderId, savedClient),
+                onSaved: (savedClient) => auditSilently({
+                  entityType: "client",
+                  entityId: savedClient?.id || null,
+                  action: "client.create",
+                  afterData: { clientName, camProfileId: camId || null, stage: stage || "Active", source: "manager" },
+                }),
+              });
             }}
             onImportClient={async (row, camId) => {
               const savedClient = await createSupabaseClient(row.name, camId || null, row.stage || "Active");
@@ -13730,7 +14429,19 @@ export default function App() {
                 action: "client.import",
                 afterData: { ...row, camProfileId: camId || null },
               });
-              await reloadSupabaseState(camId || null);
+              // Deliberately NOT saveEdit: importClients() above awaits this per
+              // row and depends on a rejection to stop the run and report which
+              // row failed, and persistEdit never rejects. What it does share is
+              // the rule — the row is on screen from what the insert returned.
+              // This used to re-download the whole database once PER ROW, so a
+              // fifty-client import was fifty full loads, and a refresh that
+              // 429'd aborted the import and reported rows already written as
+              // failures.
+              setState((current) => {
+                const placeholderId = pendingClientId();
+                const withPlaceholder = addClient(current, row.name, camId || null, { id: placeholderId });
+                return adoptSavedClient(withPlaceholder, placeholderId, savedClient);
+              });
             }}
             onAppendDailyImport={(clientId, result) =>
               persistDailyImport(clientId, result)
@@ -13802,16 +14513,19 @@ export default function App() {
                 {session?.displayName || session?.username || ""} ·{" "}
                 {session?.role || "CAM"}
               </small>
-              <small
-                className={`sidebar-role-sub ${remoteStatus.status === "error" ? "negative" : remoteStatus.status === "connected" ? "positive" : ""}`}
-              >
-                Data:{" "}
-                {remoteStatus.status === "connected"
-                  ? "Supabase"
-                  : remoteStatus.status === "loading"
-                    ? "Connecting..."
-                    : "Supabase required"}
+              {/* The three-way ternary that used to live here read the status
+                  and never the message, so "stale" — saved, on screen, just
+                  behind on other people's work — printed the same four words as
+                  a dead connection. describeRemoteStatus names the four states
+                  apart; the sentence itself is rendered below it. */}
+              <small className={`sidebar-role-sub ${remoteDataStatus.tone}`}>
+                Data: {remoteDataStatus.label}
               </small>
+              {remoteDataStatus.detail ? (
+                <small className="sidebar-role-sub sidebar-data-detail">
+                  {remoteDataStatus.detail}
+                </small>
+              ) : null}
               <div className="backup-actions">
                 {isManagerSession ? (
                   <button
@@ -13894,7 +14608,11 @@ export default function App() {
                 <>
                   {(() => {
                     const today = todayIsoDate();
-                    const urgentCount = currentCamClients.reduce((total, c) => {
+                    // Working list only. This badge sits directly above that
+                    // list, so an overdue task on a churned client would make it
+                    // count something the CAM cannot see a row for without
+                    // opening "Former clients".
+                    const urgentCount = workingSidebarClients.reduce((total, c) => {
                       const critFlags = (
                         c.dailyImports?.at(-1)?.flags || []
                       ).filter(
@@ -14072,224 +14790,33 @@ export default function App() {
                       to add your first client.
                     </div>
                   )}
-                  {orderedSidebarClients
-                    .map((client) => {
-                      const badge = deriveClientBadge(client);
-                      const todayClose = getClientImportByDate(
-                        client,
-                        todayIsoDate(),
-                      );
-                      const closeStatus = !todayClose
-                        ? "no-close"
-                        : todayClose.status === "Closed"
-                          ? "closed"
-                          : "uploaded";
-                      return (
-                        <button
-                          className={
-                            (!showOverview && selectedClient?.id === client.id
-                              ? "client-link active"
-                              : "client-link") +
-                            (draggingClientId === client.id
-                              ? " client-link-dragging"
-                              : "")
-                          }
-                          key={client.id}
-                          draggable
-                          onDragStart={(e) => {
-                            setDraggingClientId(client.id);
-                            e.dataTransfer.effectAllowed = "move";
-                          }}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            handleReorderClients(draggingClientId, client.id);
-                            setDraggingClientId(null);
-                          }}
-                          onDragEnd={() => setDraggingClientId(null)}
-                          onClick={() => {
-                            setState((current) =>
-                              selectClient(current, client.id),
-                            );
-                            setShowProfile(false);
-                            setShowOverview(false);
-                            setShowSOP(false);
-                            markClientViewed(client.id);
-                            closeMobileSidebar();
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "ArrowDown") {
-                              e.preventDefault();
-                              e.currentTarget.nextElementSibling?.focus();
-                            } else if (e.key === "ArrowUp") {
-                              e.preventDefault();
-                              (
-                                e.currentTarget.previousElementSibling ||
-                                e.currentTarget
-                                  .closest("aside")
-                                  ?.querySelector(".client-search")
-                              )?.focus();
-                            }
-                          }}
-                        >
-                          <span
-                            className={`close-dot close-dot-${closeStatus}`}
-                            title={
-                              closeStatus === "no-close"
-                                ? "No files today"
-                                : closeStatus === "closed"
-                                  ? "Closed today"
-                                  : "Uploaded · not closed"
-                            }
-                          />
-                          {closeStatus === "uploaded" &&
-                            !viewedClientIds.has(client.id) && (
-                              <span
-                                className="new-data-badge"
-                                title="New data uploaded - not yet reviewed"
-                              >
-                                NEW
-                              </span>
-                            )}
-                          <span>
-                            {client.name}
-                            <ClientKindBadge client={client} />
-                            {(() => {
-                              // Borrowed while their own CAM is away. Marked so
-                              // it never reads as part of this CAM's own book.
-                              const cover = coverageForClient(
-                                state.coverage || [],
-                                client.id,
-                                todayIsoDate(),
-                              );
-                              if (!cover || cover.coveringCamId !== currentCamProfile?.id) return null;
-                              const absent = (state.camProfiles || []).find(
-                                (profile) => profile.id === cover.absentCamId,
-                              );
-                              return (
-                                <span
-                                  className="client-kind client-kind-covering"
-                                  title={`Covering for ${absent?.name || "another CAM"} until ${cover.endDate || cover.startDate}`}
-                                >
-                                  Covering
-                                </span>
-                              );
-                            })()}
-                            {(() => {
-                              const d = lastContactDaysAgo(client);
-                              return d !== null && d > 3 ? (
-                                <span
-                                  className="last-contact-dot"
-                                  title={`Last contact ${d}d ago`}
-                                  style={{
-                                    background:
-                                      d > 7 ? "var(--error)" : "var(--warning)",
-                                  }}
-                                />
-                              ) : null;
-                            })()}
-                            {(() => {
-                              const td = todayIsoDate();
-                              const tasks = (client.tasks || []).filter(
-                                (t) => !t.done,
-                              );
-                              const overdue = tasks.filter(
-                                (t) => t.dueDate && t.dueDate < td,
-                              ).length;
-                              const dueToday = tasks.filter(
-                                (t) => t.dueDate === td,
-                              ).length;
-                              if (overdue)
-                                return (
-                                  <span
-                                    style={{
-                                      marginLeft: 3,
-                                      fontSize: 9,
-                                      fontWeight: 700,
-                                      color: "var(--negative)",
-                                      background: "rgba(239,68,68,0.15)",
-                                      borderRadius: 3,
-                                      padding: "1px 3px",
-                                    }}
-                                    title={`${overdue} overdue task${overdue !== 1 ? "s" : ""}`}
-                                  >
-                                    {overdue}
-                                  </span>
-                                );
-                              if (dueToday)
-                                return (
-                                  <span
-                                    style={{
-                                      marginLeft: 3,
-                                      fontSize: 9,
-                                      fontWeight: 700,
-                                      color: "var(--warning)",
-                                      background: "rgba(245,158,11,0.15)",
-                                      borderRadius: 3,
-                                      padding: "1px 3px",
-                                    }}
-                                    title={`${dueToday} task${dueToday !== 1 ? "s" : ""} due today`}
-                                  >
-                                    {dueToday}
-                                  </span>
-                                );
-                              return null;
-                            })()}
-                          </span>
-                          {client.credentials?.ip ? (
-                            <small className="sidebar-ip" title="VPS IP">
-                              {client.credentials.ip}
-                            </small>
-                          ) : null}
-                          {(() => {
-                            const latest = importAsOf(client, selectedDate);
-                            if (!latest) return null;
-                            const pnl = (latest.snapshots || []).reduce(
-                              (s, snap) =>
-                                s + Number(snap.grossRealizedPnl || 0),
-                              0,
-                            );
-                            return (
-                              <small
-                                className={
-                                  pnl >= 0
-                                    ? "sidebar-pnl positive"
-                                    : "sidebar-pnl negative"
-                                }
-                              >
-                                {pnl >= 0 ? "+" : ""}
-                                {formatCurrency(pnl)}
-                              </small>
-                            );
-                          })()}
-                          <span
-                            className={`pin-btn${client.pinned ? " pinned" : ""}`}
-                            title={
-                              client.pinned ? "Unpin client" : "Pin to top"
-                            }
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setState((s) => togglePinClient(s, client.id));
-                              updateSupabaseClient(client.id, { pinned: !client.pinned }).then(() => {
-                                auditSilently({
-                                  entityType: "client",
-                                  entityId: client.id,
-                                  action: client.pinned ? "client.unpin" : "client.pin",
-                                  beforeData: { pinned: Boolean(client.pinned) },
-                                  afterData: { clientId: client.id, clientName: client.name, pinned: !client.pinned },
-                                });
-                              }).catch((error) => {
-                                console.error("[CRM] Failed to pin client:", error);
-                                window.alert(`Could not update pin for "${client.name}" in Supabase: ${error.message}`);
-                              });
-                            }}
-                          >
-                            ★
-                          </span>
-                          <em className={badge.tone}>{badge.label}</em>
-                        </button>
-                      );
-                    })}
+                  {workingSidebarClients.map(renderSidebarClientRow)}
+                  {formerSidebarClients.length ? (
+                    <>
+                      <button
+                        type="button"
+                        className="nav-label former-clients-toggle"
+                        aria-expanded={showFormerClients}
+                        title="Clients whose stage is Inactive. Kept here so their history stays reachable."
+                        onClick={() =>
+                          setShowFormerClients((open) => !open)
+                        }
+                      >
+                        {showFormerClients ? (
+                          <ChevronDown size={13} />
+                        ) : (
+                          <ChevronRight size={13} />
+                        )}
+                        Former clients
+                        <span className="former-clients-count">
+                          {formerSidebarClients.length}
+                        </span>
+                      </button>
+                      {showFormerClients
+                        ? formerSidebarClients.map(renderSidebarClientRow)
+                        : null}
+                    </>
+                  ) : null}
                 </>
               )}
             </nav>
@@ -15329,13 +15856,21 @@ export default function App() {
           onCancel={() => setWorkspaceConfirmAction(null)}
           onConfirm={runWorkspaceConfirmAction}
         />
+        {/* camClients is the Manager's middle scope. On his screen
+            `accessibleClients` is the whole book while the sidebar he is looking
+            at is one CAM's, so "all my clients" is ambiguous between two real
+            lists and both are worth having. A CAM gets neither prop: for them
+            the two are the same list. */}
         <ClientExportDialog
           open={clientExport.open}
           onOpenChange={(open) => setClientExport((prev) => ({ ...prev, open }))}
           clients={accessibleClients}
+          camClients={isManagerSession ? currentCamClients : null}
+          camName={isManagerSession ? (currentCamProfile?.name || "") : ""}
           namedScopeForAll={isManagerSession}
           focusClientId={clientExport.focusClientId}
           busy={clientExport.busy}
+          progress={clientExport.progress}
           error={clientExport.error}
           result={clientExport.result}
           onExport={runClientExport}

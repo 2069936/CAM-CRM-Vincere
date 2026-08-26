@@ -12,6 +12,16 @@ import { buildBulletBotDeskStats } from '../domain/bulletBotDeskStats';
  *     the account count means accounts were excluded, and the manager has to see
  *     that rather than infer it.
  *   - A rate the data cannot support renders as "—", never as 0%.
+ *
+ * AND ONE THING THE DESK CANNOT MEASURE AT ALL, STATED RATHER THAN WORKED
+ * AROUND. This panel is the answer to "who passes, long or short, how fast", and
+ * `trading_accounts` carries columns with exactly those names —
+ * bullet_bot_pass_type and bullet_bot_direction — which are blank on almost
+ * every account. Nothing here is read from them: a pass is an observed balance
+ * against the account's own target and a direction is the one the strategy rows
+ * carry. The coverage is printed at the top so a reader who knows those columns
+ * exist knows why they are not the source, and so the desk finds out that
+ * nobody is filling them in. No value is inferred for either.
  */
 
 function percent(rate) {
@@ -207,7 +217,7 @@ function DaysToPass({ days, reason }) {
 
 export default function BulletBotDeskPanel({ clients = [], limit = 8, options = undefined }) {
   const stats = buildBulletBotDeskStats(clients, options);
-  const { cohort, direction, ranking, daysToPass, unavailable } = stats;
+  const { cohort, direction, ranking, daysToPass, unavailable, columns } = stats;
 
   if (!cohort.accounts) {
     return <p className="muted chart-empty">No Bullet Bot evaluation accounts on the book.</p>;
@@ -225,6 +235,16 @@ export default function BulletBotDeskPanel({ clients = [], limit = 8, options = 
         {cohort.inferredTargets
           ? ` ${cohort.inferredTargets} targets were inferred from the standard 50k Bullet Bot plan (53,000) because the account row has none.`
           : ''}
+      </p>
+
+      {/* Stated before any rate below it, not in a footnote under them. The
+          two columns named here are the ones a reader would assume the passes
+          and the directions came from. */}
+      <p className="muted chart-empty">
+        <strong>What the book does not record.</strong> bullet_bot_pass_type is blank on{" "}
+        {columns.passType.blank} of the {columns.accounts} accounts here (
+        {columns.passType.blankShare}%), and bullet_bot_direction on {columns.direction.blank} (
+        {columns.direction.blankShare}%). {columns.reads} {columns.refusal}
       </p>
 
       <h5>Long against Short</h5>
