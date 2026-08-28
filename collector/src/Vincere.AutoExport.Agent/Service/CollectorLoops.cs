@@ -65,7 +65,13 @@ public sealed class CollectorState
 
     public void RecordUploadSuccess(DateTimeOffset acknowledgedAt)
     {
-        lock (gate) value = value with { LastSuccessAt = acknowledgedAt };
+        lock (gate)
+        {
+            // The heartbeat contract describes the capture that was delivered,
+            // not the later network acknowledgement. Keeping both timestamps on
+            // the capture instant also preserves lastSuccessAt <= lastCaptureAt.
+            value = value with { LastSuccessAt = value.LastCaptureAt ?? acknowledgedAt };
+        }
     }
 
     public void RecordError(string code, string safeMessage)

@@ -293,9 +293,12 @@ public sealed class ControlPipeServer : ICollectorLoop
             throw new PlatformNotSupportedException("The secured control pipe requires Windows.");
         using NamedPipeServerStream pipe = CreatePipe();
         await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-        bool administrator = IsAdministrator(pipe);
         ControlCommandRequest request = await ReadFrameAsync<ControlCommandRequest>(pipe, cancellationToken)
             .ConfigureAwait(false);
+        // Windows does not expose the client's impersonation token until the
+        // client has written to the pipe. Reading the bounded request first is
+        // therefore part of the authentication protocol, not just ordering.
+        bool administrator = IsAdministrator(pipe);
         ControlCommandResponse response = await handler.HandleAsync(request, administrator, cancellationToken)
             .ConfigureAwait(false);
         await WriteFrameAsync(pipe, response, cancellationToken).ConfigureAwait(false);
