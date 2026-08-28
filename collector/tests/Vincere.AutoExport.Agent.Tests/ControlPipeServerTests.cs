@@ -1,5 +1,9 @@
 using System;
+using System.Buffers.Binary;
 using System.IO;
+using System.IO.Pipes;
+using System.Security.Principal;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
@@ -18,7 +22,40 @@ namespace Vincere.AutoExport.Agent.Tests;
 
 public sealed class ControlPipeServerTests : IDisposable
 {
+    private static readonly UTF8Encoding Utf8WithoutBom = new(false, true);
     private readonly string directory = Path.Combine(Path.GetTempPath(), "vincere-control-tests", Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public async Task ConnectedClientMayWaitBeforeFirstWriteWithoutKillingTheControlLoop()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Harness harness = CreateHarness();
+        string pipeName = "Vincere.AutoExport.Control.Tests." + Guid.NewGuid().ToString("N");
+        ControlPipeServer server = new(harness.Handler, pipeName);
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        Task serverTask = server.RunOnceAsync(timeout.Token);
+        using NamedPipeClientStream client = new(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous,
+            TokenImpersonationLevel.Impersonation);
+
+        await client.ConnectAsync(timeout.Token);
+        await Task.Delay(TimeSpan.FromMilliseconds(250), timeout.Token);
+
+        Assert.False(serverTask.IsCompleted, "The server must wait for the first request bytes before impersonating the client.");
+
+        Guid requestId = Guid.NewGuid();
+        await WriteFrameAsync(client, new ControlCommandRequest("status", requestId), timeout.Token);
+        ControlCommandResponse response = await ReadFrameAsync<ControlCommandResponse>(client, timeout.Token);
+        await serverTask;
+
+        Assert.True(response.Ok);
+        Assert.Equal(requestId, response.RequestId);
+        Assert.Equal("status_ok", response.Code);
+    }
 
     [Fact]
     public async Task MutatingCommandIsRejectedBeforePairingWhenCallerIsNotAdministrator()
@@ -120,6 +157,25 @@ public sealed class ControlPipeServerTests : IDisposable
             "1.2.3",
             "4.5.6");
         return new Harness(handler, options, token, crm);
+    }
+
+    private static async Task WriteFrameAsync<T>(Stream stream, T value, CancellationToken cancellationToken)
+    {
+        byte[] payload = Utf8WithoutBom.GetBytes(JsonConvert.SerializeObject(value, Formatting.None));
+        byte[] length = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(length, payload.Length);
+        await stream.WriteAsync(length, cancellationToken);
+        await stream.WriteAsync(payload, cancellationToken);
+        await stream.FlushAsync(cancellationToken);
+    }
+
+    private static async Task<T> ReadFrameAsync<T>(Stream stream, CancellationToken cancellationToken)
+    {
+        byte[] length = new byte[4];
+        await stream.ReadExactlyAsync(length, cancellationToken);
+        byte[] payload = new byte[BinaryPrimitives.ReadInt32LittleEndian(length)];
+        await stream.ReadExactlyAsync(payload, cancellationToken);
+        return JsonConvert.DeserializeObject<T>(Utf8WithoutBom.GetString(payload));
     }
 
     private sealed record Harness(

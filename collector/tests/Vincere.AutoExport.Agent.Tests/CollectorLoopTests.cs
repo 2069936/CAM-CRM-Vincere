@@ -24,6 +24,26 @@ public sealed class CollectorLoopTests
         QueueState.Uploading);
 
     [Fact]
+    public void SuccessfulUploadRetainsTheCaptureTimestampForHeartbeatChronology()
+    {
+        CollectorState state = new();
+        DateTimeOffset capturedAt = DateTimeOffset.Parse("2026-07-23T20:45:00Z");
+        DateTimeOffset acknowledgedAt = capturedAt.AddSeconds(3);
+        CaptureRunResult capture = new(
+            new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-07-23", null),
+            true,
+            null,
+            null);
+
+        state.RecordCapture(capture, capturedAt);
+        state.RecordUploadSuccess(acknowledgedAt);
+
+        CollectorStatusSnapshot snapshot = state.Snapshot();
+        Assert.Equal(capturedAt, snapshot.LastCaptureAt);
+        Assert.Equal(capturedAt, snapshot.LastSuccessAt);
+    }
+
+    [Fact]
     public async Task UnpairedUploaderLeavesQueueUntouched()
     {
         FakeQueue queue = new() { Next = Item };
