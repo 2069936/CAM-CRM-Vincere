@@ -148,33 +148,12 @@ Skip this and the CRM works normally; CAMs keep uploading the four NinjaTrader
 CSVs by hand. Until it is done, the Auto Collection card shows **"Installer
 unavailable"** — that is the expected state, not a bug.
 
-1. **Build the agent.** Actions → "Collector Windows" → Run workflow (it has a
-   manual trigger). Produces a `collector-agent-package-<n>` artifact. The
-   package is ~100 MB, so it is a build artifact rather than a committed file.
-
-2. **Stage the two files.** Decide where they will be served from first — any
-   HTTPS folder works (a public Supabase Storage bucket, S3, a static host).
-   That URL is baked into the manifest.
-
-   ```bash
-   ./scripts/prepare-release.sh https://<host>/<folder>
-   ```
-
-   It pulls the newest passing build from this repository's own Actions and
-   writes `release-upload/` containing `Vincere-AutoExport-Agent.zip` and
-   `release-manifest.json`, then prints the three values for step 2. Needs the
-   GitHub CLI (`gh`) and Node.
-
-3. **Upload both files** to that folder. They must sit in the same folder — the
-   CRM rejects a manifest whose artifacts are served from another origin — and
-   the folder must be publicly readable, because the VPS machines download from
-   it directly.
-
-4. **Set the three variables** from step 2 and redeploy.
-
-Re-publishing a newer build later means repeating this and updating
-`AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` with it. The manifest is hash-pinned,
-so a changed manifest with a stale hash is rejected by design.
+The hosted workflow produces a base artifact, while the AddOn is compiled on a
+VPS that has NinjaTrader and inserted by the release composer. Follow
+[`docs/publish-collector-release.md`](publish-collector-release.md) for the exact
+build, four-DLL validation, GitHub Release upload, committed manifest pin, and
+one-VPS acceptance sequence. A base artifact without `AddOn/` is never a
+production release.
 
 Reference: [`docs/publish-collector-release.md`](publish-collector-release.md)
 

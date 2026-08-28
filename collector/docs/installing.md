@@ -11,7 +11,7 @@ command: **Auto Collection → the client → step 1**, with a copy button.
    The build is `win-x64` self-contained, so the machine needs no .NET runtime.
 2. Creates `C:\ProgramData\Vincere\AutoExport`, restricted to LocalSystem and
    Administrators — it holds the device pairing token.
-3. Deploys the NinjaTrader AddOn to `Documents\NinjaTrader 8\bin\Custom\AddOns`
+3. Deploys the NinjaTrader AddOn to `Documents\NinjaTrader 8\bin\Custom`
    when the package carries one.
 4. Registers the `Vincere Auto Export` service as LocalSystem, delayed auto
    start, restarting three times on failure.
@@ -60,11 +60,10 @@ SHA-256, and the manifest carries the package's own SHA-256.
 
 ## The NinjaTrader AddOn
 
-The AddOn is not in the CI-built package — CI only ever authors it against a
-disposable payload, so the real one is deployed from a NinjaTrader-licensed
-machine. `install-agent.ps1` warns and continues when it is absent, so the
-service can be installed and paired first; NinjaTrader capture starts once the
-AddOn is in place.
+The published release contains an `AddOn` folder with four DLLs compiled on a
+machine that has NinjaTrader 8. The installer copies them to `bin\Custom`; it
+does not install an SDK or compile source on a client's machine. A package
+without `AddOn` is a CI base artifact, not a production release.
 
 ## Before rolling out to every machine
 

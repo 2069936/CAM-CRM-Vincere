@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     The AddOn compiles against NinjaTrader's own assemblies, so it can only be
-    built on a machine where NinjaTrader 8 is installed — which is why CI cannot
-    produce it and the agent package ships without it.
+    built on a machine where NinjaTrader 8 is installed. Hosted CI produces the
+    base Agent and Setup package; the release composer adds these DLLs later.
 
     This builds it here and drops the four DLLs into NinjaTrader's bin\Custom
     folder, where it loads external assemblies from.

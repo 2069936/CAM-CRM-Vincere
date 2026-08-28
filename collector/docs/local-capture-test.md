@@ -10,15 +10,15 @@ A machine with **NinjaTrader 8 installed** and the **.NET SDK 8**
 repository. No agent, no service, no pairing code, no CRM.
 
 The AddOn compiles against NinjaTrader's own assemblies, so it can only be built
-where NinjaTrader is installed. That is why CI cannot produce it and why the
-agent package ships without it.
+where NinjaTrader is installed. Hosted CI builds the base Agent and Setup; the
+release composer adds this locally compiled payload to the public package.
 
 ## The short way — one command
 
 On the VPS, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/pedro-cmyks/CAM-CRM-Vincere/dev/natanel/collector/scripts/bootstrap-local-test.ps1 | iex
+irm https://raw.githubusercontent.com/2069936/CAM-CRM-Vincere/main/collector/scripts/bootstrap-local-test.ps1 | iex
 ```
 
 That installs the .NET SDK if the machine lacks it, downloads this repository,
@@ -63,6 +63,11 @@ Then continue from step 3 below.
    ```
 
 6. **Send that JSON file back** for review.
+
+The same build leaves the four reusable release DLLs under
+`Vincere-LocalTest\source\<repository>\collector\src\Vincere.AutoExport.NinjaTrader\bin\Release\net48`.
+Keep that folder: the release composer validates and places those DLLs in the
+public agent ZIP, so client installations do not compile anything.
 
 ## What to check in the file
 

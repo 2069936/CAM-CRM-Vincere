@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Builds the auto-collection release manifest and prints the two environment
-// values the CRM needs. Run it after uploading the agent package, or before —
+// values the application release pin needs. Run it after uploading the agent package, or before —
 // the URLs just have to be the ones the files will finally live at.
 //
 //   node scripts/make-release-manifest.mjs \
@@ -10,7 +10,7 @@
 //     --out ./release-manifest.json
 //
 // Then upload BOTH the package and the generated manifest to that base URL, and
-// set the two printed variables in the CRM's Vercel project.
+// commit the printed URL and digest in server/apiLib/collectorRelease.js.
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -67,8 +67,8 @@ console.log(`Wrote ${outPath}\n`);
 console.log('Upload these two files to that base URL:');
 console.log(`  1. ${name}`);
 console.log(`  2. ${basename(outPath)}\n`);
-console.log('Then set these in the CRM project (Vercel > Settings > Environment Variables):');
-console.log(`  AUTO_COLLECTION_RELEASE_MANIFEST_URL=${baseUrl.replace(/\/+$/, '')}/${basename(outPath)}`);
+console.log('Pin these values in server/apiLib/collectorRelease.js:');
+console.log(`  DEFAULT_RELEASE_MANIFEST_URL=${baseUrl.replace(/\/+$/, '')}/${basename(outPath)}`);
 // The manifest is pinned by hash, so any later edit to it is rejected until
 // this value is updated too.
-console.log(`  AUTO_COLLECTION_RELEASE_MANIFEST_SHA256=${createHash('sha256').update(text).digest('hex')}`);
+console.log(`  DEFAULT_RELEASE_MANIFEST_SHA256=${createHash('sha256').update(text).digest('hex')}`);

@@ -117,14 +117,12 @@ jobs:
           ) -Destination $probeStage
           Compress-Archive -Path "$probeStage\*" `
             -DestinationPath 'artifacts\Vincere-NinjaTrader-Parity-Probe.zip' -Force
-      - name: Build agent package ZIP for the script installer
+      - name: Build base agent package ZIP for release composition
         shell: pwsh
         run: |
-          # The package the PowerShell installer expands — this is how the
-          # agent is distributed. The AddOn is deliberately absent: CI only ever
-          # authors it against a disposable payload, so the real one is deployed
-          # from the NinjaTrader-licensed machine, and install-agent.ps1 warns
-          # and continues when it is missing.
+          # GitHub-hosted CI cannot compile against NinjaTrader's licensed host
+          # assemblies. This base artifact is not a publishable release: the
+          # release composer must add the four DLLs built on a NinjaTrader VPS.
           $stage = 'artifacts\agent-package'
           New-Item -ItemType Directory -Path "$stage\Agent", "$stage\Setup" -Force | Out-Null
           Copy-Item -Path 'artifacts\agent\*' -Destination "$stage\Agent" -Recurse -Force
@@ -138,7 +136,7 @@ jobs:
             -DestinationPath 'artifacts\Vincere-AutoExport-Agent.zip' -Force
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: collector-agent-package-${{ github.run_number }}
+          name: collector-agent-base-package-${{ github.run_number }}
           path: artifacts/Vincere-AutoExport-Agent.zip
           retention-days: 7
           if-no-files-found: error

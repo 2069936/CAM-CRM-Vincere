@@ -13,7 +13,7 @@
     Downloads a source zip rather than cloning, so git is not required.
 
 .PARAMETER Branch
-    Branch to download. Defaults to dev/natanel.
+    Branch to download. Defaults to main in the canonical repository.
 
 .PARAMETER WorkFolder
     Where to unpack and build. Defaults to a Vincere folder under the user profile.
@@ -23,7 +23,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Branch = 'dev/natanel',
+    [string]$Branch = 'main',
     [string]$WorkFolder = (Join-Path $env:USERPROFILE 'Vincere-LocalTest'),
     [string]$NinjaTraderHome = "${env:ProgramFiles}\NinjaTrader 8"
 )
@@ -31,7 +31,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is far faster without the progress UI
 
-$Repository = 'pedro-cmyks/CAM-CRM-Vincere'
+$Repository = '2069936/CAM-CRM-Vincere'
 
 function Write-Step { param([string]$Text) Write-Host "`n==> $Text" -ForegroundColor Cyan }
 function Write-Ok { param([string]$Text) Write-Host "    $Text" -ForegroundColor Green }
@@ -102,6 +102,8 @@ if (-not (Test-Path -LiteralPath $buildScript)) {
 
 & $buildScript -NinjaTraderHome $NinjaTraderHome
 
+$addOnOutput = Join-Path $repoRoot.FullName 'collector\src\Vincere.AutoExport.NinjaTrader\bin\Release\net48'
+
 Write-Host ''
 Write-Host '================================================================' -ForegroundColor Green
 Write-Host ' Setup done. Two steps left, both in NinjaTrader:' -ForegroundColor Green
@@ -117,4 +119,7 @@ Write-Host '     A box tells you where it saved the JSON and how many rows it fo
 Write-Host '     It saves under Documents\VincereAutoExport\.'
 Write-Host ''
 Write-Host '  Then send that JSON file back for review.'
+Write-Host ''
+Write-Host 'Release DLLs (keep this folder for package composition):'
+Write-Host "  $addOnOutput"
 Write-Host ''

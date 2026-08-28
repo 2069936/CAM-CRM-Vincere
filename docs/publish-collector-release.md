@@ -1,110 +1,138 @@
-# Publishing the collector (for whoever owns the infrastructure)
+# Publishing the complete auto-collector release
 
-The auto-collector is an agent that runs on each client's Windows VPS and uploads
-the daily close by itself. The code ships in this repo; turning it on is four
-steps, all done by whoever has access to the hosting and the CRM's environment
-variables. Nothing here needs access to anyone else's repository.
+The public package has three parts that must travel together:
 
-Until a release is published the Auto Collection card shows **"Installer
-unavailable"** — that is the expected state, not a bug.
+- the Windows service (`Agent/`);
+- the pairing application (`Setup/`);
+- the four compiled NinjaTrader runtime DLLs (`AddOn/`).
 
-## Step 1 — build the agent package
+GitHub-hosted CI builds and tests the first two. The AddOn must be compiled once
+on a Windows machine with NinjaTrader 8 because its project references
+NinjaTrader's installed assemblies. Client machines never compile source.
 
-The package is a ~100 MB build artifact, so it is not committed. Produce it from
-this repo's own CI:
+No CRM-console access, self-hosted Actions runner, or Authenticode certificate is
+required for this unsigned release path. Integrity remains enforced by the
+committed SHA-256 pin for the manifest and the package hash inside the manifest.
 
-**Actions → "Collector Windows" → Run workflow.** It has a manual trigger, so it
-can be run on any branch. When it finishes, the run has an artifact named
-`collector-agent-package-<number>`.
+## Prerequisites
 
-## Step 2 — stage the two files
+- A green `Collector Windows` workflow run for the commit being released.
+- A VPS with NinjaTrader 8 and PowerShell. NinjaTrader must be closed during the
+  AddOn build.
+- On the release workstation: `gh`, Node.js, `zip`, and `unzip`.
 
-Decide first where the files will be **served from** — any HTTPS folder works
-(Supabase Storage public bucket, S3, a static host). That URL is baked into the
-manifest, so it has to be known up front.
+## 1. Build and test the base package
 
-```bash
-./scripts/prepare-release.sh https://<project>.supabase.co/storage/v1/object/public/collector
+Run **Actions → Collector Windows → Run workflow** on the release commit. The
+workflow tests the service and Setup on Windows and uploads
+`collector-agent-base-package-<run-number>`.
+
+That artifact intentionally has no `AddOn/` directory and is not publishable by
+itself. The release composer below refuses a missing or empty AddOn DLL.
+
+## 2. Compile the AddOn on the NinjaTrader VPS
+
+Close NinjaTrader, open PowerShell, and run:
+
+```powershell
+irm https://raw.githubusercontent.com/2069936/CAM-CRM-Vincere/main/collector/scripts/bootstrap-local-test.ps1 | iex
 ```
 
-It pulls the newest successful build from this repository's Actions, and writes
-`release-upload/`:
+The script downloads the canonical `main` source, installs the .NET 8 SDK for
+the current user if necessary, compiles against the local NinjaTrader install,
+installs the AddOn into `Documents\NinjaTrader 8\bin\Custom`, and prints the
+build-output directory.
 
-| File | What it is |
-|---|---|
-| `Vincere-AutoExport-Agent.zip` | the agent, the pairing window, and the install scripts |
-| `release-manifest.json` | version and SHA-256 of the package |
+Copy these four non-empty files from that directory to one folder on the release
+workstation:
 
-and prints the two environment values from step 4.
-
-Requires the GitHub CLI (`gh`) and Node. To pull from a different repository:
-`COLLECTOR_REPO=<owner/repo> ./scripts/prepare-release.sh <base-url>`.
-
-## Step 3 — upload both files
-
-Upload **both** files to that exact folder. They must share one origin — the CRM
-rejects a manifest whose artifacts are served from somewhere else. The folder has
-to be publicly readable: the VPS machines download from it directly.
-
-## Step 4 — set the environment variables
-
-In the CRM project (Vercel → Settings → Environment Variables):
-
-| Variable | Value |
-|---|---|
-| `AUTO_COLLECTION_RELEASE_MANIFEST_URL` | URL of `release-manifest.json` |
-| `AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` | the hash printed in step 2 |
-| `AUTO_COLLECTION_MIN_AGENT_VERSION` | the version printed in step 2, e.g. `0.0.5830` |
-| `INGEST_TOKEN_PEPPER` | a secret: `openssl rand -hex 32`. Generate it here and keep it here — it should never be sent over chat or committed. |
-
-Redeploy, then confirm nothing is missing:
-
-```bash
-node scripts/verify-auto-collection-env.mjs
+```text
+Vincere.AutoExport.NinjaTrader.dll
+Vincere.AutoExport.NinjaTrader.Core.dll
+Vincere.AutoExport.Contracts.dll
+Newtonsoft.Json.dll
 ```
 
-## Step 5 — confirm it worked
+The Control Center menu **New → Vincere: Export Snapshot to File (local test)**
+is the host-level check that this build loads and reads NinjaTrader.
 
-Open **Auto Collection** for any client. The card should stop saying "Installer
-unavailable" and show a PowerShell command with a copy button.
+## 3. Compose the public ZIP and manifest
 
-To onboard a machine: on the client's VPS, open PowerShell **as administrator**
-with NinjaTrader closed, paste that command, then paste the pairing code the card
-generates.
+Choose the final GitHub Release tag before generating the manifest because its
+asset URL is embedded in the manifest. For version `1.0.1`:
 
-## Re-publishing a newer build
+```bash
+./scripts/prepare-release.sh \
+  https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.1 \
+  /absolute/path/to/addon-dlls \
+  1.0.1 \
+  <successful-workflow-run-id>
+```
 
-Repeat steps 1–3, then update `AUTO_COLLECTION_RELEASE_MANIFEST_SHA256` to the
-new value. The manifest is hash-pinned, so a changed manifest with a stale hash
-is rejected — that is deliberate, and it is why the variable must move with it.
+The run ID is optional; omitting it selects the newest successful
+`Collector Windows` run. The command downloads the CI base package, validates
+all four DLLs, creates `AddOn/`, and writes:
 
-## Why the package is unsigned
+```text
+release-upload/Vincere-AutoExport-Agent.zip
+release-upload/release-manifest.json
+```
 
-Distribution does not depend on a code-signing certificate. Integrity is still
-enforced: the manifest is pinned by SHA-256 through the environment variable, and
-the package carries its own SHA-256 inside the manifest, so a tampered download
-is rejected. What is absent is the Authenticode signature, so Windows warns when
-a script downloaded from the internet is run — `collector/docs/installing.md`
-covers `Unblock-File` for that.
+Before publishing, inspect the exact AddOn entries:
 
-## Known gap to close on staging
+```bash
+unzip -l release-upload/Vincere-AutoExport-Agent.zip | grep 'AddOn/'
+shasum -a 256 release-upload/Vincere-AutoExport-Agent.zip release-upload/release-manifest.json
+```
 
-Automatic imports persist through a Postgres function that no test currently
-executes — the database tests exist but are skipped unless
-`AUTO_COLLECTION_TEST_DATABASE_URL` points at a real database. Once a staging
-Supabase is available, set that variable and run the suite; the tests are
-already written. Details in `docs/verification/auto-collection-crm.md`.
+## 4. Publish the GitHub Release
 
-## What runs where
+```bash
+gh release create agent-v1.0.1 \
+  release-upload/Vincere-AutoExport-Agent.zip \
+  release-upload/release-manifest.json \
+  --repo 2069936/CAM-CRM-Vincere \
+  --title 'Auto-Export Agent 1.0.1' \
+  --notes 'Complete collector release with Agent, Setup, and NinjaTrader AddOn.'
+```
 
-| Piece | Where it runs |
-|---|---|
-| CRM | Vercel + Supabase (already deployed) |
-| Ingest API (`api/ingest/*`) | same Vercel project, no extra setup |
-| Agent + pairing window | each client's Windows VPS |
-| NinjaTrader AddOn | each client's VPS, inside NinjaTrader |
+Do not replace assets under an already pinned tag. Publish a new tag so the old
+release remains reproducible.
 
-The AddOn is intentionally not in the package: CI only ever authors it against a
-disposable payload, so the real one is deployed from a NinjaTrader-licensed
-machine. `install-agent.ps1` warns and continues when it is absent, so the
-service can be installed and paired before the AddOn is in place.
+## 5. Pin the new release in application code
+
+`scripts/make-release-manifest.mjs` prints the manifest SHA-256. Update both
+constants in `server/apiLib/collectorRelease.js`:
+
+```js
+const DEFAULT_RELEASE_MANIFEST_URL =
+  'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.1/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = '<printed manifest sha256>';
+```
+
+Run the release resolver tests and merge through the normal `main` deployment.
+The application already deploys from the repository, so this step does not
+require entering CRM or Vercel settings. Environment overrides, if deliberately
+configured, still take precedence over the committed default.
+
+## 6. Acceptance test on one VPS
+
+With NinjaTrader closed, install from the command shown by Auto Collection. Then
+verify in this order:
+
+1. Setup passes **Checking this VPS** without `unexpected_loop_failure`.
+2. Pairing accepts a fresh enrollment code.
+3. NinjaTrader starts and shows the Vincere local-export menu.
+4. A manual test capture reaches the queue and the CRM acknowledges it.
+5. The next heartbeat is accepted after that acknowledgement.
+6. The four captured sections match the local JSON for the same trading day.
+
+Only after all six checks should the package be used on other VPS machines.
+
+## Rollback
+
+The previous GitHub Release remains immutable. Reverting the two committed
+manifest constants restores the previous download after the normal deployment.
+`C:\ProgramData\Vincere\AutoExport` remains preserved by default, so reinstalling
+does not discard pairing unless `uninstall-agent.ps1 -RemoveData` is explicitly
+used.

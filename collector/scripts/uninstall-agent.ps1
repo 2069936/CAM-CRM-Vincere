@@ -54,7 +54,7 @@ if (-not $KeepAddOn) {
     if (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue) {
         Write-Warning 'NinjaTrader is running - the AddOn was left in place. Close it and re-run to remove the AddOn.'
     } else {
-        $addOnTarget = Join-Path $NinjaTraderDocumentsPath 'bin\Custom\AddOns'
+        $addOnTarget = Join-Path $NinjaTraderDocumentsPath 'bin\Custom'
         $addOnFiles = Get-ChildItem -LiteralPath $addOnTarget -Filter 'Vincere.AutoExport*' -ErrorAction SilentlyContinue
         if ($addOnFiles) {
             Write-Step 'Removing the NinjaTrader AddOn'
