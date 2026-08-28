@@ -2,7 +2,6 @@ using System;
 using System.Buffers.Binary;
 using System.IO;
 using System.IO.Pipes;
-using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,8 +38,7 @@ public sealed class ControlPipeServerTests : IDisposable
             ".",
             pipeName,
             PipeDirection.InOut,
-            PipeOptions.Asynchronous,
-            TokenImpersonationLevel.Impersonation);
+            PipeOptions.Asynchronous);
 
         await client.ConnectAsync(timeout.Token);
         await Task.Delay(TimeSpan.FromMilliseconds(250), timeout.Token);
