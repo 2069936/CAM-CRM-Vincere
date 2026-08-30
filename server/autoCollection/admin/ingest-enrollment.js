@@ -112,6 +112,16 @@ export function createHandler({
         if (action === 'generate' && body.reason != null) throw new ApiError(400, 'invalid_reason');
         const reasonCode = action === 'rebind' ? requireAllowedReason(body.reason, REBIND_REASONS) : null;
         const requestNow = now();
+        // Say which knob is missing rather than throwing a 500 the caller has to
+        // guess at. Without INGEST_TOKEN_PEPPER, issueCode throws "Credential
+        // pepper is required" (apiLib/ingestTokens.js), which surfaced in the CRM
+        // as "Collector setup is temporarily unavailable. Try again." -- wording
+        // that invites a retry when retrying can never work, and that cost a desk
+        // a day of guessing before someone read the code. The pepper is a
+        // deployment secret and no code path may invent one: a generated value
+        // would differ per instance and per deploy, and every already-paired VPS
+        // would stop authenticating.
+        if (!String(pepper || '').trim()) throw new ApiError(503, 'collector_not_configured');
         const issued = issueCode({ pepper, now: requestNow });
         const created = await store.createEnrollment({
           clientId,

@@ -238,3 +238,47 @@ describe('ingest enrollment Supabase store', () => {
     expect(admin.from).not.toHaveBeenCalled();
   });
 });
+
+describe('missing deployment configuration', () => {
+  it('names the absent pepper instead of failing as a generic server error', async () => {
+    // The desk lost the better part of a day to this. Without
+    // INGEST_TOKEN_PEPPER the handler threw "Credential pepper is required"
+    // from inside token issuing, which reached the CRM as a 500 and was
+    // rendered "Collector setup is temporarily unavailable. Try again." So the
+    // CAM retried a button that could never work, on every client, with no way
+    // to tell this apart from a real outage. A missing deployment secret is not
+    // a transient fault and must not be described as one.
+    const handler = createHandler({
+      createClients: () => ({ admin: {}, auth: {} }),
+      authorize: async () => ({ id: CLIENT_ID }),
+      createStore: () => ({
+        createEnrollment: async () => { throw new Error('the store must not be reached'); },
+      }),
+      pepper: '',
+    });
+    const res = response();
+
+    await handler(request('POST', { clientUuid: CLIENT_ID }), res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe('collector_not_configured');
+  });
+
+  it('refuses to invent a pepper, because that would unpair every live VPS', async () => {
+    // A generated fallback would look like a fix and behave like sabotage: the
+    // value differs per instance and per deploy, so codes and device tokens
+    // hashed under one would stop verifying under the next.
+    const issueCode = vi.fn();
+    const handler = createHandler({
+      createClients: () => ({ admin: {}, auth: {} }),
+      authorize: async () => ({ id: CLIENT_ID }),
+      createStore: () => ({ createEnrollment: async () => ({}) }),
+      issueCode,
+      pepper: '   ',
+    });
+
+    await handler(request('POST', { clientUuid: CLIENT_ID }), response());
+
+    expect(issueCode).not.toHaveBeenCalled();
+  });
+});
