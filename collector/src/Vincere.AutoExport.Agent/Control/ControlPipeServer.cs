@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.ComponentModel;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
@@ -293,9 +294,18 @@ public sealed class ControlPipeServer : ICollectorLoop
             throw new PlatformNotSupportedException("The secured control pipe requires Windows.");
         using NamedPipeServerStream pipe = CreatePipe();
         await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-        bool administrator = IsAdministrator(pipe);
+
+        // READ BEFORE IMPERSONATING. Windows does not make the client's token
+        // available to the server just because the pipe connected: the client has
+        // to have written at least once, which .NET states in RunAsClient's own
+        // remarks. This used to impersonate first, so on a real VPS the server
+        // woke, called RunAsClient before Setup had sent a byte, threw, and the
+        // supervisor tore the connection down. Setup saw a closed pipe and
+        // reported "The service returned an invalid response", and the install
+        // could never leave step 1.
         ControlCommandRequest request = await ReadFrameAsync<ControlCommandRequest>(pipe, cancellationToken)
             .ConfigureAwait(false);
+        bool administrator = IsAdministrator(pipe);
         ControlCommandResponse response = await handler.HandleAsync(request, administrator, cancellationToken)
             .ConfigureAwait(false);
         await WriteFrameAsync(pipe, response, cancellationToken).ConfigureAwait(false);
@@ -323,12 +333,26 @@ public sealed class ControlPipeServer : ICollectorLoop
     private static bool IsAdministrator(NamedPipeServerStream pipe)
     {
         bool administrator = false;
-        pipe.RunAsClient(() =>
+        try
         {
-            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
-            WindowsPrincipal principal = new(identity);
-            administrator = identity.IsSystem || principal.IsInRole(WindowsBuiltInRole.Administrator);
-        });
+            pipe.RunAsClient(() =>
+            {
+                using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+                WindowsPrincipal principal = new(identity);
+                administrator = identity.IsSystem || principal.IsInRole(WindowsBuiltInRole.Administrator);
+            });
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or Win32Exception)
+        {
+            // Failing to impersonate is not a reason to drop the connection. It
+            // used to be: the exception escaped, the supervisor caught it, and the
+            // caller got a severed pipe with no explanation. Denying the privilege
+            // is both safer and more useful -- `status` needs no privilege and will
+            // answer, and a command that does need one comes back as
+            // `administrator_required`, which names the problem instead of hiding
+            // it behind a dead socket.
+            administrator = false;
+        }
         return administrator;
     }
 
