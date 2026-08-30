@@ -64,7 +64,7 @@ public sealed class ControlPipeTransportTests
     }
 
     [Fact]
-    public async Task DoesNotDropTheConnectionWhenTheCallerCannotBeImpersonated()
+    public async Task AnswersEvenWhenTheClientAsksForNoImpersonation()
     {
         if (!OnWindows) return; // The control pipe is Windows-only by design.
 
@@ -74,10 +74,17 @@ public sealed class ControlPipeTransportTests
         using CancellationTokenSource lifetime = new(TimeSpan.FromSeconds(15));
         Task serving = server.RunOnceAsync(lifetime.Token);
 
-        // TokenImpersonationLevel.None denies the server the right to impersonate.
-        // The connection must still be answered: `status` needs no privilege, and a
-        // command that does must come back as a refusal the caller can read, never
-        // as a severed pipe.
+        // TokenImpersonationLevel.None asks for no impersonation. It does NOT
+        // reliably prevent it -- an earlier version of this test asserted the
+        // server would see an unprivileged caller and CI proved otherwise, because
+        // Windows applies a default security quality of service when the client
+        // specifies none, and the server impersonated successfully anyway.
+        //
+        // So this does not assert who the caller turned out to be, which is not
+        // ours to decide and varies with the account running the tests. It asserts
+        // the property that actually failed in production: whatever happens while
+        // reading the caller's identity, the connection is answered rather than
+        // severed. That is what Setup needs, and a dropped pipe is what it got.
         using NamedPipeClientStream client = new(
             ".",
             pipeName,
@@ -92,7 +99,8 @@ public sealed class ControlPipeTransportTests
         await serving;
 
         Assert.Equal(requestId, response.RequestId);
-        Assert.False(handler.LastIsAdministrator);
+        Assert.True(response.Ok);
+        Assert.Equal("status", handler.LastCommand);
     }
 
     private static async Task WriteFrameAsync(Stream stream, object payload, CancellationToken cancellationToken)
