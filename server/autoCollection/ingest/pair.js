@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { resolveIngestPepper } from '../../apiLib/ingestPepper.js';
 import { createServiceClient } from '../../apiLib/apiAuth.js';
 import { normalizeCollectorVersion } from '../../apiLib/collectorVersion.js';
 import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
@@ -142,7 +143,7 @@ export function createHandler({
   createStore = createPairStore,
   createLimiter = createPairRateLimiter,
   trustedClientIp = trustedVercelClientIp,
-  pepper = process.env.INGEST_TOKEN_PEPPER,
+  pepper = resolveIngestPepper(),
   maxAttempts = positiveInteger(process.env.INGEST_PAIR_RATE_LIMIT_MAX_ATTEMPTS, 10),
   windowSeconds = positiveInteger(process.env.INGEST_PAIR_RATE_LIMIT_WINDOW_SECONDS, 60),
   blockSeconds = positiveInteger(process.env.INGEST_PAIR_RATE_LIMIT_BLOCK_SECONDS, 300),

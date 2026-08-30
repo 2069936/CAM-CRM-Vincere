@@ -1,4 +1,4 @@
-import process from 'node:process';
+import { resolveIngestPepper } from '../../apiLib/ingestPepper.js';
 import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
 import { issueEnrollmentCode } from '../../apiLib/ingestTokens.js';
@@ -86,7 +86,7 @@ export function createHandler({
   authorize = requireAppUser,
   createStore = createIngestEnrollmentStore,
   issueCode = issueEnrollmentCode,
-  pepper = process.env.INGEST_TOKEN_PEPPER,
+  pepper = resolveIngestPepper(),
   now = () => new Date(),
 } = {}) {
   return async function handler(req, res) {

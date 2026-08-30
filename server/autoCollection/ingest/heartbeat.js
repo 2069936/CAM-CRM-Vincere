@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { resolveIngestPepper } from '../../apiLib/ingestPepper.js';
 import { createServiceClient } from '../../apiLib/apiAuth.js';
 import { normalizeCollectorVersion, requiresCollectorUpdate } from '../../apiLib/collectorVersion.js';
 import { createDeviceAuthStore, requireIngestDevice } from '../../apiLib/deviceAuth.js';
@@ -186,7 +187,7 @@ export function createHandler({
   createAuthStore = createDeviceAuthStore,
   createStore = createHeartbeatStore,
   authenticate = requireIngestDevice,
-  pepper = process.env.INGEST_TOKEN_PEPPER,
+  pepper = resolveIngestPepper(),
   minimumAgentVersion = process.env.AUTO_COLLECTION_MIN_AGENT_VERSION,
   minIntervalSeconds = parseHeartbeatIntervalSeconds(
     process.env.AUTO_COLLECTION_HEARTBEAT_MIN_INTERVAL_SECONDS,
