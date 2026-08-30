@@ -1,6 +1,23 @@
 import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, UploadCloud } from 'lucide-react';
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from '../domain/csvImport';
+import { normalizeAutoImportSnapshot } from '../domain/autoImport';
+
+const SECTIONS = ['accounts', 'strategies', 'orders', 'executions'];
+
+// One snapshot.json carries all four sections, where the CSV route needs four
+// separate exports. The rest of the upload path is written against a list of
+// per-file results, so a snapshot is presented as the four it stands in for.
+// That keeps summarizeUploadTypes, the completeness warning and the file pills
+// working unchanged rather than growing a second notion of "complete".
+function snapshotAsParsedFiles(fileName, parsed) {
+  return SECTIONS.map((section) => ({
+    fileName: `${fileName} (${section})`,
+    type: section,
+    rows: parsed[section] || [],
+    errors: [],
+  }));
+}
 
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
@@ -20,6 +37,33 @@ export default function UploadArea({ onParsed }) {
     setError('');
     setIsProcessing(true);
     try {
+      // A snapshot is the whole close in one file, so it is never combined with
+      // loose CSVs: doing that would double count whatever they overlap on, and
+      // silently, since both routes end in the same reconcile.
+      const snapshots = files.filter((file) => /\.json$/i.test(file.name));
+      if (snapshots.length && snapshots.length !== files.length) {
+        throw new Error('Upload either the four NinjaTrader CSV exports or one snapshot .json from the AddOn, not both at once.');
+      }
+      if (snapshots.length > 1) {
+        throw new Error('Upload one snapshot .json at a time. Each one is a complete close on its own.');
+      }
+
+      if (snapshots.length === 1) {
+        const file = snapshots[0];
+        const text = await readFileAsText(file);
+        // normalizeAutoImportSnapshot is the same function the automatic path
+        // uses server side, so a file uploaded by hand and a file delivered by
+        // the agent are read by identical code and cannot disagree.
+        const { parsed: sections } = normalizeAutoImportSnapshot(JSON.parse(text));
+        const asFiles = snapshotAsParsedFiles(file.name, sections);
+        setParsedFiles(asFiles);
+        onParsed(
+          SECTIONS.reduce((acc, section) => ({ ...acc, [section]: sections[section] || [] }), {}),
+          asFiles,
+        );
+        return;
+      }
+
       const parsed = [];
       for (const file of files) {
         const text = await readFileAsText(file);
@@ -51,11 +95,11 @@ export default function UploadArea({ onParsed }) {
       <label className="upload-dropzone">
         <UploadCloud size={22} />
         <span>{isProcessing ? 'Processing files...' : 'Upload NinjaTrader daily files'}</span>
-        <small>Accounts, strategies, orders, and executions. Headers can be in any order.</small>
+        <small>The four NinjaTrader exports, or one snapshot .json from the AddOn. Headers can be in any order.</small>
         <input
           type="file"
           multiple
-          accept=".csv"
+          accept=".csv,.json"
           onChange={(event) => handleFiles(Array.from(event.target.files || []))}
         />
       </label>
