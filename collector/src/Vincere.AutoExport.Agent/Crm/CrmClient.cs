@@ -517,13 +517,25 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             "upload_failed",
             "configuration_error",
         };
-        if (payload.QueueDepth < 0
-            || payload.QueueBytes < 0
-            || (!string.IsNullOrEmpty(payload.LastErrorCode)
-                && !allowedErrorCodes.Contains(payload.LastErrorCode, StringComparer.Ordinal))
-            || (payload.LastCaptureAt.HasValue
-                && payload.LastSuccessAt.HasValue
-                && payload.LastSuccessAt > payload.LastCaptureAt))
+        // An unrecognised code is DROPPED, never a reason to refuse to send. This
+        // used to throw, and the agent set `heartbeat_failed` on itself whenever a
+        // heartbeat failed -- a code missing from the list above. So one failed
+        // heartbeat poisoned every heartbeat after it: send, fail, record
+        // heartbeat_failed, refuse to send because of heartbeat_failed, forever,
+        // every five seconds, with the CRM showing the VPS as never having paired.
+        // A heartbeat is a liveness signal; the diagnostic field is the least
+        // important thing in it and must not be able to suppress it.
+        string errorCode = string.IsNullOrEmpty(payload.LastErrorCode)
+            || allowedErrorCodes.Contains(payload.LastErrorCode, StringComparer.Ordinal)
+            ? payload.LastErrorCode
+            : null;
+        // Deliberately NOT rejecting LastSuccessAt > LastCaptureAt. An upload
+        // finishes after the capture it carries, so that is the ordinary order,
+        // and the opposite is ordinary too once a capture has happened since the
+        // last acknowledged upload. Neither says anything is wrong, and refusing
+        // the first would have broken every heartbeat after the first successful
+        // upload.
+        if (payload.QueueDepth < 0 || payload.QueueBytes < 0)
         {
             throw new ArgumentException("Heartbeat metadata is invalid.", nameof(payload));
         }
@@ -538,7 +550,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             AgentVersion = NormalizeVersion(payload.AgentVersion, nameof(payload.AgentVersion)),
             AddonVersion = NormalizeVersion(payload.AddonVersion, nameof(payload.AddonVersion)),
             NinjaTraderVersion = NormalizeVersion(payload.NinjaTraderVersion, nameof(payload.NinjaTraderVersion)),
-            LastErrorCode = string.IsNullOrEmpty(payload.LastErrorCode) ? null : payload.LastErrorCode,
+            LastErrorCode = string.IsNullOrEmpty(errorCode) ? null : errorCode,
             LastErrorMessage = string.IsNullOrEmpty(safeMessage) ? null : safeMessage,
         };
     }

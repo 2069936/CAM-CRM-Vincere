@@ -103,10 +103,11 @@ export function normalizeHeartbeatBody(value, {
     if (addonAvailable !== null && typeof addonAvailable !== 'boolean') throw invalidHeartbeat();
     const lastCaptureAt = nullableTimestamp(value.lastCaptureAt, latestAllowedMs);
     const lastSuccessAt = nullableTimestamp(value.lastSuccessAt, latestAllowedMs);
-    if (lastCaptureAt && lastSuccessAt
-      && Date.parse(lastSuccessAt) > Date.parse(lastCaptureAt)) {
-      throw invalidHeartbeat();
-    }
+    // No ordering rule between these two. An upload finishes after the capture it
+    // carries, so lastSuccessAt later than lastCaptureAt is the ordinary case,
+    // and the reverse is ordinary as well once a capture has happened since the
+    // last acknowledged upload. Rejecting the first meant every heartbeat after
+    // a successful upload was refused as malformed.
     return {
       agentVersion: normalizeCollectorVersion(value.agentVersion),
       addonVersion: normalizeCollectorVersion(value.addonVersion),

@@ -167,6 +167,65 @@ public sealed class CrmClientHeartbeatTests
         public string ReadMachineGuid() => "MACHINE-GUID";
     }
 
+    // Measured on a live VPS, 2026-08-31. The machine paired, captured, and
+    // queued its snapshot, and then every heartbeat was refused with
+    // "Heartbeat metadata is invalid" every five seconds. The agent sets
+    // `heartbeat_failed` on itself when a heartbeat fails, and that code was not
+    // in the allowlist this method checked, so the first failure made every
+    // later heartbeat unsendable and the CRM showed a working VPS as unpaired.
+    // A heartbeat is a liveness signal: the diagnostic field must never be able
+    // to suppress it.
+    [Fact]
+    public async Task StillSendsWhenTheLastErrorCodeIsOneTheAllowlistDoesNotKnow()
+    {
+        RecordingHandler handler = new(_ => Json(HttpStatusCode.OK, """
+            {"ok":true,"deviceId":"33333333-3333-4333-8333-333333333333","status":"online","updateRequired":false,"throttled":false,"schedule":{"time":"16:30","timeZone":"America/New_York"}}
+            """));
+        CrmClient client = CreateClient(handler);
+        HeartbeatPayload payload = Payload() with { LastErrorCode = "heartbeat_failed" };
+
+        HeartbeatResult result = await client.SendHeartbeatAsync(payload);
+
+        Assert.Equal("online", result.Status);
+        RecordedRequest request = Assert.Single(handler.Requests);
+        // Dropped rather than forwarded: the server has its own allowlist, and an
+        // unknown code is not worth failing a liveness signal over.
+        Assert.DoesNotContain("heartbeat_failed", request.Body);
+    }
+
+    // An upload finishes after the capture it carries, so this ordering is the
+    // ordinary one. Rejecting it meant every heartbeat after the agent's first
+    // successful upload would have been refused as malformed.
+    [Fact]
+    public async Task AcceptsASuccessThatIsNewerThanTheCaptureItCarried()
+    {
+        RecordingHandler handler = new(_ => Json(HttpStatusCode.OK, """
+            {"ok":true,"deviceId":"33333333-3333-4333-8333-333333333333","status":"online","updateRequired":false,"throttled":false,"schedule":{"time":"16:30","timeZone":"America/New_York"}}
+            """));
+        CrmClient client = CreateClient(handler);
+        HeartbeatPayload payload = Payload() with
+        {
+            LastCaptureAt = new DateTimeOffset(2026, 8, 31, 16, 30, 0, TimeSpan.FromHours(-4)),
+            LastSuccessAt = new DateTimeOffset(2026, 8, 31, 16, 31, 0, TimeSpan.FromHours(-4)),
+        };
+
+        HeartbeatResult result = await client.SendHeartbeatAsync(payload);
+
+        Assert.Equal("online", result.Status);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task StillRefusesMetadataThatCannotBeTrue()
+    {
+        CrmClient client = CreateClient(new RecordingHandler(_ => Json(HttpStatusCode.OK, "{}")));
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => client.SendHeartbeatAsync(Payload() with { QueueDepth = -1 }));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => client.SendHeartbeatAsync(Payload() with { QueueBytes = -1 }));
+    }
+
     private sealed class RecordingDelay : IRetryDelay
     {
         public List<TimeSpan> Delays { get; } = new();
