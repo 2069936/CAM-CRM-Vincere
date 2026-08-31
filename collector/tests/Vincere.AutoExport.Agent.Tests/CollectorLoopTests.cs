@@ -77,13 +77,13 @@ public sealed class CollectorLoopTests
     {
         // A rejection the CRM sends back used to leave no trace at all: it is a
         // handled exception, so it never reached the supervisor, and the
-        // supervisor was the only thing that logged. An afternoon of refused
-        // uploads produced an empty log.
+        // supervisor was the only thing that wrote to the log. An afternoon of
+        // refused uploads produced an empty log.
         //
         // Once, not every pass, because this loop runs every ten seconds and the
         // repeats would bury the line that matters.
         FakeQueue queue = new() { Next = Item };
-        FakeCrm crm = new()
+        MutableCrm crm = new()
         {
             UploadError = new CrmClientException(
                 "upload_failed",
@@ -95,9 +95,7 @@ public sealed class CollectorLoopTests
         UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
 
         await loop.RunOnceAsync(CancellationToken.None);
-        queue.Next = Item;
         await loop.RunOnceAsync(CancellationToken.None);
-        queue.Next = Item;
         await loop.RunOnceAsync(CancellationToken.None);
 
         Assert.Equal(new[] { "upload_failed" }, reporter.Codes);
@@ -106,12 +104,11 @@ public sealed class CollectorLoopTests
     }
 
     [Fact]
-    public async Task ADifferentRejectionAfterOneAlreadyLoggedIsWrittenToo()
+    public async Task AFaultThatChangesShapeIsWrittenAgain()
     {
-        // Only identical repeats are suppressed. A fault that changes shape is a
-        // new fact and has to reach the log.
+        // Only identical repeats are suppressed. A different code is a new fact.
         FakeQueue queue = new() { Next = Item };
-        FakeCrm crm = new()
+        MutableCrm crm = new()
         {
             UploadError = new CrmClientException("upload_failed", "first", true, disposition: CrmFailureDisposition.Retry),
         };
@@ -119,16 +116,32 @@ public sealed class CollectorLoopTests
         UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
 
         await loop.RunOnceAsync(CancellationToken.None);
-
-        FakeCrm second = new()
-        {
-            UploadError = new CrmClientException("capture_timeout", "second", true, disposition: CrmFailureDisposition.Retry),
-        };
-        UploadLoop resumed = new(queue, second, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
-        queue.Next = Item;
-        await resumed.RunOnceAsync(CancellationToken.None);
+        crm.UploadError = new CrmClientException("capture_timeout", "second", true, disposition: CrmFailureDisposition.Retry);
+        await loop.RunOnceAsync(CancellationToken.None);
 
         Assert.Equal(new[] { "upload_failed", "capture_timeout" }, reporter.Codes);
+    }
+
+    [Fact]
+    public async Task AGoodPassLetsTheSameFaultBeWrittenAgainWhenItReturns()
+    {
+        // What clearing on success buys. Without it, a fault that came back after
+        // a working upload would be silent for the rest of the process lifetime.
+        FakeQueue queue = new() { Next = Item };
+        MutableCrm crm = new()
+        {
+            UploadError = new CrmClientException("upload_failed", "refused", true, disposition: CrmFailureDisposition.Retry),
+        };
+        RecordingReporter reporter = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+        crm.UploadError = null;
+        await loop.RunOnceAsync(CancellationToken.None);
+        crm.UploadError = new CrmClientException("upload_failed", "refused again", true, disposition: CrmFailureDisposition.Retry);
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "upload_failed", "upload_failed" }, reporter.Codes);
     }
 
     [Fact]
@@ -329,6 +342,23 @@ public sealed class CollectorLoopTests
         public Task<QueueItem> QuarantineAsync(QueueItem item, string code, CancellationToken cancellationToken = default) => Task.FromResult(item);
         public Task<QueueStatus> GetStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult(new QueueStatus(1, 0, 2, 0, 128, false));
         public Task<QueueCleanupResult> CleanupAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => Task.FromResult(new QueueCleanupResult(0, 0));
+    }
+
+    // FakeCrm's UploadError is init-only, which is right for the tests that set
+    // one fault and assert on it. Change-detection needs the fault to move while
+    // the same loop instance keeps running, because the loop is what remembers.
+    private sealed class MutableCrm : ICollectorCrmClient
+    {
+        public CrmClientException UploadError { get; set; }
+
+        public Task<PairingResult> PairAsync(string code, string agentVersion, string addonVersion, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<UploadAcknowledgement> UploadAsync(QueueItem item, CancellationToken cancellationToken = default)
+        {
+            if (UploadError != null) throw UploadError;
+            return Task.FromResult(new UploadAcknowledgement("batch-id", null, false, "processed", item.ContentSha256, DateTimeOffset.UtcNow));
+        }
+        public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
+            => Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
     }
 
     private sealed class RecordingReporter : IServiceReporter
