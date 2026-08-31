@@ -15,9 +15,17 @@ public sealed class EventLogReporter : IServiceReporter
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public void LoopFailed(string loopName, string errorCode)
+    public void LoopFailed(string loopName, string errorCode, Exception exception = null)
     {
-        string message = $"Collector loop '{loopName}' recovered after '{errorCode}'.";
+        // The exception type and message are appended because without them this
+        // line said only that a loop had failed, which is not enough to act on.
+        // Deliberately NOT the stack trace: it is long, it is not needed to name
+        // the fault, and it is the part most likely to carry a path or an
+        // argument. The message still goes through the redacting logger.
+        string detail = exception is null
+            ? string.Empty
+            : $" {exception.GetType().FullName}: {exception.Message}";
+        string message = $"Collector loop '{loopName}' recovered after '{errorCode}'.{detail}";
         logger.Write("ERROR", errorCode, message);
         if (!OperatingSystem.IsWindows()) return;
         TryWriteWindowsEvent(message);

@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.IO;
 using System.IO.Pipes;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -49,7 +50,18 @@ public sealed class ControlPipeClient : IControlPipeClient
         bool confirmed = false,
         CancellationToken cancellationToken = default)
     {
-        using NamedPipeClientStream pipe = new(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        // TokenImpersonationLevel.Impersonation is required, not decorative. The
+        // overload without it leaves the level at None, and the service then
+        // cannot impersonate this client at all -- so every command that needs an
+        // administrator (`pair` among them) is refused no matter who is running
+        // Setup. The service only ever reads the identity to answer "is this an
+        // administrator"; it never acts as the user.
+        using NamedPipeClientStream pipe = new(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous,
+            TokenImpersonationLevel.Impersonation);
         using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(connectTimeout);
         try

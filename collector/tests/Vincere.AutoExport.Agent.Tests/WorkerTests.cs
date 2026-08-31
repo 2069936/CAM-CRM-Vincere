@@ -28,6 +28,15 @@ public sealed class WorkerTests
         Assert.True(recovering.Runs >= 2);
         Assert.Contains(reporter.Failures, failure => failure.LoopName == "uploader");
         Assert.True(sibling.Runs >= 2);
+
+        // The supervisor used to catch without binding the exception, so a crashed
+        // loop reached the log as the bare code `unexpected_loop_failure` and
+        // nothing else. On a live VPS that made the control-pipe failure
+        // undiagnosable: the service recovered every second and never said why.
+        (string _, string _, Exception reported) = Assert.Single(
+            reporter.Failures,
+            failure => failure.LoopName == "uploader");
+        Assert.IsType<InvalidOperationException>(reported);
     }
 
     [Fact]
@@ -140,11 +149,11 @@ public sealed class WorkerTests
 
     private sealed class RecordingReporter : IServiceReporter
     {
-        public List<(string LoopName, string ErrorCode)> Failures { get; } = new();
+        public List<(string LoopName, string ErrorCode, Exception Exception)> Failures { get; } = new();
 
-        public void LoopFailed(string loopName, string errorCode)
+        public void LoopFailed(string loopName, string errorCode, Exception exception = null)
         {
-            lock (Failures) Failures.Add((loopName, errorCode));
+            lock (Failures) Failures.Add((loopName, errorCode, exception));
         }
     }
 }

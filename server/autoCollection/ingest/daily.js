@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { resolveIngestPepper } from '../../apiLib/ingestPepper.js';
 import { randomUUID } from 'node:crypto';
 import { createServiceClient } from '../../apiLib/apiAuth.js';
 import {
@@ -122,7 +123,7 @@ export function createHandler({
   reconcile = reconcileDailyImport,
   persist = persistDailyImportWithClient,
   env = process.env,
-  pepper = env.INGEST_TOKEN_PEPPER,
+  pepper = resolveIngestPepper(env),
   maxCompressedBytes = resolveAutoCollectionLimits(env).maxCompressedBytes,
   maxUncompressedBytes = resolveAutoCollectionLimits(env).maxUncompressedBytes,
   leaseSeconds = Math.min(600, Math.max(30,

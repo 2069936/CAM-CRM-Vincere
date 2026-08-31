@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import process from 'node:process';
+import { resolveIngestPepper } from './ingestPepper.js';
 import { createServiceClient, extractBearerToken } from './apiAuth.js';
 import { ApiError } from './http.js';
 import {
@@ -46,7 +46,7 @@ export async function requireIngestDevice(req, {
   store,
   createClient = createServiceClient,
   createStore = createDeviceAuthStore,
-  pepper = process.env.INGEST_TOKEN_PEPPER,
+  pepper = resolveIngestPepper(),
 } = {}) {
   let token;
   let machineId;

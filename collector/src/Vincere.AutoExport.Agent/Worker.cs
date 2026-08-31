@@ -29,7 +29,14 @@ public sealed class SystemCollectorDelay : ICollectorDelay
 
 public interface IServiceReporter
 {
-    void LoopFailed(string loopName, string errorCode);
+    // `exception` is what the supervisor caught. It used to be discarded, which
+    // left `unexpected_loop_failure` as the only trace of a crashed loop and made
+    // a live incident impossible to diagnose from the VPS: the control pipe was
+    // failing on every Setup connection and the log could not say why. Pass it so
+    // the type and message reach the log. Implementations must not log the stack
+    // trace or anything derived from a payload; the type and message are enough
+    // to name the fault and carry no client data.
+    void LoopFailed(string loopName, string errorCode, Exception exception = null);
 }
 
 public sealed class Worker : BackgroundService
@@ -70,9 +77,9 @@ public sealed class Worker : BackgroundService
             {
                 break;
             }
-            catch
+            catch (Exception exception)
             {
-                reporter.LoopFailed(loop.Name, "unexpected_loop_failure");
+                reporter.LoopFailed(loop.Name, "unexpected_loop_failure", exception);
                 nextDelay = FailureDelay;
             }
 

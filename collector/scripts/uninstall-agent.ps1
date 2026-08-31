@@ -54,7 +54,10 @@ if (-not $KeepAddOn) {
     if (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue) {
         Write-Warning 'NinjaTrader is running - the AddOn was left in place. Close it and re-run to remove the AddOn.'
     } else {
-        $addOnTarget = Join-Path $NinjaTraderDocumentsPath 'bin\Custom\AddOns'
+        # bin\Custom, not bin\Custom\AddOns. The installer deploys to bin\Custom
+        # because that is where NinjaTrader loads external assemblies from, so
+        # looking in the AddOns subfolder found nothing and left every DLL behind.
+        $addOnTarget = Join-Path $NinjaTraderDocumentsPath 'bin\Custom'
         $addOnFiles = Get-ChildItem -LiteralPath $addOnTarget -Filter 'Vincere.AutoExport*' -ErrorAction SilentlyContinue
         if ($addOnFiles) {
             Write-Step 'Removing the NinjaTrader AddOn'

@@ -11,6 +11,10 @@ const SAFE_MESSAGES = Object.freeze({
   client_not_eligible: 'This client is not ready for automatic collection.',
   ingest_access_not_found: 'That setup access no longer exists. Refresh the status.',
   invalid_request: 'The collector setup request is invalid. Refresh and try again.',
+  // Not "try again": this one never resolves by retrying. It names the missing
+  // deployment secret so whoever can set it knows what to set, instead of the
+  // desk re-clicking a button that cannot work.
+  collector_not_configured: 'Automatic collection is not configured for this deployment yet. INGEST_TOKEN_PEPPER has to be set on the server before a VPS can be paired.',
   unavailable: 'Collector setup is temporarily unavailable. Try again.',
 });
 
@@ -59,6 +63,7 @@ function errorCode(status, body) {
   const serverCode = typeof body?.error === 'string' ? body.error : '';
   if (status === 409 && ['active_device_exists', 'client_not_eligible'].includes(serverCode)) return serverCode;
   if (status === 404 && serverCode === 'ingest_access_not_found') return serverCode;
+  if (status === 503 && serverCode === 'collector_not_configured') return serverCode;
   if (status >= 400 && status < 500) return 'invalid_request';
   return 'unavailable';
 }
