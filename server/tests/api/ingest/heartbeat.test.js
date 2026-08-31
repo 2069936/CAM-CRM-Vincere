@@ -160,11 +160,14 @@ describe('heartbeat body validation', () => {
     }))).toThrow('invalid_heartbeat');
   });
 
-  it('rejects supplied success later than supplied capture', () => {
-    expect(() => normalizeHeartbeatBody(body({
+  it('accepts supplied success later than supplied capture', () => {
+    expect(normalizeHeartbeatBody(body({
       lastCaptureAt: '2026-07-23T20:40:00Z',
       lastSuccessAt: '2026-07-23T20:40:00.001Z',
-    }))).toThrow('invalid_heartbeat');
+    }))).toMatchObject({
+      lastCaptureAt: '2026-07-23T20:40:00Z',
+      lastSuccessAt: '2026-07-23T20:40:00.001Z',
+    });
   });
 
   it.each([
@@ -304,14 +307,26 @@ describe('public ingest heartbeat', () => {
     expect(JSON.stringify(res.body)).not.toContain('unexpected');
   });
 
-  it.each([
-    ['future timestamp', { lastCaptureAt: '2026-07-23T21:05:00.001Z', lastSuccessAt: null }],
-    ['success after capture', { lastCaptureAt: '2026-07-23T20:40:00Z', lastSuccessAt: '2026-07-23T20:40:00.001Z' }],
-  ])('returns controlled validation for authenticated %s', async (_label, timestampOverrides) => {
+  it('returns controlled validation for an authenticated future timestamp', async () => {
     const { handler, calls } = setup();
-    const res = await heartbeat(handler, body(timestampOverrides));
+    const res = await heartbeat(handler, body({
+      lastCaptureAt: '2026-07-23T21:05:00.001Z',
+      lastSuccessAt: null,
+    }));
     expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_heartbeat' } });
     expect(calls.record).toHaveLength(0);
+  });
+
+  it('records an authenticated success later than capture', async () => {
+    const { handler, calls } = setup();
+    const timestamps = {
+      lastCaptureAt: '2026-07-23T20:40:00Z',
+      lastSuccessAt: '2026-07-23T20:40:00.001Z',
+    };
+    const res = await heartbeat(handler, body(timestamps));
+    expect(res).toMatchObject({ statusCode: 200, body: { ok: true } });
+    expect(calls.record).toHaveLength(1);
+    expect(calls.record[0]).toMatchObject(timestamps);
   });
 
   it('rejects authenticated bodies over 8 KiB', async () => {

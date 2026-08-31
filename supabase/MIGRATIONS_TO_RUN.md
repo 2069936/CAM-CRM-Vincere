@@ -17,6 +17,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 37 | `step_37_derived_strategy_pnl.sql` | `derived_realized` on `strategy_snapshots`; `derivation` on `account_snapshots` | Per-algo P&L derived from the fills |
 | 38 | `step_38_flag_acknowledged_to_resolved.sql` | `acknowledged_before_step_38` on `operational_flags`, and the 460 `Acknowledged` rows set to `Resolved` | Retiring the Acknowledge action on flags |
 | 39 | `step_39_client_churn_reason.sql` | `churn_reason`, `churn_note`, `churned_at` on `clients` | The churn drill-down, and the reason captured when a CAM marks a client Inactive |
+| 41 | `step_41_heartbeat_ordering.sql` | replaces `record_ingest_heartbeat` without the invalid capture/success ordering rule | Collector heartbeats remain valid after a successful upload |
 
 ## These three groups behave differently
 
@@ -90,12 +91,17 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
+
+Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
+invalid ordering rule between `last_success_at` and `last_capture_at`; either
+timestamp may honestly be newer. The independent five-minute future-skew
+checks remain in place. It does not rewrite stored device rows.
 
 Step 39 adds columns and rewrites nothing. Every client already marked Inactive
 keeps a null reason and a null date, which the app reports as "Not recorded"

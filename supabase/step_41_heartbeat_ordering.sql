@@ -117,13 +117,6 @@ begin
     else greatest(v_device.last_success_at, p_last_success_at)
   end;
 
-  if v_effective_success_at is not null
-    and (v_effective_capture_at is null
-         or v_effective_success_at > v_effective_capture_at) then
-    raise exception 'INVALID_HEARTBEAT_REQUEST'
-      using errcode = '22023';
-  end if;
-
   v_unchanged :=
     v_device.agent_version is not distinct from p_agent_version
     and v_device.addon_version is not distinct from p_addon_version

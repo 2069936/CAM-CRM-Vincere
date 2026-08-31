@@ -41,7 +41,7 @@ const prose = raw
 const runbook = readFileSync(runbookUrl, 'utf8');
 
 describe('step 39 records why a client left', () => {
-  it('is the next free number after 38 and is the highest step there is', () => {
+  it('is the next free number after 38 and remains unique', () => {
     expect(exists).toBe(true);
     // A directory scan, not an existsSync on one guessed filename. The check
     // this replaces looked for a literal `step_39_.sql` and would have missed
@@ -50,7 +50,6 @@ describe('step 39 records why a client left', () => {
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
-    expect(Math.max(...numbers)).toBe(39);
     expect(numbers.filter((n) => n === 39)).toHaveLength(1);
   });
 
@@ -58,7 +57,7 @@ describe('step 39 records why a client left', () => {
     expect(runbook).toMatch(/^\| 39 \| `step_39_client_churn_reason\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 39 | `step_39_client_churn_reason.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 38 | `step_38_flag_acknowledged_to_resolved.sql`'));
-    expect(runbook).toContain('→ 38 → 39.');
+    expect(runbook).toContain('→ 38 → 39 →');
   });
 
   it('adds three nullable columns and no more', () => {
