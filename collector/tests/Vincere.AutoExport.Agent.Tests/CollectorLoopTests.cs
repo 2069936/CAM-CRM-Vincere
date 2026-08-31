@@ -73,6 +73,77 @@ public sealed class CollectorLoopTests
     }
 
     [Fact]
+    public async Task RejectedUploadIsWrittenToTheLogOnceAndNotOnEveryRetry()
+    {
+        // A rejection the CRM sends back used to leave no trace at all: it is a
+        // handled exception, so it never reached the supervisor, and the
+        // supervisor was the only thing that logged. An afternoon of refused
+        // uploads produced an empty log.
+        //
+        // Once, not every pass, because this loop runs every ten seconds and the
+        // repeats would bury the line that matters.
+        FakeQueue queue = new() { Next = Item };
+        FakeCrm crm = new()
+        {
+            UploadError = new CrmClientException(
+                "upload_failed",
+                "The CRM did not accept the snapshot.",
+                true,
+                disposition: CrmFailureDisposition.Retry),
+        };
+        RecordingReporter reporter = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+        queue.Next = Item;
+        await loop.RunOnceAsync(CancellationToken.None);
+        queue.Next = Item;
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "upload_failed" }, reporter.Codes);
+        Assert.Equal("uploader", Assert.Single(reporter.Loops));
+        Assert.Contains("did not accept", Assert.Single(reporter.Messages));
+    }
+
+    [Fact]
+    public async Task ADifferentRejectionAfterOneAlreadyLoggedIsWrittenToo()
+    {
+        // Only identical repeats are suppressed. A fault that changes shape is a
+        // new fact and has to reach the log.
+        FakeQueue queue = new() { Next = Item };
+        FakeCrm crm = new()
+        {
+            UploadError = new CrmClientException("upload_failed", "first", true, disposition: CrmFailureDisposition.Retry),
+        };
+        RecordingReporter reporter = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        FakeCrm second = new()
+        {
+            UploadError = new CrmClientException("capture_timeout", "second", true, disposition: CrmFailureDisposition.Retry),
+        };
+        UploadLoop resumed = new(queue, second, new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
+        queue.Next = Item;
+        await resumed.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "upload_failed", "capture_timeout" }, reporter.Codes);
+    }
+
+    [Fact]
+    public async Task ASuccessfulUploadWritesNothing()
+    {
+        FakeQueue queue = new() { Next = Item };
+        RecordingReporter reporter = new();
+        UploadLoop loop = new(queue, new FakeCrm(), new FakeTokenStore("token"), new CollectorState(), new FakeCaptureHistory(), reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Empty(reporter.Codes);
+    }
+
+    [Fact]
     public async Task RevokedCredentialIsDeletedAndClaimIsReturnedToQueue()
     {
         FakeQueue queue = new() { Next = Item };
@@ -258,6 +329,20 @@ public sealed class CollectorLoopTests
         public Task<QueueItem> QuarantineAsync(QueueItem item, string code, CancellationToken cancellationToken = default) => Task.FromResult(item);
         public Task<QueueStatus> GetStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult(new QueueStatus(1, 0, 2, 0, 128, false));
         public Task<QueueCleanupResult> CleanupAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => Task.FromResult(new QueueCleanupResult(0, 0));
+    }
+
+    private sealed class RecordingReporter : IServiceReporter
+    {
+        public List<string> Loops { get; } = new();
+        public List<string> Codes { get; } = new();
+        public List<string> Messages { get; } = new();
+
+        public void LoopFailed(string loopName, string errorCode, Exception exception = null)
+        {
+            Loops.Add(loopName);
+            Codes.Add(errorCode);
+            Messages.Add(exception?.Message ?? string.Empty);
+        }
     }
 
     private sealed class FakeCrm : ICollectorCrmClient
