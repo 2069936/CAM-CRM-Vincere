@@ -188,7 +188,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
                             continue;
                         }
-                        throw PairingFailure(response.StatusCode, errorCode, retryAfter);
+                        throw PairingFailure(response.StatusCode, errorCode, retryAfter, ReadDenialReason(responseBytes));
                     }
                     finally
                     {
@@ -623,6 +623,19 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     // went wrong. The cause lived in a log only one person could open, so an
     // outage took two days and a chain of inference to place. The desk reads
     // this log from a diagnostics bundle, so the answer belongs here.
+    private static string ReadDenialReason(byte[] responseBytes)
+    {
+        try
+        {
+            string reason = JsonConvert.DeserializeObject<ErrorResponse>(Encoding.UTF8.GetString(responseBytes))?.Reason;
+            return string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static string ReadFailureCause(byte[] responseBytes)
     {
         try
@@ -694,10 +707,17 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     private static CrmClientException PairingFailure(
         HttpStatusCode status,
         string errorCode,
-        TimeSpan? retryAfter)
+        TimeSpan? retryAfter,
+        string reason = null)
     {
         if (status == HttpStatusCode.BadRequest && errorCode == "invalid_or_expired_code")
-            return new CrmClientException("invalid_or_expired_code", "The pairing code is invalid or expired.", false);
+            // The reason when the server sent one. It withholds it for exactly
+            // one refusal, the one that would turn this endpoint into an oracle
+            // for guessing codes, and then this falls back to the old code.
+            return new CrmClientException(
+                string.IsNullOrEmpty(reason) ? "invalid_or_expired_code" : reason,
+                "The pairing code was refused.",
+                false);
         if (status == HttpStatusCode.TooManyRequests)
             return new CrmClientException("pairing_rate_limited", "Pairing is temporarily rate limited.", true, retryAfter);
         bool retryable = (int)status >= 500;
@@ -844,6 +864,11 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         // safe to put straight into this machine's log.
         [JsonProperty("cause")]
         public string Cause { get; set; }
+
+        // Which of the nine ways a pairing was refused. Absent when the server
+        // is deliberately withholding it, which it does for exactly one of them.
+        [JsonProperty("reason")]
+        public string Reason { get; set; }
     }
 
     private sealed class UploadResponse

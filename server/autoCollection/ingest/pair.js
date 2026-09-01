@@ -26,6 +26,29 @@ const SQL_DENIAL_CODES = Object.freeze({
   CLIENT_INELIGIBLE: 'client_ineligible',
 });
 
+/* ------------------------------------------------------------------------- *
+ * Nine ways to be refused, one sentence for all of them.
+ *
+ * Every denial came back as `invalid_or_expired_code`, so the Setup window said
+ * "This code is invalid or expired. Generate a new code in the CRM." for all
+ * nine. Two of them are actually fixed by a new code. The rest are not, and the
+ * desk generated code after code against a machine that already had a device,
+ * which no code will ever fix, being told each time to try another one.
+ *
+ * WHAT STAYS HIDDEN, AND WHY ONLY THAT. `code_not_found` is the one an attacker
+ * could use: told apart from the others it turns this endpoint into an oracle
+ * for guessing codes. Every other reason is only reachable once a real
+ * enrollment row has been found by its hash, which means the caller already
+ * holds a valid code, so naming it reveals nothing they did not bring with them.
+ *
+ * The `error` field is unchanged, so anything reading it keeps working.
+ * ------------------------------------------------------------------------- */
+const CODE_GUESSING_ORACLE = 'code_not_found';
+
+export function publicDenialReason(reasonCode) {
+  return reasonCode === CODE_GUESSING_ORACLE ? PUBLIC_PAIR_ERROR : reasonCode;
+}
+
 export class PairingDeniedError extends Error {
   constructor(reasonCode) {
     super('Pairing denied.');
@@ -222,7 +245,7 @@ export function createHandler({
           const entry = denialAudit(error.reasonCode, { agentVersion, addonVersion });
           if (error.reasonCode === 'code_expired') entry.action = 'ingest_pair.expired';
           await safeAudit(store, entry);
-          return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR });
+          return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR, reason: publicDenialReason(error.reasonCode) });
         }
         await safeAudit(store, {
           ...denialAudit('pairing_unavailable', { agentVersion, addonVersion }),

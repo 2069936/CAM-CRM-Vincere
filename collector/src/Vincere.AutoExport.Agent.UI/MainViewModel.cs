@@ -95,6 +95,32 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand SaveScheduleCommand { get; }
     public ICommand CollectDiagnosticsCommand { get; }
 
+    // WHY THIS IS A LIST AND NOT ONE SENTENCE.
+    //
+    // Nine different refusals used to read "This code is invalid or expired.
+    // Generate a new code in the CRM." Two of them are fixed by a new code. The
+    // rest are not, and the desk generated code after code against a machine
+    // that already had a device, being told each time to try another one.
+    //
+    // Each line says what to do, because a name for the fault with no next step
+    // is only a better looking dead end.
+    private static string PairingRefusalMessage(string code) => code switch
+    {
+        "invalid_or_expired_code" => "This code is not valid. Generate a new code in the CRM.",
+        "code_expired" => "This code has expired. Generate a new one in the CRM.",
+        "code_consumed" => "This code was already used. Generate a new one in the CRM.",
+        "code_revoked" => "This code was revoked in the CRM. Generate a new one.",
+        "machine_conflict" =>
+            "This VPS is already connected to a client. Revoke it in the CRM before connecting it to another one. A new code will not help.",
+        "device_revoked" =>
+            "This VPS was revoked in the CRM. Rebind it there before connecting again.",
+        "client_ineligible" =>
+            "This client is not ready for automatic collection. Check its status and product key in the CRM.",
+        "credential_conflict" or "nonce_or_credential_conflict" =>
+            "A different pairing is already in progress for this code. Generate a new one in the CRM.",
+        _ => null,
+    };
+
     public async Task InitializeAsync()
     {
         await RunAsync(async () =>
@@ -150,9 +176,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             UiControlResponse response = await client.SendAsync("pair", enrollmentCode: canonical);
             if (!response.Ok)
             {
-                StatusMessage = response.Code == "invalid_or_expired_code"
-                    ? "This code is invalid or expired. Generate a new code in the CRM."
-                    : response.Message;
+                StatusMessage = PairingRefusalMessage(response.Code) ?? response.Message;
                 return;
             }
             ClientName = Value(response.Data, "ClientName", "clientName");
