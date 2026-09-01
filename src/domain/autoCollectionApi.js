@@ -8,7 +8,15 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SAFE_MESSAGES = Object.freeze({
   permission_denied: 'You do not have access to this client setup.',
   active_device_exists: 'This client already has a connected VPS. Use Rebind VPS if it was replaced.',
+  // WHICH OF THE FIVE, because "not ready" sent CAMs to ask instead of to fix.
+  // Four are one field away in the client profile and the fifth, a blank product
+  // key, is invisible until somebody thinks to look at it.
   client_not_eligible: 'This client is not ready for automatic collection.',
+  client_not_found: 'This client no longer exists.',
+  client_deleted: 'This client is deleted. Restore it before connecting a VPS.',
+  client_not_active: 'This client is not Active. Set the status to Active in the client profile, then try again.',
+  client_name_missing: 'This client has no name. Add one in the client profile, then try again.',
+  client_product_key_missing: 'This client has no product key. Add it in the client profile, then try again.',
   ingest_access_not_found: 'That setup access no longer exists. Refresh the status.',
   invalid_request: 'The collector setup request is invalid. Refresh and try again.',
   // Not "try again": this one never resolves by retrying. It names the missing
