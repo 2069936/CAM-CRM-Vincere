@@ -157,6 +157,33 @@ public sealed class CollectorLoopTests
     }
 
     [Fact]
+    public async Task ARejectedHeartbeatIsWrittenToTheLogToo()
+    {
+        // The status said heartbeat_failed for two days and the log had nothing
+        // to say about it, because only the uploader reported.
+        FakeTokenStore token = new("token");
+        RecordingReporter reporter = new();
+        ThrowingHeartbeatCrm crm = new()
+        {
+            HeartbeatError = new CrmClientException(
+                "heartbeat_failed",
+                "The CRM did not accept the heartbeat. Cause: server_permission_denied.",
+                true,
+                disposition: CrmFailureDisposition.Retry),
+        };
+        HeartbeatLoop loop = new(new FakeQueue(), crm, token, new CollectorState(), "1.0.0", "1.0.0", "8.1.0", reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "heartbeat_failed" }, reporter.Codes);
+        // The server's own word for what went wrong, carried all the way into
+        // this machine's log so the desk can read it without opening a console
+        // only one person can reach.
+        Assert.Contains("server_permission_denied", Assert.Single(reporter.Messages));
+    }
+
+    [Fact]
     public async Task RevokedCredentialIsDeletedAndClaimIsReturnedToQueue()
     {
         FakeQueue queue = new() { Next = Item };
@@ -359,6 +386,19 @@ public sealed class CollectorLoopTests
         }
         public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
             => Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
+    }
+
+    private sealed class ThrowingHeartbeatCrm : ICollectorCrmClient
+    {
+        public CrmClientException HeartbeatError { get; set; }
+
+        public Task<PairingResult> PairAsync(string code, string agentVersion, string addonVersion, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<UploadAcknowledgement> UploadAsync(QueueItem item, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
+        {
+            if (HeartbeatError != null) throw HeartbeatError;
+            return Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
+        }
     }
 
     private sealed class RecordingReporter : IServiceReporter

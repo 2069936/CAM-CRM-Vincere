@@ -275,7 +275,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                         await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
-                    throw UploadFailure(response.StatusCode, errorCode, retryAfter);
+                    throw UploadFailure(response.StatusCode, errorCode, retryAfter, ReadFailureCause(responseBytes));
                 }
                 catch (HttpRequestException exception) when (IsTlsFailure(exception))
                 {
@@ -368,7 +368,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                         await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
-                    throw HeartbeatFailure(response.StatusCode, retryAfter);
+                    throw HeartbeatFailure(response.StatusCode, retryAfter, ReadFailureCause(responseBytes));
                 }
                 catch (HttpRequestException exception) when (IsTlsFailure(exception))
                 {
@@ -586,6 +586,29 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
     }
 
+    // WHY THE SERVER'S OWN WORD ENDS UP IN THIS LOG.
+    //
+    // A 500 from the CRM used to reach this machine as "The CRM did not accept
+    // the snapshot", which is this client's sentence and says nothing about what
+    // went wrong. The cause lived in a log only one person could open, so an
+    // outage took two days and a chain of inference to place. The desk reads
+    // this log from a diagnostics bundle, so the answer belongs here.
+    private static string ReadFailureCause(byte[] responseBytes)
+    {
+        try
+        {
+            string cause = JsonConvert.DeserializeObject<ErrorResponse>(Encoding.UTF8.GetString(responseBytes))?.Cause;
+            return string.IsNullOrWhiteSpace(cause) ? null : cause.Trim();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string WithCause(string message, string cause)
+        => string.IsNullOrEmpty(cause) ? message : message + " Cause: " + cause + ".";
+
     private static T Deserialize<T>(byte[] bytes, string code)
     {
         try
@@ -659,7 +682,8 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     private static CrmClientException UploadFailure(
         HttpStatusCode status,
         string errorCode,
-        TimeSpan? retryAfter)
+        TimeSpan? retryAfter,
+        string cause = null)
     {
         if ((int)status is >= 300 and < 400)
             return new CrmClientException("unexpected_redirect", "The CRM returned an unexpected redirect.", false);
@@ -709,7 +733,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             || (int)status >= 500;
         return new CrmClientException(
             "upload_failed",
-            "The CRM did not accept the snapshot.",
+            WithCause("The CRM did not accept the snapshot.", cause),
             retryable,
             retryAfter,
             disposition: retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);
@@ -717,7 +741,8 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
 
     private static CrmClientException HeartbeatFailure(
         HttpStatusCode status,
-        TimeSpan? retryAfter)
+        TimeSpan? retryAfter,
+        string cause = null)
     {
         if (status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new CrmClientException(
@@ -730,7 +755,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             || (int)status >= 500;
         return new CrmClientException(
             "heartbeat_failed",
-            "The CRM did not accept the heartbeat.",
+            WithCause("The CRM did not accept the heartbeat.", cause),
             retryable,
             retryAfter,
             disposition: retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);
@@ -783,6 +808,12 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     {
         [JsonProperty("error")]
         public string Error { get; set; }
+
+        // Present only on a failure the CRM hid from us. It is a fixed
+        // vocabulary the server picks, never a message and never a row, so it is
+        // safe to put straight into this machine's log.
+        [JsonProperty("cause")]
+        public string Cause { get; set; }
     }
 
     private sealed class UploadResponse

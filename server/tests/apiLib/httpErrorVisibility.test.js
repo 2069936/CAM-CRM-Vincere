@@ -111,3 +111,68 @@ describe('what the default reporter is allowed to write', () => {
     expect(written[0]).not.toContain('check the policy');
   });
 });
+
+describe('the cause the caller is allowed to read', () => {
+  const cause = (error) => {
+    const target = res();
+    handleApiError(target, error, { production: true, report: () => {} });
+    return target.sent.json?.cause;
+  };
+
+  it('names a permission denial, which is the whole diagnosis in one word', () => {
+    expect(cause(Object.assign(new Error('permission denied for table ingest_devices'), { code: '42501' })))
+      .toBe('server_permission_denied');
+  });
+
+  it('names a missing relation, a missing column and a missing function the same way', () => {
+    for (const code of ['42P01', '42703', '42883']) {
+      expect(cause(Object.assign(new Error('x'), { code }))).toBe('server_schema_missing');
+    }
+  });
+
+  it('names a timeout, a capacity limit and an unreachable backend', () => {
+    expect(cause(Object.assign(new Error('x'), { code: '57014' }))).toBe('server_timeout');
+    expect(cause(Object.assign(new Error('x'), { code: '53300' }))).toBe('server_capacity');
+    expect(cause(Object.assign(new Error('x'), { code: '08006' }))).toBe('server_unreachable');
+  });
+
+  it('collapses anything it does not recognise, so a new code cannot leak by default', () => {
+    expect(cause(Object.assign(new Error('x'), { code: 'P0001' }))).toBe('server_error');
+    expect(cause(Object.assign(new Error('x'), { code: 'something odd' }))).toBe('server_error');
+    expect(cause(new Error('no code at all'))).toBe('server_error');
+  });
+
+  it('never carries the message, the table, the row or the hint', () => {
+    const target = res();
+    handleApiError(target, Object.assign(new Error('permission denied for table ingest_devices'), {
+      code: '42501',
+      details: 'Key (account)=(LTATASWAN501329011095) is not present.',
+      hint: 'check the policy',
+    }), { production: true, report: () => {} });
+
+    const body = JSON.stringify(target.sent.json || {});
+    expect(body).toContain('server_permission_denied');
+    expect(body).not.toContain('ingest_devices');
+    expect(body).not.toContain('LTATASWAN501329011095');
+    expect(body).not.toContain('check the policy');
+    expect(body).not.toContain('42501');
+  });
+
+  it('adds nothing to a response the caller was already allowed to read', () => {
+    // A 4xx already says what was wrong, and anything that reads `error` today
+    // must keep seeing exactly what it saw.
+    const target = res();
+    handleApiError(target, new ApiError(400, 'invalid_heartbeat'), { production: true, report: () => {} });
+    expect(target.sent.json).toEqual({ error: 'invalid_heartbeat' });
+  });
+
+  it('leaves the endpoint\'s own error string untouched', () => {
+    const target = res();
+    handleApiError(target, new Error('raw'), {
+      production: true,
+      fallbackMessage: 'snapshot_ingest_unavailable',
+      report: () => {},
+    });
+    expect(target.sent.json.error).toBe('snapshot_ingest_unavailable');
+  });
+});

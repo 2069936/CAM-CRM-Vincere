@@ -264,6 +264,8 @@ public sealed class HeartbeatLoop : ICollectorLoop
     private readonly string agentVersion;
     private readonly string addonVersion;
     private readonly string ninjaTraderVersion;
+    private readonly IServiceReporter reporter;
+    private string lastReportedCode;
 
     public HeartbeatLoop(
         ICollectorQueue queue,
@@ -272,8 +274,10 @@ public sealed class HeartbeatLoop : ICollectorLoop
         CollectorState state,
         string agentVersion,
         string addonVersion,
-        string ninjaTraderVersion)
+        string ninjaTraderVersion,
+        IServiceReporter reporter = null)
     {
+        this.reporter = reporter;
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
@@ -310,6 +314,7 @@ public sealed class HeartbeatLoop : ICollectorLoop
         {
             HeartbeatResult result = await crm.SendHeartbeatAsync(payload, cancellationToken).ConfigureAwait(false);
             state.RecordHeartbeat(result);
+            ReportChange(null, null);
         }
         catch (CrmClientException exception) when (exception.Disposition == CrmFailureDisposition.RePair)
         {
@@ -320,7 +325,18 @@ public sealed class HeartbeatLoop : ICollectorLoop
         catch (CrmClientException exception)
         {
             state.RecordError(exception.Code, exception.Message);
+            ReportChange(exception.Code, exception);
         }
+    }
+
+    // Same rule as the uploader: the first occurrence and every change, never
+    // the repeats. A rejected heartbeat left no trace at all until now, so the
+    // status said heartbeat_failed and the log had nothing to say about it.
+    private void ReportChange(string code, Exception exception)
+    {
+        if (string.Equals(lastReportedCode, code, StringComparison.Ordinal)) return;
+        lastReportedCode = code;
+        if (code != null) reporter?.LoopFailed(Name, code, exception);
     }
 }
 

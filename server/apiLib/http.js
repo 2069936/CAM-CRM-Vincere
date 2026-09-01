@@ -92,6 +92,45 @@ export async function readJsonBody(req, {
  * logging it again would bury the one line that matters under every rejected
  * request.
  * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------- *
+ * A cause the caller can act on, from a vocabulary that says nothing else.
+ *
+ * WHY THE CALLER GETS ANYTHING AT ALL. The collector is not a browser, it is a
+ * program on a VPS with a log the desk can read, and the only reason two days
+ * went by on a 500 is that neither end could name it. Telling it "Unexpected
+ * server error" and writing the real cause to a log one person can open makes
+ * every future outage take as long as this one did.
+ *
+ * WHAT IT IS ALLOWED TO SAY. A fixed vocabulary, mapped from SQLSTATE. Not the
+ * message, not `details` or `hint` which quote the failing row, not the table,
+ * not the query. `server_permission_denied` tells the desk to look at grants and
+ * tells an attacker that a backend they cannot reach has a permissions problem,
+ * which is a trade worth making once you have watched the alternative.
+ *
+ * Unknown codes collapse to `server_error`, which is exactly today's silence, so
+ * a code nobody anticipated cannot leak by default.
+ * ------------------------------------------------------------------------- */
+const SQLSTATE_CAUSES = new Map([
+  ['42501', 'server_permission_denied'],
+  ['42P01', 'server_schema_missing'],
+  ['42703', 'server_schema_missing'],
+  ['42883', 'server_schema_missing'],
+  ['57014', 'server_timeout'],
+  ['53300', 'server_capacity'],
+  ['53400', 'server_capacity'],
+  ['23505', 'server_conflict'],
+  ['23503', 'server_conflict'],
+]);
+
+export function failureCause(error) {
+  const code = String(error?.code ?? '').trim().toUpperCase();
+  if (!code) return 'server_error';
+  if (SQLSTATE_CAUSES.has(code)) return SQLSTATE_CAUSES.get(code);
+  // Connection classes are 08xxx across every driver.
+  if (code.startsWith('08')) return 'server_unreachable';
+  return 'server_error';
+}
+
 function reportHiddenFailure(error) {
   const parts = [error?.name, error?.code, error?.message]
     .map((part) => String(part ?? '').trim())
@@ -108,7 +147,11 @@ export function handleApiError(res, error, {
   const status = Number.isInteger(error?.status) ? error.status : 500;
   const exposed = error instanceof ApiError || (status >= 400 && status < 500);
   const message = (production && !exposed) ? fallbackMessage : (error?.message || fallbackMessage);
-  if (!exposed) report?.(error);
   for (const [name, value] of Object.entries(error?.headers || {})) res.setHeader(name, value);
-  return sendJson(res, status, { error: message });
+  if (exposed) return sendJson(res, status, { error: message });
+  // Hidden from the caller, so it goes to the log AND comes back as a cause the
+  // caller can put in its own log. `error` keeps whatever the endpoint chose, so
+  // nothing that reads it today changes.
+  report?.(error);
+  return sendJson(res, status, { error: message, cause: failureCause(error) });
 }
