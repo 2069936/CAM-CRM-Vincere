@@ -113,7 +113,9 @@ describe('AutoCollectionCard rendering and actions', () => {
   it('says what the code is for and what to do when it expires', () => {
     const live = render({ ...base, enrollment: { id: 'e', code: 'A1B2C3D4E5', expiresAt: '2026-07-23T17:45:00.000Z', consumedAt: null, revokedAt: null } });
     expect(live).toContain('which client this machine belongs to');
-    expect(live).toContain('lasts 60 minutes');
+    // The screen has to say the same number the server stamps, or the CAM
+            // plans around a deadline that is not the real one.
+            expect(live).toContain('lasts four hours');
     // Only the POST response carries the plaintext code; ingest-status never
     // returns it (ingest-status.js:85-93), so a reload really does lose it.
     expect(live).toContain('Shown once');

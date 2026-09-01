@@ -539,7 +539,7 @@ export default function AutoCollectionCard({
         <ConnectionStep
           number={3}
           title="Enter one-time code"
-          description="In the Vincere Auto Export Setup window, paste this code and press Connect this VPS. It is the only thing that tells the server which client this machine belongs to. It lasts 60 minutes; when it expires, generate another one."
+          description="In the Vincere Auto Export Setup window, paste this code and press Connect this VPS. It is the only thing that tells the server which client this machine belongs to. It lasts four hours; when it expires, generate another one."
           state={steps.code.state}
         >
           {usableCode ? (

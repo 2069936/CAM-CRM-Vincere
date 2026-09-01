@@ -88,7 +88,29 @@ export function deriveDeviceToken({ enrollmentCode, machineId, pairingNonce, pep
   };
 }
 
-export function issueEnrollmentCode({ pepper, now = new Date(), ttlMs = 60 * 60 * 1000 } = {}) {
+/* ------------------------------------------------------------------------- *
+ * FOUR HOURS, NOT ONE, AND WHY THAT CHANGED.
+ *
+ * An hour was right when installing was a download and a service registration.
+ * It is not right now: the installer builds the NinjaTrader AddOn on the machine
+ * it lands on, which means fetching the .NET SDK and compiling, and on a slow
+ * VPS that is most of an hour before the Setup window even opens.
+ *
+ * It also fights the order people actually work in. A CAM is in the CRM, copies
+ * the install line AND the code, then walks over to the VPS. Telling them to
+ * come back later for the code is telling them to work in an order the screen
+ * does not suggest, and codes expired on the desk with `code_expired` in the
+ * audit while the CAM sat looking at a window asking for one.
+ *
+ * WHAT FOUR HOURS COSTS. The code is one-time and consumed by the first
+ * successful pairing, bound to a single client, rate limited, and 10 characters
+ * of Crockford base32, which is 50 bits. Brute force is not the exposure at
+ * either duration. The exposure is a code sitting unused in a chat window, and
+ * that is bounded by it being one-time far more than by the clock.
+ * ------------------------------------------------------------------------- */
+export const ENROLLMENT_CODE_TTL_MS = 4 * 60 * 60 * 1000;
+
+export function issueEnrollmentCode({ pepper, now = new Date(), ttlMs = ENROLLMENT_CODE_TTL_MS } = {}) {
   const bytes = randomBytes(10);
   const code = Array.from(bytes, (byte) => CROCKFORD_BASE32[byte & 31]).join('');
   return {
