@@ -127,3 +127,51 @@ export function createReportPdfDownloader({
 }
 
 export const downloadReportPdf = createReportPdfDownloader();
+
+/* ------------------------------------------------------------------------- *
+ * The same request, handing back the bytes instead of saving them.
+ *
+ * For the day package, which needs eleven PDFs in one zip rather than eleven
+ * files in a Downloads folder. It takes HTML rather than a live sheet because
+ * the package renders each client off screen and reads the markup back, so
+ * there is no element to hand over.
+ *
+ * Everything else is deliberately shared: the same endpoint, the same token,
+ * the same refusal to save a 200 that is not a PDF. That last one matters more
+ * here than anywhere: a login page saved eleven times into a zip named for the
+ * close is a folder a CAM distributes from.
+ * ------------------------------------------------------------------------- */
+export function createReportPdfBytesFetcher({
+  fetchImpl = globalThis.fetch,
+  getAccessToken = defaultAccessToken,
+  endpoint = '/api/report/pdf',
+} = {}) {
+  return async function downloadReportPdfBytes({ html, title, signal } = {}) {
+    if (!html) throw new ReportPdfError('no_report', { status: 0 });
+    const token = await getAccessToken();
+    let response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: 'POST',
+        signal,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html, title }),
+      });
+    } catch (error) {
+      if (error?.name === 'AbortError' || signal?.aborted) throw error;
+      throw new ReportPdfError('unavailable', { cause: error });
+    }
+    if (!response.ok) {
+      let message;
+      try { message = (await response.json())?.error || ''; } catch { message = ''; }
+      throw new ReportPdfError(errorCode(response.status, message), { status: response.status });
+    }
+    const blob = await response.blob();
+    if (blob.type && !blob.type.startsWith('application/pdf')) {
+      throw new ReportPdfError('unavailable', { status: response.status });
+    }
+    return new Uint8Array(await blob.arrayBuffer());
+  };
+}
+
+export const downloadReportPdfBytes = createReportPdfBytesFetcher();
