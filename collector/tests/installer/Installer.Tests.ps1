@@ -40,6 +40,65 @@ Describe 'NinjaTrader profile detection' {
     }
 }
 
+Describe 'One download, one movement' {
+    BeforeAll {
+        $script:installScript = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\install-agent.ps1') -Raw
+        $script:windowsWorkflow = Get-Content -LiteralPath (
+            [IO.Path]::GetFullPath((Join-Path $collectorRoot '..\.github\workflows\collector-windows.yml'))) -Raw
+    }
+
+    It 'ships the AddOn source in the package, laid out so the project references resolve' {
+        # The AddOn csproj reaches its two dependencies through `../Vincere...`,
+        # so the three folders have to stay siblings under AddOnSource and
+        # Directory.Build.props has to sit above them.
+        $windowsWorkflow | Should -Match 'AddOnSource'
+        $windowsWorkflow | Should -Match ([regex]::Escape("Copy-Item -LiteralPath 'collector\Directory.Build.props'"))
+        foreach ($project in 'Vincere.AutoExport.Contracts',
+            'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
+            $windowsWorkflow | Should -Match ([regex]::Escape($project))
+        }
+        # This runner's build leftovers must not travel.
+        $windowsWorkflow | Should -Match ([regex]::Escape("notin @('bin', 'obj')"))
+    }
+
+    It 'builds the AddOn on the machine when the package carries no compiled one' {
+        # THE REGRESSION THIS CLOSES. The package shipped without an AddOn, the
+        # installer warned and carried on, and the machine ran a service that
+        # captured nothing until somebody deployed four DLLs by hand.
+        $installScript | Should -Match ([regex]::Escape('AddOnSource\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj'))
+        $installScript | Should -Match 'NINJATRADER_HOME'
+        $installScript | Should -Match 'dotnet build'
+    }
+
+    It 'fetches the build SDK itself rather than asking for it first' {
+        # Requiring a preinstalled SDK would have made this two movements again.
+        $installScript | Should -Match 'dotnet-install\.ps1'
+        $installScript | Should -Match '-Channel'
+        # Under the install root, which uninstall removes outright, so the
+        # toolchain leaves with everything else.
+        $installScript | Should -Match ([regex]::Escape("Join-Path `$InstallRoot 'build\dotnet'"))
+    }
+
+    It 'verifies every DLL the AddOn needs before calling the build a success' {
+        foreach ($dll in 'Vincere.AutoExport.NinjaTrader.dll',
+            'Vincere.AutoExport.NinjaTrader.Core.dll',
+            'Vincere.AutoExport.Contracts.dll', 'Newtonsoft.Json.dll') {
+            $installScript | Should -Match ([regex]::Escape($dll))
+        }
+        $installScript | Should -Match 'is missing from'
+    }
+
+    It 'uses no syntax that Windows PowerShell 5.1 cannot parse' {
+        # Windows Server opens 5.1, which has no null-conditional operator and no
+        # ternary. A script that only runs under PowerShell 7 would fail on the
+        # VPSes this is written for, and it would fail at the top before
+        # installing anything.
+        $installScript | Should -Not -Match '\)\?\.'
+        $installScript | Should -Not -Match '\?\?'
+        { [scriptblock]::Create($installScript) } | Should -Not -Throw
+    }
+}
+
 Describe 'Installer safety authoring' {
     BeforeAll {
         $machine = Get-Content -LiteralPath (Join-Path $installerRoot 'Package.wxs') -Raw

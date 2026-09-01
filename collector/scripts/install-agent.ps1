@@ -47,6 +47,10 @@ param(
 
     [string]$NinjaTraderDocumentsPath = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NinjaTrader 8'),
 
+    # NinjaTrader's install folder, the one holding bin\NinjaTrader.Core.dll. The
+    # AddOn is compiled against the assemblies in there.
+    [string]$NinjaTraderHome = "${env:ProgramFiles}\NinjaTrader 8",
+
     [switch]$SkipAddOn,
 
     [switch]$NoPairing
@@ -158,16 +162,105 @@ if (-not $SkipAddOn) {
     if (-not (Test-Path -LiteralPath $customPath)) {
         throw "NinjaTrader folder not found: $customPath`nOpen NinjaTrader 8 once so it creates its Documents folder, or pass -NinjaTraderDocumentsPath."
     }
+    # bin\Custom, not bin\Custom\AddOns: that subfolder is for NinjaScript
+    # source NinjaTrader compiles, and a compiled DLL there is never loaded.
+    $addOnTarget = $customPath
     $addOnSource = Join-Path $PackagePath 'AddOn'
+    $addOnProject = Join-Path $PackagePath 'AddOnSource\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj'
+
     if (Test-Path -LiteralPath $addOnSource) {
-        # bin\Custom, not bin\Custom\AddOns: that subfolder is for NinjaScript
-        # source NinjaTrader compiles, and a compiled DLL there is never loaded.
-        $addOnTarget = $customPath
         New-Item -ItemType Directory -Path $addOnTarget -Force | Out-Null
         Copy-Item -Path (Join-Path $addOnSource '*') -Destination $addOnTarget -Recurse -Force
         Write-Ok "AddOn deployed to $addOnTarget"
-    } else {
-        Write-Warning 'No AddOn folder in the package - skipping. The service will install, but NinjaTrader capture stays off until the AddOn is deployed.'
+    }
+    elseif (Test-Path -LiteralPath $addOnProject) {
+        # WHY THIS COMPILES HERE INSTEAD OF ARRIVING BUILT.
+        #
+        # The AddOn references NinjaTrader's own assemblies, which are licensed
+        # and never leave the machines that have them, so CI cannot produce it.
+        # The package used to ship without one: the service installed, the
+        # console said it was finished, and the machine captured nothing until
+        # somebody deployed four DLLs by hand. One download was not one movement.
+        #
+        # This machine is the one place the NinjaTrader assemblies are certain to
+        # exist, because it is the machine that runs NinjaTrader. So it builds
+        # what it is about to load, from the source it just downloaded. No
+        # prebuilt binary of unclear provenance goes near a client's accounts.
+        Write-Step 'Building the NinjaTrader AddOn on this machine'
+
+        $ninjaCore = Join-Path $NinjaTraderHome 'bin\NinjaTrader.Core.dll'
+        if (-not (Test-Path -LiteralPath $ninjaCore)) {
+            throw "NinjaTrader 8 was not found at: $NinjaTraderHome`n" +
+                  'Pass -NinjaTraderHome with the folder that contains bin\NinjaTrader.Core.dll.'
+        }
+
+        # The SDK is a build dependency, not something the desk should have to
+        # install first, and requiring it would have made this two movements
+        # again. Fetched under the install root rather than system-wide: it needs
+        # no PATH change and no second elevated session, and uninstall-agent.ps1
+        # removes the install root outright, so it leaves with everything else
+        # rather than lingering as a toolchain nobody remembers installing.
+        # Written the long way on purpose: Windows Server ships Windows PowerShell
+        # 5.1, which has no null-conditional operator, and this script has to run
+        # under whatever PowerShell the VPS opens.
+        $dotnet = $null
+        $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+        if ($dotnetCommand) {
+            # A machine can have the runtime and no SDK, which cannot build.
+            $sdks = & $dotnetCommand.Source --list-sdks 2>$null
+            if ($LASTEXITCODE -eq 0 -and $sdks) { $dotnet = $dotnetCommand.Source }
+        }
+        if (-not $dotnet) {
+            $sdkRoot = Join-Path $InstallRoot 'build\dotnet'
+            $dotnet = Join-Path $sdkRoot 'dotnet.exe'
+            if (-not (Test-Path -LiteralPath $dotnet)) {
+                Write-Step 'Downloading the .NET SDK to build the AddOn'
+                $bootstrap = Join-Path ([IO.Path]::GetTempPath()) 'dotnet-install.ps1'
+                Invoke-WebRequest 'https://dot.net/v1/dotnet-install.ps1' -OutFile $bootstrap -UseBasicParsing
+                & $bootstrap -Channel '8.0' -InstallDir $sdkRoot -NoPath
+                Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue
+            }
+            if (-not (Test-Path -LiteralPath $dotnet)) {
+                throw 'The .NET SDK could not be installed, so the AddOn cannot be built here.'
+            }
+            Write-Ok "Build SDK at $sdkRoot"
+        }
+
+        $env:NINJATRADER_HOME = $NinjaTraderHome
+        & $dotnet build $addOnProject -c Release --nologo
+        if ($LASTEXITCODE -ne 0) { throw "The AddOn did not build (dotnet exit $LASTEXITCODE)." }
+
+        $built = Join-Path (Split-Path -Parent $addOnProject) 'bin\Release\net48'
+        $dlls = @(
+            'Vincere.AutoExport.NinjaTrader.dll',
+            'Vincere.AutoExport.NinjaTrader.Core.dll',
+            'Vincere.AutoExport.Contracts.dll',
+            'Newtonsoft.Json.dll'
+        )
+        foreach ($dll in $dlls) {
+            if (-not (Test-Path -LiteralPath (Join-Path $built $dll))) {
+                throw "The AddOn build finished but $dll is missing from $built."
+            }
+        }
+
+        # An earlier install may have put these in bin\Custom\AddOns, where they
+        # are never loaded. Clear them so NinjaScript does not trip over
+        # assemblies sitting in its source folder.
+        $stale = Join-Path $NinjaTraderDocumentsPath 'bin\Custom\AddOns'
+        if (Test-Path -LiteralPath $stale) {
+            Get-ChildItem -LiteralPath $stale -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -in $dlls } |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+
+        New-Item -ItemType Directory -Path $addOnTarget -Force | Out-Null
+        foreach ($dll in $dlls) {
+            Copy-Item -LiteralPath (Join-Path $built $dll) -Destination $addOnTarget -Force
+        }
+        Write-Ok "AddOn built and deployed to $addOnTarget"
+    }
+    else {
+        Write-Warning 'No AddOn and no AddOn source in the package - skipping. The service will install, but NinjaTrader capture stays off until the AddOn is deployed.'
     }
 }
 
