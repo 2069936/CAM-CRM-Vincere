@@ -110,6 +110,7 @@ import {
   reconcileDailyImport,
   isCashType,
 } from "./domain/reconcile";
+import { stampAccountOutcome } from "./domain/accountOutcomeStamp";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import { buildBatchImportPlan } from "./domain/batchImport";
 import { suggestAccountDefaults } from "./domain/accountTargets";
@@ -13602,6 +13603,19 @@ export default function App() {
         augment.targetProfit = defaults.target;
       if (Object.keys(augment).length) finalPatch = { ...patch, ...augment };
     }
+    // A classification without the day it was made cannot be placed in time,
+    // and the day cannot be recovered afterwards. Applied here rather than in
+    // the one <select> that prompted it, so every route that marks an account
+    // Failed or Funded is dated the same way. See accountOutcomeStamp.js.
+    const registryForDates = selectedClient.accountRegistry || {};
+    const existingKey = Object.keys(registryForDates).find(
+      (key) => key.toLowerCase() === accountName.toLowerCase(),
+    );
+    finalPatch = stampAccountOutcome(
+      finalPatch,
+      existingKey ? registryForDates[existingKey] : {},
+      todayIsoDate(),
+    );
     persistAccountUpdate(selectedClient.id, accountName, finalPatch);
   }
 
