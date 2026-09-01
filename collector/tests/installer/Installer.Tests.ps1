@@ -80,7 +80,11 @@ Describe 'One download, one movement' {
                 Join-Path $collectorRoot "src\$project\$project.csproj") -Raw
             foreach ($match in [regex]::Matches($csproj, '<PackageReference\s+Include="([^"]+)"')) {
                 $package = $match.Groups[1].Value
-                $packages | Should -Match ([regex]::Escape("<PackageVersion Include=\"$package\""))
+                # Built by concatenation: PowerShell escapes with a backtick, not
+                # a backslash, and `\"` inside a double-quoted string is a parse
+                # error rather than a quote.
+                $needle = '<PackageVersion Include="' + $package + '"'
+                $packages | Should -Match ([regex]::Escape($needle))
             }
         }
     }
