@@ -52,13 +52,37 @@ Describe 'One download, one movement' {
         # so the three folders have to stay siblings under AddOnSource and
         # Directory.Build.props has to sit above them.
         $windowsWorkflow | Should -Match 'AddOnSource'
-        $windowsWorkflow | Should -Match ([regex]::Escape("Copy-Item -LiteralPath 'collector\Directory.Build.props'"))
+        # BOTH props files, by wildcard. Shipping only Directory.Build.props left
+        # Directory.Packages.props behind, which is what supplies the version for
+        # every versionless PackageReference. Newtonsoft.Json then resolved to
+        # 3.5.8, the lowest that has ever existed, and the AddOn failed to build
+        # on a real VPS because JsonException is not a type in it.
+        $windowsWorkflow | Should -Match ([regex]::Escape("Copy-Item -Path 'collector\Directory.*.props'"))
+        $windowsWorkflow | Should -Match ([regex]::Escape('Build configuration is missing from the package'))
         foreach ($project in 'Vincere.AutoExport.Contracts',
             'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
             $windowsWorkflow | Should -Match ([regex]::Escape($project))
         }
         # This runner's build leftovers must not travel.
         $windowsWorkflow | Should -Match ([regex]::Escape("notin @('bin', 'obj')"))
+    }
+
+    It 'pins a version for every package the AddOn source resolves' {
+        # The guard on the real cause rather than on the workflow text: a
+        # versionless PackageReference is only safe while central package
+        # management ships alongside it, and CS0246 on a client's VPS is a poor
+        # place to discover it did not.
+        $packages = Get-Content -LiteralPath (Join-Path $collectorRoot 'Directory.Packages.props') -Raw
+        $packages | Should -Match 'ManagePackageVersionsCentrally>true<'
+        foreach ($project in 'Vincere.AutoExport.Contracts',
+            'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
+            $csproj = Get-Content -LiteralPath (
+                Join-Path $collectorRoot "src\$project\$project.csproj") -Raw
+            foreach ($match in [regex]::Matches($csproj, '<PackageReference\s+Include="([^"]+)"')) {
+                $package = $match.Groups[1].Value
+                $packages | Should -Match ([regex]::Escape("<PackageVersion Include=\"$package\""))
+            }
+        }
     }
 
     It 'builds the AddOn on the machine when the package carries no compiled one' {

@@ -140,14 +140,22 @@ jobs:
           #
           # LAYOUT MATTERS. The AddOn csproj reaches its two dependencies through
           # `../Vincere.AutoExport.*`, so the three project folders have to stay
-          # siblings, and Directory.Build.props has to sit above them. bin and obj
-          # are excluded: they are this runner's leftovers and would be stale
-          # everywhere else.
+          # siblings, and the Directory.*.props above them have to travel too.
+          # BOTH of them: Directory.Packages.props is what turns
+          # `<PackageReference Include="Newtonsoft.Json" />` into a version, and
+          # a package built without it resolved Newtonsoft.Json to 3.5.8, the
+          # lowest that has ever existed, where JsonException is not a type yet.
+          # The build failed on a real VPS with CS0246 and eighteen NU1604
+          # warnings nobody would read. Copied by wildcard so a third one added
+          # later travels without anyone remembering this.
+          #
+          # bin and obj are excluded: they are this runner's leftovers and would
+          # be stale everywhere else.
           $stage = 'artifacts\agent-package'
           New-Item -ItemType Directory -Path "$stage\Agent", "$stage\Setup", "$stage\AddOnSource" -Force | Out-Null
           Copy-Item -Path 'artifacts\agent\*' -Destination "$stage\Agent" -Recurse -Force
           Copy-Item -Path 'artifacts\ui\*' -Destination "$stage\Setup" -Recurse -Force
-          Copy-Item -LiteralPath 'collector\Directory.Build.props' -Destination "$stage\AddOnSource"
+          Copy-Item -Path 'collector\Directory.*.props' -Destination "$stage\AddOnSource"
           foreach ($proj in 'Vincere.AutoExport.Contracts',
             'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
             $dest = Join-Path "$stage\AddOnSource" $proj
@@ -159,6 +167,14 @@ jobs:
           $addOnProject = "$stage\AddOnSource\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj"
           if (-not (Test-Path -LiteralPath $addOnProject)) {
             throw "AddOn source is missing from the package: $addOnProject"
+          }
+          # Every props file that governs the build has to be in the package, or
+          # the machine that builds it resolves different packages than CI did.
+          foreach ($props in Get-ChildItem -Path 'collector\Directory.*.props') {
+            $shipped = Join-Path "$stage\AddOnSource" $props.Name
+            if (-not (Test-Path -LiteralPath $shipped)) {
+              throw "Build configuration is missing from the package: $($props.Name)"
+            }
           }
           Copy-Item -LiteralPath @(
             'collector\scripts\install-agent.ps1',
