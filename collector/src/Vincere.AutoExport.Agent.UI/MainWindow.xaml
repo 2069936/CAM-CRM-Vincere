@@ -146,8 +146,13 @@
                     <TextBlock Text=" / 4" Foreground="{StaticResource MutedBrush}" FontSize="16" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Background="#342A4A" CornerRadius="10" Padding="9,4" Margin="0,0,10,0" Visibility="{Binding UpdateRequired, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="UPDATE REQUIRED" Foreground="#D8CCFF" FontWeight="SemiBold" FontSize="10" />
+                    <!-- Was a label reading UPDATE REQUIRED and nothing else, which
+                         names a state and leaves the reader to guess the action. The
+                         action is the same install line from the CRM, so it says so. -->
+                    <Border Background="#342A4A" CornerRadius="10" Padding="9,4" Margin="0,0,10,0"
+                            ToolTip="{Binding UpdateHint}"
+                            Visibility="{Binding UpdateRequired, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="{Binding UpdateHint}" Foreground="#D8CCFF" FontWeight="SemiBold" FontSize="10" />
                     </Border>
                     <TextBlock Text="{Binding QueueSummary}" Foreground="{StaticResource MutedBrush}" FontSize="12" VerticalAlignment="Center" />
                 </StackPanel>
@@ -243,7 +248,15 @@
                                 </Border>
                             </StackPanel>
                         </Border>
-                        <Button Content="Create support diagnostics" Command="{Binding CollectDiagnosticsCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" HorizontalAlignment="Left" Margin="0,18,0,0" AutomationProperties.Name="Create redacted support diagnostics" />
+                        <!-- The queue lives under ProgramData, which is hidden, inside a
+                             tree restricted to SYSTEM and Administrators. Copying a
+                             capture out by hand is the fallback whenever uploads are
+                             failing, and it required knowing the path and pasting it
+                             into the address bar. -->
+                        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                            <Button Content="Create support diagnostics" Command="{Binding CollectDiagnosticsCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" AutomationProperties.Name="Create redacted support diagnostics" />
+                            <Button Content="Open queue folder" Command="{Binding OpenQueueFolderCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" Margin="10,0,0,0" AutomationProperties.Name="Open the folder holding captures that have not uploaded" />
+                        </StackPanel>
                         <TextBlock Text="{Binding DiagnosticsPath}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
                     </StackPanel>
                   </ScrollViewer>

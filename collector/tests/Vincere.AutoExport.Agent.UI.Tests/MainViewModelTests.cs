@@ -124,6 +124,45 @@ public sealed class MainViewModelTests
         Assert.Equal("7 uploads waiting", viewModel.QueueSummary);
         Assert.Equal(3, viewModel.CurrentStep);
         Assert.DoesNotContain("Accounts", viewModel.StatusMessage);
+
+        // The badge used to read UPDATE REQUIRED and stop there, which names a
+        // state and leaves the reader to ask what to run.
+        Assert.Contains("install line", viewModel.UpdateHint);
+    }
+
+    [Fact]
+    public async Task NoUpdateHintWhenNothingIsOutOfDate()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", new
+        {
+            Paired = true,
+            ClientName = "Acme",
+            ScheduleTime = "16:45",
+            Runtime = new { UpdateRequired = false },
+            Queue = new { PendingCount = 0 },
+        }));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+
+        Assert.False(viewModel.UpdateRequired);
+        Assert.Equal(string.Empty, viewModel.UpdateHint);
+    }
+
+    [Fact]
+    public void TheQueueFolderCanBeOpenedWithoutKnowingWhereItIs()
+    {
+        // It lives under ProgramData, which is hidden, inside a tree restricted
+        // to SYSTEM and Administrators. Copying a capture out by hand is the
+        // fallback whenever uploads are failing, and it required pasting a path
+        // into the address bar.
+        MainViewModel viewModel = new(new FakeClient());
+
+        Assert.NotNull(viewModel.OpenQueueFolderCommand);
+        // Available even before a status arrives: a queue that cannot upload is
+        // exactly when nothing else on this window is working either.
+        Assert.True(viewModel.OpenQueueFolderCommand.CanExecute(null));
     }
 
     [Fact]

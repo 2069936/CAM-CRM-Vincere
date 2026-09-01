@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -39,6 +40,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         TestCaptureCommand = new AsyncCommand(TestCaptureAsync, () => !IsBusy);
         SaveScheduleCommand = new AsyncCommand(SaveScheduleAsync, () => !IsBusy);
         CollectDiagnosticsCommand = new AsyncCommand(CollectDiagnosticsAsync, () => !IsBusy);
+        OpenQueueFolderCommand = new AsyncCommand(OpenQueueFolderAsync, () => true);
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -62,7 +64,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool ServiceAvailable { get => serviceAvailable; private set => Set(ref serviceAvailable, value); }
     public bool RequiresRestart { get => requiresRestart; private set => Set(ref requiresRestart, value); }
     public bool IsComplete { get => isComplete; private set => Set(ref isComplete, value); }
-    public bool UpdateRequired { get => updateRequired; private set => Set(ref updateRequired, value); }
+    public bool UpdateRequired
+    {
+        get => updateRequired;
+        private set
+        {
+            if (!Set(ref updateRequired, value)) return;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(UpdateHint)));
+        }
+    }
+
+    // NAMING A STATE IS NOT TELLING SOMEONE WHAT TO DO.
+    //
+    // This was the word UPDATE REQUIRED on its own. Correct, and useless: the
+    // reader learns something is out of date and still has to ask what to run.
+    // The action is the same install line the CRM already shows, so it says
+    // that, and the window stops being a dead end.
+    //
+    // Nothing here downloads or installs anything. An agent that replaces
+    // itself from the internet, on machines carrying live client accounts, is a
+    // decision for the people who own those accounts, not something to grow
+    // quietly out of a status badge.
+    public string UpdateHint => UpdateRequired
+        ? "UPDATE AVAILABLE · re-run the install line from the CRM"
+        : string.Empty;
     public string EnrollmentCode { get => enrollmentCode; set => Set(ref enrollmentCode, value ?? string.Empty); }
     public string ClientName { get => clientName; private set => Set(ref clientName, value); }
     public string ScheduleTime { get => scheduleTime; set => Set(ref scheduleTime, value); }
@@ -94,6 +119,37 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand TestCaptureCommand { get; }
     public ICommand SaveScheduleCommand { get; }
     public ICommand CollectDiagnosticsCommand { get; }
+    public ICommand OpenQueueFolderCommand { get; }
+
+    // THE FOLDER NOBODY COULD NAVIGATE TO.
+    //
+    // The queue lives under ProgramData, which is hidden, inside a folder tree
+    // restricted to SYSTEM and Administrators. Reaching it meant knowing the
+    // path and pasting it into the address bar, so a CAM who needed to copy a
+    // capture out by hand, which is the whole fallback while uploads are
+    // failing, had to be told the path every time.
+    //
+    // Opens the pending folder rather than the queue root: that is where the
+    // files that have not made it to the CRM are, and it is the only one anyone
+    // has ever needed to open.
+    private Task OpenQueueFolderAsync()
+    {
+        string pending = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Vincere", "AutoExport", "queue", "pending");
+        try
+        {
+            // Created rather than reported missing: an empty queue folder is the
+            // normal state and an error about it would read as a fault.
+            Directory.CreateDirectory(pending);
+            Process.Start(new ProcessStartInfo(pending) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Could not open {pending}. {exception.Message}";
+        }
+        return Task.CompletedTask;
+    }
 
     // WHY THIS IS A LIST AND NOT ONE SENTENCE.
     //
@@ -284,7 +340,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void RaiseCommands()
     {
-        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand }.OfType<AsyncCommand>())
+        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand }.OfType<AsyncCommand>())
             command.RaiseCanExecuteChanged();
     }
 }
