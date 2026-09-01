@@ -133,6 +133,24 @@ Describe 'One download, one movement' {
         $closeAt | Should -BeLessThan $copyAt
     }
 
+    It 'leaves a way back to the Setup window that is not the install command' {
+        # People closed the window and were told to re-run the whole install,
+        # which downloads a hundred megabytes and rebuilds the AddOn to reach a
+        # window that was already sitting on the disk. The MSI has always laid a
+        # shortcut down; this installer, the one the desk actually uses, did not.
+        $installScript | Should -Match ([regex]::Escape('Vincere Auto Export.lnk'))
+        $installScript | Should -Match 'CommonDesktopDirectory'
+        $installScript | Should -Match ([regex]::Escape('Start Menu\Programs'))
+        $installScript | Should -Match ([regex]::Escape('Setup\Vincere.AutoExport.Agent.UI.exe'))
+    }
+
+    It 'takes the shortcuts away with the program' {
+        # A shortcut to a program that is gone is worse than no shortcut.
+        $uninstallScript = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\uninstall-agent.ps1') -Raw
+        $uninstallScript | Should -Match ([regex]::Escape('Vincere Auto Export.lnk'))
+        $uninstallScript | Should -Match 'Remove-Item'
+    }
+
     It 'uses no syntax that Windows PowerShell 5.1 cannot parse' {
         # Windows Server opens 5.1, which has no null-conditional operator and no
         # ternary. A script that only runs under PowerShell 7 would fail on the

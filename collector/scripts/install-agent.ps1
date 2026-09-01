@@ -293,6 +293,35 @@ if (-not $SkipAddOn) {
 
 # --- register and start the service ---------------------------------------
 
+# --- shortcuts, so the window can be found again ---------------------------
+#
+# The MSI has always laid one down. This installer never did, and it is the one
+# the desk actually uses, so the Setup window could only be reopened by someone
+# who knew it lived under Program Files and could type the path. People closed
+# it and were told to re-run the whole install, which downloads a hundred
+# megabytes and rebuilds the AddOn to reach a window that was already there.
+#
+# Desktop and Start menu both: the desktop for the machine someone is looking
+# at, the Start menu so typing "Vincere" finds it.
+Write-Step 'Creating the Vincere Auto Export shortcuts'
+$shortcutTarget = Join-Path $InstallRoot 'Setup\Vincere.AutoExport.Agent.UI.exe'
+if (Test-Path -LiteralPath $shortcutTarget) {
+    $shell = New-Object -ComObject WScript.Shell
+    $startMenu = Join-Path ${env:ProgramData} 'Microsoft\Windows\Start Menu\Programs'
+    foreach ($dir in @([Environment]::GetFolderPath('CommonDesktopDirectory'), $startMenu)) {
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { continue }
+        $link = $shell.CreateShortcut((Join-Path $dir 'Vincere Auto Export.lnk'))
+        $link.TargetPath = $shortcutTarget
+        $link.WorkingDirectory = Split-Path -Parent $shortcutTarget
+        $link.Description = 'Open the Vincere Auto Export setup and status window'
+        $link.Save()
+    }
+    [Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    Write-Ok 'Shortcut on the desktop and in the Start menu.'
+} else {
+    Write-Warning 'Setup window not found in the package, so no shortcut was created.'
+}
+
 Write-Step "Registering the $ServiceName service"
 $serviceBinary = Join-Path $InstallRoot 'Agent\Vincere.AutoExport.Agent.exe'
 # New-Service rather than sc.exe: it quotes the binary path itself, so a path
