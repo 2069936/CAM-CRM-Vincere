@@ -129,7 +129,14 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         // Held per code rather than per client so a genuinely different code
         // still gets fresh entropy, and dropped on success so nothing outlives
         // the pairing it belongs to.
-        string nonce = pairingNonces.GetOrAdd(code, _ => Base64Url(RandomNumberGenerator.GetBytes(32)));
+        // The raw bytes stay local and are still wiped in the finally below. Only
+        // the encoded string is held, and only until this code pairs.
+        byte[] nonceBytes = null;
+        string nonce = pairingNonces.GetOrAdd(code, _ =>
+        {
+            nonceBytes = RandomNumberGenerator.GetBytes(32);
+            return Base64Url(nonceBytes);
+        });
         byte[] requestBytes = null;
         try
         {
@@ -221,7 +228,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(nonceBytes);
+            if (nonceBytes != null) CryptographicOperations.ZeroMemory(nonceBytes);
             if (requestBytes != null) CryptographicOperations.ZeroMemory(requestBytes);
         }
     }
