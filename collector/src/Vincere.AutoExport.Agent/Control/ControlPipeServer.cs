@@ -83,8 +83,10 @@ public sealed class ControlCommandHandler : IControlCommandHandler
         IDiagnosticsCollector diagnostics,
         ICaptureHistoryStore history,
         string agentVersion,
-        string addonVersion)
+        string addonVersion,
+        IServiceReporter reporter = null)
     {
+        this.reporter = reporter;
         this.optionsStore = optionsStore ?? throw new ArgumentNullException(nameof(optionsStore));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.scheduler = scheduler ?? throw new ArgumentNullException(nameof(scheduler));
@@ -96,6 +98,24 @@ public sealed class ControlCommandHandler : IControlCommandHandler
         this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.agentVersion = agentVersion ?? throw new ArgumentNullException(nameof(agentVersion));
         this.addonVersion = addonVersion ?? throw new ArgumentNullException(nameof(addonVersion));
+    }
+
+    private readonly IServiceReporter reporter;
+
+    // A REFUSED COMMAND LEFT NO TRACE ON THE MACHINE EITHER.
+    //
+    // These are returned to the Setup window and nowhere else. When pairing was
+    // refused, the desk read one sentence on screen, the server's own audit
+    // insert was failing silently, and the diagnostics bundle said nothing about
+    // it. There was no third place to look, which is how a refusal nobody could
+    // name cost an afternoon.
+    //
+    // Only the code and the message, which are already written for a human and
+    // carry no code, no token and no client data.
+    private ControlResponse ReportedFailure(string requestId, string code, string message)
+    {
+        reporter?.LoopFailed("control", code ?? "control_command_failed", null);
+        return Failure(requestId, code, message);
     }
 
     public async Task<ControlCommandResponse> HandleAsync(
@@ -128,15 +148,15 @@ public sealed class ControlCommandHandler : IControlCommandHandler
         }
         catch (CrmClientException exception)
         {
-            return Failure(request.RequestId, exception.Code, exception.Message);
+            return ReportedFailure(request.RequestId, exception.Code, exception.Message);
         }
         catch (AgentConfigurationException exception)
         {
-            return Failure(request.RequestId, exception.Code, exception.Message);
+            return ReportedFailure(request.RequestId, exception.Code, exception.Message);
         }
         catch (CaptureAttemptException exception)
         {
-            return Failure(request.RequestId, exception.Code, exception.Message);
+            return ReportedFailure(request.RequestId, exception.Code, exception.Message);
         }
     }
 

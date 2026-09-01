@@ -72,7 +72,8 @@ builder.Services.AddSingleton<IControlCommandHandler>(provider => new ControlCom
     provider.GetRequiredService<IDiagnosticsCollector>(),
     provider.GetRequiredService<ICaptureHistoryStore>(),
     version,
-    "1.0.0"));
+    "1.0.0",
+    provider.GetRequiredService<IServiceReporter>()));
 builder.Services.AddSingleton<ICollectorLoop, QueueRecoveryLoop>();
 builder.Services.AddSingleton<ICollectorLoop, ScheduledCaptureLoop>();
 builder.Services.AddSingleton<ICollectorLoop, UploadLoop>();
