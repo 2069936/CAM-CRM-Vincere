@@ -112,7 +112,7 @@ public sealed class ControlCommandHandler : IControlCommandHandler
     //
     // Only the code and the message, which are already written for a human and
     // carry no code, no token and no client data.
-    private ControlResponse ReportedFailure(string requestId, string code, string message)
+    private ControlCommandResponse ReportedFailure(Guid requestId, string code, string message)
     {
         reporter?.LoopFailed("control", code ?? "control_command_failed", null);
         return Failure(requestId, code, message);
