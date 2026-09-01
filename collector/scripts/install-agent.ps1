@@ -129,6 +129,33 @@ if ($existing) {
     Write-Ok 'Existing service removed (settings in ProgramData are kept).'
 }
 
+# THE SETUP WINDOW HOLDS THE FILES THIS IS ABOUT TO REPLACE.
+#
+# Stopping the service was not enough. install-agent.ps1 opens the Setup window
+# at the end of every run, so the window from the previous install is still
+# running on a reinstall, and it holds its own DLLs open. Copy-Item then fails on
+# the first locked file with "being used by another process" — after the service
+# has already been deleted, which leaves the machine with no agent at all and an
+# install that got halfway. That is the worst possible place to stop.
+#
+# Closed politely first so a window mid-pairing gets to shut down on its own, and
+# only killed if it does not. The pairing token lives in ProgramData, not in that
+# process, so nothing is lost either way.
+$setupProcesses = Get-Process -Name 'Vincere.AutoExport.Agent.UI' -ErrorAction SilentlyContinue
+if ($setupProcesses) {
+    Write-Step 'Closing the Vincere Auto Export Setup window'
+    foreach ($process in $setupProcesses) {
+        $process.CloseMainWindow() | Out-Null
+    }
+    Start-Sleep -Seconds 2
+    $stubborn = Get-Process -Name 'Vincere.AutoExport.Agent.UI' -ErrorAction SilentlyContinue
+    if ($stubborn) {
+        $stubborn | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+    Write-Ok 'Setup window closed.'
+}
+
 # --- lay down the files ----------------------------------------------------
 
 Write-Step "Installing to $InstallRoot"

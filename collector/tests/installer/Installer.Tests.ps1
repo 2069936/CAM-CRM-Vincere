@@ -88,6 +88,23 @@ Describe 'One download, one movement' {
         $installScript | Should -Match 'is missing from'
     }
 
+    It 'closes the Setup window before replacing the files it holds open' {
+        # THE HALF-INSTALL THIS CLOSES. This script opens the Setup window at the
+        # end of every run, so a reinstall meets the previous window still
+        # holding its own DLLs. Copy-Item failed on the first locked file, after
+        # the service had already been deleted, leaving the machine with no agent
+        # and an install stopped halfway.
+        $installScript | Should -Match ([regex]::Escape("Get-Process -Name 'Vincere.AutoExport.Agent.UI'"))
+        $installScript | Should -Match 'CloseMainWindow'
+
+        # Before the copy, not after it, which is the whole point.
+        $closeAt = $installScript.IndexOf('CloseMainWindow')
+        $copyAt = $installScript.IndexOf('Copy-Item -Path (Join-Path $PackagePath')
+        $closeAt | Should -BeGreaterThan 0
+        $copyAt | Should -BeGreaterThan 0
+        $closeAt | Should -BeLessThan $copyAt
+    }
+
     It 'uses no syntax that Windows PowerShell 5.1 cannot parse' {
         # Windows Server opens 5.1, which has no null-conditional operator and no
         # ternary. A script that only runs under PowerShell 7 would fail on the
