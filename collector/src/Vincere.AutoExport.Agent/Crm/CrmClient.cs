@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -96,6 +97,10 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             disposeHandler: true);
     }
 
+    // Keyed by the normalized enrollment code. Codes are one-time and expire in
+    // an hour, so this holds at most a handful and only until one succeeds.
+    private readonly ConcurrentDictionary<string, string> pairingNonces = new(StringComparer.Ordinal);
+
     public async Task<PairingResult> PairAsync(
         string enrollmentCode,
         string agentVersion,
@@ -106,8 +111,25 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         string machineId = MachineIdentity.ReadNormalized(machineGuidSource);
         agentVersion = NormalizeVersion(agentVersion, nameof(agentVersion));
         addonVersion = NormalizeVersion(addonVersion, nameof(addonVersion));
-        byte[] nonceBytes = RandomNumberGenerator.GetBytes(32);
-        string nonce = Base64Url(nonceBytes);
+        // THE SAME NONCE FOR THE SAME CODE, and this is what makes a retry work.
+        //
+        // The nonce goes into the device credential, and the server's pairing
+        // function treats a second call carrying the same machine and the same
+        // credential as the same pairing: it returns the device it already
+        // created rather than refusing. That is deliberate, and it is the only
+        // reason retrying is meant to be safe.
+        //
+        // A fresh nonce per attempt broke exactly that. The first attempt could
+        // commit the device on the server and still fail on the way back — a
+        // dropped response, a 500 after the write — and the desk would press
+        // Connect again, present a different credential for the same code, and
+        // be told the code was already used. The code is one-time, so that is
+        // terminal: generate a new one, and hope the same thing does not happen.
+        //
+        // Held per code rather than per client so a genuinely different code
+        // still gets fresh entropy, and dropped on success so nothing outlives
+        // the pairing it belongs to.
+        string nonce = pairingNonces.GetOrAdd(code, _ => Base64Url(RandomNumberGenerator.GetBytes(32)));
         byte[] requestBytes = null;
         try
         {
@@ -140,6 +162,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             PairResponse paired = Deserialize<PairResponse>(responseBytes, "pairing_response_invalid");
                             ValidatePairResponse(paired);
                             await tokenStore.SaveTokenAsync(paired.DeviceToken, cancellationToken).ConfigureAwait(false);
+                            pairingNonces.TryRemove(code, out _);
                             return new PairingResult(
                                 paired.DeviceId,
                                 paired.ClientName.Trim(),

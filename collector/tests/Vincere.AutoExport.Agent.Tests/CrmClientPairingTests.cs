@@ -114,6 +114,52 @@ public sealed class CrmClientPairingTests
     }
 
     [Fact]
+    public async Task PressingConnectAgainSendsTheSameCredentialForTheSameCode()
+    {
+        // THE ONE THAT BURNED CODES. The nonce goes into the device credential,
+        // and the server treats a second call carrying the same machine and the
+        // same credential as the same pairing, returning the device it already
+        // created. A fresh nonce per attempt defeated that: the first attempt
+        // could commit the device and still fail on the way back, and pressing
+        // Connect again presented a different credential for a code that was
+        // now consumed, which the server can only refuse. The code is one-time,
+        // so that was terminal.
+        int call = 0;
+        RecordingHandler handler = new(_ =>
+        {
+            call++;
+            if (call == 1) return Json(HttpStatusCode.InternalServerError, "{\"error\":\"boom\"}");
+            return Json(HttpStatusCode.OK, """
+                {"deviceToken":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC","deviceId":"33333333-3333-4333-8333-333333333333","clientName":"Acme","schedule":{"time":"16:45","timeZone":"America/New_York"}}
+                """);
+        });
+        RecordingTokenStore tokenStore = new();
+        CrmClient client = CreateClient(handler, tokenStore, maxAttempts: 1);
+
+        await Assert.ThrowsAsync<CrmClientException>(() => client.PairAsync("ABCDEFGHJK", "1.2.3", "4.5.6"));
+        await client.PairAsync("ABCDEFGHJK", "1.2.3", "4.5.6");
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(handler.Requests[0].Body, handler.Requests[1].Body);
+        Assert.Equal("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", tokenStore.Token);
+    }
+
+    [Fact]
+    public async Task ADifferentCodeStillGetsItsOwnNonce()
+    {
+        // Only a retry of the same code reuses it. Two codes sharing entropy
+        // would be a worse bug than the one this fixes.
+        RecordingHandler handler = new(_ => Json(HttpStatusCode.InternalServerError, "{}"));
+        CrmClient client = CreateClient(handler, new RecordingTokenStore(), maxAttempts: 1);
+
+        await Assert.ThrowsAsync<CrmClientException>(() => client.PairAsync("ABCDEFGHJK", "1.2.3", "4.5.6"));
+        await Assert.ThrowsAsync<CrmClientException>(() => client.PairAsync("MNPQRSTVWX", "1.2.3", "4.5.6"));
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.NotEqual(handler.Requests[0].Body, handler.Requests[1].Body);
+    }
+
+    [Fact]
     public async Task TlsValidationFailureIsNotRetried()
     {
         RecordingHandler handler = new(_ => throw new HttpRequestException(
