@@ -151,6 +151,16 @@ Describe 'One download, one movement' {
         $uninstallScript | Should -Match 'Remove-Item'
     }
 
+    It 'reports a version the published release can actually satisfy' {
+        # Undeclared it was 1.0.0, the SDK default, against a release tagged
+        # agent-v1.0.1 whose manifest asks for a minimum of 1.0.1. The server
+        # then marks every machine update_required forever, because no build can
+        # ever report the number being asked for.
+        $csproj = Get-Content -LiteralPath (
+            Join-Path $collectorRoot 'src\Vincere.AutoExport.Agent\Vincere.AutoExport.Agent.csproj') -Raw
+        $csproj | Should -Match '<Version>\d+\.\d+\.\d+</Version>'
+    }
+
     It 'uses no syntax that Windows PowerShell 5.1 cannot parse' {
         # Windows Server opens 5.1, which has no null-conditional operator and no
         # ternary. A script that only runs under PowerShell 7 would fail on the
