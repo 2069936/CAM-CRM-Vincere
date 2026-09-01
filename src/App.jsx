@@ -9373,6 +9373,7 @@ function CamOverview({
   onAddClientTask,
   onLogClientActivity,
   onResolveFlag,
+  onClassifyAccount,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -9728,6 +9729,7 @@ function CamOverview({
         today={today}
         queue={flagQueue}
         onResolveFlag={onResolveFlag}
+        onClassifyAccount={onClassifyAccount}
         onLogClientActivity={onLogClientActivity}
         onSelectClient={onSelectClient}
       />
@@ -13619,6 +13621,25 @@ export default function App() {
     persistAccountUpdate(selectedClient.id, accountName, finalPatch);
   }
 
+  // Answering "did it pass" or "did it fail" from the flag queue, where the CAM
+  // is looking at the evidence, rather than from the account table where they
+  // would have to go find the row. Routed through the same persist path as the
+  // table so both write the same dated record; the stamping lives in
+  // accountOutcomeStamp.js and is applied here too, because this call does not
+  // pass through handleAccountUpdate and would otherwise write an undated claim.
+  function classifyAccountOutcome(clientId, accountName, patch) {
+    const client = state.clients?.find((entry) => entry.id === clientId);
+    const registry = client?.accountRegistry || {};
+    const key = Object.keys(registry).find(
+      (name) => name.toLowerCase() === String(accountName).toLowerCase(),
+    );
+    persistAccountUpdate(
+      clientId,
+      accountName,
+      stampAccountOutcome(patch, key ? registry[key] : {}, todayIsoDate()),
+    );
+  }
+
   function persistAccountUpdate(clientId, accountName, patch) {
     setState((current) =>
       upsertAccountMeta(current, clientId, accountName, patch),
@@ -14894,6 +14915,7 @@ export default function App() {
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
                 onResolveFlag={resolveFlagByIds}
+                onClassifyAccount={classifyAccountOutcome}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
