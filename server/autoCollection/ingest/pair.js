@@ -102,6 +102,62 @@ export function createPairStore(admin) {
       };
     },
 
+    /* WHO IS HOLDING THIS MACHINE.
+     *
+     * `machine_conflict` is the one refusal a new code can never fix, and it is
+     * also the one the CAM cannot investigate: the blocking device belongs to
+     * whichever client claimed this VPS first, and that client is very often
+     * outside the CAM's own book, so the fleet view returns nothing and the
+     * admin fleet endpoint answers 403. The desk spent two days generating code
+     * after code against a machine that was never going to accept one.
+     *
+     * The pairing RPC knows the answer and cannot say it: it raises, and an
+     * exception carries no row. So this reads it afterwards with the same
+     * service role, on the denial path only, and the name goes into the audit
+     * entry rather than into the response. The caller on the VPS holds one
+     * client's enrolment code and has no business learning another client's
+     * name from a failed request; the CAM in the CRM does. */
+    async findMachineHolder(machineHash) {
+      const { data, error } = await admin
+        .from('ingest_devices')
+        .select('id, client_id, created_at')
+        .eq('machine_id_hash', machineHash)
+        .eq('status', 'active')
+        .is('revoked_at', null)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data?.client_id) return null;
+      const { data: client, error: clientError } = await admin
+        .from('clients')
+        .select('name')
+        .eq('id', data.client_id)
+        .maybeSingle();
+      if (clientError) throw clientError;
+      return {
+        deviceId: data.id,
+        clientUuid: data.client_id,
+        clientName: String(client?.name || '').trim() || null,
+        pairedAt: data.created_at || null,
+      };
+    },
+
+    /* Which client the attempt was for. The audit row used to carry a null
+     * entity_id, so sixty-eight refusals were one undifferentiated pile and no
+     * client page could show its own. The code hash is already in hand. */
+    async findEnrollmentClient(codeHash) {
+      const { data, error } = await admin
+        .from('ingest_enrollments')
+        .select('client_id')
+        .eq('code_hash', codeHash)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data?.client_id || null;
+    },
+
     async writeAudit({ entityType, entityId, action, afterData }) {
       const { error } = await admin.from('audit_logs').insert({
         user_id: null,
@@ -159,6 +215,30 @@ function denialAudit(reasonCode, versions = {}) {
       ...(versions.addonVersion ? { addonVersion: versions.addonVersion } : {}),
     },
   };
+}
+
+/**
+ * Turn an anonymous denial into one a client page can show.
+ *
+ * Best effort on purpose: this runs while answering a request that has already
+ * failed, and a refusal that cannot be annotated is still a refusal. Losing the
+ * detail must never turn a clean 400 into a 500.
+ */
+export async function attachAttemptDetail(store, entry, { reasonCode, codeHash, machineHash }) {
+  try {
+    const clientId = await store.findEnrollmentClient(codeHash);
+    if (clientId) entry.entityId = clientId;
+  } catch {
+    // Unattributed is the state this was already in.
+  }
+  if (reasonCode !== SQL_DENIAL_CODES.MACHINE_CONFLICT) return entry;
+  try {
+    const holder = await store.findMachineHolder(machineHash);
+    if (holder) entry.afterData = { ...entry.afterData, blockedBy: holder };
+  } catch {
+    // Same.
+  }
+  return entry;
 }
 
 export function createHandler({
@@ -222,10 +302,14 @@ export function createHandler({
       }
 
       const issued = deriveDeviceToken({ enrollmentCode: code, machineId: machine, pairingNonce: nonce, pepper });
+      // Hoisted: the denial path needs the same two hashes to say which client
+      // was being paired and which one already holds this machine.
+      const codeHash = digestEnrollmentCode(code, pepper);
+      const machineHash = digestMachineId(machine, pepper);
       try {
         const paired = await store.pairDevice({
-          codeHash: digestEnrollmentCode(code, pepper),
-          machineHash: digestMachineId(machine, pepper),
+          codeHash,
+          machineHash,
           credentialHash: issued.record.credentialHash,
           credentialPrefix: issued.record.tokenPrefix,
           agentVersion,
@@ -244,6 +328,7 @@ export function createHandler({
         if (error instanceof PairingDeniedError) {
           const entry = denialAudit(error.reasonCode, { agentVersion, addonVersion });
           if (error.reasonCode === 'code_expired') entry.action = 'ingest_pair.expired';
+          await attachAttemptDetail(store, entry, { reasonCode: error.reasonCode, codeHash, machineHash });
           await safeAudit(store, entry);
           return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR, reason: publicDenialReason(error.reasonCode) });
         }
