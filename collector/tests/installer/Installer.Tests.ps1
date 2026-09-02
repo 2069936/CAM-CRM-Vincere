@@ -161,6 +161,34 @@ Describe 'One download, one movement' {
         $csproj | Should -Match '<Version>\d+\.\d+\.\d+</Version>'
     }
 
+    It 'never overwrites the Newtonsoft NinjaTrader ships with its own' {
+        # bin\Custom is NinjaTrader's assembly folder, and it ships its own
+        # Newtonsoft.Json. Dropping a different build there is the only thing
+        # this installer does that can reach NinjaScript compilation, and
+        # NinjaScript failing to compile is how an account shows no strategies.
+        $installScript | Should -Match ([regex]::Escape("Join-Path `$NinjaTraderHome 'bin\Newtonsoft.Json.dll'"))
+        $installScript | Should -Match ([regex]::Escape('$shipJson = $false'))
+    }
+
+    It 'stops before touching anything when the shipped Newtonsoft is too old' {
+        # Refusing after the copy would be worse than not checking: the machine
+        # would already be in the state the check exists to prevent.
+        $refuseAt = $installScript.IndexOf('this AddOn was built against')
+        $copyAt = $installScript.IndexOf('foreach ($dll in $ourDlls)')
+        $refuseAt | Should -BeGreaterThan 0
+        $copyAt | Should -BeGreaterThan 0
+        $refuseAt | Should -BeLessThan $copyAt
+    }
+
+    It 'clears only its own files out of the AddOns folder' {
+        # The cleanup matched by name against a list that included
+        # Newtonsoft.Json.dll, so it would have deleted one that belonged to
+        # somebody else.
+        $ourList = [regex]::Match($installScript, '\$ourDlls = @\(([^)]*)\)').Groups[1].Value
+        $ourList | Should -Match 'Vincere\.AutoExport\.NinjaTrader\.dll'
+        $ourList | Should -Not -Match 'Newtonsoft'
+    }
+
     It 'uses no syntax that Windows PowerShell 5.1 cannot parse' {
         # Windows Server opens 5.1, which has no null-conditional operator and no
         # ternary. A script that only runs under PowerShell 7 would fail on the

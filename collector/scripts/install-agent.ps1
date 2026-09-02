@@ -270,20 +270,60 @@ if (-not $SkipAddOn) {
             }
         }
 
-        # An earlier install may have put these in bin\Custom\AddOns, where they
-        # are never loaded. Clear them so NinjaScript does not trip over
-        # assemblies sitting in its source folder.
+        # --- the one file that is not ours to overwrite --------------------
+        #
+        # bin\Custom is NinjaTrader's own assembly folder, and NinjaTrader ships
+        # its own Newtonsoft.Json. Dropping a different build of it there is the
+        # only thing this installer does that can reach NinjaScript compilation,
+        # and NinjaScript failing to compile is how an account ends up showing no
+        # strategies at all. That is a client's stack going quiet because of an
+        # exporter, which is not a trade worth making for any feature.
+        #
+        # So NinjaTrader's copy wins whenever it has one. Ours is only laid down
+        # when there is nothing to conflict with, and if theirs is too old for
+        # the code we just compiled this stops BEFORE touching anything, leaving
+        # NinjaTrader exactly as it was.
+        $ourJson = Join-Path $built 'Newtonsoft.Json.dll'
+        $ninjaJson = Join-Path $NinjaTraderHome 'bin\Newtonsoft.Json.dll'
+        $shipJson = $true
+        if (Test-Path -LiteralPath $ninjaJson) {
+            $theirJsonVersion = [Version](Get-Item -LiteralPath $ninjaJson).VersionInfo.FileVersion
+            $ourJsonVersion = [Version](Get-Item -LiteralPath $ourJson).VersionInfo.FileVersion
+            if ($theirJsonVersion.Major -lt $ourJsonVersion.Major) {
+                throw @"
+NinjaTrader ships Newtonsoft.Json $theirJsonVersion and this AddOn was built against $ourJsonVersion.
+Installing the AddOn could stop NinjaScript from compiling, which would leave the
+strategies on this machine not loading at all.
+
+Nothing has been changed. Update NinjaTrader 8 and run this again, or pass
+-SkipAddOn to install the service only and deploy the AddOn separately.
+"@
+            }
+            $shipJson = $false
+            Write-Ok "Using NinjaTrader's own Newtonsoft.Json $theirJsonVersion."
+        }
+
+        # OUR files only, matched by name, and never Newtonsoft: an earlier
+        # install put these in bin\Custom\AddOns where they are never loaded, and
+        # a blanket delete by name would take a Newtonsoft that belonged to
+        # somebody else.
+        $ourDlls = @(
+            'Vincere.AutoExport.NinjaTrader.dll',
+            'Vincere.AutoExport.NinjaTrader.Core.dll',
+            'Vincere.AutoExport.Contracts.dll'
+        )
         $stale = Join-Path $NinjaTraderDocumentsPath 'bin\Custom\AddOns'
         if (Test-Path -LiteralPath $stale) {
             Get-ChildItem -LiteralPath $stale -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -in $dlls } |
+                Where-Object { $_.Name -in $ourDlls } |
                 Remove-Item -Force -ErrorAction SilentlyContinue
         }
 
         New-Item -ItemType Directory -Path $addOnTarget -Force | Out-Null
-        foreach ($dll in $dlls) {
+        foreach ($dll in $ourDlls) {
             Copy-Item -LiteralPath (Join-Path $built $dll) -Destination $addOnTarget -Force
         }
+        if ($shipJson) { Copy-Item -LiteralPath $ourJson -Destination $addOnTarget -Force }
         Write-Ok "AddOn built and deployed to $addOnTarget"
     }
     else {
