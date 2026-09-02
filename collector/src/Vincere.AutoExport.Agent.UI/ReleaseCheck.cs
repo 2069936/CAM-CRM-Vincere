@@ -37,7 +37,7 @@ public sealed class ReleaseCheck
     // rather than fetched from the CRM on purpose: the whole point is to work
     // when the CRM does not.
     public const string DefaultManifestUrl =
-        "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.1/release-manifest.json";
+        "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.2/release-manifest.json";
 
     private static readonly Regex VersionPattern = new(@"^\d{1,5}(\.\d{1,5}){1,3}$", RegexOptions.Compiled);
 

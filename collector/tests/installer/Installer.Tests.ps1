@@ -153,7 +153,7 @@ Describe 'One download, one movement' {
 
     It 'reports a version the published release can actually satisfy' {
         # Undeclared it was 1.0.0, the SDK default, against a release tagged
-        # agent-v1.0.1 whose manifest asks for a minimum of 1.0.1. The server
+        # agent-v1.0.2 whose manifest asks for a minimum of 1.0.2. The server
         # then marks every machine update_required forever, because no build can
         # ever report the number being asked for.
         $csproj = Get-Content -LiteralPath (
