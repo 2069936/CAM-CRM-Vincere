@@ -18,5 +18,10 @@
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ControlPipeClient.cs" Link="ControlPipeClient.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/MainViewModel.cs" Link="MainViewModel.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/CaptureDayView.cs" Link="CaptureDayView.cs" />
+    <!-- Named one by one rather than referencing the UI project, because that
+         project is WPF and does not build everywhere this suite runs. A new file
+         the view model uses has to be added here or the tests stop compiling,
+         which is how CI caught this one. -->
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ReleaseCheck.cs" Link="ReleaseCheck.cs" />
   </ItemGroup>
 </Project>
