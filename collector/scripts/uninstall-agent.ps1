@@ -45,6 +45,18 @@ if ($service) {
     Start-Sleep -Seconds 2
 }
 
+# The shortcuts install-agent.ps1 leaves on the desktop and in the Start menu.
+# A shortcut to a program that is gone is worse than no shortcut.
+$startMenu = Join-Path ${env:ProgramData} 'Microsoft\Windows\Start Menu\Programs'
+foreach ($dir in @([Environment]::GetFolderPath('CommonDesktopDirectory'), $startMenu)) {
+    if (-not $dir) { continue }
+    $link = Join-Path $dir 'Vincere Auto Export.lnk'
+    if (Test-Path -LiteralPath $link) {
+        Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+        Write-Ok "Removed $link"
+    }
+}
+
 if (Test-Path -LiteralPath $InstallRoot) {
     Write-Step "Removing $InstallRoot"
     Remove-Item -LiteralPath $InstallRoot -Recurse -Force

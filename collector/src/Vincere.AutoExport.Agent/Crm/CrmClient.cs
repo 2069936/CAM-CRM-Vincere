@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -96,6 +97,10 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             disposeHandler: true);
     }
 
+    // Keyed by the normalized enrollment code. Codes are one-time and expire in
+    // an hour, so this holds at most a handful and only until one succeeds.
+    private readonly ConcurrentDictionary<string, string> pairingNonces = new(StringComparer.Ordinal);
+
     public async Task<PairingResult> PairAsync(
         string enrollmentCode,
         string agentVersion,
@@ -106,8 +111,32 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         string machineId = MachineIdentity.ReadNormalized(machineGuidSource);
         agentVersion = NormalizeVersion(agentVersion, nameof(agentVersion));
         addonVersion = NormalizeVersion(addonVersion, nameof(addonVersion));
-        byte[] nonceBytes = RandomNumberGenerator.GetBytes(32);
-        string nonce = Base64Url(nonceBytes);
+        // THE SAME NONCE FOR THE SAME CODE, and this is what makes a retry work.
+        //
+        // The nonce goes into the device credential, and the server's pairing
+        // function treats a second call carrying the same machine and the same
+        // credential as the same pairing: it returns the device it already
+        // created rather than refusing. That is deliberate, and it is the only
+        // reason retrying is meant to be safe.
+        //
+        // A fresh nonce per attempt broke exactly that. The first attempt could
+        // commit the device on the server and still fail on the way back — a
+        // dropped response, a 500 after the write — and the desk would press
+        // Connect again, present a different credential for the same code, and
+        // be told the code was already used. The code is one-time, so that is
+        // terminal: generate a new one, and hope the same thing does not happen.
+        //
+        // Held per code rather than per client so a genuinely different code
+        // still gets fresh entropy, and dropped on success so nothing outlives
+        // the pairing it belongs to.
+        // The raw bytes stay local and are still wiped in the finally below. Only
+        // the encoded string is held, and only until this code pairs.
+        byte[] nonceBytes = null;
+        string nonce = pairingNonces.GetOrAdd(code, _ =>
+        {
+            nonceBytes = RandomNumberGenerator.GetBytes(32);
+            return Base64Url(nonceBytes);
+        });
         byte[] requestBytes = null;
         try
         {
@@ -140,6 +169,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             PairResponse paired = Deserialize<PairResponse>(responseBytes, "pairing_response_invalid");
                             ValidatePairResponse(paired);
                             await tokenStore.SaveTokenAsync(paired.DeviceToken, cancellationToken).ConfigureAwait(false);
+                            pairingNonces.TryRemove(code, out _);
                             return new PairingResult(
                                 paired.DeviceId,
                                 paired.ClientName.Trim(),
@@ -158,7 +188,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
                             continue;
                         }
-                        throw PairingFailure(response.StatusCode, errorCode, retryAfter);
+                        throw PairingFailure(response.StatusCode, errorCode, retryAfter, ReadDenialReason(responseBytes));
                     }
                     finally
                     {
@@ -198,7 +228,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(nonceBytes);
+            if (nonceBytes != null) CryptographicOperations.ZeroMemory(nonceBytes);
             if (requestBytes != null) CryptographicOperations.ZeroMemory(requestBytes);
         }
     }
@@ -275,7 +305,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                         await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
-                    throw UploadFailure(response.StatusCode, errorCode, retryAfter);
+                    throw UploadFailure(response.StatusCode, errorCode, retryAfter, ReadFailureCause(responseBytes));
                 }
                 catch (HttpRequestException exception) when (IsTlsFailure(exception))
                 {
@@ -368,7 +398,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                         await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
-                    throw HeartbeatFailure(response.StatusCode, retryAfter);
+                    throw HeartbeatFailure(response.StatusCode, retryAfter, ReadFailureCause(responseBytes));
                 }
                 catch (HttpRequestException exception) when (IsTlsFailure(exception))
                 {
@@ -586,6 +616,42 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
     }
 
+    // WHY THE SERVER'S OWN WORD ENDS UP IN THIS LOG.
+    //
+    // A 500 from the CRM used to reach this machine as "The CRM did not accept
+    // the snapshot", which is this client's sentence and says nothing about what
+    // went wrong. The cause lived in a log only one person could open, so an
+    // outage took two days and a chain of inference to place. The desk reads
+    // this log from a diagnostics bundle, so the answer belongs here.
+    private static string ReadDenialReason(byte[] responseBytes)
+    {
+        try
+        {
+            string reason = JsonConvert.DeserializeObject<ErrorResponse>(Encoding.UTF8.GetString(responseBytes))?.Reason;
+            return string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string ReadFailureCause(byte[] responseBytes)
+    {
+        try
+        {
+            string cause = JsonConvert.DeserializeObject<ErrorResponse>(Encoding.UTF8.GetString(responseBytes))?.Cause;
+            return string.IsNullOrWhiteSpace(cause) ? null : cause.Trim();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string WithCause(string message, string cause)
+        => string.IsNullOrEmpty(cause) ? message : message + " Cause: " + cause + ".";
+
     private static T Deserialize<T>(byte[] bytes, string code)
     {
         try
@@ -641,10 +707,17 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     private static CrmClientException PairingFailure(
         HttpStatusCode status,
         string errorCode,
-        TimeSpan? retryAfter)
+        TimeSpan? retryAfter,
+        string reason = null)
     {
         if (status == HttpStatusCode.BadRequest && errorCode == "invalid_or_expired_code")
-            return new CrmClientException("invalid_or_expired_code", "The pairing code is invalid or expired.", false);
+            // The reason when the server sent one. It withholds it for exactly
+            // one refusal, the one that would turn this endpoint into an oracle
+            // for guessing codes, and then this falls back to the old code.
+            return new CrmClientException(
+                string.IsNullOrEmpty(reason) ? "invalid_or_expired_code" : reason,
+                "The pairing code was refused.",
+                false);
         if (status == HttpStatusCode.TooManyRequests)
             return new CrmClientException("pairing_rate_limited", "Pairing is temporarily rate limited.", true, retryAfter);
         bool retryable = (int)status >= 500;
@@ -659,7 +732,8 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     private static CrmClientException UploadFailure(
         HttpStatusCode status,
         string errorCode,
-        TimeSpan? retryAfter)
+        TimeSpan? retryAfter,
+        string cause = null)
     {
         if ((int)status is >= 300 and < 400)
             return new CrmClientException("unexpected_redirect", "The CRM returned an unexpected redirect.", false);
@@ -709,7 +783,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             || (int)status >= 500;
         return new CrmClientException(
             "upload_failed",
-            "The CRM did not accept the snapshot.",
+            WithCause("The CRM did not accept the snapshot.", cause),
             retryable,
             retryAfter,
             disposition: retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);
@@ -717,7 +791,8 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
 
     private static CrmClientException HeartbeatFailure(
         HttpStatusCode status,
-        TimeSpan? retryAfter)
+        TimeSpan? retryAfter,
+        string cause = null)
     {
         if (status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new CrmClientException(
@@ -730,7 +805,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             || (int)status >= 500;
         return new CrmClientException(
             "heartbeat_failed",
-            "The CRM did not accept the heartbeat.",
+            WithCause("The CRM did not accept the heartbeat.", cause),
             retryable,
             retryAfter,
             disposition: retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);
@@ -783,6 +858,17 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     {
         [JsonProperty("error")]
         public string Error { get; set; }
+
+        // Present only on a failure the CRM hid from us. It is a fixed
+        // vocabulary the server picks, never a message and never a row, so it is
+        // safe to put straight into this machine's log.
+        [JsonProperty("cause")]
+        public string Cause { get; set; }
+
+        // Which of the nine ways a pairing was refused. Absent when the server
+        // is deliberately withholding it, which it does for exactly one of them.
+        [JsonProperty("reason")]
+        public string Reason { get; set; }
     }
 
     private sealed class UploadResponse

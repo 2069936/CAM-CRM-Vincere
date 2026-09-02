@@ -33,6 +33,31 @@ function stableStoreError(error) {
 
 export function createIngestEnrollmentStore(admin) {
   return {
+    /* WHICH OF THE FIVE IT WAS.
+     *
+     * create_ingest_enrollment refuses on any of five conditions and raises one
+     * name for all of them, so the CAM was told "This client is not ready for
+     * automatic collection" and had to guess. Four of the five are things they
+     * can fix in the client profile in ten seconds, and the fifth, a blank
+     * product key, is invisible until someone thinks to look at that field.
+     *
+     * Read after the refusal rather than before it: checking first would be a
+     * second read on every successful enrolment, and a check that races the RPC
+     * can disagree with it. This runs only when the answer is already no. */
+    async describeIneligibility(clientId) {
+      const { data, error } = await admin
+        .from('clients')
+        .select('status, deleted_at, name, product_key')
+        .eq('id', clientId)
+        .maybeSingle();
+      if (error || !data) return 'client_not_found';
+      if (data.deleted_at) return 'client_deleted';
+      if (data.status !== 'Active') return 'client_not_active';
+      if (!String(data.name ?? '').trim()) return 'client_name_missing';
+      if (!String(data.product_key ?? '').trim()) return 'client_product_key_missing';
+      return 'client_not_eligible';
+    },
+
     async createEnrollment({ clientId, codeHash, createdBy, expiresAt, rebind, actionCode, reasonCode }) {
       const { data, error } = await admin.rpc('create_ingest_enrollment', {
         p_client_id: clientId,
@@ -90,6 +115,10 @@ export function createHandler({
   now = () => new Date(),
 } = {}) {
   return async function handler(req, res) {
+    // Held outside the try so the catch can ask which of the five conditions
+    // refused this client. Null until the request is far enough along to know.
+    let resolvedClientId = null;
+    let resolvedStore = null;
     try {
       requireMethod(req, ['POST', 'DELETE']);
       res.setHeader('Cache-Control', 'private, no-store');
@@ -97,6 +126,7 @@ export function createHandler({
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'invalid_request');
       if ('productKey' in body || 'product_key' in body) throw new ApiError(400, 'invalid_request');
       const clientId = requireUuid(body.clientUuid, 'client_uuid');
+      resolvedClientId = clientId;
       const { admin, auth } = createClients();
       const actor = await authorize(req, {
         admin,
@@ -105,6 +135,7 @@ export function createHandler({
         clientUuid: clientId,
       });
       const store = createStore(admin);
+      resolvedStore = store;
 
       if (req.method === 'POST') {
         const action = body.action == null || body.action === '' ? 'generate' : String(body.action).toLowerCase();
@@ -151,7 +182,15 @@ export function createHandler({
       const revoked = await store.revokeAccess({ clientId, enrollmentId, deviceId, reasonCode, actorId: actor.id });
       return sendJson(res, 200, { revoked });
     } catch (error) {
-      return handleApiError(res, publicAdminError(error), { fallbackMessage: 'enrollment_request_failed' });
+      let reported = publicAdminError(error);
+      if (error?.code === 'CLIENT_NOT_ELIGIBLE' && resolvedClientId && resolvedStore?.describeIneligibility) {
+        try {
+          reported = new ApiError(409, await resolvedStore.describeIneligibility(resolvedClientId));
+        } catch {
+          // The reason is a courtesy. Losing it must not turn a 409 into a 500.
+        }
+      }
+      return handleApiError(res, reported, { fallbackMessage: 'enrollment_request_failed' });
     }
   };
 }

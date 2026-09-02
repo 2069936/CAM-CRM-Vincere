@@ -260,6 +260,7 @@ describe('collector profile status store', () => {
       clients: { id: CLIENT_ID, name: 'Acme Trading' },
       ingest_devices: { id: DEVICE_ID, health_status: 'online' },
       ingest_enrollments: { id: ENROLLMENT_ID, expires_at: '2026-07-23T17:00:00Z' },
+      audit_logs: { created_at: '2026-09-01T21:03:00Z', after_data: { reasonCode: 'machine_conflict' } },
     };
     function builder(table) {
       const query = {
@@ -277,9 +278,102 @@ describe('collector profile status store', () => {
       client: rows.clients,
       device: rows.ingest_devices,
       enrollment: rows.ingest_enrollments,
+      attempt: rows.audit_logs,
     });
     const columns = selected.map(([, value]) => value).join(',');
     expect(columns).not.toMatch(/product.?key|machine|credential|code_hash|metadata/i);
-    expect(admin.from).toHaveBeenCalledTimes(3);
+    expect(admin.from).toHaveBeenCalledTimes(4);
+  });
+
+  it('renders the page even when the audit read fails, because a card is worth more than a 500', async () => {
+    // The pairing history is a courtesy. The device and enrollment rows are the
+    // page, and losing the courtesy must not take them down with it.
+    const admin = {
+      from: vi.fn((table) => {
+        const query = {
+          select() { return query; },
+          eq() { return query; },
+          order() { return query; },
+          limit() { return query; },
+          maybeSingle() { return query; },
+          then(resolve, reject) {
+            if (table === 'audit_logs') {
+              return Promise.resolve({ data: null, error: { code: '42501' } }).then(resolve, reject);
+            }
+            return Promise.resolve({ data: { id: CLIENT_ID, name: 'Acme Trading' }, error: null }).then(resolve, reject);
+          },
+        };
+        return query;
+      }),
+    };
+    await expect(createIngestStatusStore(admin).load(CLIENT_ID))
+      .resolves.toMatchObject({ attempt: null, client: { id: CLIENT_ID } });
+  });
+});
+
+/* Pairing is entered on the VPS and refused on the VPS. The CRM showed the
+ * client at "Not connected" and nothing else, so the person who could act on
+ * the refusal never read it. These carry the last one back. */
+describe('the last refused pairing attempt', () => {
+  const withAttempt = (after_data) => setup({
+    status: {
+      client: { id: CLIENT_ID, name: 'Acme Trading' },
+      device: null,
+      enrollment: null,
+      attempt: { created_at: '2026-09-01T21:03:00.000Z', after_data },
+    },
+  });
+
+  const read = async (after_data) => {
+    const { handler } = withAttempt(after_data);
+    const res = response();
+    await handler({ method: 'GET', query: { clientUuid: CLIENT_ID }, headers: { authorization: 'Bearer session' } }, res);
+    return res.body.lastPairAttempt;
+  };
+
+  it('names the client holding the machine, which is the whole point', async () => {
+    expect(await read({
+      reasonCode: 'machine_conflict',
+      agentVersion: '1.0.1',
+      blockedBy: { clientName: 'Andrew Nestra', pairedAt: '2026-09-01T20:32:00.000Z' },
+    })).toEqual({
+      at: '2026-09-01T21:03:00.000Z',
+      reason: 'machine_conflict',
+      agentVersion: '1.0.1',
+      blockedBy: { clientName: 'Andrew Nestra', pairedAt: '2026-09-01T20:32:00.000Z' },
+    });
+  });
+
+  it('withholds the blocking device and client ids, which this CAM cannot act on anyway', async () => {
+    // Revoking someone else's device needs Manager rights. Handing over the
+    // identifiers would only be a record this CAM has no rights over.
+    const body = await read({
+      reasonCode: 'machine_conflict',
+      blockedBy: {
+        clientName: 'Andrew Nestra',
+        clientUuid: '44444444-4444-4444-8444-444444444444',
+        deviceId: '55555555-5555-4555-8555-555555555555',
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain('44444444');
+    expect(JSON.stringify(body)).not.toContain('55555555');
+  });
+
+  it('collapses a reason it does not recognise instead of passing it through', async () => {
+    expect((await read({ reasonCode: 'something_new' })).reason).toBe('pairing_refused');
+  });
+
+  it('reports no holder rather than an empty name', async () => {
+    expect((await read({ reasonCode: 'machine_conflict', blockedBy: { clientName: '  ' } })).blockedBy).toBeNull();
+    expect((await read({ reasonCode: 'code_expired' })).blockedBy).toBeNull();
+  });
+
+  it('is null when the client has never been refused', async () => {
+    const { handler } = setup({
+      status: { client: { id: CLIENT_ID, name: 'Acme Trading' }, device: null, enrollment: null, attempt: null },
+    });
+    const res = response();
+    await handler({ method: 'GET', query: { clientUuid: CLIENT_ID }, headers: { authorization: 'Bearer session' } }, res);
+    expect(res.body.lastPairAttempt).toBeNull();
   });
 });

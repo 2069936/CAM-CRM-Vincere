@@ -121,14 +121,61 @@ jobs:
         shell: pwsh
         run: |
           # The package the PowerShell installer expands — this is how the
-          # agent is distributed. The AddOn is deliberately absent: CI only ever
-          # authors it against a disposable payload, so the real one is deployed
-          # from the NinjaTrader-licensed machine, and install-agent.ps1 warns
-          # and continues when it is missing.
+          # agent is distributed.
+          #
+          # NO COMPILED AddOn, AND NOW THE SOURCE INSTEAD. CI cannot build the
+          # AddOn: it references NinjaTrader's own assemblies, which are licensed
+          # and stay off the runner, so this job only ever authors the installer
+          # against a disposable payload. That used to mean the package shipped
+          # without an AddOn at all, install-agent.ps1 warned and carried on, and
+          # every machine that installed from the CRM box got a running service
+          # that captured nothing until somebody deployed the DLLs by hand. One
+          # download was never one movement.
+          #
+          # The source ships instead, and the installer builds it on the machine
+          # that is going to run it — the one place the NinjaTrader assemblies are
+          # guaranteed to exist. Nothing proprietary enters this repository or
+          # this artifact, and no prebuilt binary of unclear provenance does
+          # either: every machine compiles what it is about to load.
+          #
+          # LAYOUT MATTERS. The AddOn csproj reaches its two dependencies through
+          # `../Vincere.AutoExport.*`, so the three project folders have to stay
+          # siblings, and the Directory.*.props above them have to travel too.
+          # BOTH of them: Directory.Packages.props is what turns
+          # `<PackageReference Include="Newtonsoft.Json" />` into a version, and
+          # a package built without it resolved Newtonsoft.Json to 3.5.8, the
+          # lowest that has ever existed, where JsonException is not a type yet.
+          # The build failed on a real VPS with CS0246 and eighteen NU1604
+          # warnings nobody would read. Copied by wildcard so a third one added
+          # later travels without anyone remembering this.
+          #
+          # bin and obj are excluded: they are this runner's leftovers and would
+          # be stale everywhere else.
           $stage = 'artifacts\agent-package'
-          New-Item -ItemType Directory -Path "$stage\Agent", "$stage\Setup" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$stage\Agent", "$stage\Setup", "$stage\AddOnSource" -Force | Out-Null
           Copy-Item -Path 'artifacts\agent\*' -Destination "$stage\Agent" -Recurse -Force
           Copy-Item -Path 'artifacts\ui\*' -Destination "$stage\Setup" -Recurse -Force
+          Copy-Item -Path 'collector\Directory.*.props' -Destination "$stage\AddOnSource"
+          foreach ($proj in 'Vincere.AutoExport.Contracts',
+            'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
+            $dest = Join-Path "$stage\AddOnSource" $proj
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Get-ChildItem -LiteralPath "collector\src\$proj" -Force |
+              Where-Object { $_.Name -notin @('bin', 'obj') } |
+              Copy-Item -Destination $dest -Recurse -Force
+          }
+          $addOnProject = "$stage\AddOnSource\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj"
+          if (-not (Test-Path -LiteralPath $addOnProject)) {
+            throw "AddOn source is missing from the package: $addOnProject"
+          }
+          # Every props file that governs the build has to be in the package, or
+          # the machine that builds it resolves different packages than CI did.
+          foreach ($props in Get-ChildItem -Path 'collector\Directory.*.props') {
+            $shipped = Join-Path "$stage\AddOnSource" $props.Name
+            if (-not (Test-Path -LiteralPath $shipped)) {
+              throw "Build configuration is missing from the package: $($props.Name)"
+            }
+          }
           Copy-Item -LiteralPath @(
             'collector\scripts\install-agent.ps1',
             'collector\scripts\uninstall-agent.ps1',

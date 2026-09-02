@@ -40,6 +40,166 @@ Describe 'NinjaTrader profile detection' {
     }
 }
 
+Describe 'One download, one movement' {
+    BeforeAll {
+        $script:installScript = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\install-agent.ps1') -Raw
+        $script:windowsWorkflow = Get-Content -LiteralPath (
+            [IO.Path]::GetFullPath((Join-Path $collectorRoot '..\.github\workflows\collector-windows.yml'))) -Raw
+    }
+
+    It 'ships the AddOn source in the package, laid out so the project references resolve' {
+        # The AddOn csproj reaches its two dependencies through `../Vincere...`,
+        # so the three folders have to stay siblings under AddOnSource and
+        # Directory.Build.props has to sit above them.
+        $windowsWorkflow | Should -Match 'AddOnSource'
+        # BOTH props files, by wildcard. Shipping only Directory.Build.props left
+        # Directory.Packages.props behind, which is what supplies the version for
+        # every versionless PackageReference. Newtonsoft.Json then resolved to
+        # 3.5.8, the lowest that has ever existed, and the AddOn failed to build
+        # on a real VPS because JsonException is not a type in it.
+        $windowsWorkflow | Should -Match ([regex]::Escape("Copy-Item -Path 'collector\Directory.*.props'"))
+        $windowsWorkflow | Should -Match ([regex]::Escape('Build configuration is missing from the package'))
+        foreach ($project in 'Vincere.AutoExport.Contracts',
+            'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
+            $windowsWorkflow | Should -Match ([regex]::Escape($project))
+        }
+        # This runner's build leftovers must not travel.
+        $windowsWorkflow | Should -Match ([regex]::Escape("notin @('bin', 'obj')"))
+    }
+
+    It 'pins a version for every package the AddOn source resolves' {
+        # The guard on the real cause rather than on the workflow text: a
+        # versionless PackageReference is only safe while central package
+        # management ships alongside it, and CS0246 on a client's VPS is a poor
+        # place to discover it did not.
+        $packages = Get-Content -LiteralPath (Join-Path $collectorRoot 'Directory.Packages.props') -Raw
+        $packages | Should -Match 'ManagePackageVersionsCentrally>true<'
+        foreach ($project in 'Vincere.AutoExport.Contracts',
+            'Vincere.AutoExport.NinjaTrader.Core', 'Vincere.AutoExport.NinjaTrader') {
+            $csproj = Get-Content -LiteralPath (
+                Join-Path $collectorRoot "src\$project\$project.csproj") -Raw
+            foreach ($match in [regex]::Matches($csproj, '<PackageReference\s+Include="([^"]+)"')) {
+                $package = $match.Groups[1].Value
+                # Built by concatenation: PowerShell escapes with a backtick, not
+                # a backslash, and `\"` inside a double-quoted string is a parse
+                # error rather than a quote.
+                $needle = '<PackageVersion Include="' + $package + '"'
+                $packages | Should -Match ([regex]::Escape($needle))
+            }
+        }
+    }
+
+    It 'builds the AddOn on the machine when the package carries no compiled one' {
+        # THE REGRESSION THIS CLOSES. The package shipped without an AddOn, the
+        # installer warned and carried on, and the machine ran a service that
+        # captured nothing until somebody deployed four DLLs by hand.
+        $installScript | Should -Match ([regex]::Escape('AddOnSource\Vincere.AutoExport.NinjaTrader\Vincere.AutoExport.NinjaTrader.csproj'))
+        $installScript | Should -Match 'NINJATRADER_HOME'
+        $installScript | Should -Match 'dotnet build'
+    }
+
+    It 'fetches the build SDK itself rather than asking for it first' {
+        # Requiring a preinstalled SDK would have made this two movements again.
+        $installScript | Should -Match 'dotnet-install\.ps1'
+        $installScript | Should -Match '-Channel'
+        # Under the install root, which uninstall removes outright, so the
+        # toolchain leaves with everything else.
+        $installScript | Should -Match ([regex]::Escape("Join-Path `$InstallRoot 'build\dotnet'"))
+    }
+
+    It 'verifies every DLL the AddOn needs before calling the build a success' {
+        foreach ($dll in 'Vincere.AutoExport.NinjaTrader.dll',
+            'Vincere.AutoExport.NinjaTrader.Core.dll',
+            'Vincere.AutoExport.Contracts.dll', 'Newtonsoft.Json.dll') {
+            $installScript | Should -Match ([regex]::Escape($dll))
+        }
+        $installScript | Should -Match 'is missing from'
+    }
+
+    It 'closes the Setup window before replacing the files it holds open' {
+        # THE HALF-INSTALL THIS CLOSES. This script opens the Setup window at the
+        # end of every run, so a reinstall meets the previous window still
+        # holding its own DLLs. Copy-Item failed on the first locked file, after
+        # the service had already been deleted, leaving the machine with no agent
+        # and an install stopped halfway.
+        $installScript | Should -Match ([regex]::Escape("Get-Process -Name 'Vincere.AutoExport.Agent.UI'"))
+        $installScript | Should -Match 'CloseMainWindow'
+
+        # Before the copy, not after it, which is the whole point.
+        $closeAt = $installScript.IndexOf('CloseMainWindow')
+        $copyAt = $installScript.IndexOf('Copy-Item -Path (Join-Path $PackagePath')
+        $closeAt | Should -BeGreaterThan 0
+        $copyAt | Should -BeGreaterThan 0
+        $closeAt | Should -BeLessThan $copyAt
+    }
+
+    It 'leaves a way back to the Setup window that is not the install command' {
+        # People closed the window and were told to re-run the whole install,
+        # which downloads a hundred megabytes and rebuilds the AddOn to reach a
+        # window that was already sitting on the disk. The MSI has always laid a
+        # shortcut down; this installer, the one the desk actually uses, did not.
+        $installScript | Should -Match ([regex]::Escape('Vincere Auto Export.lnk'))
+        $installScript | Should -Match 'CommonDesktopDirectory'
+        $installScript | Should -Match ([regex]::Escape('Start Menu\Programs'))
+        $installScript | Should -Match ([regex]::Escape('Setup\Vincere.AutoExport.Agent.UI.exe'))
+    }
+
+    It 'takes the shortcuts away with the program' {
+        # A shortcut to a program that is gone is worse than no shortcut.
+        $uninstallScript = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\uninstall-agent.ps1') -Raw
+        $uninstallScript | Should -Match ([regex]::Escape('Vincere Auto Export.lnk'))
+        $uninstallScript | Should -Match 'Remove-Item'
+    }
+
+    It 'reports a version the published release can actually satisfy' {
+        # Undeclared it was 1.0.0, the SDK default, against a release tagged
+        # agent-v1.0.1 whose manifest asks for a minimum of 1.0.1. The server
+        # then marks every machine update_required forever, because no build can
+        # ever report the number being asked for.
+        $csproj = Get-Content -LiteralPath (
+            Join-Path $collectorRoot 'src\Vincere.AutoExport.Agent\Vincere.AutoExport.Agent.csproj') -Raw
+        $csproj | Should -Match '<Version>\d+\.\d+\.\d+</Version>'
+    }
+
+    It 'never overwrites the Newtonsoft NinjaTrader ships with its own' {
+        # bin\Custom is NinjaTrader's assembly folder, and it ships its own
+        # Newtonsoft.Json. Dropping a different build there is the only thing
+        # this installer does that can reach NinjaScript compilation, and
+        # NinjaScript failing to compile is how an account shows no strategies.
+        $installScript | Should -Match ([regex]::Escape("Join-Path `$NinjaTraderHome 'bin\Newtonsoft.Json.dll'"))
+        $installScript | Should -Match ([regex]::Escape('$shipJson = $false'))
+    }
+
+    It 'stops before touching anything when the shipped Newtonsoft is too old' {
+        # Refusing after the copy would be worse than not checking: the machine
+        # would already be in the state the check exists to prevent.
+        $refuseAt = $installScript.IndexOf('this AddOn was built against')
+        $copyAt = $installScript.IndexOf('foreach ($dll in $ourDlls)')
+        $refuseAt | Should -BeGreaterThan 0
+        $copyAt | Should -BeGreaterThan 0
+        $refuseAt | Should -BeLessThan $copyAt
+    }
+
+    It 'clears only its own files out of the AddOns folder' {
+        # The cleanup matched by name against a list that included
+        # Newtonsoft.Json.dll, so it would have deleted one that belonged to
+        # somebody else.
+        $ourList = [regex]::Match($installScript, '\$ourDlls = @\(([^)]*)\)').Groups[1].Value
+        $ourList | Should -Match 'Vincere\.AutoExport\.NinjaTrader\.dll'
+        $ourList | Should -Not -Match 'Newtonsoft'
+    }
+
+    It 'uses no syntax that Windows PowerShell 5.1 cannot parse' {
+        # Windows Server opens 5.1, which has no null-conditional operator and no
+        # ternary. A script that only runs under PowerShell 7 would fail on the
+        # VPSes this is written for, and it would fail at the top before
+        # installing anything.
+        $installScript | Should -Not -Match '\)\?\.'
+        $installScript | Should -Not -Match '\?\?'
+        { [scriptblock]::Create($installScript) } | Should -Not -Throw
+    }
+}
+
 Describe 'Installer safety authoring' {
     BeforeAll {
         $machine = Get-Content -LiteralPath (Join-Path $installerRoot 'Package.wxs') -Raw

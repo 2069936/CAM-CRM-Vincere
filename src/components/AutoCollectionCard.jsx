@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
+import { describePairRefusal } from '../domain/pairRefusal';
 import {
   buildAutoCollectionViewModel,
   confirmationPhrase,
@@ -381,6 +382,7 @@ export default function AutoCollectionCard({
   const displayClientName = status?.client?.name || clientName;
   const steps = buildEnrollmentStepStates(status, nowMs, { commandHandedOff });
   const enrollmentPhase = steps.enrollment.status;
+  const refusal = describePairRefusal(status?.lastPairAttempt);
   // buildInstallCommand returns '' for a signed setup executable
   // (autoCollectionViewModel.js:62), which is run rather than expanded. Step 1
   // used to gate its body on hasRelease alone, so an exe release rendered
@@ -539,7 +541,7 @@ export default function AutoCollectionCard({
         <ConnectionStep
           number={3}
           title="Enter one-time code"
-          description="In the Vincere Auto Export Setup window, paste this code and press Connect this VPS. It is the only thing that tells the server which client this machine belongs to. It lasts 60 minutes; when it expires, generate another one."
+          description="In the Vincere Auto Export Setup window, paste this code and press Connect this VPS. It is the only thing that tells the server which client this machine belongs to. It lasts four hours; when it expires, generate another one."
           state={steps.code.state}
         >
           {usableCode ? (
@@ -576,6 +578,22 @@ export default function AutoCollectionCard({
               The previous code expired at {formatTime(status.enrollment.expiresAt)}.
               Generate another one; the expired one cannot be revived.
             </p>
+          ) : null}
+          {refusal && !device ? (
+            // The refusal is read on the VPS by whoever is installing, and the
+            // person who can act on it is here. Placed above the generate
+            // button on purpose: `machine_conflict` is the one refusal no code
+            // can fix, and it was sixty-six of the last sixty-eight.
+            <div className={`auto-collection-refusal${refusal.newCodeHelps ? '' : ' auto-collection-refusal-blocking'}`} role="status">
+              <p className="auto-collection-refusal-headline">
+                <AlertTriangle size={14} /> {refusal.headline}
+              </p>
+              <p className="auto-collection-step-hint">{refusal.detail}</p>
+              <p className="auto-collection-refusal-when">
+                Last attempt {formatTime(status.lastPairAttempt.at)}
+                {status.lastPairAttempt.agentVersion ? ` · agent ${status.lastPairAttempt.agentVersion}` : ''}
+              </p>
+            </div>
           ) : null}
           {!usableCode && !device && status?.permissions?.generate && hasRelease ? (
             <button type="button" className="secondary-button auto-collection-step-action" onClick={(event) => openConfirmation({

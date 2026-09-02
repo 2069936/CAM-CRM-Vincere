@@ -139,19 +139,48 @@ public sealed class UploadLoop : ICollectorLoop
     private readonly IDeviceTokenStore tokenStore;
     private readonly CollectorState state;
     private readonly ICaptureHistoryStore history;
+    private readonly IServiceReporter reporter;
+    private string lastReportedCode;
 
     public UploadLoop(
         ICollectorQueue queue,
         ICollectorCrmClient crm,
         IDeviceTokenStore tokenStore,
         CollectorState state,
-        ICaptureHistoryStore history)
+        ICaptureHistoryStore history,
+        IServiceReporter reporter = null)
     {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
         this.state = state ?? throw new ArgumentNullException(nameof(state));
         this.history = history ?? throw new ArgumentNullException(nameof(history));
+        this.reporter = reporter;
+    }
+
+    // A REJECTION THE CRM SENDS BACK IS NOT A SILENT EVENT ANY MORE.
+    //
+    // Every failure here is a handled CrmClientException, so it never reached
+    // the supervisor and the supervisor is the only thing that wrote to the log.
+    // A VPS spent a full afternoon retrying uploads that the CRM was refusing
+    // with a 5xx, and the log for that afternoon says nothing about it at all:
+    // the only way to learn there was a problem was to read the queue depth in a
+    // diagnostics bundle and infer the status code from which retry disposition
+    // the agent had chosen. That is not a diagnosis, it is an inference.
+    //
+    // ONLY ON CHANGE, because this loop runs every ten seconds and a stuck
+    // upload would otherwise write eight thousand identical lines a day and bury
+    // the one line that matters. The first occurrence is written and identical
+    // repeats are not. A success clears the remembered code rather than writing
+    // a line of its own: this reporter's one verb is LoopFailed, and sending a
+    // recovery through it would put a line in the log that reads as a failure.
+    // Clearing is what matters, because it is what lets the same fault be
+    // written again if it comes back after a good pass.
+    private void ReportChange(string code, Exception exception)
+    {
+        if (string.Equals(lastReportedCode, code, StringComparison.Ordinal)) return;
+        lastReportedCode = code;
+        if (code != null) reporter?.LoopFailed(Name, code, exception);
     }
 
     public string Name => "uploader";
@@ -177,6 +206,7 @@ public sealed class UploadLoop : ICollectorLoop
                 acknowledgement.AcknowledgedAt,
                 cancellationToken).ConfigureAwait(false);
             state.RecordUploadSuccess(acknowledgement.AcknowledgedAt);
+            ReportChange(null, null);
             await RecordHistoryAsync(
                 () => history.RecordUploadedAsync(
                     item.TradingDate,
@@ -209,6 +239,7 @@ public sealed class UploadLoop : ICollectorLoop
                         cancellationToken)).ConfigureAwait(false);
             }
             state.RecordError(exception.Code, exception.Message);
+            ReportChange(exception.Code, exception);
         }
     }
 
@@ -233,6 +264,8 @@ public sealed class HeartbeatLoop : ICollectorLoop
     private readonly string agentVersion;
     private readonly string addonVersion;
     private readonly string ninjaTraderVersion;
+    private readonly IServiceReporter reporter;
+    private string lastReportedCode;
 
     public HeartbeatLoop(
         ICollectorQueue queue,
@@ -241,8 +274,10 @@ public sealed class HeartbeatLoop : ICollectorLoop
         CollectorState state,
         string agentVersion,
         string addonVersion,
-        string ninjaTraderVersion)
+        string ninjaTraderVersion,
+        IServiceReporter reporter = null)
     {
+        this.reporter = reporter;
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
@@ -279,6 +314,7 @@ public sealed class HeartbeatLoop : ICollectorLoop
         {
             HeartbeatResult result = await crm.SendHeartbeatAsync(payload, cancellationToken).ConfigureAwait(false);
             state.RecordHeartbeat(result);
+            ReportChange(null, null);
         }
         catch (CrmClientException exception) when (exception.Disposition == CrmFailureDisposition.RePair)
         {
@@ -289,7 +325,18 @@ public sealed class HeartbeatLoop : ICollectorLoop
         catch (CrmClientException exception)
         {
             state.RecordError(exception.Code, exception.Message);
+            ReportChange(exception.Code, exception);
         }
+    }
+
+    // Same rule as the uploader: the first occurrence and every change, never
+    // the repeats. A rejected heartbeat left no trace at all until now, so the
+    // status said heartbeat_failed and the log had nothing to say about it.
+    private void ReportChange(string code, Exception exception)
+    {
+        if (string.Equals(lastReportedCode, code, StringComparison.Ordinal)) return;
+        lastReportedCode = code;
+        if (code != null) reporter?.LoopFailed(Name, code, exception);
     }
 }
 

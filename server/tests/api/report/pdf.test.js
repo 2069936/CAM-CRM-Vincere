@@ -140,6 +140,48 @@ describe('where the function believes the deployment lives', () => {
       .toBe('https://abc-123.vercel.app');
   });
 
+  it('uses the production alias on production, which is not behind Deployment Protection', () => {
+    // THE OUTAGE THIS CLOSES. On production VERCEL_URL names the deployment
+    // host, which Deployment Protection guards, so the function fetching its own
+    // index.html got an SSO login page back and every Download PDF returned 502.
+    // The alias serves the same build and is public.
+    expect(resolveReportBaseUrl({
+      VERCEL: '1',
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'abc-123.vercel.app',
+      VERCEL_PROJECT_PRODUCTION_URL: 'cam-crm-vincere.vercel.app',
+    })).toBe('https://cam-crm-vincere.vercel.app');
+  });
+
+  it('leaves preview deployments on their own url', () => {
+    // The alias must NOT win here: a preview asking production for
+    // /assets/index-<hash>.css asks for a hash that is not there.
+    expect(resolveReportBaseUrl({
+      VERCEL: '1',
+      VERCEL_ENV: 'preview',
+      VERCEL_URL: 'abc-123.vercel.app',
+      VERCEL_PROJECT_PRODUCTION_URL: 'cam-crm-vincere.vercel.app',
+    })).toBe('https://abc-123.vercel.app');
+  });
+
+  it('falls back to the deployment url when production sets no alias', () => {
+    expect(resolveReportBaseUrl({
+      VERCEL: '1',
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'abc-123.vercel.app',
+    })).toBe('https://abc-123.vercel.app');
+  });
+
+  it('still lets the explicit override beat the production alias', () => {
+    expect(resolveReportBaseUrl({
+      VERCEL: '1',
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'abc-123.vercel.app',
+      VERCEL_PROJECT_PRODUCTION_URL: 'cam-crm-vincere.vercel.app',
+      REPORT_PDF_BASE_URL: 'https://crm.vincere.test',
+    })).toBe('https://crm.vincere.test');
+  });
+
   it('never trusts the Host header on Vercel', () => {
     // THE HOLE THIS CLOSES. Host is caller-controlled. Trusting it would let a
     // request carrying `Host: evil.example` make the function fetch a stylesheet

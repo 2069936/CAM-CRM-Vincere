@@ -113,7 +113,9 @@ describe('AutoCollectionCard rendering and actions', () => {
   it('says what the code is for and what to do when it expires', () => {
     const live = render({ ...base, enrollment: { id: 'e', code: 'A1B2C3D4E5', expiresAt: '2026-07-23T17:45:00.000Z', consumedAt: null, revokedAt: null } });
     expect(live).toContain('which client this machine belongs to');
-    expect(live).toContain('lasts 60 minutes');
+    // The screen has to say the same number the server stamps, or the CAM
+            // plans around a deadline that is not the real one.
+            expect(live).toContain('lasts four hours');
     // Only the POST response carries the plaintext code; ingest-status never
     // returns it (ingest-status.js:85-93), so a reload really does lose it.
     expect(live).toContain('Shown once');
@@ -432,5 +434,52 @@ describe('a version the VPS has not reported is not version zero', () => {
       device: { ...pairedNoHeartbeat.device, addonVersion: '1.1.0' },
     });
     expect(html).toContain('Agent 1.4.2 · Add-on 1.1.0 · NinjaTrader —');
+  });
+});
+
+/* The refusal is read on the VPS by whoever is installing. The CRM showed
+ * "Not connected" and nothing else, and the person holding the CRM is the only
+ * one who can revoke the device that is blocking the machine. */
+describe('the last refused pairing attempt on the card', () => {
+  const refused = (lastPairAttempt) => render({ ...base, lastPairAttempt });
+
+  it('names the client holding the VPS', () => {
+    const markup = refused({
+      at: '2026-09-01T21:03:00.000Z',
+      reason: 'machine_conflict',
+      agentVersion: '1.0.1',
+      blockedBy: { clientName: 'Andrew Nestra', pairedAt: '2026-09-01T20:32:00.000Z' },
+    });
+    expect(markup).toContain('already connected to another client');
+    expect(markup).toContain('Andrew Nestra');
+    expect(markup).toContain('A new code will not help');
+  });
+
+  it('marks a blocking refusal apart from one another code fixes', () => {
+    expect(refused({ at: '2026-09-01T21:03:00.000Z', reason: 'machine_conflict' }))
+      .toContain('auto-collection-refusal-blocking');
+    expect(refused({ at: '2026-09-01T21:03:00.000Z', reason: 'code_expired' }))
+      .not.toContain('auto-collection-refusal-blocking');
+  });
+
+  it('still offers the generate button, because the CAM decides', () => {
+    // Naming the dead end is the fix. Removing the button would leave a CAM who
+    // has already revoked the other device with no way to try again.
+    expect(refused({ at: '2026-09-01T21:03:00.000Z', reason: 'machine_conflict' }))
+      .toContain('Generate one-time code');
+  });
+
+  it('says nothing on a client that has never been refused', () => {
+    expect(render(base)).not.toContain('auto-collection-refusal');
+  });
+
+  it('says nothing once the client is connected', () => {
+    // A refusal from before a successful pairing is history, not a problem.
+    const markup = render({
+      ...base,
+      device: { id: 'device', status: 'active', healthStatus: 'online', lastSeenAt: '2026-07-23T16:44:00.000Z' },
+      lastPairAttempt: { at: '2026-09-01T21:03:00.000Z', reason: 'machine_conflict', blockedBy: { clientName: 'Andrew Nestra' } },
+    });
+    expect(markup).not.toContain('auto-collection-refusal');
   });
 });

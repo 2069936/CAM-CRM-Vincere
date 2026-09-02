@@ -23,10 +23,14 @@ describe('ingest tokens', () => {
     expect(isExpired(issued.record.expiresAt, new Date('2026-01-01T00:01:00Z'))).toBe(true);
   });
 
-  it('uses an exact 60-minute enrollment expiration by default', () => {
+  it('gives a code long enough to survive the install that has to finish first', () => {
+    // Was an hour, which stopped being enough the day the installer started
+    // fetching the .NET SDK and compiling the AddOn on the target machine. Codes
+    // expired on the desk with `code_expired` in the audit while the CAM sat in
+    // front of a window asking for one.
     const now = new Date('2026-01-01T00:00:00Z');
     const issued = issueEnrollmentCode({ pepper: 'test-pepper', now });
-    expect(issued.record.expiresAt).toBe('2026-01-01T01:00:00.000Z');
+    expect(issued.record.expiresAt).toBe('2026-01-01T04:00:00.000Z');
   });
 
   it('never stores or logs the raw device token', () => {

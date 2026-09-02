@@ -23,6 +23,22 @@ const DEVICE_SELECT = [
 ].join(',');
 const ENROLLMENT_SELECT = 'id,expires_at,consumed_at,revoked_at,created_at';
 
+/* The refusals a CAM is allowed to read back, by the name the agent already
+ * shows on the VPS. Anything unrecognised collapses, so a reason added to the
+ * pairing RPC later cannot surface here unreviewed. */
+const SAFE_PAIR_REASONS = new Set([
+  'code_expired',
+  'code_consumed',
+  'code_revoked',
+  'machine_conflict',
+  'device_revoked',
+  'client_ineligible',
+  'credential_conflict',
+  'nonce_or_credential_conflict',
+  'invalid_request',
+  'rate_limited',
+]);
+
 function requireClientUuid(value) {
   const normalized = String(value || '').trim();
   if (!UUID.test(normalized)) throw new ApiError(400, 'invalid_client_uuid');
@@ -42,19 +58,47 @@ export function createIngestStatusStore(admin) {
     return data || null;
   }
 
+  /* THE ATTEMPT NOBODY COULD SEE.
+   *
+   * Pairing happens on the VPS and fails there, so the CRM showed a client
+   * stuck at "Not connected" with no hint of why, while the person at the VPS
+   * read a sentence the CAM never saw. The refusals were being audited the
+   * whole time. This reads the last one back.
+   *
+   * Swallows its own failure: a card that renders without this line is the card
+   * that shipped, and an audit read is not worth a 500 on the client page. */
+  async function lastPairAttempt(clientId) {
+    try {
+      const { data, error } = await admin
+        .from('audit_logs')
+        .select('created_at, after_data')
+        .eq('entity_type', 'ingest_pair_attempt')
+        .eq('entity_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) return null;
+      return data || null;
+    } catch {
+      return null;
+    }
+  }
+
   return {
     async load(clientId) {
       const clientPromise = admin.from('clients').select('id,name').eq('id', clientId).maybeSingle();
       const devicePromise = maybeLatest('ingest_devices', DEVICE_SELECT, clientId);
       const enrollmentPromise = maybeLatest('ingest_enrollments', ENROLLMENT_SELECT, clientId);
-      const [{ data: client, error }, device, enrollment] = await Promise.all([
+      const attemptPromise = lastPairAttempt(clientId);
+      const [{ data: client, error }, device, enrollment, attempt] = await Promise.all([
         clientPromise,
         devicePromise,
         enrollmentPromise,
+        attemptPromise,
       ]);
       if (error) throw error;
       if (!client?.id) throw new ApiError(404, 'client_not_found');
-      return { client, device, enrollment };
+      return { client, device, enrollment, attempt };
     },
   };
 }
@@ -89,6 +133,25 @@ function publicEnrollment(row) {
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at || null,
     revokedAt: row.revoked_at || null,
+  };
+}
+
+/* WHAT THE CAM IS TOLD ABOUT THE BLOCKING CLIENT, AND WHAT THEY ARE NOT.
+ *
+ * The name, because asking for a revocation requires knowing whom to ask, and
+ * the CAM's own fleet view cannot show a client outside their book. Not the
+ * uuid and not the device id: neither is actionable without Manager rights,
+ * and both are identifiers for a record this CAM has no rights over. */
+function publicPairAttempt(row) {
+  if (!row) return null;
+  const reason = row.after_data?.reasonCode;
+  const blockedBy = row.after_data?.blockedBy;
+  const holderName = String(blockedBy?.clientName || '').trim();
+  return {
+    at: row.created_at,
+    reason: SAFE_PAIR_REASONS.has(reason) ? reason : 'pairing_refused',
+    agentVersion: row.after_data?.agentVersion || null,
+    blockedBy: holderName ? { clientName: holderName, pairedAt: blockedBy.pairedAt || null } : null,
   };
 }
 
@@ -134,6 +197,7 @@ export function createHandler({
         release,
         device: publicDevice(status.device),
         enrollment: publicEnrollment(status.enrollment),
+        lastPairAttempt: publicPairAttempt(status.attempt),
       });
     } catch (error) {
       return handleApiError(res, publicError(error), { fallbackMessage: 'collector_status_failed' });

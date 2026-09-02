@@ -55,12 +55,36 @@ import {
  * rendering the CAM's report. It is used only when nothing else is set, which is
  * the local `vercel dev` case.
  *
- * REPORT_PDF_BASE_URL overrides everything, for the one deployment shape that
- * breaks the default: with Vercel Deployment Protection on, VERCEL_URL requires
- * an SSO round trip and index.html comes back as a login page.
+ * ON PRODUCTION THE ALIAS WINS, and this is the fix for a live outage. The
+ * reasoning above holds for previews and only for previews. On a production
+ * deployment VERCEL_URL still names the deployment host, and that host is what
+ * Deployment Protection guards: the function's fetch of its own index.html came
+ * back as an SSO login page, resolveReportStylesheets found no stylesheet in it,
+ * and every Download PDF returned 502 while Print, which renders in the CAM's
+ * own browser, kept working. REPORT_PDF_BASE_URL was the documented way out, but
+ * it is a variable someone has to know to set, on a deployment nobody had a
+ * reason to think was misconfigured.
+ *
+ * VERCEL_PROJECT_PRODUCTION_URL is set by Vercel itself and names the production
+ * alias, which serves the same build and is not behind the protection. Taking it
+ * only when VERCEL_ENV is `production` leaves the preview path untouched: a
+ * preview still asks its own deployment for its own asset hashes.
+ *
+ * WHAT THIS COSTS. During the seconds of a deploy rollover the alias may still
+ * serve the previous build, so a report rendered in that window picks up the
+ * previous stylesheet. It cannot pick up a hash that does not resolve, because
+ * the hash is read out of the same index.html it just fetched, so the pairing is
+ * always self-consistent. A few seconds of last-build styling beats a 502 that
+ * never clears on its own.
+ *
+ * REPORT_PDF_BASE_URL still overrides everything, for any deployment shape
+ * neither branch fits.
  */
 export function resolveReportBaseUrl(env = process.env, req = null) {
   if (env.REPORT_PDF_BASE_URL) return String(env.REPORT_PDF_BASE_URL).trim();
+  if (env.VERCEL_ENV === 'production' && env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${String(env.VERCEL_PROJECT_PRODUCTION_URL).trim()}`;
+  }
   if (env.VERCEL_URL) return `https://${env.VERCEL_URL}`;
   if (env.VERCEL) {
     throw new ApiError(500, 'report_base_url_unset: set REPORT_PDF_BASE_URL for this deployment');

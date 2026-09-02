@@ -26,6 +26,29 @@ const SQL_DENIAL_CODES = Object.freeze({
   CLIENT_INELIGIBLE: 'client_ineligible',
 });
 
+/* ------------------------------------------------------------------------- *
+ * Nine ways to be refused, one sentence for all of them.
+ *
+ * Every denial came back as `invalid_or_expired_code`, so the Setup window said
+ * "This code is invalid or expired. Generate a new code in the CRM." for all
+ * nine. Two of them are actually fixed by a new code. The rest are not, and the
+ * desk generated code after code against a machine that already had a device,
+ * which no code will ever fix, being told each time to try another one.
+ *
+ * WHAT STAYS HIDDEN, AND WHY ONLY THAT. `code_not_found` is the one an attacker
+ * could use: told apart from the others it turns this endpoint into an oracle
+ * for guessing codes. Every other reason is only reachable once a real
+ * enrollment row has been found by its hash, which means the caller already
+ * holds a valid code, so naming it reveals nothing they did not bring with them.
+ *
+ * The `error` field is unchanged, so anything reading it keeps working.
+ * ------------------------------------------------------------------------- */
+const CODE_GUESSING_ORACLE = 'code_not_found';
+
+export function publicDenialReason(reasonCode) {
+  return reasonCode === CODE_GUESSING_ORACLE ? PUBLIC_PAIR_ERROR : reasonCode;
+}
+
 export class PairingDeniedError extends Error {
   constructor(reasonCode) {
     super('Pairing denied.');
@@ -77,6 +100,62 @@ export function createPairStore(admin) {
         agentVersion: device.agent_version,
         addonVersion: device.addon_version,
       };
+    },
+
+    /* WHO IS HOLDING THIS MACHINE.
+     *
+     * `machine_conflict` is the one refusal a new code can never fix, and it is
+     * also the one the CAM cannot investigate: the blocking device belongs to
+     * whichever client claimed this VPS first, and that client is very often
+     * outside the CAM's own book, so the fleet view returns nothing and the
+     * admin fleet endpoint answers 403. The desk spent two days generating code
+     * after code against a machine that was never going to accept one.
+     *
+     * The pairing RPC knows the answer and cannot say it: it raises, and an
+     * exception carries no row. So this reads it afterwards with the same
+     * service role, on the denial path only, and the name goes into the audit
+     * entry rather than into the response. The caller on the VPS holds one
+     * client's enrolment code and has no business learning another client's
+     * name from a failed request; the CAM in the CRM does. */
+    async findMachineHolder(machineHash) {
+      const { data, error } = await admin
+        .from('ingest_devices')
+        .select('id, client_id, created_at')
+        .eq('machine_id_hash', machineHash)
+        .eq('status', 'active')
+        .is('revoked_at', null)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data?.client_id) return null;
+      const { data: client, error: clientError } = await admin
+        .from('clients')
+        .select('name')
+        .eq('id', data.client_id)
+        .maybeSingle();
+      if (clientError) throw clientError;
+      return {
+        deviceId: data.id,
+        clientUuid: data.client_id,
+        clientName: String(client?.name || '').trim() || null,
+        pairedAt: data.created_at || null,
+      };
+    },
+
+    /* Which client the attempt was for. The audit row used to carry a null
+     * entity_id, so sixty-eight refusals were one undifferentiated pile and no
+     * client page could show its own. The code hash is already in hand. */
+    async findEnrollmentClient(codeHash) {
+      const { data, error } = await admin
+        .from('ingest_enrollments')
+        .select('client_id')
+        .eq('code_hash', codeHash)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data?.client_id || null;
     },
 
     async writeAudit({ entityType, entityId, action, afterData }) {
@@ -136,6 +215,30 @@ function denialAudit(reasonCode, versions = {}) {
       ...(versions.addonVersion ? { addonVersion: versions.addonVersion } : {}),
     },
   };
+}
+
+/**
+ * Turn an anonymous denial into one a client page can show.
+ *
+ * Best effort on purpose: this runs while answering a request that has already
+ * failed, and a refusal that cannot be annotated is still a refusal. Losing the
+ * detail must never turn a clean 400 into a 500.
+ */
+export async function attachAttemptDetail(store, entry, { reasonCode, codeHash, machineHash }) {
+  try {
+    const clientId = await store.findEnrollmentClient(codeHash);
+    if (clientId) entry.entityId = clientId;
+  } catch {
+    // Unattributed is the state this was already in.
+  }
+  if (reasonCode !== SQL_DENIAL_CODES.MACHINE_CONFLICT) return entry;
+  try {
+    const holder = await store.findMachineHolder(machineHash);
+    if (holder) entry.afterData = { ...entry.afterData, blockedBy: holder };
+  } catch {
+    // Same.
+  }
+  return entry;
 }
 
 export function createHandler({
@@ -199,10 +302,14 @@ export function createHandler({
       }
 
       const issued = deriveDeviceToken({ enrollmentCode: code, machineId: machine, pairingNonce: nonce, pepper });
+      // Hoisted: the denial path needs the same two hashes to say which client
+      // was being paired and which one already holds this machine.
+      const codeHash = digestEnrollmentCode(code, pepper);
+      const machineHash = digestMachineId(machine, pepper);
       try {
         const paired = await store.pairDevice({
-          codeHash: digestEnrollmentCode(code, pepper),
-          machineHash: digestMachineId(machine, pepper),
+          codeHash,
+          machineHash,
           credentialHash: issued.record.credentialHash,
           credentialPrefix: issued.record.tokenPrefix,
           agentVersion,
@@ -221,8 +328,9 @@ export function createHandler({
         if (error instanceof PairingDeniedError) {
           const entry = denialAudit(error.reasonCode, { agentVersion, addonVersion });
           if (error.reasonCode === 'code_expired') entry.action = 'ingest_pair.expired';
+          await attachAttemptDetail(store, entry, { reasonCode: error.reasonCode, codeHash, machineHash });
           await safeAudit(store, entry);
-          return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR });
+          return sendJson(res, 400, { error: PUBLIC_PAIR_ERROR, reason: publicDenialReason(error.reasonCode) });
         }
         await safeAudit(store, {
           ...denialAudit('pairing_unavailable', { agentVersion, addonVersion }),

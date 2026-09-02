@@ -230,3 +230,127 @@ describe('what the queue says', () => {
     expect(countOf(html, /data-action="resolve-row"/g)).toBe(0);
   });
 });
+
+/* ── Answering the outcome, not just clearing the flag ────────────────────── */
+
+describe('the two flags that ask what happened to the account', () => {
+  const targetBook = () => [
+    {
+      id: 'client-1',
+      name: 'Harper Juniper',
+      dailyImports: [
+        {
+          id: 'imp-0730',
+          date: '2026-07-30',
+          flags: [flag('f-target', {
+            type: 'Evaluation target reached',
+            accountName: 'ACC-7',
+            message: 'ACC-7 reached its evaluation target.',
+          })],
+        },
+      ],
+    },
+  ];
+
+  it('offers Funded on a target reached, and writes only that', () => {
+    // Passing is a type change on this desk, not a status: there is no 'Passed'
+    // and there should not be one.
+    const written = [];
+    const tree = CamFlagQueue({
+      clients: targetBook(),
+      today: TODAY,
+      onResolveFlag: () => {},
+      onClassifyAccount: (clientId, accountName, patch) => written.push({ clientId, accountName, patch }),
+    });
+
+    const answer = buttons(tree, 'classify-account')[0];
+    expect(answer).toBeTruthy();
+    answer.props.onClick();
+
+    expect(written).toEqual([{
+      clientId: 'client-1',
+      accountName: 'ACC-7',
+      patch: { accountType: 'Funded' },
+    }]);
+  });
+
+  it('offers Failed on an account that stopped appearing', () => {
+    const written = [];
+    const tree = CamFlagQueue({
+      clients: strandedBook(),
+      today: TODAY,
+      onResolveFlag: () => {},
+      onClassifyAccount: (clientId, accountName, patch) => written.push({ clientId, accountName, patch }),
+    });
+
+    const answer = buttons(tree, 'classify-account').find(
+      (node) => node.props['data-account-name'] === 'ACC-9',
+    );
+    expect(answer).toBeTruthy();
+    answer.props.onClick();
+
+    expect(written).toEqual([{
+      clientId: 'client-1',
+      accountName: 'ACC-9',
+      patch: { status: 'Failed' },
+    }]);
+  });
+
+  it('resolves the flag in the same click, so a book cannot end up half answered', () => {
+    // A CAM who has just said "it failed" has answered the flag too. Making them
+    // click twice is how you get resolved flags on unclassified accounts.
+    const written = [];
+    const resolved = [];
+    const tree = CamFlagQueue({
+      clients: strandedBook(),
+      today: TODAY,
+      onResolveFlag: (clientId, importId, flagId) => resolved.push({ clientId, importId, flagId }),
+      onClassifyAccount: (clientId, accountName, patch) => written.push({ clientId, accountName, patch }),
+    });
+
+    buttons(tree, 'classify-account')
+      .find((node) => node.props['data-account-name'] === 'ACC-9')
+      .props.onClick();
+
+    expect(written).toHaveLength(1);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].flagId).toBe('f-0730');
+  });
+
+  it('asks nothing on flags that are not about an outcome', () => {
+    // Strategy disabled is a configuration problem, not the end of an account.
+    const tree = CamFlagQueue({
+      clients: strandedBook(),
+      today: TODAY,
+      onResolveFlag: () => {},
+      onClassifyAccount: () => {},
+    });
+    const asked = buttons(tree, 'classify-account').map((node) => node.props['data-outcome-type']);
+    expect(asked.every((type) => type === 'Missing account' || type === 'Evaluation target reached')).toBe(true);
+  });
+
+  it('shows no answer button when there is nothing to write it to', () => {
+    // Without the handler there is no account write, and a button that only
+    // resolves would be a second Resolve wearing an outcome's label.
+    const tree = CamFlagQueue({
+      clients: strandedBook(),
+      today: TODAY,
+      onResolveFlag: () => {},
+    });
+    expect(buttons(tree, 'classify-account')).toHaveLength(0);
+  });
+
+  it('preselects nothing, because a wrong outcome costs more than an open flag', () => {
+    // 30 of the 48 accounts already marked Failed still appear in their client's
+    // latest close, and 25 of those traded in it.
+    const tree = CamFlagQueue({
+      clients: strandedBook(),
+      today: TODAY,
+      onResolveFlag: () => {},
+      onClassifyAccount: () => {},
+    });
+    const row = buttons(tree, 'classify-account')[0];
+    expect(row.props.disabled).toBeFalsy();
+    expect(buttons(tree, 'resolve-row').length).toBeGreaterThan(0);
+  });
+});

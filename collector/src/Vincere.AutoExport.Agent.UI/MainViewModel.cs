@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -32,13 +33,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string collectionAlert;
     private IReadOnlyList<CaptureDayView> days = Array.Empty<CaptureDayView>();
 
-    public MainViewModel(IControlPipeClient client)
+    private readonly ReleaseCheck releaseCheck;
+
+    // Injectable so the tests can answer without a network, which is the only
+    // way to assert what happens when there is not one.
+    public MainViewModel(IControlPipeClient client, ReleaseCheck releaseCheck = null)
     {
         this.client = client ?? throw new ArgumentNullException(nameof(client));
+        this.releaseCheck = releaseCheck ?? new ReleaseCheck();
         PairCommand = new AsyncCommand(PairAsync, () => !IsBusy);
         TestCaptureCommand = new AsyncCommand(TestCaptureAsync, () => !IsBusy);
         SaveScheduleCommand = new AsyncCommand(SaveScheduleAsync, () => !IsBusy);
         CollectDiagnosticsCommand = new AsyncCommand(CollectDiagnosticsAsync, () => !IsBusy);
+        OpenQueueFolderCommand = new AsyncCommand(OpenQueueFolderAsync, () => true);
+        CheckForUpdateCommand = new AsyncCommand(CheckForUpdateAsync, () => !IsBusy);
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -62,7 +70,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool ServiceAvailable { get => serviceAvailable; private set => Set(ref serviceAvailable, value); }
     public bool RequiresRestart { get => requiresRestart; private set => Set(ref requiresRestart, value); }
     public bool IsComplete { get => isComplete; private set => Set(ref isComplete, value); }
-    public bool UpdateRequired { get => updateRequired; private set => Set(ref updateRequired, value); }
+    public bool UpdateRequired
+    {
+        get => updateRequired;
+        private set
+        {
+            if (!Set(ref updateRequired, value)) return;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(UpdateHint)));
+        }
+    }
+
+    // NAMING A STATE IS NOT TELLING SOMEONE WHAT TO DO.
+    //
+    // This was the word UPDATE REQUIRED on its own. Correct, and useless: the
+    // reader learns something is out of date and still has to ask what to run.
+    // The action is the same install line the CRM already shows, so it says
+    // that, and the window stops being a dead end.
+    //
+    // Nothing here downloads or installs anything. An agent that replaces
+    // itself from the internet, on machines carrying live client accounts, is a
+    // decision for the people who own those accounts, not something to grow
+    // quietly out of a status badge.
+    public string UpdateHint => UpdateRequired
+        ? "UPDATE AVAILABLE · re-run the install line from the CRM"
+        : string.Empty;
     public string EnrollmentCode { get => enrollmentCode; set => Set(ref enrollmentCode, value ?? string.Empty); }
     public string ClientName { get => clientName; private set => Set(ref clientName, value); }
     public string ScheduleTime { get => scheduleTime; set => Set(ref scheduleTime, value); }
@@ -94,6 +125,92 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand TestCaptureCommand { get; }
     public ICommand SaveScheduleCommand { get; }
     public ICommand CollectDiagnosticsCommand { get; }
+    public ICommand OpenQueueFolderCommand { get; }
+    public ICommand CheckForUpdateCommand { get; }
+
+    // ASKING, RATHER THAN WAITING TO BE TOLD.
+    //
+    // UpdateRequired only ever arrives inside a heartbeat response. Heartbeats
+    // have been failing with a 500 all week, which is exactly when someone wants
+    // to know whether their agent is current, so the notice was dark precisely
+    // when it mattered. This asks the release manifest directly and works
+    // whether or not the CRM does.
+    //
+    // Reads a version and says a sentence. It does not download and it does not
+    // install; see ReleaseCheck for why that line is where it is.
+    private async Task CheckForUpdateAsync()
+    {
+        StatusMessage = "Checking for updates...";
+        ReleaseCheckResult result = await releaseCheck.CheckAsync(InstalledVersion).ConfigureAwait(true);
+        LatestVersionMessage = result.Message;
+        StatusMessage = result.Message;
+    }
+
+    public string InstalledVersion { get; set; } =
+        typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+
+    private string latestVersionMessage = string.Empty;
+    public string LatestVersionMessage
+    {
+        get => latestVersionMessage;
+        private set => Set(ref latestVersionMessage, value);
+    }
+
+    // THE FOLDER NOBODY COULD NAVIGATE TO.
+    //
+    // The queue lives under ProgramData, which is hidden, inside a folder tree
+    // restricted to SYSTEM and Administrators. Reaching it meant knowing the
+    // path and pasting it into the address bar, so a CAM who needed to copy a
+    // capture out by hand, which is the whole fallback while uploads are
+    // failing, had to be told the path every time.
+    //
+    // Opens the pending folder rather than the queue root: that is where the
+    // files that have not made it to the CRM are, and it is the only one anyone
+    // has ever needed to open.
+    private Task OpenQueueFolderAsync()
+    {
+        string pending = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Vincere", "AutoExport", "queue", "pending");
+        try
+        {
+            // Created rather than reported missing: an empty queue folder is the
+            // normal state and an error about it would read as a fault.
+            Directory.CreateDirectory(pending);
+            Process.Start(new ProcessStartInfo(pending) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Could not open {pending}. {exception.Message}";
+        }
+        return Task.CompletedTask;
+    }
+
+    // WHY THIS IS A LIST AND NOT ONE SENTENCE.
+    //
+    // Nine different refusals used to read "This code is invalid or expired.
+    // Generate a new code in the CRM." Two of them are fixed by a new code. The
+    // rest are not, and the desk generated code after code against a machine
+    // that already had a device, being told each time to try another one.
+    //
+    // Each line says what to do, because a name for the fault with no next step
+    // is only a better looking dead end.
+    private static string PairingRefusalMessage(string code) => code switch
+    {
+        "invalid_or_expired_code" => "This code is not valid. Generate a new code in the CRM.",
+        "code_expired" => "This code has expired. Generate a new one in the CRM.",
+        "code_consumed" => "This code was already used. Generate a new one in the CRM.",
+        "code_revoked" => "This code was revoked in the CRM. Generate a new one.",
+        "machine_conflict" =>
+            "This VPS is already connected to a client. Revoke it in the CRM before connecting it to another one. A new code will not help.",
+        "device_revoked" =>
+            "This VPS was revoked in the CRM. Rebind it there before connecting again.",
+        "client_ineligible" =>
+            "This client is not ready for automatic collection. Check its status and product key in the CRM.",
+        "credential_conflict" or "nonce_or_credential_conflict" =>
+            "A different pairing is already in progress for this code. Generate a new one in the CRM.",
+        _ => null,
+    };
 
     public async Task InitializeAsync()
     {
@@ -150,9 +267,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             UiControlResponse response = await client.SendAsync("pair", enrollmentCode: canonical);
             if (!response.Ok)
             {
-                StatusMessage = response.Code == "invalid_or_expired_code"
-                    ? "This code is invalid or expired. Generate a new code in the CRM."
-                    : response.Message;
+                StatusMessage = PairingRefusalMessage(response.Code) ?? response.Message;
                 return;
             }
             ClientName = Value(response.Data, "ClientName", "clientName");
@@ -260,7 +375,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void RaiseCommands()
     {
-        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand }.OfType<AsyncCommand>())
+        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand }.OfType<AsyncCommand>())
             command.RaiseCanExecuteChanged();
     }
 }

@@ -1,4 +1,5 @@
 import { CheckCircle2, Clock3 } from 'lucide-react';
+import { OUTCOME_PROMPTS } from '../domain/accountOutcomeStamp';
 import {
   buildCamFlagQueue,
   flagActivityEntry,
@@ -9,6 +10,23 @@ import { QUIET_SHAPES, buildQuietAccounts, quietEvidenceForFlag } from '../domai
 
 /** The one flag type this file reads evidence back for. reconcile.js:582. */
 const MISSING_ACCOUNT = 'Missing account';
+const TARGET_REACHED = 'Evaluation target reached';
+
+// WHICH FLAG ASKS WHICH QUESTION.
+//
+// These two are the only moments where the desk knows something the book does
+// not: a balance crossed its target, or an account it was running stopped
+// appearing. Both are the outcome of an account, and neither is recorded today.
+// 48 accounts are marked Failed and 1 carries a date, because nobody was ever
+// asked at the moment there was something to answer.
+//
+// Answering writes the outcome AND resolves the flag, because a CAM who has
+// just said "it failed" has answered the flag too, and making them click twice
+// is how a book ends up with resolved flags and unclassified accounts.
+const OUTCOME_QUESTION = {
+  [TARGET_REACHED]: OUTCOME_PROMPTS.TARGET_REACHED,
+  [MISSING_ACCOUNT]: OUTCOME_PROMPTS.WENT_MISSING,
+};
 
 /**
  * How a shape renders on a flag row.
@@ -79,11 +97,27 @@ function quietEvidenceModel(clients, asOfDate) {
  * button and fire its onClick without a DOM — which is how the ids a click
  * actually sends are asserted rather than assumed.
  */
+/* ── Answering the outcome, not just clearing the flag ─────────────────────
+ *
+ * NOT A DEFAULT AND NOT A GUESS. The button states the outcome the CAM is
+ * claiming and writes only that. The desk's own lifecycle module refuses to
+ * decide this from evidence for good reason: 30 of the 48 accounts already
+ * marked Failed still appear in their client's latest close and 25 of those
+ * traded in it. A wrong "this is dead" on a live funded account costs far more
+ * than an unanswered question, so nothing is preselected and Resolve stays.
+ *
+ * WRITTEN INLINE, not as a component. This file's suite calls CamFlagQueue as a
+ * plain function and walks the returned tree, which is what lets it assert the
+ * ids a click actually sends. A sub-component is an unrendered node in that
+ * tree, so a button inside one is invisible to every test here.
+ * ------------------------------------------------------------------------- */
+
 export default function CamFlagQueue({
   clients = [],
   today = null,
   queue = null,
   onResolveFlag,
+  onClassifyAccount = null,
   onLogClientActivity = null,
   onSelectClient = null,
   defaultOpenGroups = 3,
@@ -312,6 +346,31 @@ export default function CamFlagQueue({
                       >
                         <CheckCircle2 size={13} /> Resolve
                       </button>
+                      {(() => {
+                        const prompt = OUTCOME_QUESTION[group.type] || OUTCOME_QUESTION[row.type];
+                        // Only where there is an account to write to. A Missing
+                        // account row with no accountName is a book problem, not
+                        // an outcome.
+                        if (!prompt || !onClassifyAccount || !row.accountName || !row.clientId) return null;
+                        return (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            data-action="classify-account"
+                            data-outcome-type={group.type || row.type}
+                            data-account-name={row.accountName}
+                            data-client-id={row.clientId}
+                            title={prompt.question}
+                            style={{ fontSize: 11, whiteSpace: 'nowrap', marginLeft: 6 }}
+                            onClick={() => {
+                              onClassifyAccount(row.clientId, row.accountName, { ...prompt.patch });
+                              applyRow(row);
+                            }}
+                          >
+                            {prompt.confirmLabel}
+                          </button>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}

@@ -110,6 +110,16 @@ import {
   reconcileDailyImport,
   isCashType,
 } from "./domain/reconcile";
+import { stampAccountOutcome } from "./domain/accountOutcomeStamp";
+import { createRoot } from "react-dom/client";
+import { zipSync } from "fflate";
+import {
+  buildDailyReportPackage,
+  clientsWithCloseOn,
+  describePackage,
+  packageFileName,
+} from "./domain/dailyReportPackage";
+import { downloadReportPdfBytes, saveBlobAs } from "./domain/reportPdfDownload";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import { buildBatchImportPlan } from "./domain/batchImport";
 import { suggestAccountDefaults } from "./domain/accountTargets";
@@ -9364,6 +9374,52 @@ export function buildIncomeProjection(clients = []) {
   return rows.sort((a, b) => b.pct - a.pct);
 }
 
+/* ------------------------------------------------------------------------- *
+ * One client's report sheet, rendered off screen so the package can have it.
+ *
+ * THROUGH THE SAME COMPONENT THE SCREEN USES, mounted into a detached container
+ * and read back. Not renderToStaticMarkup: that would be a second rendering
+ * path, and the whole reason the downloaded PDF matches the printed one is that
+ * both come from this DOM. A second path is a second thing to keep in
+ * agreement, and it would drift silently because nobody prints eleven reports
+ * to check.
+ *
+ * Off screen rather than hidden: `display: none` collapses layout, and a report
+ * whose blocks have no height paginates differently once Chromium lays it out.
+ * ------------------------------------------------------------------------- */
+async function renderReportSheetHtml({ client, dailyImport, camProfile }) {
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-10000px";
+  host.style.top = "0";
+  host.style.width = "1024px";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  try {
+    await new Promise((resolve) => {
+      root.render(
+        <ReportPanel
+          client={client}
+          dailyImport={dailyImport}
+          camConfig={camProfile?.reportConfig}
+          clientConfig={client?.reportConfig}
+          camName={camProfile?.name || ""}
+          onSaveConfig={() => {}}
+          onClose={() => {}}
+        />,
+      );
+      // One frame is enough: the sheet renders from data already in memory and
+      // nothing it shows is fetched.
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+    return host.querySelector(".report-sheet")?.outerHTML || null;
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+}
+
+
 function CamOverview({
   clients,
   camProfiles = [],
@@ -9372,6 +9428,7 @@ function CamOverview({
   onAddClientTask,
   onLogClientActivity,
   onResolveFlag,
+  onClassifyAccount,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -9430,6 +9487,56 @@ function CamOverview({
   });
 
   const today = todayIsoDate();
+
+  // The day's whole close as one file. Progress is held rather than derived,
+  // because a run of eleven takes long enough that a button with no state on it
+  // reads as frozen and gets clicked again.
+  const [packageState, setPackageState] = useState(null);
+  const packageReady = clientsWithCloseOn(clients, today).length;
+
+  async function downloadDayPackage() {
+    if (packageState?.busy) return;
+    setPackageState({ busy: true, message: "Building reports…" });
+    try {
+      const result = await buildDailyReportPackage({
+        clients,
+        date: today,
+        renderSheet: ({ client, dailyImport }) => renderReportSheetHtml({
+          client,
+          dailyImport,
+          camProfile: (camProfiles || [])[0],
+        }),
+        renderPdf: downloadReportPdfBytes,
+        onProgress: ({ done, total, clientName }) => setPackageState({
+          busy: true,
+          message: `Building ${done} of ${total} · ${clientName}`,
+        }),
+      });
+
+      if (!result.files.length) {
+        setPackageState({ busy: false, message: describePackage(result), tone: "bad" });
+        return;
+      }
+      const entries = {};
+      for (const file of result.files) entries[file.name] = file.bytes;
+      // No compression: these are PDFs, already compressed, and deflating eleven
+      // of them buys nothing for the seconds it costs.
+      const zipped = zipSync(entries, { level: 0 });
+      saveBlobAs(packageFileName(today), new Blob([zipped], { type: "application/zip" }));
+      setPackageState({
+        busy: false,
+        message: describePackage(result),
+        tone: result.failed.length ? "warn" : "ok",
+      });
+    } catch (error) {
+      setPackageState({
+        busy: false,
+        message: error?.message || "Could not build the reports.",
+        tone: "bad",
+      });
+    }
+  }
+
   // The two per-client counters on this page count the CAM's WORKING book, the
   // same set the sidebar lists above the "Former clients" disclosure. Counting
   // churned clients here produced the header-disagrees-with-the-list defect this
@@ -9539,6 +9646,32 @@ function CamOverview({
                 · {formerCount} former
               </span>
             )}
+          </div>
+          {/* The close is one decision and eleven downloads. This makes it one
+              of each. Disabled rather than hidden when nothing has closed yet,
+              so its absence is never mistaken for the feature not existing. */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
+            <button
+              type="button"
+              className="secondary-button"
+              data-action="download-day-package"
+              disabled={!packageReady || packageState?.busy}
+              onClick={downloadDayPackage}
+              title={packageReady
+                ? `Download today's report for all ${packageReady} clients that closed, as one zip`
+                : "No client has a close for today yet"}
+            >
+              <Download size={14} />
+              {packageState?.busy ? "Building…" : `Download today's reports (${packageReady})`}
+            </button>
+            {packageState?.message ? (
+              <span
+                className={packageState.tone === "bad" ? "negative" : "muted"}
+                style={{ fontSize: 12 }}
+              >
+                {packageState.message}
+              </span>
+            ) : null}
           </div>
           <div
             style={{
@@ -9727,6 +9860,7 @@ function CamOverview({
         today={today}
         queue={flagQueue}
         onResolveFlag={onResolveFlag}
+        onClassifyAccount={onClassifyAccount}
         onLogClientActivity={onLogClientActivity}
         onSelectClient={onSelectClient}
       />
@@ -13602,7 +13736,39 @@ export default function App() {
         augment.targetProfit = defaults.target;
       if (Object.keys(augment).length) finalPatch = { ...patch, ...augment };
     }
+    // A classification without the day it was made cannot be placed in time,
+    // and the day cannot be recovered afterwards. Applied here rather than in
+    // the one <select> that prompted it, so every route that marks an account
+    // Failed or Funded is dated the same way. See accountOutcomeStamp.js.
+    const registryForDates = selectedClient.accountRegistry || {};
+    const existingKey = Object.keys(registryForDates).find(
+      (key) => key.toLowerCase() === accountName.toLowerCase(),
+    );
+    finalPatch = stampAccountOutcome(
+      finalPatch,
+      existingKey ? registryForDates[existingKey] : {},
+      todayIsoDate(),
+    );
     persistAccountUpdate(selectedClient.id, accountName, finalPatch);
+  }
+
+  // Answering "did it pass" or "did it fail" from the flag queue, where the CAM
+  // is looking at the evidence, rather than from the account table where they
+  // would have to go find the row. Routed through the same persist path as the
+  // table so both write the same dated record; the stamping lives in
+  // accountOutcomeStamp.js and is applied here too, because this call does not
+  // pass through handleAccountUpdate and would otherwise write an undated claim.
+  function classifyAccountOutcome(clientId, accountName, patch) {
+    const client = state.clients?.find((entry) => entry.id === clientId);
+    const registry = client?.accountRegistry || {};
+    const key = Object.keys(registry).find(
+      (name) => name.toLowerCase() === String(accountName).toLowerCase(),
+    );
+    persistAccountUpdate(
+      clientId,
+      accountName,
+      stampAccountOutcome(patch, key ? registry[key] : {}, todayIsoDate()),
+    );
   }
 
   function persistAccountUpdate(clientId, accountName, patch) {
@@ -14880,6 +15046,7 @@ export default function App() {
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
                 onResolveFlag={resolveFlagByIds}
+                onClassifyAccount={classifyAccountOutcome}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
