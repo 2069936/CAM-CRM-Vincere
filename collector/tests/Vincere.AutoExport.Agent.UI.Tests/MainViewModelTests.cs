@@ -217,6 +217,88 @@ public sealed class MainViewModelTests
         Assert.Contains("Redacted diagnostics", viewModel.StatusMessage);
     }
 
+    /* THE WINDOW WAS REPORTING ITS OWN VERSION.
+     *
+     * Only the service project declares a <Version>, so the Setup window read
+     * 1.0.0 off its own assembly while the service beside it was 1.0.2. Someone
+     * who had just reinstalled was told the update had not taken, and the update
+     * check compared that 1.0.0 against the published manifest and announced an
+     * update that was already installed. */
+
+    [Fact]
+    public async Task InstalledVersionComesFromTheServiceNotFromThisAssembly()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", new
+        {
+            Paired = true,
+            ClientName = "Acme",
+            ScheduleTime = "16:45",
+            AgentVersion = "1.0.2",
+            Queue = new { PendingCount = 0 },
+        }));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Equal("1.0.2", viewModel.InstalledVersion);
+        Assert.True(viewModel.InstalledVersionIsFromService);
+    }
+
+    [Fact]
+    public async Task AcceptsTheCamelCaseSpellingTheWireActuallyUses()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", new
+        {
+            Paired = true,
+            agentVersion = "1.1.0",
+            Queue = new { PendingCount = 0 },
+        }));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Equal("1.1.0", viewModel.InstalledVersion);
+    }
+
+    [Fact]
+    public async Task KeepsTheFallbackWhenTheServiceReportsNoVersion()
+    {
+        // An older service that predates this field. Showing nothing would be
+        // worse than showing the assembly value.
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", new
+        {
+            Paired = true,
+            Queue = new { PendingCount = 0 },
+        }));
+        MainViewModel viewModel = new(client);
+        string before = viewModel.InstalledVersion;
+
+        await viewModel.InitializeAsync();
+
+        Assert.Equal(before, viewModel.InstalledVersion);
+        Assert.False(viewModel.InstalledVersionIsFromService);
+    }
+
+    [Fact]
+    public async Task WillNotAnnounceAnUpdateAgainstAVersionItIsGuessingAt()
+    {
+        // THE FAILURE THIS PREVENTS. Comparing the window's own assembly against
+        // the manifest reported an available update on a machine that was
+        // already current, permanently.
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(false, "unavailable", "The collector service is not running."));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+        await viewModel.CheckForUpdateAsync();
+
+        Assert.False(viewModel.InstalledVersionIsFromService);
+        Assert.Contains("has not reported its version", viewModel.LatestVersionMessage);
+    }
+
     private static UiControlResponse Response(bool ok, string code, string message, object data = null)
         => new(Guid.NewGuid(), ok, code, message, data == null ? null : JObject.FromObject(data));
 

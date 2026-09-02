@@ -138,16 +138,44 @@ public sealed class MainViewModel : INotifyPropertyChanged
     //
     // Reads a version and says a sentence. It does not download and it does not
     // install; see ReleaseCheck for why that line is where it is.
-    private async Task CheckForUpdateAsync()
+    // internal, not private: the UI test project compiles this file into its own
+    // assembly and awaits this directly. ICommand.Execute is `async void`, which
+    // a test cannot await.
+    internal async Task CheckForUpdateAsync()
     {
+        // Refuse to compare a version we are only guessing at. Comparing this
+        // window's own assembly against the published manifest is what produced
+        // a permanent "an update is available" on machines that were already
+        // current, and a notice everyone learns to ignore is worse than none.
+        if (!InstalledVersionIsFromService)
+        {
+            LatestVersionMessage = "Cannot check yet: the collector service has not reported its version.";
+            StatusMessage = LatestVersionMessage;
+            return;
+        }
         StatusMessage = "Checking for updates...";
         ReleaseCheckResult result = await releaseCheck.CheckAsync(InstalledVersion).ConfigureAwait(true);
         LatestVersionMessage = result.Message;
         StatusMessage = result.Message;
     }
 
+    /* THE VERSION OF THE SERVICE, NOT OF THIS WINDOW.
+     *
+     * This used to read typeof(MainViewModel).Assembly, which is the Setup
+     * window's own assembly. Only the service project declares a <Version>, so
+     * the window said 1.0.0 while the service beside it was 1.0.2, and someone
+     * who had just reinstalled was told the update had not taken. Worse, the
+     * update check then compared 1.0.0 against the published manifest and
+     * announced an update that was already installed, every time, forever.
+     *
+     * The service reports its own version over the control pipe now. This
+     * assembly value survives only as the answer before the pipe replies, and
+     * the check refuses to run until it has been replaced. */
     public string InstalledVersion { get; set; } =
         typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+
+    /// <summary>True once the service has told us what it is running.</summary>
+    public bool InstalledVersionIsFromService { get; private set; }
 
     private string latestVersionMessage = string.Empty;
     public string LatestVersionMessage
@@ -228,6 +256,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             bool paired = data.Value<bool?>("Paired") ?? data.Value<bool?>("paired") ?? false;
             ClientName = Value(data, "ClientName", "clientName");
             ScheduleTime = Value(data, "ScheduleTime", "scheduleTime") ?? "16:30";
+            string reportedVersion = Value(data, "AgentVersion", "agentVersion");
+            if (!string.IsNullOrWhiteSpace(reportedVersion))
+            {
+                InstalledVersion = reportedVersion.Trim();
+                InstalledVersionIsFromService = true;
+            }
             JObject runtime = ObjectValue(data, "Runtime", "runtime");
             UpdateRequired = runtime?.Value<bool?>("UpdateRequired")
                 ?? runtime?.Value<bool?>("updateRequired")
