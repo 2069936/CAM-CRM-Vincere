@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -29,7 +30,12 @@ namespace Vincere.AutoExport.Agent.UI;
  * moved: none of that means anything is wrong with this machine's collection,
  * so it says it could not check rather than reporting a problem.
  * ------------------------------------------------------------------------- */
-public sealed record ReleaseCheckResult(bool Checked, bool UpdateAvailable, string LatestVersion, string Message);
+public sealed record ReleaseCheckResult(
+    bool Checked,
+    bool UpdateAvailable,
+    string LatestVersion,
+    string Message,
+    string InstallCommand = null);
 
 public sealed class ReleaseCheck
 {
@@ -64,17 +70,56 @@ public sealed class ReleaseCheck
         return 0;
     }
 
-    public static ReleaseCheckResult Evaluate(string installedVersion, string latestVersion)
+    /* THE COMMAND, RATHER THAN DIRECTIONS TO IT.
+     *
+     * This used to end with "Re-run the install line from the CRM to update",
+     * which is only useful to someone who can get back to the screen that shows
+     * that line. The CRM does not offer a way back to it once a client is past
+     * setup, so the notice named a step the reader could not take.
+     *
+     * It is the same command the CRM builds (src/domain/autoCollectionViewModel.js
+     * buildInstallCommand), assembled from the same manifest this already
+     * downloaded, so there is nothing to keep in step by hand.
+     *
+     * IT STILL DOES NOT RUN IT. A person copies it into an elevated PowerShell
+     * and watches it. These machines carry live client accounts, and an agent
+     * that replaces itself unattended on one of them is a decision for whoever
+     * owns those accounts, not for this window. Handing over the exact command
+     * removes the dead end without taking that decision.
+     */
+    public static string BuildInstallCommand(string artifactUrl)
+    {
+        string url = (artifactUrl ?? string.Empty).Trim();
+        if (url.Length == 0) return null;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri parsed)
+            || parsed.Scheme != Uri.UriSchemeHttps)
+        {
+            // A manifest that names a non https artifact is not one to build a
+            // copy and paste command from.
+            return null;
+        }
+        string quoted = url.Replace("'", "''");
+        return string.Join("; ", new[]
+        {
+            "$d=\"$env:TEMP\\vincere-agent\"",
+            "Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue",
+            "Invoke-WebRequest '" + quoted + "' -OutFile \"$d.zip\" -UseBasicParsing",
+            "Expand-Archive \"$d.zip\" $d -Force",
+            "& \"$d\\install-agent.ps1\" -PackagePath $d",
+        });
+    }
+
+    public static ReleaseCheckResult Evaluate(string installedVersion, string latestVersion, string artifactUrl = null)
     {
         if (!VersionPattern.IsMatch(latestVersion ?? string.Empty))
             return new ReleaseCheckResult(false, false, null, "Could not read the published version.");
         if (Compare(installedVersion, latestVersion) < 0)
         {
-            return new ReleaseCheckResult(
-                true,
-                true,
-                latestVersion,
-                $"Version {latestVersion} is available. You are on {installedVersion}. Re-run the install line from the CRM to update.");
+            string command = BuildInstallCommand(artifactUrl);
+            string message = command == null
+                ? $"Version {latestVersion} is available. You are on {installedVersion}. Re-run the install line from the CRM to update."
+                : $"Version {latestVersion} is available. You are on {installedVersion}. Copy the command below, paste it into PowerShell as administrator, and run it.";
+            return new ReleaseCheckResult(true, true, latestVersion, message, command);
         }
         return new ReleaseCheckResult(true, false, latestVersion, $"You are up to date on {installedVersion}.");
     }
@@ -86,8 +131,18 @@ public sealed class ReleaseCheck
         try
         {
             string body = await http.GetStringAsync(manifestUrl, cancellationToken).ConfigureAwait(false);
-            string latest = JObject.Parse(body).Value<string>("version");
-            return Evaluate(installedVersion, latest);
+            JObject manifest = JObject.Parse(body);
+            string latest = manifest.Value<string>("version");
+            // The zip is the only artifact this command can expand. A signed
+            // setup executable is run directly and gets no command.
+            string artifactUrl = manifest["artifacts"] is JArray artifacts
+                ? artifacts.OfType<JObject>()
+                    .Where(artifact => (artifact.Value<string>("name") ?? string.Empty)
+                        .EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    .Select(artifact => artifact.Value<string>("url"))
+                    .FirstOrDefault()
+                : null;
+            return Evaluate(installedVersion, latest, artifactUrl);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or Newtonsoft.Json.JsonException)
         {

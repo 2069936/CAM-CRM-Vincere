@@ -262,6 +262,36 @@
                             <Button Content="Check for updates" Command="{Binding CheckForUpdateCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" Margin="10,0,0,0" AutomationProperties.Name="Check whether a newer agent has been published" />
                         </StackPanel>
                         <TextBlock Text="{Binding LatestVersionMessage}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                        <!-- The command, not directions to it. "Re-run the install line
+                             from the CRM" is only actionable for someone who can reach
+                             the screen that prints that line, and the CRM offers no way
+                             back to it once a client is past setup. Read only and
+                             selectable: the window hands the command over, a person runs
+                             it in an elevated PowerShell and watches it. -->
+                        <StackPanel Visibility="{Binding HasUpdateInstallCommand, Converter={StaticResource BoolToVisibility}}" Margin="0,10,0,0">
+                            <TextBox Text="{Binding UpdateInstallCommand, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="False"
+                                     VerticalScrollBarVisibility="Auto"
+                                     MaxHeight="110"
+                                     FontFamily="Consolas"
+                                     Background="{StaticResource RaisedBrush}"
+                                     Foreground="{StaticResource TextBrush}"
+                                     BorderThickness="0"
+                                     Padding="8"
+                                     AutomationProperties.Name="PowerShell command that installs the published update" />
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Content="Copy install command"
+                                        Command="{Binding CopyInstallCommandCommand}"
+                                        Background="{StaticResource RaisedBrush}"
+                                        Foreground="{StaticResource TextBrush}"
+                                        AutomationProperties.Name="Copy the install command to the clipboard" />
+                                <TextBlock Text="{Binding CopyConfirmation}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="10,0,0,0" />
+                            </StackPanel>
+                            <TextBlock Text="Run it in Windows PowerShell as administrator on this VPS. It keeps the pairing and the queued captures."
+                                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                        </StackPanel>
                         <TextBlock Text="{Binding DiagnosticsPath}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
                     </StackPanel>
                   </ScrollViewer>

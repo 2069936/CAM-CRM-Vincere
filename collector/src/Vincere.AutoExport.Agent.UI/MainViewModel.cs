@@ -35,18 +35,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private readonly ReleaseCheck releaseCheck;
 
+    // Injected rather than called directly, because System.Windows.Clipboard is
+    // WPF and this file is compiled into a plain net8.0 test assembly.
+    private readonly Action<string> copyToClipboard;
+
     // Injectable so the tests can answer without a network, which is the only
     // way to assert what happens when there is not one.
-    public MainViewModel(IControlPipeClient client, ReleaseCheck releaseCheck = null)
+    public MainViewModel(
+        IControlPipeClient client,
+        ReleaseCheck releaseCheck = null,
+        Action<string> copyToClipboard = null)
     {
         this.client = client ?? throw new ArgumentNullException(nameof(client));
         this.releaseCheck = releaseCheck ?? new ReleaseCheck();
+        this.copyToClipboard = copyToClipboard;
         PairCommand = new AsyncCommand(PairAsync, () => !IsBusy);
         TestCaptureCommand = new AsyncCommand(TestCaptureAsync, () => !IsBusy);
         SaveScheduleCommand = new AsyncCommand(SaveScheduleAsync, () => !IsBusy);
         CollectDiagnosticsCommand = new AsyncCommand(CollectDiagnosticsAsync, () => !IsBusy);
         OpenQueueFolderCommand = new AsyncCommand(OpenQueueFolderAsync, () => true);
         CheckForUpdateCommand = new AsyncCommand(CheckForUpdateAsync, () => !IsBusy);
+        CopyInstallCommandCommand = new AsyncCommand(CopyInstallCommandAsync, () => !string.IsNullOrEmpty(UpdateInstallCommand));
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -127,6 +136,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand CollectDiagnosticsCommand { get; }
     public ICommand OpenQueueFolderCommand { get; }
     public ICommand CheckForUpdateCommand { get; }
+    public ICommand CopyInstallCommandCommand { get; }
 
     // ASKING, RATHER THAN WAITING TO BE TOLD.
     //
@@ -157,6 +167,69 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ReleaseCheckResult result = await releaseCheck.CheckAsync(InstalledVersion).ConfigureAwait(true);
         LatestVersionMessage = result.Message;
         StatusMessage = result.Message;
+        UpdateInstallCommand = result.InstallCommand;
+        CopyConfirmation = null;
+    }
+
+    private string updateInstallCommand;
+    private string copyConfirmation;
+
+    /* THE COMMAND ITSELF, BECAUSE THERE IS NO WAY BACK TO THE CRM SCREEN.
+     *
+     * The notice used to end "re-run the install line from the CRM", which is
+     * only actionable for someone who can reach the screen that prints that
+     * line. Once a client is past setup the CRM offers no way back to it, so
+     * the one instruction this window gave was one the reader could not follow.
+     *
+     * This is the same command the CRM builds, assembled from the manifest the
+     * check already downloaded. The window does NOT run it: a person pastes it
+     * into an elevated PowerShell and watches it. These machines carry live
+     * client accounts, and software that replaces itself unattended on one of
+     * them is not this window's call to make. */
+    public string UpdateInstallCommand
+    {
+        get => updateInstallCommand;
+        private set
+        {
+            if (Set(ref updateInstallCommand, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasUpdateInstallCommand)));
+                (CopyInstallCommandCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasUpdateInstallCommand => !string.IsNullOrEmpty(UpdateInstallCommand);
+
+    /// <summary>What the reader is told after pressing Copy.</summary>
+    public string CopyConfirmation
+    {
+        get => copyConfirmation;
+        private set => Set(ref copyConfirmation, value);
+    }
+
+    internal Task CopyInstallCommandAsync()
+    {
+        if (string.IsNullOrEmpty(UpdateInstallCommand)) return Task.CompletedTask;
+        if (copyToClipboard == null)
+        {
+            // No clipboard in this host. The command is on screen and
+            // selectable, so say that rather than claim it was copied.
+            CopyConfirmation = "Select the command above and copy it.";
+            return Task.CompletedTask;
+        }
+        try
+        {
+            copyToClipboard(UpdateInstallCommand);
+            CopyConfirmation = "Copied. Paste it into PowerShell as administrator.";
+        }
+        catch (Exception)
+        {
+            // Another process holding the clipboard is the ordinary reason, and
+            // the command stays on screen either way.
+            CopyConfirmation = "Could not reach the clipboard. Select the command above and copy it.";
+        }
+        return Task.CompletedTask;
     }
 
     /* THE VERSION OF THE SERVICE, NOT OF THIS WINDOW.
