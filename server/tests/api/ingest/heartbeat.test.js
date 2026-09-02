@@ -129,8 +129,15 @@ describe('heartbeat body validation', () => {
     expect(() => normalizeHeartbeatBody(body({ [field]: value }))).toThrow('invalid_heartbeat');
   });
 
-  it('rejects a null NinjaTrader version because every reported version is strict numeric dotted', () => {
-    expect(() => normalizeHeartbeatBody(body({ ninjaTraderVersion: null }))).toThrow('invalid_heartbeat');
+  it('accepts a null NinjaTrader version, which is what a collector that has not captured yet reports', () => {
+    // This assertion used to demand the opposite, on the reasoning that every
+    // reported version is strict numeric dotted. The agent does not learn the
+    // NinjaTrader version until the add-on tells it, and the column is only ever
+    // written BY a heartbeat, so requiring it here meant a device that had not
+    // captured could never send an acceptable heartbeat and could therefore
+    // never acquire the value that would make its heartbeats acceptable. Four
+    // devices sat in that loop for three days.
+    expect(normalizeHeartbeatBody(body({ ninjaTraderVersion: null })).ninjaTraderVersion).toBeNull();
   });
 
   it.each([
