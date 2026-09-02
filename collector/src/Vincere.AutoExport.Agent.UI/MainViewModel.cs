@@ -33,14 +33,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string collectionAlert;
     private IReadOnlyList<CaptureDayView> days = Array.Empty<CaptureDayView>();
 
-    public MainViewModel(IControlPipeClient client)
+    private readonly ReleaseCheck releaseCheck;
+
+    // Injectable so the tests can answer without a network, which is the only
+    // way to assert what happens when there is not one.
+    public MainViewModel(IControlPipeClient client, ReleaseCheck releaseCheck = null)
     {
         this.client = client ?? throw new ArgumentNullException(nameof(client));
+        this.releaseCheck = releaseCheck ?? new ReleaseCheck();
         PairCommand = new AsyncCommand(PairAsync, () => !IsBusy);
         TestCaptureCommand = new AsyncCommand(TestCaptureAsync, () => !IsBusy);
         SaveScheduleCommand = new AsyncCommand(SaveScheduleAsync, () => !IsBusy);
         CollectDiagnosticsCommand = new AsyncCommand(CollectDiagnosticsAsync, () => !IsBusy);
         OpenQueueFolderCommand = new AsyncCommand(OpenQueueFolderAsync, () => true);
+        CheckForUpdateCommand = new AsyncCommand(CheckForUpdateAsync, () => !IsBusy);
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -120,6 +126,35 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand SaveScheduleCommand { get; }
     public ICommand CollectDiagnosticsCommand { get; }
     public ICommand OpenQueueFolderCommand { get; }
+    public ICommand CheckForUpdateCommand { get; }
+
+    // ASKING, RATHER THAN WAITING TO BE TOLD.
+    //
+    // UpdateRequired only ever arrives inside a heartbeat response. Heartbeats
+    // have been failing with a 500 all week, which is exactly when someone wants
+    // to know whether their agent is current, so the notice was dark precisely
+    // when it mattered. This asks the release manifest directly and works
+    // whether or not the CRM does.
+    //
+    // Reads a version and says a sentence. It does not download and it does not
+    // install; see ReleaseCheck for why that line is where it is.
+    private async Task CheckForUpdateAsync()
+    {
+        StatusMessage = "Checking for updates...";
+        ReleaseCheckResult result = await releaseCheck.CheckAsync(InstalledVersion).ConfigureAwait(true);
+        LatestVersionMessage = result.Message;
+        StatusMessage = result.Message;
+    }
+
+    public string InstalledVersion { get; set; } =
+        typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+
+    private string latestVersionMessage = string.Empty;
+    public string LatestVersionMessage
+    {
+        get => latestVersionMessage;
+        private set => Set(ref latestVersionMessage, value);
+    }
 
     // THE FOLDER NOBODY COULD NAVIGATE TO.
     //
@@ -340,7 +375,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void RaiseCommands()
     {
-        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand }.OfType<AsyncCommand>())
+        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand }.OfType<AsyncCommand>())
             command.RaiseCanExecuteChanged();
     }
 }

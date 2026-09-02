@@ -150,6 +150,45 @@ public sealed class MainViewModelTests
         Assert.Equal(string.Empty, viewModel.UpdateHint);
     }
 
+    [Theory]
+    [InlineData("1.0.0", "1.0.1", true)]
+    [InlineData("1.0.1", "1.0.1", false)]
+    [InlineData("1.0.2", "1.0.1", false)]
+    [InlineData("1.0", "1.0.1", true)]
+    [InlineData("1.10.0", "1.9.0", false)]
+    public void AnUpdateIsOfferedOnlyWhenTheresActuallyANewerOne(string installed, string latest, bool expected)
+    {
+        // 1.10 is newer than 1.9, which a string comparison gets backwards.
+        Assert.Equal(expected, ReleaseCheck.Evaluate(installed, latest).UpdateAvailable);
+    }
+
+    [Fact]
+    public void AnUnreadableVersionIsNotTreatedAsUpToDate()
+    {
+        // Saying "you are current" because the manifest could not be parsed is
+        // the one wrong answer here: it is confidently wrong.
+        ReleaseCheckResult result = ReleaseCheck.Evaluate("1.0.0", "not-a-version");
+        Assert.False(result.Checked);
+        Assert.False(result.UpdateAvailable);
+    }
+
+    [Fact]
+    public void TheAnswerSaysWhatToDoAboutIt()
+    {
+        ReleaseCheckResult result = ReleaseCheck.Evaluate("1.0.0", "1.0.1");
+        Assert.Contains("1.0.1", result.Message);
+        Assert.Contains("install line", result.Message);
+    }
+
+    [Fact]
+    public void ItAsksTheReleaseDirectlySoItWorksWhileTheCrmDoesNot()
+    {
+        // The point of this button. The old notice only lit up from a heartbeat
+        // response, and heartbeats were the thing that was failing.
+        Assert.Contains("releases/download", ReleaseCheck.DefaultManifestUrl);
+        Assert.StartsWith("https://", ReleaseCheck.DefaultManifestUrl);
+    }
+
     [Fact]
     public void TheQueueFolderCanBeOpenedWithoutKnowingWhereItIs()
     {
