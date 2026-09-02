@@ -139,15 +139,34 @@ function reportHiddenFailure(error) {
   console.error(`[CRM] Unhandled API failure: ${parts.join(' ')}`);
 }
 
+/**
+ * @param underlying the real error, when the endpoint has replaced it with a
+ *   public one. An endpoint that catches something unexpected and answers with
+ *   `new ApiError(500, 'something_unavailable')` is choosing the STATUS, not
+ *   choosing to throw away the reason, and without this the reason was thrown
+ *   away: the substitute is an ApiError, ApiErrors are treated as deliberate,
+ *   and deliberate errors are neither logged nor given a cause. Every
+ *   unexpected failure in the snapshot upload path went out as a silent,
+ *   causeless 500 for that reason, for days, while the collector retried it.
+ *   Only consulted for a 5xx, because a 4xx already told the caller what was
+ *   wrong.
+ */
 export function handleApiError(res, error, {
   fallbackMessage = 'Unexpected server error.',
   production = process.env.NODE_ENV === 'production',
   report = reportHiddenFailure,
+  underlying = null,
 } = {}) {
   const status = Number.isInteger(error?.status) ? error.status : 500;
   const exposed = error instanceof ApiError || (status >= 400 && status < 500);
   const message = (production && !exposed) ? fallbackMessage : (error?.message || fallbackMessage);
   for (const [name, value] of Object.entries(error?.headers || {})) res.setHeader(name, value);
+  if (exposed && underlying && status >= 500) {
+    // The endpoint chose the status and handed over what it was hiding. The
+    // caller still reads exactly the string the endpoint picked.
+    report?.(underlying);
+    return sendJson(res, status, { error: message, cause: failureCause(underlying) });
+  }
   if (exposed) return sendJson(res, status, { error: message });
   // Hidden from the caller, so it goes to the log AND comes back as a cause the
   // caller can put in its own log. `error` keeps whatever the endpoint chose, so
