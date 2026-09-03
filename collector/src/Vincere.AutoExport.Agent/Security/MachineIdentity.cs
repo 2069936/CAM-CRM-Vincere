@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
@@ -157,6 +159,26 @@ public static class MachineIdentity
         // Always the same shape, whether or not each part was readable, so the
         // identity of one machine cannot change between two calls.
         return guid + ComponentSeparator + name + ComponentSeparator + installId;
+    }
+
+    /* WHAT HAS TO BE SCRUBBED OUT OF AN ERROR MESSAGE.
+     *
+     * The identity is now three components joined by a separator, and an error
+     * message quoting "the machine id" almost always quotes one component, not
+     * the join. Redacting only the joined value silently stopped scrubbing the
+     * bare MachineGuid. Every non-empty part is returned, longest first, so a
+     * component that contains another is replaced before its substring is. */
+    public static IEnumerable<string> RedactionTerms(string machineId)
+    {
+        string joined = (machineId ?? string.Empty).Trim();
+        if (joined.Length == 0) return Array.Empty<string>();
+        return joined
+            .Split(ComponentSeparator)
+            .Append(joined)
+            .Where(part => part.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .OrderByDescending(part => part.Length)
+            .ToArray();
     }
 
     private static string ReadInstallId(IInstallIdSource installIdSource)

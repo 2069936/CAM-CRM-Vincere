@@ -352,9 +352,13 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         ArgumentNullException.ThrowIfNull(payload);
         string deviceToken = await tokenStore.LoadTokenAsync(cancellationToken).ConfigureAwait(false);
         string machineId = MachineIdentity.ReadNormalized(machineGuidSource);
+        // EACH COMPONENT, NOT ONLY THE WHOLE STRING. The machine id became
+        // "guid|name|installId", and redacting only the joined value would stop
+        // scrubbing the bare MachineGuid, which is what an error message
+        // actually tends to contain.
         HeartbeatPayload normalized = NormalizeHeartbeat(
             payload,
-            new[] { deviceToken, machineId });
+            MachineIdentity.RedactionTerms(machineId).Prepend(deviceToken).ToArray());
         byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(normalized, Formatting.None));
         try
         {

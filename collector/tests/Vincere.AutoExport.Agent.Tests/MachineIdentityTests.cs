@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Vincere.AutoExport.Agent.Security;
 using Xunit;
 
@@ -188,5 +189,41 @@ public sealed class MachineIdentityTests
             new FakeGuid(), new FakeName { Value = new string('n', 400) }, new FakeInstallId());
         Assert.True(identity.Length < 256);
         Assert.Equal(64, MachineIdentity.NormalizeComponent(new string('n', 400)).Length);
+    }
+
+    [Fact]
+    public void RedactionCoversEveryComponentAndNotJustTheJoin()
+    {
+        // An error message quoting "the machine id" almost always quotes ONE
+        // component, and usually the bare MachineGuid. Redacting only the joined
+        // value silently stopped scrubbing it.
+        string[] terms = MachineIdentity.RedactionTerms("the-guid|server|install-abc").ToArray();
+        Assert.Contains("the-guid", terms);
+        Assert.Contains("server", terms);
+        Assert.Contains("install-abc", terms);
+        Assert.Contains("the-guid|server|install-abc", terms);
+    }
+
+    [Fact]
+    public void RedactsTheLongestTermFirstSoNothingIsLeftBehind()
+    {
+        // Replacing "server" before "server-01" would leave "-01" sitting in the
+        // message.
+        string[] terms = MachineIdentity.RedactionTerms("guid|server|server-01").ToArray();
+        Assert.True(terms.Length >= 2);
+        for (int index = 1; index < terms.Length; index++)
+            Assert.True(terms[index - 1].Length >= terms[index].Length);
+    }
+
+    [Fact]
+    public void RedactionSkipsEmptyComponents()
+    {
+        // A machine with no readable name must not put "" on the redaction list,
+        // which would match everywhere.
+        string[] terms = MachineIdentity.RedactionTerms("guid||").ToArray();
+        Assert.DoesNotContain(string.Empty, terms);
+        Assert.Contains("guid", terms);
+        Assert.Empty(MachineIdentity.RedactionTerms(null));
+        Assert.Empty(MachineIdentity.RedactionTerms("   "));
     }
 }

@@ -68,7 +68,12 @@ public sealed class CrmClientPairingTests
         Assert.Equal("https://crm.example.test/api/ingest/pair", request.Uri.ToString());
         Assert.Null(request.Authorization);
         Assert.Contains("\"enrollmentCode\":\"ABCDEFGHJK\"", request.Body);
-        Assert.Contains("\"machineId\":\"machine-guid\"", request.Body);
+        // The machine id is "guid|name|installId" now: neither the Windows
+        // MachineGuid nor the computer name is unique on this fleet. Two VPSes
+        // for different clients both report guid 67731bcc... and both are named
+        // SERVER. What this test cares about is that the guid this source
+        // supplies is the one that goes on the wire.
+        Assert.Contains("\"machineId\":\"machine-guid|", request.Body);
         Assert.Matches("\\\"pairingNonce\\\":\\\"[A-Za-z0-9_-]{43}\\\"", request.Body);
     }
 

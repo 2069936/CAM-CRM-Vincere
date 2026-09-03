@@ -39,7 +39,12 @@ public sealed class CaptureAndQueueWorkflowTests
         await workflow.CaptureAndQueueAsync(context);
 
         Assert.Same(snapshot, queue.Snapshot);
-        Assert.Equal("machine-guid", queue.Snapshot.Source.MachineId);
+        // The machine id is "guid|name|installId" now: neither the Windows
+        // MachineGuid nor the computer name is unique on this fleet. Two VPSes
+        // for different clients both report guid 67731bcc... and both are named
+        // SERVER. What this test cares about is that the guid this source
+        // supplies is the one that goes on the wire.
+        Assert.StartsWith("machine-guid|", queue.Snapshot.Source.MachineId);
         Assert.Equal("1.2.3", queue.Snapshot.Source.AgentVersion);
         Assert.Equal("0.4.0", queue.Snapshot.Source.AddonVersion);
         Assert.Equal("8.1.5.2", queue.Snapshot.Source.NinjaTraderVersion);
