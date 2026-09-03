@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,6 +21,98 @@ public interface IMachineNameSource
 public sealed class EnvironmentMachineNameSource : IMachineNameSource
 {
     public string ReadMachineName() => Environment.MachineName;
+}
+
+/// <summary>An identifier belonging to this installation and no other.</summary>
+public interface IInstallIdSource
+{
+    string ReadInstallId();
+}
+
+/* THE COMPONENT THAT DOES NOT DEPEND ON THE HOSTING PROVIDER.
+ *
+ * The MachineGuid was not unique: two VPSes belonging to different clients both
+ * reported 67731bcc-9934-4bec-b548-0fd0e57c20a5, because the fleet is deployed
+ * from one Windows image without sysprep. Adding the machine name did not help
+ * either: both of those boxes are also named SERVER. Measured on the machines,
+ * not assumed.
+ *
+ * So the identity needs one component that no image can carry, and the only way
+ * to get one is to make it here, on first use, and keep it. A value written by
+ * this installation is different in every installation by construction.
+ *
+ * It lives in ProgramData beside config.json and secret.bin, which the installer
+ * preserves across a reinstall, so updating the agent does not change what
+ * machine it claims to be. It is not a secret and it is not a credential: it
+ * identifies a machine, it does not authorise anything, and the server only ever
+ * sees an HMAC of it.
+ *
+ * A machine imaged AFTER the agent was installed still carries this, and that is
+ * correct: such a clone also carries the device credential, so it genuinely is
+ * the same device as far as anything here can tell.
+ */
+public sealed class FileInstallIdSource : IInstallIdSource
+{
+    private readonly string path;
+
+    public FileInstallIdSource(string path = null)
+    {
+        this.path = string.IsNullOrWhiteSpace(path) ? DefaultPath() : path;
+    }
+
+    public static string DefaultPath()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Vincere",
+            "AutoExport",
+            "install-id");
+    }
+
+    public string ReadInstallId()
+    {
+        string existing = TryRead();
+        if (existing.Length > 0) return existing;
+        try
+        {
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            // CreateNew, not Create: the service and a second process starting at
+            // the same moment must not each write a different id and have the
+            // last one win. Whoever loses the race reads what the winner wrote.
+            using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (StreamWriter writer = new(stream))
+            {
+                writer.Write(Guid.NewGuid().ToString("D"));
+            }
+        }
+        catch (IOException)
+        {
+            // Already there, written by whoever won the race.
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException
+            or ArgumentException
+            or NotSupportedException)
+        {
+            // Nothing writable here. Fall through: an empty component leaves the
+            // identity exactly as strong as it was before this existed, which is
+            // worse than intended but never worse than not collecting at all.
+            return string.Empty;
+        }
+        return TryRead();
+    }
+
+    private string TryRead()
+    {
+        try
+        {
+            return File.Exists(path) ? File.ReadAllText(path).Trim() : string.Empty;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return string.Empty;
+        }
+    }
 }
 
 public static class MachineIdentity
@@ -52,14 +145,30 @@ public static class MachineIdentity
      */
     private const char ComponentSeparator = '|';
 
-    public static string ReadNormalized(IMachineGuidSource source, IMachineNameSource nameSource = null)
+    public static string ReadNormalized(
+        IMachineGuidSource source,
+        IMachineNameSource nameSource = null,
+        IInstallIdSource installIdSource = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         string guid = Normalize(source.ReadMachineGuid());
         string name = NormalizeComponent(ReadName(nameSource));
-        // Always the same shape, whether or not a name was readable, so the
+        string installId = NormalizeComponent(ReadInstallId(installIdSource));
+        // Always the same shape, whether or not each part was readable, so the
         // identity of one machine cannot change between two calls.
-        return guid + ComponentSeparator + name;
+        return guid + ComponentSeparator + name + ComponentSeparator + installId;
+    }
+
+    private static string ReadInstallId(IInstallIdSource installIdSource)
+    {
+        try
+        {
+            return (installIdSource ?? new FileInstallIdSource()).ReadInstallId();
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
     }
 
     private static string ReadName(IMachineNameSource nameSource)
