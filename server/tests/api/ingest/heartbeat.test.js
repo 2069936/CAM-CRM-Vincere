@@ -357,12 +357,18 @@ describe('public ingest heartbeat', () => {
     });
   });
 
-  it('rejects a pre-parsed object because its original wire length is unknowable', async () => {
+  it('accepts a pre-parsed object, because the platform always hands one over', async () => {
+    // This asserted a 400, on the reasoning that a parsed body's original wire
+    // length is unknowable. The reasoning is sound and the conclusion was
+    // fatal: the Vercel runtime parses every JSON body, so the endpoint refused
+    // every heartbeat it ever received, before reading a field. Five devices
+    // sat at "never seen" for days on this line. The size limit is enforced on
+    // the re-serialised object instead.
     const { handler, calls } = setup();
     const res = await heartbeat(handler, body(), { body: body() });
-    expect(res).toMatchObject({ statusCode: 400, body: { error: 'invalid_heartbeat' } });
+    expect(res).toMatchObject({ statusCode: 200 });
     expect(calls.authenticate).toHaveLength(1);
-    expect(calls.record).toHaveLength(0);
+    expect(calls.record).toHaveLength(1);
   });
 
   it('fails invalid nonblank minimum-version configuration with a sanitized 500', async () => {

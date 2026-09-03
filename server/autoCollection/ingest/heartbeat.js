@@ -228,10 +228,9 @@ export function createHandler({
 
       let requestBody;
       try {
-        requestBody = await readJsonBody(req, {
-          maxBytes: 8 * 1024,
-          requireRawBody: true,
-        });
+        // No requireRawBody: it refused a body the platform had already
+        // parsed, and the platform always parses. See readJsonBody.
+        requestBody = await readJsonBody(req, { maxBytes: 8 * 1024 });
       } catch (error) {
         if (error instanceof ApiError && [400, 413].includes(error.status)) {
           throw invalidHeartbeat(error.status);
