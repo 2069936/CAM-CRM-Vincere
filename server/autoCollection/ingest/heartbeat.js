@@ -268,8 +268,14 @@ export function createHandler({
       if (error instanceof ApiError) {
         return handleApiError(res, error, { fallbackMessage: 'heartbeat_unavailable' });
       }
+      // Same laundering the upload path had: replacing the error with a clean
+      // ApiError makes it look deliberate, and a deliberate error is neither
+      // logged nor given a cause. Four devices have been failing here since
+      // 31 August and no theory about why has survived contact with the
+      // evidence, so the next failure gets to name itself.
       return handleApiError(res, new ApiError(500, 'heartbeat_unavailable'), {
         fallbackMessage: 'heartbeat_unavailable',
+        underlying: error,
       });
     }
   };

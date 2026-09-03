@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { describe, it, expect } from 'vitest';
 import { normalizeHeartbeatBody } from '../../../autoCollection/ingest/heartbeat.js';
 
@@ -66,5 +67,70 @@ describe('what stays required', () => {
 
   it('still refuses a body carrying a key it does not know', () => {
     expect(() => normalizeHeartbeatBody({ ...body(), schemaVersion: 1 })).toThrow();
+  });
+});
+
+/* The heartbeat endpoint hid its failures the same way the upload one did.
+ *
+ * Four devices have been refused since 31 August. The agent version, add-on
+ * version and NinjaTrader version it sends are all valid literals, the VPS clock
+ * is exactly in step with the server, and the RPC signature matches what the
+ * code calls. Four theories, none of them survived. The endpoint is going to
+ * have to say it itself. */
+import { createHandler } from '../../../autoCollection/ingest/heartbeat.js';
+
+describe('a heartbeat that fails for a reason nobody has guessed', () => {
+  // The endpoint reads the raw body off the stream, so the request has to be
+  // one, not an object with a `body` on it.
+  function request(payload) {
+    const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
+    return {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': String(bytes.length) },
+      async *[Symbol.asyncIterator]() { yield bytes; },
+    };
+  }
+
+  function res() {
+    const sent = {};
+    return {
+      sent,
+      setHeader(name, value) { (sent.headers ||= {})[name] = value; },
+      status(code) { sent.status = code; return this; },
+      json(body) { sent.json = body; return this; },
+      end() {},
+    };
+  }
+
+  it('reports the real error and names its cause, instead of a bare 500', async () => {
+    const reported = [];
+    const handler = createHandler({
+      createClient: () => ({}),
+      authenticate: async () => ({ id: 'device-1', clientId: 'client-1' }),
+      createStore: () => ({
+        recordHeartbeat: async () => {
+          throw Object.assign(new Error('permission denied for function record_ingest_heartbeat'), { code: '42501' });
+        },
+      }),
+      report: (error) => reported.push(error),
+    });
+
+    const target = res();
+    await handler(request({
+        agentVersion: '1.0.2',
+        addonVersion: '1.0.0',
+        ninjaTraderVersion: '8.1.0',
+        lastCaptureAt: null,
+        lastSuccessAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        queueDepth: 9,
+        queueBytes: 23481,
+        addonAvailable: true,
+    }), target);
+
+    expect(target.sent.status).toBe(500);
+    expect(target.sent.json.error).toBe('heartbeat_unavailable');
+    expect(target.sent.json.cause).toBe('server_permission_denied');
   });
 });
