@@ -583,7 +583,12 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         {
             AgentVersion = NormalizeVersion(payload.AgentVersion, nameof(payload.AgentVersion)),
             AddonVersion = NormalizeVersion(payload.AddonVersion, nameof(payload.AddonVersion)),
-            NinjaTraderVersion = NormalizeVersion(payload.NinjaTraderVersion, nameof(payload.NinjaTraderVersion)),
+            // Nullable, like the server now accepts. A collector that has not
+            // captured yet does not know what NinjaTrader is running, and
+            // saying so is better than the literal that used to be sent.
+            NinjaTraderVersion = string.IsNullOrWhiteSpace(payload.NinjaTraderVersion)
+                ? null
+                : NormalizeVersion(payload.NinjaTraderVersion, nameof(payload.NinjaTraderVersion)),
             LastErrorCode = string.IsNullOrEmpty(errorCode) ? null : errorCode,
             LastErrorMessage = string.IsNullOrEmpty(safeMessage) ? null : safeMessage,
         };

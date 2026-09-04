@@ -22,6 +22,13 @@ public sealed class SystemCollectorClock : ICollectorClock
     public DateTimeOffset GetCurrentDateTimeOffset() => DateTimeOffset.UtcNow;
 }
 
+/* NinjaTraderVersion is here because the heartbeat used to invent it.
+ *
+ * Program.cs passed the literal "8.1.0" for every machine on the desk, so the
+ * CRM showed a NinjaTrader version nobody was running. The real one arrives in
+ * every capture: the add-on reports it, CapturePipeClient refuses a snapshot
+ * without it, and a real one on this desk reads 8.1.6.0. It is recorded here
+ * when a capture succeeds and reported from here afterwards. */
 public sealed record CollectorStatusSnapshot(
     DateTimeOffset? LastCaptureAt,
     DateTimeOffset? LastSuccessAt,
@@ -29,7 +36,9 @@ public sealed record CollectorStatusSnapshot(
     string LastErrorMessage,
     bool? AddonAvailable,
     bool UpdateRequired,
-    string DeviceStatus);
+    string DeviceStatus,
+    string NinjaTraderVersion = null,
+    string AddonVersion = null);
 
 public sealed class CollectorState
 {
@@ -39,6 +48,25 @@ public sealed class CollectorState
     public CollectorStatusSnapshot Snapshot()
     {
         lock (gate) return value;
+    }
+
+    /// <summary>What the add-on says it and NinjaTrader are, seen at capture.</summary>
+    public void RecordEnvironment(string ninjaTraderVersion, string addonVersion)
+    {
+        lock (gate)
+        {
+            value = value with
+            {
+                // Only overwrite with something. An add-on that stops reporting
+                // must not erase the last version we actually saw.
+                NinjaTraderVersion = string.IsNullOrWhiteSpace(ninjaTraderVersion)
+                    ? value.NinjaTraderVersion
+                    : ninjaTraderVersion.Trim(),
+                AddonVersion = string.IsNullOrWhiteSpace(addonVersion)
+                    ? value.AddonVersion
+                    : addonVersion.Trim(),
+            };
+        }
     }
 
     public void RecordCapture(CaptureRunResult result, DateTimeOffset attemptedAt)
@@ -301,8 +329,11 @@ public sealed class HeartbeatLoop : ICollectorLoop
         CollectorStatusSnapshot current = state.Snapshot();
         HeartbeatPayload payload = new(
             agentVersion,
-            addonVersion,
-            ninjaTraderVersion,
+            // Observed beats configured. The constructor values are the answer
+            // before the first capture, and for NinjaTrader there is no honest
+            // constructor value, so it is null until the add-on says otherwise.
+            string.IsNullOrWhiteSpace(current.AddonVersion) ? addonVersion : current.AddonVersion,
+            string.IsNullOrWhiteSpace(current.NinjaTraderVersion) ? ninjaTraderVersion : current.NinjaTraderVersion,
             current.LastCaptureAt,
             current.LastSuccessAt,
             current.LastErrorCode,
