@@ -108,3 +108,49 @@ describe('auto collection browser API', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+/* THE REASON WAS COMPUTED, SENT, AND THROWN AWAY.
+ *
+ * create_ingest_enrollment refuses on any of five conditions, and the server
+ * learned to say which one. The messages for all five were written at the same
+ * time and sat in SAFE_MESSAGES unreachable, because the allow-list here only
+ * knew the old generic name. Every precise reason fell through to the 4xx line
+ * and came out as "The collector setup request is invalid. Refresh and try
+ * again." Refreshing fixes none of the five.
+ *
+ * Observed on a real client: no product key, and the CAM was told to reload. */
+describe('the reason a client cannot be enrolled reaches the CAM', () => {
+  const refusing = (code) => createAutoCollectionApi({
+    fetchImpl: async () => new Response(JSON.stringify({ error: code }), { status: 409 }),
+    getAccessToken: async () => 'token',
+  });
+
+  it.each([
+    ['client_product_key_missing', 'no product key'],
+    ['client_not_active', 'not Active'],
+    ['client_deleted', 'deleted'],
+    ['client_name_missing', 'no name'],
+    ['client_not_found', 'no longer exists'],
+  ])('names %s instead of telling them to refresh', async (code, fragment) => {
+    await expect(refusing(code).generateEnrollment(CLIENT_ID)).rejects.toMatchObject({ code });
+    await expect(refusing(code).generateEnrollment(CLIENT_ID)).rejects.toThrow(new RegExp(fragment, 'i'));
+  });
+
+  it('says nothing about refreshing, because refreshing cannot fix any of them', async () => {
+    await expect(refusing('client_product_key_missing').generateEnrollment(CLIENT_ID))
+      .rejects.not.toThrow(/refresh/i);
+  });
+
+  it('keeps the generic answer for a 409 it does not recognise', async () => {
+    // A new refusal added to the RPC must not leak an unreviewed string.
+    await expect(refusing('something_new_from_the_rpc').generateEnrollment(CLIENT_ID))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('still names the two it already handled', async () => {
+    await expect(refusing('active_device_exists').generateEnrollment(CLIENT_ID))
+      .rejects.toMatchObject({ code: 'active_device_exists' });
+    await expect(refusing('client_not_eligible').generateEnrollment(CLIENT_ID))
+      .rejects.toMatchObject({ code: 'client_not_eligible' });
+  });
+});
