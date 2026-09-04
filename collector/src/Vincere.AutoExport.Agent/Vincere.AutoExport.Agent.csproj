@@ -7,14 +7,14 @@
 
     <!-- THE NUMBER THE AGENT REPORTS ABOUT ITSELF.
          Undeclared, it was 1.0.0, the SDK default, while the release it ships in
-         is tagged agent-v1.0.2 and that release's manifest asks for a minimum of
-         1.0.2. Nothing broke, the heartbeat still returns 200, but the server
+         is tagged agent-v1.0.3 and that release's manifest asks for a minimum of
+         1.0.3. Nothing broke, the heartbeat still returns 200, but the server
          marks every machine update_required and no build can ever satisfy it,
          because the binary will always say 1.0.0. That turns the update notice
          into permanent noise on every VPS, and a notice everyone learns to
          ignore is worse than none.
          Keep this in step with the release tag. -->
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
   </PropertyGroup>
 
   <ItemGroup>

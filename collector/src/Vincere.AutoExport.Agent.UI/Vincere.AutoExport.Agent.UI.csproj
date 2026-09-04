@@ -4,7 +4,7 @@
          reads the service's version over the control pipe and this is only the
          answer before the pipe replies, but a fallback that is wrong by two
          releases is how the window came to report 1.0.0 forever. -->
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>WinExe</OutputType>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
