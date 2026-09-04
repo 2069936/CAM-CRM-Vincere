@@ -30,16 +30,36 @@ async function readRawBody(req, maxBytes) {
   if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBytes)) {
     throw new ApiError(413, 'compressed_payload_too_large');
   }
-  if (Buffer.isBuffer(req?.body)) {
-    if (req.body.length > maxBytes) throw new ApiError(413, 'compressed_payload_too_large');
-    return req.body;
+  /* `req.body` IS A LAZY GETTER AND IT THROWS.
+   *
+   * The Vercel Node runtime installs it alongside `req.query`, which
+   * api/ingest/[action].js needs for routing, so it cannot be turned off here.
+   * It parses according to Content-Type, and every snapshot is uploaded as
+   * gzip bytes under Content-Type application/json, so the parse fails and the
+   * getter throws the moment anything looks at it.
+   *
+   * It threw out of the `Buffer.isBuffer(req.body)` line below: a type test.
+   * The throw escaped decodeSnapshotRequest before the batch row was claimed,
+   * which is why every upload since 31 August produced a 500 with no cause and
+   * left no row in ingest_batches to point at. */
+  let parsed;
+  try {
+    parsed = req?.body;
+  } catch {
+    // Not the JSON the Content-Type promised, which is the normal case here.
+    // The stream below still has the bytes: the runtime restores it.
+    parsed = undefined;
   }
-  if (typeof req?.body === 'string') {
-    const bytes = Buffer.from(req.body, 'binary');
+  if (Buffer.isBuffer(parsed)) {
+    if (parsed.length > maxBytes) throw new ApiError(413, 'compressed_payload_too_large');
+    return parsed;
+  }
+  if (typeof parsed === 'string') {
+    const bytes = Buffer.from(parsed, 'binary');
     if (bytes.length > maxBytes) throw new ApiError(413, 'compressed_payload_too_large');
     return bytes;
   }
-  if (req?.body !== undefined && req?.body !== null) {
+  if (parsed !== undefined && parsed !== null) {
     throw new ApiError(400, 'raw_gzip_body_required');
   }
   if (!req || !(Symbol.asyncIterator in Object(req))) {

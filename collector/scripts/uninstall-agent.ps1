@@ -29,6 +29,12 @@ $InstallRoot = Join-Path ${env:ProgramFiles} 'Vincere\Auto Export'
 $DataRoot = Join-Path ${env:ProgramData} 'Vincere\AutoExport'
 
 function Write-Step { param([string]$Text) Write-Host "==> $Text" -ForegroundColor Cyan }
+# Defined because line 56 called it and this file never had it. With
+# $ErrorActionPreference = 'Stop' above, that call aborted the uninstall at the
+# first shortcut it found, leaving the install root and the data root behind on
+# every machine that has a shortcut, which is every machine installed since
+# shortcuts were added. The installer's own Write-Ok, kept identical.
+function Write-Ok { param([string]$Text) Write-Host "    $Text" -ForegroundColor Green }
 
 $identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

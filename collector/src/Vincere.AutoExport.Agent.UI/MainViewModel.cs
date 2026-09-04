@@ -35,18 +35,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private readonly ReleaseCheck releaseCheck;
 
+    // Injected rather than called directly, because System.Windows.Clipboard is
+    // WPF and this file is compiled into a plain net8.0 test assembly.
+    private readonly Action<string> copyToClipboard;
+
     // Injectable so the tests can answer without a network, which is the only
     // way to assert what happens when there is not one.
-    public MainViewModel(IControlPipeClient client, ReleaseCheck releaseCheck = null)
+    public MainViewModel(
+        IControlPipeClient client,
+        ReleaseCheck releaseCheck = null,
+        Action<string> copyToClipboard = null)
     {
         this.client = client ?? throw new ArgumentNullException(nameof(client));
         this.releaseCheck = releaseCheck ?? new ReleaseCheck();
+        this.copyToClipboard = copyToClipboard;
         PairCommand = new AsyncCommand(PairAsync, () => !IsBusy);
         TestCaptureCommand = new AsyncCommand(TestCaptureAsync, () => !IsBusy);
         SaveScheduleCommand = new AsyncCommand(SaveScheduleAsync, () => !IsBusy);
         CollectDiagnosticsCommand = new AsyncCommand(CollectDiagnosticsAsync, () => !IsBusy);
         OpenQueueFolderCommand = new AsyncCommand(OpenQueueFolderAsync, () => true);
         CheckForUpdateCommand = new AsyncCommand(CheckForUpdateAsync, () => !IsBusy);
+        CopyInstallCommandCommand = new AsyncCommand(CopyInstallCommandAsync, () => !string.IsNullOrEmpty(UpdateInstallCommand));
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -127,6 +136,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand CollectDiagnosticsCommand { get; }
     public ICommand OpenQueueFolderCommand { get; }
     public ICommand CheckForUpdateCommand { get; }
+    public ICommand CopyInstallCommandCommand { get; }
 
     // ASKING, RATHER THAN WAITING TO BE TOLD.
     //
@@ -138,16 +148,107 @@ public sealed class MainViewModel : INotifyPropertyChanged
     //
     // Reads a version and says a sentence. It does not download and it does not
     // install; see ReleaseCheck for why that line is where it is.
-    private async Task CheckForUpdateAsync()
+    // internal, not private: the UI test project compiles this file into its own
+    // assembly and awaits this directly. ICommand.Execute is `async void`, which
+    // a test cannot await.
+    internal async Task CheckForUpdateAsync()
     {
+        // Refuse to compare a version we are only guessing at. Comparing this
+        // window's own assembly against the published manifest is what produced
+        // a permanent "an update is available" on machines that were already
+        // current, and a notice everyone learns to ignore is worse than none.
+        if (!InstalledVersionIsFromService)
+        {
+            LatestVersionMessage = "Cannot check yet: the collector service has not reported its version.";
+            StatusMessage = LatestVersionMessage;
+            return;
+        }
         StatusMessage = "Checking for updates...";
         ReleaseCheckResult result = await releaseCheck.CheckAsync(InstalledVersion).ConfigureAwait(true);
         LatestVersionMessage = result.Message;
         StatusMessage = result.Message;
+        UpdateInstallCommand = result.InstallCommand;
+        CopyConfirmation = null;
     }
 
+    private string updateInstallCommand;
+    private string copyConfirmation;
+
+    /* THE COMMAND ITSELF, BECAUSE THERE IS NO WAY BACK TO THE CRM SCREEN.
+     *
+     * The notice used to end "re-run the install line from the CRM", which is
+     * only actionable for someone who can reach the screen that prints that
+     * line. Once a client is past setup the CRM offers no way back to it, so
+     * the one instruction this window gave was one the reader could not follow.
+     *
+     * This is the same command the CRM builds, assembled from the manifest the
+     * check already downloaded. The window does NOT run it: a person pastes it
+     * into an elevated PowerShell and watches it. These machines carry live
+     * client accounts, and software that replaces itself unattended on one of
+     * them is not this window's call to make. */
+    public string UpdateInstallCommand
+    {
+        get => updateInstallCommand;
+        private set
+        {
+            if (Set(ref updateInstallCommand, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasUpdateInstallCommand)));
+                (CopyInstallCommandCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasUpdateInstallCommand => !string.IsNullOrEmpty(UpdateInstallCommand);
+
+    /// <summary>What the reader is told after pressing Copy.</summary>
+    public string CopyConfirmation
+    {
+        get => copyConfirmation;
+        private set => Set(ref copyConfirmation, value);
+    }
+
+    internal Task CopyInstallCommandAsync()
+    {
+        if (string.IsNullOrEmpty(UpdateInstallCommand)) return Task.CompletedTask;
+        if (copyToClipboard == null)
+        {
+            // No clipboard in this host. The command is on screen and
+            // selectable, so say that rather than claim it was copied.
+            CopyConfirmation = "Select the command above and copy it.";
+            return Task.CompletedTask;
+        }
+        try
+        {
+            copyToClipboard(UpdateInstallCommand);
+            CopyConfirmation = "Copied. Paste it into PowerShell as administrator.";
+        }
+        catch (Exception)
+        {
+            // Another process holding the clipboard is the ordinary reason, and
+            // the command stays on screen either way.
+            CopyConfirmation = "Could not reach the clipboard. Select the command above and copy it.";
+        }
+        return Task.CompletedTask;
+    }
+
+    /* THE VERSION OF THE SERVICE, NOT OF THIS WINDOW.
+     *
+     * This used to read typeof(MainViewModel).Assembly, which is the Setup
+     * window's own assembly. Only the service project declares a <Version>, so
+     * the window said 1.0.0 while the service beside it was 1.0.2, and someone
+     * who had just reinstalled was told the update had not taken. Worse, the
+     * update check then compared 1.0.0 against the published manifest and
+     * announced an update that was already installed, every time, forever.
+     *
+     * The service reports its own version over the control pipe now. This
+     * assembly value survives only as the answer before the pipe replies, and
+     * the check refuses to run until it has been replaced. */
     public string InstalledVersion { get; set; } =
         typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+
+    /// <summary>True once the service has told us what it is running.</summary>
+    public bool InstalledVersionIsFromService { get; private set; }
 
     private string latestVersionMessage = string.Empty;
     public string LatestVersionMessage
@@ -228,6 +329,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             bool paired = data.Value<bool?>("Paired") ?? data.Value<bool?>("paired") ?? false;
             ClientName = Value(data, "ClientName", "clientName");
             ScheduleTime = Value(data, "ScheduleTime", "scheduleTime") ?? "16:30";
+            string reportedVersion = Value(data, "AgentVersion", "agentVersion");
+            if (!string.IsNullOrWhiteSpace(reportedVersion))
+            {
+                InstalledVersion = reportedVersion.Trim();
+                InstalledVersionIsFromService = true;
+            }
             JObject runtime = ObjectValue(data, "Runtime", "runtime");
             UpdateRequired = runtime?.Value<bool?>("UpdateRequired")
                 ?? runtime?.Value<bool?>("updateRequired")

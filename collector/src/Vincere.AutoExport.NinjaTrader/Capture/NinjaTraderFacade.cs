@@ -60,10 +60,35 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
             return rows;
         }
 
-        // The single gate for all four sections: an account filtered here also
-        // stops contributing strategies, orders and executions, so a close never
-        // carries trades belonging to an account it does not list.
-        private static List<Account> SnapshotAccounts()
+        // EVALUATED ONCE PER CAPTURE, NOT ONCE PER SECTION.
+        //
+        // This is the single gate for all four sections: an account filtered
+        // here also stops contributing strategies, orders and executions, so a
+        // close never carries trades belonging to an account it does not list.
+        //
+        // It used to be a static method the four readers each called, and the
+        // filter reads LIVE state: ConnectionStatus, CashValue, NetLiquidation.
+        // Four evaluations milliseconds apart against a connection that is
+        // reconnecting do not have to agree. When they disagreed, the close
+        // carried strategies, orders or executions belonging to an account the
+        // accounts section had dropped, and the CRM rejected the WHOLE snapshot
+        // with "strategies[i].accountName does not reference an account". The
+        // file was unusable by hand as well as automatically, and it looked
+        // random because it depended on where the flap landed.
+        //
+        // One facade is constructed per capture (VincereAutoExportAddOn.cs:133),
+        // so memoising on the instance gives every section the same list and
+        // costs nothing beyond the capture it belongs to.
+        private List<Account> snapshotAccounts;
+
+        private List<Account> SnapshotAccounts()
+        {
+            if (snapshotAccounts != null) return snapshotAccounts;
+            snapshotAccounts = BuildSnapshotAccounts();
+            return snapshotAccounts;
+        }
+
+        private static List<Account> BuildSnapshotAccounts()
         {
             List<Account> all;
             lock (Account.All)

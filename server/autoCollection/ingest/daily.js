@@ -300,7 +300,10 @@ export function createHandler({
             if (isDeviceCredentialError(releaseError)) return sendDeviceCredentialError(res);
             // The bounded lease remains recoverable if an explicit release fails.
           }
-          return handleApiError(res, publicFailure(stage), { fallbackMessage: 'snapshot_ingest_unavailable' });
+          return handleApiError(res, publicFailure(stage), {
+            fallbackMessage: 'snapshot_ingest_unavailable',
+            underlying: error,
+          });
         }
         try {
           await completeBatch(store, {
@@ -318,7 +321,10 @@ export function createHandler({
         const failure = preciseValidationCode
           ? new ApiError(422, preciseValidationCode)
           : (error instanceof ApiError && error.status === 409 ? error : publicFailure(stage));
-        return handleApiError(res, failure, { fallbackMessage: 'snapshot_ingest_unavailable' });
+        return handleApiError(res, failure, {
+          fallbackMessage: 'snapshot_ingest_unavailable',
+          underlying: error,
+        });
       }
       if (error instanceof ApiError || Number.isInteger(error?.status)) {
         const exposed = error?.code === 'capture_metadata_conflict'
@@ -326,7 +332,14 @@ export function createHandler({
           : error;
         return handleApiError(res, exposed, { fallbackMessage: 'snapshot_ingest_unavailable' });
       }
-      return handleApiError(res, new ApiError(500, 'snapshot_ingest_unavailable'), { fallbackMessage: 'snapshot_ingest_unavailable' });
+      // THE ONE THAT HID EVERYTHING. Replacing the error with a clean ApiError
+      // here is what made every unexpected upload failure a silent 500 with no
+      // log line and no cause, which is exactly the state the desk spent days
+      // in. The public answer is unchanged; the reason now reaches the log.
+      return handleApiError(res, new ApiError(500, 'snapshot_ingest_unavailable'), {
+        fallbackMessage: 'snapshot_ingest_unavailable',
+        underlying: error,
+      });
     }
   };
 }

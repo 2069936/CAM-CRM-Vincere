@@ -35,6 +35,13 @@ public sealed record ControlCommandResponse(
     string Message,
     object Data = null);
 
+/* AgentVersion is here because the window was reading its own.
+ *
+ * The Setup window is a separate assembly from the service, and only the
+ * service project carries a <Version>. So the window reported 1.0.0 while the
+ * service running beside it was 1.0.2, and someone who had just updated was
+ * told the update had not taken. The number that matters is the one the service
+ * sends to the CRM, and the service is the only thing that knows it. */
 public sealed record ControlStatusData(
     bool Paired,
     string DeviceId,
@@ -43,7 +50,9 @@ public sealed record ControlStatusData(
     string TimeZone,
     CollectorStatusSnapshot Runtime,
     QueueStatus Queue,
-    IReadOnlyList<CaptureDay> Timeline);
+    IReadOnlyList<CaptureDay> Timeline,
+    string AgentVersion = null,
+    string AddonVersion = null);
 
 public interface IDiagnosticsCollector
 {
@@ -177,7 +186,9 @@ public sealed class ControlCommandHandler : IControlCommandHandler
                 options.TimeZone,
                 state.Snapshot(),
                 queueStatus,
-                await BuildTimelineAsync(options, cancellationToken).ConfigureAwait(false)));
+                await BuildTimelineAsync(options, cancellationToken).ConfigureAwait(false),
+                agentVersion,
+                addonVersion));
     }
 
     /// <summary>

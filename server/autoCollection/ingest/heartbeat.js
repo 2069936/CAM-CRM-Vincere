@@ -83,6 +83,28 @@ function safeErrorMessage(value) {
   return sanitized || null;
 }
 
+/* THE FIELD THAT DEADLOCKED EVERY COLLECTOR ON THE DESK.
+ *
+ * ninjaTraderVersion went through normalizeCollectorVersion, which throws on an
+ * empty string, and the catch below turns any throw into a 400. The agent does
+ * not know the NinjaTrader version until the add-on has told it, so a machine
+ * that has not completed a capture sends null and every heartbeat it will ever
+ * send is refused as malformed.
+ *
+ * That is a closed loop. The column is only ever written by a heartbeat, so a
+ * device whose heartbeats are refused for having no NinjaTrader version can
+ * never acquire one. Four devices paired across three days, every one of them
+ * with ninjatrader_version NULL, health_status still 'pending', last_seen_at
+ * frozen at the second they paired, and nine snapshots stacked up on disk.
+ *
+ * The agent's own model has always declared this nullable, and lastCaptureAt
+ * and lastSuccessAt beside it are already allowed to be null for exactly the
+ * same reason: not knowing yet is the normal state of a new install. */
+function nullableCollectorVersion(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  return normalizeCollectorVersion(value);
+}
+
 export function normalizeHeartbeatBody(value, {
   now = new Date(),
   maxFutureSkewMs = 5 * 60 * 1000,
@@ -111,7 +133,7 @@ export function normalizeHeartbeatBody(value, {
     return {
       agentVersion: normalizeCollectorVersion(value.agentVersion),
       addonVersion: normalizeCollectorVersion(value.addonVersion),
-      ninjaTraderVersion: normalizeCollectorVersion(value.ninjaTraderVersion),
+      ninjaTraderVersion: nullableCollectorVersion(value.ninjaTraderVersion),
       lastCaptureAt,
       lastSuccessAt,
       lastErrorCode: stableErrorCode(value.lastErrorCode),
@@ -206,10 +228,9 @@ export function createHandler({
 
       let requestBody;
       try {
-        requestBody = await readJsonBody(req, {
-          maxBytes: 8 * 1024,
-          requireRawBody: true,
-        });
+        // No requireRawBody: it refused a body the platform had already
+        // parsed, and the platform always parses. See readJsonBody.
+        requestBody = await readJsonBody(req, { maxBytes: 8 * 1024 });
       } catch (error) {
         if (error instanceof ApiError && [400, 413].includes(error.status)) {
           throw invalidHeartbeat(error.status);
@@ -246,8 +267,14 @@ export function createHandler({
       if (error instanceof ApiError) {
         return handleApiError(res, error, { fallbackMessage: 'heartbeat_unavailable' });
       }
+      // Same laundering the upload path had: replacing the error with a clean
+      // ApiError makes it look deliberate, and a deliberate error is neither
+      // logged nor given a cause. Four devices have been failing here since
+      // 31 August and no theory about why has survived contact with the
+      // evidence, so the next failure gets to name itself.
       return handleApiError(res, new ApiError(500, 'heartbeat_unavailable'), {
         fallbackMessage: 'heartbeat_unavailable',
+        underlying: error,
       });
     }
   };

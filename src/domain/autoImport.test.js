@@ -292,11 +292,49 @@ describe('normalizeAutoImportSnapshot', () => {
     expect(dailyImport.snapshots[0].strategies).toHaveLength(1);
   });
 
-  it('rejects references to an account absent from the account section', () => {
+  it('rejects references to an account absent from the account section, and names it', () => {
+    // The name is the whole diagnosis. A CAM handed a file they cannot open
+    // needs to know WHICH account went missing, because the usual cause is a
+    // capture that read the account list while a connection was reconnecting.
     const snapshot = snapshotWithLiveAccount();
     snapshot.orders[0].accountName = 'MISSING-ACCOUNT';
 
     const error = expectValidationFailure(snapshot);
-    expect(error.errors).toContain('orders[0].accountName does not reference an account');
+    expect(error.errors).toContain(
+      'orders[0].accountName does not reference an account (MISSING-ACCOUNT)',
+    );
+  });
+
+  it('reports one line per missing account, not one per row', () => {
+    // A real close drops hundreds of rows for a single dropped account. One
+    // line per row buries the one fact that matters under its own repetition.
+    const snapshot = snapshotWithLiveAccount();
+    const order = snapshot.orders[0];
+    snapshot.orders = Array.from({ length: 40 }, (unused, index) => ({
+      ...order,
+      orderId: `${order.orderId || 'order'}-${index}`,
+      accountName: 'GONE-9371',
+    }));
+
+    const error = expectValidationFailure(snapshot);
+    const lines = error.errors.filter((line) => line.includes('does not reference an account'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('GONE-9371');
+    expect(lines[0]).toContain('and 37 more');
+  });
+
+  it('names each missing account separately when more than one went away', () => {
+    const snapshot = snapshotWithLiveAccount();
+    const order = snapshot.orders[0];
+    snapshot.orders = [
+      { ...order, orderId: `${order.orderId || 'order'}-a`, accountName: 'GONE-9371' },
+      { ...order, orderId: `${order.orderId || 'order'}-b`, accountName: 'GONE-0556' },
+    ];
+
+    const error = expectValidationFailure(snapshot);
+    const lines = error.errors.filter((line) => line.includes('does not reference an account'));
+    expect(lines).toHaveLength(2);
+    expect(lines.join(' ')).toContain('GONE-9371');
+    expect(lines.join(' ')).toContain('GONE-0556');
   });
 });

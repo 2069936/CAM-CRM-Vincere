@@ -52,17 +52,50 @@ async function readStream(req, maxBytes) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/* THE PLATFORM PARSES THE BODY, AND ASKING IT NOT TO DOES NOTHING.
+ *
+ * api/ingest/[action].js exports `config = { api: { bodyParser: false } }`.
+ * That key belongs to the Next.js Pages Router and this is not a Next.js
+ * project, so nothing reads it. The Vercel Node runtime installs `req.query`
+ * and a lazy `req.body` getter together, in one function, and the router in
+ * that same file dispatches on `req.query.action`. Routing works, therefore
+ * the body getter is installed too. There is no configuration that keeps one
+ * and drops the other.
+ *
+ * Two consequences, and both were live:
+ *
+ *   - The getter is LAZY and it THROWS when the bytes are not the JSON the
+ *     Content-Type promised. Every gzipped upload has Content-Type
+ *     application/json, so merely LOOKING at `req.body` threw, out of a line
+ *     that was only testing what type it was.
+ *   - `requireRawBody` refused a body the platform had already parsed. That
+ *     encoded an assumption, that the platform never parses, which is false
+ *     here. It rejected every heartbeat with 400 before reading one field.
+ *
+ * So the body is read defensively and a parsed body is accepted as what it is.
+ * The raw stream stays the fallback and still works: the runtime restores it
+ * after reading, so a handler that needs the bytes can still have them.
+ */
+function platformParsedBody(req) {
+  try {
+    return req?.body;
+  } catch {
+    // The lazy getter threw, which means the bytes are not what the
+    // Content-Type claimed. The stream below is the real source.
+    return undefined;
+  }
+}
+
 export async function readJsonBody(req, {
   maxBytes = 64 * 1024,
-  requireRawBody = false,
 } = {}) {
-  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
-    if (requireRawBody) throw new ApiError(400, 'Raw JSON request body is required.');
-    requireBodyWithinLimit(req.body, maxBytes);
-    return req.body;
+  const body = platformParsedBody(req);
+  if (body && typeof body === 'object' && !Buffer.isBuffer(body)) {
+    requireBodyWithinLimit(body, maxBytes);
+    return body;
   }
-  if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
-    const value = String(req.body);
+  if (typeof body === 'string' || Buffer.isBuffer(body)) {
+    const value = String(body);
     if (Buffer.byteLength(value) > maxBytes) throw new ApiError(413, 'Request body is too large.');
     return parseJson(value);
   }
@@ -139,15 +172,34 @@ function reportHiddenFailure(error) {
   console.error(`[CRM] Unhandled API failure: ${parts.join(' ')}`);
 }
 
+/**
+ * @param underlying the real error, when the endpoint has replaced it with a
+ *   public one. An endpoint that catches something unexpected and answers with
+ *   `new ApiError(500, 'something_unavailable')` is choosing the STATUS, not
+ *   choosing to throw away the reason, and without this the reason was thrown
+ *   away: the substitute is an ApiError, ApiErrors are treated as deliberate,
+ *   and deliberate errors are neither logged nor given a cause. Every
+ *   unexpected failure in the snapshot upload path went out as a silent,
+ *   causeless 500 for that reason, for days, while the collector retried it.
+ *   Only consulted for a 5xx, because a 4xx already told the caller what was
+ *   wrong.
+ */
 export function handleApiError(res, error, {
   fallbackMessage = 'Unexpected server error.',
   production = process.env.NODE_ENV === 'production',
   report = reportHiddenFailure,
+  underlying = null,
 } = {}) {
   const status = Number.isInteger(error?.status) ? error.status : 500;
   const exposed = error instanceof ApiError || (status >= 400 && status < 500);
   const message = (production && !exposed) ? fallbackMessage : (error?.message || fallbackMessage);
   for (const [name, value] of Object.entries(error?.headers || {})) res.setHeader(name, value);
+  if (exposed && underlying && status >= 500) {
+    // The endpoint chose the status and handed over what it was hiding. The
+    // caller still reads exactly the string the endpoint picked.
+    report?.(underlying);
+    return sendJson(res, status, { error: message, cause: failureCause(underlying) });
+  }
   if (exposed) return sendJson(res, status, { error: message });
   // Hidden from the caller, so it goes to the log AND comes back as a cause the
   // caller can put in its own log. `error` keeps whatever the endpoint chose, so

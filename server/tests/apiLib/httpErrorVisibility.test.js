@@ -176,3 +176,83 @@ describe('the cause the caller is allowed to read', () => {
     expect(target.sent.json.error).toBe('snapshot_ingest_unavailable');
   });
 });
+
+/* THE LAUNDERING THAT HID THE UPLOAD FAILURE FOR DAYS.
+ *
+ * daily.js catches whatever went wrong and answers with a clean
+ * `new ApiError(500, 'snapshot_ingest_unavailable')`. That substitute is an
+ * ApiError, ApiErrors are treated as deliberate, and deliberate errors are
+ * neither logged nor given a cause. So every unexpected failure in the snapshot
+ * path went out silent and causeless while the collector retried it, and the
+ * instrumentation added for exactly this purpose never fired, because the
+ * endpoint destroyed the evidence before handing it over. */
+describe('an endpoint that replaced the error can still hand over the real one', () => {
+  it('logs the hidden error and names its cause', () => {
+    const { lines, report } = capture();
+    const target = res();
+    const real = Object.assign(new Error('permission denied for function claim_ingest_batch'), { code: '42501' });
+
+    handleApiError(target, new ApiError(500, 'snapshot_ingest_unavailable'), {
+      production: true,
+      report,
+      underlying: real,
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].code).toBe('42501');
+    expect(target.sent.json).toEqual({
+      error: 'snapshot_ingest_unavailable',
+      cause: 'server_permission_denied',
+    });
+  });
+
+  it('keeps the exact string the endpoint chose', () => {
+    // Anything reading `error` today must keep seeing what it saw.
+    const target = res();
+    handleApiError(target, new ApiError(503, 'snapshot_finalization_pending'), {
+      production: true,
+      report: () => {},
+      underlying: new Error('whatever'),
+    });
+    expect(target.sent.json.error).toBe('snapshot_finalization_pending');
+    expect(target.sent.status).toBe(503);
+  });
+
+  it('says nothing extra on a 4xx, which already told the caller what was wrong', () => {
+    // A 422 names the validation that refused. Logging every rejected snapshot
+    // would bury the one line that matters.
+    const { lines, report } = capture();
+    const target = res();
+    handleApiError(target, new ApiError(422, 'snapshot_processing_failed'), {
+      production: true,
+      report,
+      underlying: new Error('boom'),
+    });
+    expect(lines).toHaveLength(0);
+    expect(target.sent.json).toEqual({ error: 'snapshot_processing_failed' });
+  });
+
+  it('changes nothing when no underlying error is handed over', () => {
+    const { lines, report } = capture();
+    const target = res();
+    handleApiError(target, new ApiError(503, 'snapshot_ingest_failed'), { production: true, report });
+    expect(lines).toHaveLength(0);
+    expect(target.sent.json).toEqual({ error: 'snapshot_ingest_failed' });
+  });
+
+  it('never leaks the hidden error text, only its category', () => {
+    const target = res();
+    handleApiError(target, new ApiError(500, 'snapshot_ingest_unavailable'), {
+      production: true,
+      report: () => {},
+      underlying: Object.assign(new Error('permission denied for table ingest_batches'), {
+        code: '42501',
+        details: 'Key (account)=(LTATASWAN501329011095) is not present.',
+      }),
+    });
+    const body = JSON.stringify(target.sent.json);
+    expect(body).not.toContain('ingest_batches');
+    expect(body).not.toContain('LTATASWAN501329011095');
+    expect(body).not.toContain('42501');
+  });
+});

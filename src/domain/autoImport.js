@@ -97,15 +97,44 @@ function duplicateErrors(snapshot) {
   return errors;
 }
 
+/* NAMES THE ACCOUNT, AND NAMES IT ONCE.
+ *
+ * This used to report one error per offending row, saying only
+ * "strategies[0].accountName does not reference an account". A CAM handed that
+ * about a file they cannot open learns nothing: not which account, and not
+ * whether it is one account or forty rows of the same one. On a real close a
+ * single dropped account produces hundreds of those lines.
+ *
+ * The cause it is usually reporting is a capture that read the account list
+ * more than once while a connection was reconnecting, so the close carried rows
+ * for an account the accounts section had already dropped. The account name is
+ * the one fact that identifies which one flapped.
+ *
+ * Row indexes are kept for the first few, because "which row" is still what you
+ * want when the name itself looks right and the mismatch is whitespace. */
+const REFERENCE_ERROR_ROW_SAMPLE = 3;
+
 function accountReferenceErrors(snapshot) {
   const accountsByLower = new Set(snapshot.accounts.map((account) => trimText(account.accountName).toLowerCase()));
   const errors = [];
   for (const section of ['strategies', 'orders', 'executions']) {
+    const offending = new Map();
     snapshot[section].forEach((row, index) => {
-      if (!accountsByLower.has(trimText(row.accountName).toLowerCase())) {
-        errors.push(`${section}[${index}].accountName does not reference an account`);
-      }
+      const name = trimText(row.accountName);
+      if (accountsByLower.has(name.toLowerCase())) return;
+      if (!offending.has(name)) offending.set(name, []);
+      offending.get(name).push(index);
     });
+    for (const [name, indexes] of offending) {
+      const shown = indexes.slice(0, REFERENCE_ERROR_ROW_SAMPLE).join(', ');
+      const more = indexes.length > REFERENCE_ERROR_ROW_SAMPLE
+        ? ` and ${indexes.length - REFERENCE_ERROR_ROW_SAMPLE} more`
+        : '';
+      errors.push(
+        `${section}[${shown}]${more}.accountName does not reference an account`
+        + ` (${name === '' ? 'blank' : name})`,
+      );
+    }
   }
   return errors;
 }

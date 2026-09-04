@@ -341,3 +341,38 @@ Describe 'Installer safety authoring' {
         $directory | Should -Be 'NinjaTraderCustomFolder'
     }
 }
+
+Describe 'Every helper a script calls is a helper that script defines' {
+    # uninstall-agent.ps1 called Write-Ok at line 56 and never defined it. It
+    # defines only Write-Step. With $ErrorActionPreference = 'Stop' set at the
+    # top, that call aborted the uninstall at the first shortcut it removed,
+    # leaving the service files and the data root behind on every machine that
+    # has a shortcut, which is every machine installed since shortcuts existed.
+    #
+    # Nothing caught it because this suite reads these scripts as text and never
+    # runs them, and a parse succeeds on a call to a function that does not
+    # exist. This is the cheapest check that would have.
+    BeforeAll {
+        $script:scriptRoot = Join-Path $collectorRoot 'scripts'
+        $script:builtInWriters = @(
+            'Write-Host', 'Write-Error', 'Write-Warning', 'Write-Output',
+            'Write-Verbose', 'Write-Debug', 'Write-Information',
+            'Write-Progress', 'Write-EventLog'
+        )
+    }
+
+    It 'defines every Write- helper called in <Name>' -ForEach @(
+        @{ Name = 'install-agent.ps1' }
+        @{ Name = 'uninstall-agent.ps1' }
+    ) {
+        $text = Get-Content -LiteralPath (Join-Path $scriptRoot $Name) -Raw
+        $defined = @([regex]::Matches($text, '(?m)^function\s+(Write-[A-Za-z]+)') |
+            ForEach-Object { $_.Groups[1].Value })
+        $called = @([regex]::Matches($text, '(?m)^\s*(Write-[A-Za-z]+)\s') |
+            ForEach-Object { $_.Groups[1].Value })
+        $missing = @($called |
+            Where-Object { $builtInWriters -notcontains $_ -and $defined -notcontains $_ } |
+            Select-Object -Unique)
+        $missing -join ', ' | Should -BeNullOrEmpty
+    }
+}

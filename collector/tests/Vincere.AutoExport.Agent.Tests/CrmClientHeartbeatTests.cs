@@ -38,7 +38,12 @@ public sealed class CrmClientHeartbeatTests
         Assert.Equal("16:45", result.ScheduleTime);
         RecordedRequest request = Assert.Single(handler.Requests);
         Assert.Equal("Bearer DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", request.Authorization);
-        Assert.Equal("machine-guid", request.MachineId);
+        // The machine id is "guid|name|installId" now: neither the Windows
+        // MachineGuid nor the computer name is unique on this fleet. Two VPSes
+        // for different clients both report guid 67731bcc... and both are named
+        // SERVER. What this test cares about is that the guid this source
+        // supplies is the one that goes on the wire.
+        Assert.StartsWith("machine-guid|", request.MachineId);
         Assert.Contains("\"queueDepth\":3", request.Body);
         Assert.DoesNotContain("machine-guid", request.Body, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("DDDDDDDD", request.Body);
