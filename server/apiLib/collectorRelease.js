@@ -205,11 +205,11 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * Environment variables still win when set, so another deployment can point
  * elsewhere without touching code.
  *
- * Built by run 33648466783 of the Collector Windows workflow, published as
- * release agent-v1.0.2.
+ * Built by run 33845829413 of the Collector Windows workflow, published as
+ * release agent-v1.0.3.
  */
-const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.2/release-manifest.json';
-const DEFAULT_RELEASE_MANIFEST_SHA256 = '445b894ed5f59b47cfbbcb6b0966897a33014629d47d6983fd75a97807aa6d80';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = '6ab28ff7d06fac99e9963f4fd442f88ac5e2330cad17dc5adba8b8334e607fe2';
 
 export async function resolveInstallerRelease(env = process.env, {
   production = env.NODE_ENV === 'production',
