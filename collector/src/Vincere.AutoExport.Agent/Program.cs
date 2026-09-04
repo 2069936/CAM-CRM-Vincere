@@ -41,7 +41,13 @@ builder.Services.AddSingleton<ICaptureWorkflow>(provider => new CaptureAndQueueW
     provider.GetRequiredService<ICollectorQueue>(),
     provider.GetRequiredService<IMachineGuidSource>(),
     provider.GetRequiredService<ICaptureHistoryStore>(),
-    version));
+    version,
+    // Every capture carries what the add-on and NinjaTrader actually are.
+    // Recording it here is what lets the heartbeat report the truth instead of
+    // the literal that used to be hardcoded below.
+    (ninjaTraderVersion, addonVersion) => provider
+        .GetRequiredService<CollectorState>()
+        .RecordEnvironment(ninjaTraderVersion, addonVersion)));
 builder.Services.AddSingleton<ICaptureScheduler, CaptureScheduler>();
 builder.Services.AddSingleton<ICollectorCrmClient>(provider => CrmClient.CreateProduction(
     crmBaseUri,
@@ -83,8 +89,13 @@ builder.Services.AddSingleton<ICollectorLoop>(provider => new HeartbeatLoop(
     provider.GetRequiredService<IDeviceTokenStore>(),
     provider.GetRequiredService<CollectorState>(),
     version,
+    // Fallbacks until the first capture reports the real ones. The add-on
+    // contract version is genuinely 1.0.0; the NinjaTrader version is not
+    // knowable before a capture, and inventing one put "8.1.0" on every
+    // machine on the desk regardless of what was installed. A real one reads
+    // 8.1.6.0. Null now, and the server accepts null.
     "1.0.0",
-    "8.1.0",
+    null,
     provider.GetRequiredService<IServiceReporter>()));
 builder.Services.AddSingleton<ICollectorLoop, ControlPipeServer>();
 builder.Services.AddHostedService<Worker>();

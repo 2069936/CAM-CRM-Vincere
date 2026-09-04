@@ -142,4 +142,70 @@ public sealed class CaptureAndQueueWorkflowTests
 
         public string ReadMachineGuid() => value;
     }
+
+    /* THE HEARTBEAT USED TO INVENT THE NinjaTrader VERSION.
+     *
+     * Program.cs passed the literal "8.1.0" for every machine on the desk, so
+     * the CRM displayed a version nobody was running. A real one on this desk
+     * reads 8.1.6.0, and it is in every capture already: the add-on reports it
+     * and CapturePipeClient refuses a snapshot without one. */
+
+    [Fact]
+    public async Task HandsOverWhatTheAddOnSaysNinjaTraderIs()
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        var seen = new List<(string NinjaTrader, string AddOn)>();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            new FakeQueueWriter(),
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3",
+            (ninjaTrader, addOn) => seen.Add((ninjaTrader, addOn)));
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Equal(("8.1.5.2", "0.4.0"), Assert.Single(seen));
+    }
+
+    [Fact]
+    public async Task ReportingTheEnvironmentNeverCostsTheCapture()
+    {
+        // The snapshot is the point. A listener that throws must not turn a
+        // successful capture into a failed one, which would make the scheduler
+        // retry a day it already collected.
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3",
+            (_, _) => throw new InvalidOperationException("listener exploded"));
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Same(snapshot, queue.Snapshot);
+    }
+
+    [Fact]
+    public async Task WorksWithNoListenerAtAll()
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3");
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Same(snapshot, queue.Snapshot);
+    }
 }
