@@ -208,4 +208,91 @@ public sealed class CaptureAndQueueWorkflowTests
 
         Assert.Same(snapshot, queue.Snapshot);
     }
+
+    /* A CLOSE TAKEN WHILE THE TRADES WERE STILL OPEN IS NOT A CLOSE.
+     *
+     * 2026-09-08: the scheduled capture fired at 16:30:00 and reported -$2,064
+     * for the day. The real number was -$1,319. The $745 difference was
+     * unrealized PnL on three accounts whose closing fills landed at 16:32. A
+     * capture from the same machine at 18:28 matched the manual export exactly,
+     * and a CAM rebuilt the day by hand. */
+
+    [Fact]
+    public async Task QueuesTheSnapshotBeforeAskingForAnotherAttempt()
+    {
+        // THE ORDER IS THE WHOLE DESIGN. The snapshot reaches the queue first,
+        // so nothing is lost and the day is never missed. The throw only leaves
+        // the day unmarked so the scheduler tries again and the later, settled
+        // capture supersedes this one.
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        snapshot.Accounts[0].UnrealizedPnl = 235m;
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3");
+
+        await Assert.ThrowsAsync<CaptureAttemptException>(() => workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false)));
+
+        Assert.Same(snapshot, queue.Snapshot);
+    }
+
+    [Fact]
+    public async Task NamesTheReasonSoTheSchedulerAndTheLogAgree()
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        snapshot.Accounts[0].UnrealizedPnl = -120m;
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            new FakeQueueWriter(),
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3");
+
+        CaptureAttemptException error = await Assert.ThrowsAsync<CaptureAttemptException>(
+            () => workflow.CaptureAndQueueAsync(
+                new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false)));
+
+        Assert.Equal("positions_open", error.Code);
+    }
+
+    [Fact]
+    public async Task AcceptsACaptureWhereEverythingHasSettled()
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        foreach (AccountRowV1 account in snapshot.Accounts) account.UnrealizedPnl = 0m;
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3");
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Same(snapshot, queue.Snapshot);
+    }
+
+    [Fact]
+    public async Task TreatsAMissingUnrealizedValueAsSettledRatherThanOpen()
+    {
+        // A client whose export omits the field must not have every clean close
+        // retried until the cutoff and then flagged.
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        foreach (AccountRowV1 account in snapshot.Accounts) account.UnrealizedPnl = null;
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            new FakeQueueWriter(),
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3");
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+    }
 }

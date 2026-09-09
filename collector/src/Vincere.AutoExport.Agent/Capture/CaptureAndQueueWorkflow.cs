@@ -98,6 +98,47 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
         }
+
+        /* A CLOSE TAKEN WHILE THE TRADES WERE STILL OPEN IS NOT A CLOSE.
+         *
+         * On 2026-09-08 the scheduled capture fired at 16:30:00 and reported
+         * -$2,064 for the day. The real number was -$1,319. The $745 difference
+         * was unrealized PnL on three accounts whose closing fills landed at
+         * 16:32, two minutes after the snapshot. A capture from the same
+         * machine at 18:28 matched the manual export to the dollar, and a CAM
+         * had to rebuild the day by hand.
+         *
+         * MOVING THE SCHEDULE IS NOT THE FIX. Those strategies are configured
+         * to close at 16:45 and 16:50, and the time is per strategy and per
+         * client, so any single scheduled hour is a guess that is wrong for
+         * somebody, silently.
+         *
+         * THIS THROWS AFTER QUEUEING, AND THAT ORDER IS THE WHOLE DESIGN. The
+         * snapshot is already on disk, so nothing is lost and the day is never
+         * missed. What the throw does is leave the day unmarked, so the
+         * scheduler tries again before its cutoff and the later, settled
+         * capture supersedes the early one. The CRM already replaces an earlier
+         * import for the same date, which is what makes this safe rather than
+         * merely hopeful.
+         *
+         * Past the cutoff the scheduler stops retrying and the early capture is
+         * what the desk has, flagged by the CRM as taken with positions open.
+         * An incomplete close that says so beats no close at all.
+         */
+        decimal openUnrealized = 0m;
+        if (snapshot.Accounts != null)
+        {
+            foreach (AccountRowV1 account in snapshot.Accounts)
+            {
+                openUnrealized += account?.UnrealizedPnl ?? 0m;
+            }
+        }
+        if (openUnrealized != 0m)
+        {
+            throw new CaptureAttemptException(
+                "positions_open",
+                "The capture was taken while at least one account still held a position.");
+        }
     }
 
     private static string FormatDate(LocalDate date)

@@ -1,3 +1,4 @@
+import { openPositionsAt } from './openPositions';
 import { normalizeStrategyFamily, parseStrategyVersion } from './csvImport.js';
 import { validateAutoExportSnapshot } from './autoExportContract.js';
 
@@ -296,6 +297,19 @@ export function normalizeAutoImportSnapshot(snapshot) {
       missingSections: [],
       emptySections,
       isComplete: emptySections.length === 0,
+      /* A CLOSE TAKEN WHILE THE TRADES WERE STILL OPEN IS NOT A CLOSE.
+       *
+       * On 2026-09-08 the scheduled capture fired at 16:30:00 and reported
+       * -$2,064 for the day. The real number was -$1,319: $745 of it was still
+       * unrealized on three accounts whose closing fills landed at 16:32. A
+       * capture from the same machine at 18:28 matched the manual export to
+       * the dollar.
+       *
+       * Moving the schedule is not a fix. Those strategies are configured to
+       * close at 16:45 and 16:50, and the time is per strategy and per client,
+       * so any single hour is a guess that is wrong for somebody. Asking the
+       * snapshot whether anything was still open is not a guess. */
+      openPositions: openPositionsAt(snapshot),
       accountPnl,
     },
   };

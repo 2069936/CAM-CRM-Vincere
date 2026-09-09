@@ -338,3 +338,31 @@ describe('normalizeAutoImportSnapshot', () => {
     expect(lines.join(' ')).toContain('GONE-0556');
   });
 });
+
+/* A CLOSE TAKEN WHILE THE TRADES WERE STILL OPEN IS NOT A CLOSE.
+ *
+ * 2026-09-08: the scheduled capture fired at 16:30:00 and reported -$2,064 for
+ * the day. The real number was -$1,319. The $745 gap was unrealized PnL on
+ * three accounts whose closing fills landed at 16:32, two minutes after the
+ * snapshot. Nothing in the snapshot said so, so the wrong number looked exactly
+ * like a right one and a manual export had to be done by hand. */
+describe('a snapshot says whether the day had finished closing', () => {
+  const clone = () => JSON.parse(JSON.stringify(snapshotFixture));
+  const withOpen = () => {
+    const snapshot = clone();
+    snapshot.accounts[0].unrealizedPnl = 235;
+    return snapshot;
+  };
+
+  it('carries the accounts that were still in a position', () => {
+    const result = normalizeAutoImportSnapshot(withOpen());
+    expect(result.metadata.openPositions.open).toBe(true);
+    expect(result.metadata.openPositions.unrealizedTotal).toBe(235);
+  });
+
+  it('says nothing is open on a capture taken after everything closed', () => {
+    const snapshot = clone();
+    for (const account of snapshot.accounts) account.unrealizedPnl = 0;
+    expect(normalizeAutoImportSnapshot(snapshot).metadata.openPositions.open).toBe(false);
+  });
+});
