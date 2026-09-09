@@ -183,7 +183,10 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
             if (snapshot.Strategies != null && snapshot.Strategies.Count > 0)
             {
                 await strategyObservations.SaveAsync(
-                    new StrategyObservation(tradingDate, snapshot.CapturedAt, snapshot.Strategies),
+                    new StrategyObservation(
+                        tradingDate,
+                        snapshot.CapturedAt,
+                        new List<StrategyRowV1>(snapshot.Strategies)),
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
@@ -208,7 +211,10 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
         AutoExportSnapshotV1 snapshot = await captureClient.CaptureAsync(cancellationToken).ConfigureAwait(false);
         if (snapshot?.Strategies == null || snapshot.Strategies.Count == 0) return;
         await strategyObservations.SaveAsync(
-            new StrategyObservation(tradingDate, snapshot.CapturedAt, snapshot.Strategies),
+            new StrategyObservation(
+                tradingDate,
+                snapshot.CapturedAt,
+                new List<StrategyRowV1>(snapshot.Strategies)),
             cancellationToken).ConfigureAwait(false);
     }
 
