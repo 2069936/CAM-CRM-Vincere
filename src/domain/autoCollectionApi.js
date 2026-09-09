@@ -66,10 +66,33 @@ async function defaultAccessToken() {
   return data.session.access_token;
 }
 
+/* THE REASON WAS COMPUTED, SENT, AND THROWN AWAY HERE.
+ *
+ * create_ingest_enrollment refuses on any of five conditions and used to raise
+ * one name for all of them, so the server learned to say which: a blank product
+ * key, a status that is not Active, a deleted client, a missing name, or a
+ * client that is gone. The messages for all five are in SAFE_MESSAGES below,
+ * written at the same time.
+ *
+ * None of them was reachable. This allow-list still only knew the old generic
+ * name, so every precise reason fell through to the 4xx line at the bottom and
+ * came out as "The collector setup request is invalid. Refresh and try again."
+ * Refreshing fixes none of the five. A CAM whose client simply had no product
+ * key was told to reload the page, on a client where reloading can never work.
+ */
+const INELIGIBILITY_CODES = [
+  'client_not_eligible',
+  'client_not_found',
+  'client_deleted',
+  'client_not_active',
+  'client_name_missing',
+  'client_product_key_missing',
+];
+
 function errorCode(status, body) {
   if (status === 401 || status === 403) return 'permission_denied';
   const serverCode = typeof body?.error === 'string' ? body.error : '';
-  if (status === 409 && ['active_device_exists', 'client_not_eligible'].includes(serverCode)) return serverCode;
+  if (status === 409 && ['active_device_exists', ...INELIGIBILITY_CODES].includes(serverCode)) return serverCode;
   if (status === 404 && serverCode === 'ingest_access_not_found') return serverCode;
   if (status === 503 && serverCode === 'collector_not_configured') return serverCode;
   if (status >= 400 && status < 500) return 'invalid_request';
