@@ -305,10 +305,11 @@ export function normalizeAutoImportSnapshot(snapshot) {
        * capture from the same machine at 18:28 matched the manual export to
        * the dollar.
        *
-       * Moving the schedule is not a fix. Those strategies are configured to
-       * close at 16:45 and 16:50, and the time is per strategy and per client,
-       * so any single hour is a guess that is wrong for somebody. Asking the
-       * snapshot whether anything was still open is not a guess. */
+       * The capture ran two minutes before the desk finished flattening, so
+       * moving it later is the cure and it was moved. This is the guard for
+       * the day three minutes of margin is not enough, because the failure is
+       * silent: asking the snapshot whether anything was still open is not a
+       * guess about the clock. */
       openPositions: openPositionsAt(snapshot),
       accountPnl,
     },

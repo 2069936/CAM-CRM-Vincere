@@ -8,10 +8,16 @@
  * snapshot. A capture from the same machine at 18:28 agreed with the manual
  * export to the dollar.
  *
- * MOVING THE CLOCK DOES NOT FIX IT. The strategies on that book are configured
- * to close at 16:45 and 16:50 (CloseAllOpenTradeTime), and those times are per
- * strategy and per client. Any single scheduled hour is a guess that is wrong
- * for somebody, and the failure is silent: the number looks like a number.
+ * MOVING THE CLOCK IS THE CURE, AND IT IS NOT A GUARANTEE. The desk flattens
+ * around 16:30, by hand when the strategies have not done it, and that day the
+ * fills landed at 16:32. A capture at 16:35 clears it. But three minutes of
+ * margin over a close that has to happen by hand is a thin promise, and when it
+ * is missed the failure is silent: the number looks like a number.
+ *
+ * (The strategies also carry CloseAllOpenTradeTime of 16:45 and 16:50. Those
+ * are the last-resort automatic close rather than when the desk actually
+ * flattens, and reading them as the normal close time is what first led to the
+ * wrong conclusion about this.)
  *
  * So the snapshot is asked the question directly. An account still carrying
  * unrealized PnL had a position open when the picture was taken, which means

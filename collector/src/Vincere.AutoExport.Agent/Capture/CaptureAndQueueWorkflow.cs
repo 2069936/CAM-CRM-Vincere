@@ -108,10 +108,21 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
          * machine at 18:28 matched the manual export to the dollar, and a CAM
          * had to rebuild the day by hand.
          *
-         * MOVING THE SCHEDULE IS NOT THE FIX. Those strategies are configured
-         * to close at 16:45 and 16:50, and the time is per strategy and per
-         * client, so any single scheduled hour is a guess that is wrong for
-         * somebody, silently.
+         * THE SCHEDULE WAS THE CAUSE AND MOVING IT IS THE CURE. The desk
+         * flattens around 16:30, by hand when the strategies have not done it,
+         * and the fills that day landed at 16:32. The capture ran at 16:30:00,
+         * two minutes early. Moving it to 16:35 clears the observed close.
+         *
+         * (The strategies also carry CloseAllOpenTradeTime of 16:45 and 16:50.
+         * Those are the last-resort automatic close, not when the desk actually
+         * flattens, and reading them as the normal close time is what first led
+         * to the wrong conclusion here.)
+         *
+         * THIS EXISTS FOR THE DAY THE MARGIN IS NOT ENOUGH. 16:35 is three
+         * minutes after a close that has been landing at 16:32. A slow fill or
+         * a manual flatten at 16:36 puts the desk straight back into a wrong
+         * number that looks exactly like a right one. The point of asking the
+         * snapshot is that the schedule stops being load bearing.
          *
          * THIS THROWS AFTER QUEUEING, AND THAT ORDER IS THE WHOLE DESIGN. The
          * snapshot is already on disk, so nothing is lost and the day is never
