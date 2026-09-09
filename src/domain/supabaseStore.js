@@ -5,6 +5,7 @@ import {
   withLegacyDailyImportId,
 } from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
+import { normalizeClientTags } from './clientTags';
 import { splitSimulationRows } from './simulationAccounts';
 import { createRequestGate } from './supabaseRetry';
 
@@ -567,6 +568,14 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
         note: client.churn_note || '',
         at: client.churned_at ? String(client.churned_at).slice(0, 10) : '',
       },
+      // Step 42 adds the column; where it has not run this is undefined and
+      // normalizes to the empty list, so a client simply carries no tags rather
+      // than the page failing to load.
+      //
+      // Top level, not inside `profile`, for the same reason `churn` is:
+      // updateProfile re-sends that object whole on every contact-card edit,
+      // and a tag parked there would ride along with a phone-number correction.
+      tags: normalizeClientTags(client.tags),
       profile: {
         stage: client.stage || 'Active',
         fullName: client.full_name || client.name,
@@ -852,6 +861,10 @@ function clientPatchToDb(patch = {}) {
     if ('messenger' in profile) mapped.messenger = profile.messenger || '';
     if ('subscriptionPrice' in profile) mapped.subscription_price = normalizeSubscriptionPrice(profile.subscriptionPrice);
   }
+  // Mapped only when a patch actually carries tags, so no other save touches
+  // the column and, on a database where step 42 has not run, no other save can
+  // fail because of it.
+  if ('tags' in patch) mapped.tags = normalizeClientTags(patch.tags);
   // The churn classification, mapped only when a patch actually carries one.
   //
   // This is the whole reason `churn` is a top-level key rather than a profile
@@ -1226,6 +1239,29 @@ export async function updateSupabaseClient(clientId, patch = {}) {
   const credentialPatch = 'credentials' in patch ? credentialsToDb(patch.credentials || {}) : null;
   const propFirmPatch = 'propFirms' in patch ? (patch.propFirms || []) : null;
 
+  /* THE PRICE BEFORE THE CHANGE, READ BEFORE THE CHANGE.
+   *
+   * New MRR, lost MRR and the free-to-paying conversion rate are all
+   * differences between a before and an after, and neither was ever stored.
+   * The audit trail for a client edit records `changedFields:
+   * Object.keys(patch)` and nothing else: it knows the price was touched and
+   * on what day, and has never known whether the client went from Free to $500
+   * or the reverse. None of it can be reconstructed backwards, so the log
+   * starts the day this ships and the dashboard reports how far back it
+   * actually reaches.
+   *
+   * Read here rather than after the update, because after the update the old
+   * value is gone. */
+  let previousPrice = null;
+  if ('subscription_price' in dbPatch) {
+    const { data: before } = await supabase
+      .from('clients')
+      .select('subscription_price')
+      .eq('id', clientUuid)
+      .maybeSingle();
+    previousPrice = before?.subscription_price ?? null;
+  }
+
   const { data, error } = await supabase
     .from('clients')
     .update(dbPatch)
@@ -1233,6 +1269,25 @@ export async function updateSupabaseClient(clientId, patch = {}) {
     .select()
     .single();
   if (error) throw new Error(error.message);
+
+  // Only on an actual move. Saving the contact card re-sends the whole profile,
+  // so without this every phone-number correction would write a row saying the
+  // price changed from $500 to $500 and the movement figures would be noise.
+  if ('subscription_price' in dbPatch && dbPatch.subscription_price !== previousPrice) {
+    // Deliberately not awaited into the failure path: the price change is
+    // saved, and losing its history row must never surface as a failed save.
+    await supabase
+      .from('client_price_changes')
+      .insert({
+        client_id: clientUuid,
+        previous_price: previousPrice,
+        new_price: dbPatch.subscription_price,
+      })
+      .then(
+        () => {},
+        () => {},
+      );
+  }
 
   if (credentialPatch) {
     const { error: credentialError } = await supabase

@@ -58,6 +58,8 @@ import PerformanceCharts from './components/PerformanceCharts';
 import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
+import ClientTagPicker from "./components/ClientTagPicker";
+import RevenueHealthPanel from "./components/RevenueHealthPanel";
 import AutoCollectionManager from "./components/AutoCollectionManager";
 import ClientExportDialog from "./components/ClientExportDialog";
 import {
@@ -9429,6 +9431,7 @@ function CamOverview({
   onLogClientActivity,
   onResolveFlag,
   onClassifyAccount,
+  canSeeRevenue = false,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
 }) {
@@ -9615,6 +9618,11 @@ function CamOverview({
     const d = lastContactDaysAgo(c);
     return d === null || d >= 7;
   }).length;
+
+  /* Whole book, not one CAM's slice. Revenue is a management question and
+     `allClients` is the only list that answers it; `clients` is scoped. */
+  const revenueBook = allClients.length ? allClients : clients;
+  const monthStart = `${today.slice(0, 7)}-01`;
 
   return (
     <main className="content">
@@ -9839,6 +9847,17 @@ function CamOverview({
           </div>
         </div>
       </div>
+
+      {/* Revenue health, for management only. Placed directly under the header
+          because it is the first question asked in that meeting, and because
+          every figure on it carries the count of clients nobody has priced. */}
+      {canSeeRevenue ? (
+        <RevenueHealthPanel
+          clients={revenueBook}
+          asOf={today}
+          monthStart={monthStart}
+        />
+      ) : null}
 
       {/*
         The queue, directly under the tile that counts it — and handed the SAME
@@ -11788,6 +11807,10 @@ function CredentialsTab({
               ))}
             </select>
           </label>
+          <ClientTagPicker
+            tags={client.tags}
+            onChange={(tags) => onUpdateClient({ tags })}
+          />
           <label>
             Preferred channel
             <select
@@ -15047,6 +15070,7 @@ export default function App() {
                 onLogClientActivity={persistActivity}
                 onResolveFlag={resolveFlagByIds}
                 onClassifyAccount={classifyAccountOutcome}
+                canSeeRevenue={session?.role === USER_ROLES.MANAGER}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;

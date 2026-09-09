@@ -8483,3 +8483,40 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
 .algo-contrib-table td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); }
 .algo-contrib-table .nums { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .algo-contrib-note { font-size: 11px; }
+
+/* Tags on a client. Checkboxes, because a client can be at risk AND a refund
+   save, and that combination is the row that matters most. */
+.client-tag-picker { margin: 14px 0 4px; }
+.client-tag-picker-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;
+}
+.client-tag-options { display: grid; gap: 8px; }
+.client-tag-option {
+  display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+.client-tag-option.checked { border-color: var(--accent, #6366f1); }
+.client-tag-name { font-size: 13px; font-weight: 600; }
+.client-tag-why { font-size: 11px; color: var(--text-muted); }
+
+/* Revenue health. The caveats are styled to be read, not skipped: the MRR on
+   this desk is a floor while most of the book has no tier set, and a number
+   presented without that is a number that gets believed. */
+.revenue-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 10px 0 16px; }
+.revenue-tile { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; }
+.revenue-tile.warn { border-left: 3px solid var(--danger, #c0392b); }
+.revenue-tile-label {
+  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
+}
+.revenue-tile-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+.revenue-tile-note { font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4; }
+.revenue-health h4 { margin: 18px 0 6px; font-size: 13px; }
+.revenue-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.revenue-table th, .revenue-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.revenue-table th { font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+.revenue-table .warn-row td { color: var(--danger, #c0392b); }
+.revenue-caveat {
+  font-size: 12px; color: var(--text-muted); margin: 8px 0 0;
+  padding: 8px 10px; border-left: 3px solid var(--danger, #c0392b); line-height: 1.5;
+}
