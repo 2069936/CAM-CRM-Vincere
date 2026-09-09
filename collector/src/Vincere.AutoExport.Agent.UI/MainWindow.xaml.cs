@@ -18,7 +18,8 @@ public partial class MainWindow : Window
             runElevatedScript: RunElevatedScript);
         DataContext = viewModel;
         Loaded += async (_, _) => await viewModel.InitializeAsync();
-    
+    }
+
     /* Runs the update as administrator, from a file rather than an inline
      * command: a hundred-character URL and a checksum threaded through nested
      * quoting is how an install line becomes a bug nobody can read.
@@ -49,5 +50,4 @@ public partial class MainWindow : Window
             return false;
         }
     }
-}
 }
