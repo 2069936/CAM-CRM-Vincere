@@ -80,6 +80,22 @@ public sealed class CaptureAndQueueWorkflowTests
         Assert.Null(queue.Snapshot);
     }
 
+
+    /// <summary>A snapshot carrying accounts with the unrealized values given.</summary>
+    private static AutoExportSnapshotV1 SnapshotWithUnrealized(params decimal?[] unrealized)
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        for (int index = 0; index < unrealized.Length; index++)
+        {
+            snapshot.Accounts.Add(new AccountRowV1
+            {
+                AccountName = $"ACC{index}",
+                UnrealizedPnl = unrealized[index],
+            });
+        }
+        return snapshot;
+    }
+
     private static AutoExportSnapshotV1 Snapshot()
     {
         return new AutoExportSnapshotV1
@@ -224,8 +240,7 @@ public sealed class CaptureAndQueueWorkflowTests
         // so nothing is lost and the day is never missed. The throw only leaves
         // the day unmarked so the scheduler tries again and the later, settled
         // capture supersedes this one.
-        AutoExportSnapshotV1 snapshot = Snapshot();
-        snapshot.Accounts[0].UnrealizedPnl = 235m;
+        AutoExportSnapshotV1 snapshot = SnapshotWithUnrealized(235m, 0m);
         FakeQueueWriter queue = new();
         CaptureAndQueueWorkflow workflow = new(
             new FakeCaptureClient(snapshot),
@@ -243,8 +258,7 @@ public sealed class CaptureAndQueueWorkflowTests
     [Fact]
     public async Task NamesTheReasonSoTheSchedulerAndTheLogAgree()
     {
-        AutoExportSnapshotV1 snapshot = Snapshot();
-        snapshot.Accounts[0].UnrealizedPnl = -120m;
+        AutoExportSnapshotV1 snapshot = SnapshotWithUnrealized(-120m);
         CaptureAndQueueWorkflow workflow = new(
             new FakeCaptureClient(snapshot),
             new FakeQueueWriter(),
@@ -262,8 +276,7 @@ public sealed class CaptureAndQueueWorkflowTests
     [Fact]
     public async Task AcceptsACaptureWhereEverythingHasSettled()
     {
-        AutoExportSnapshotV1 snapshot = Snapshot();
-        foreach (AccountRowV1 account in snapshot.Accounts) account.UnrealizedPnl = 0m;
+        AutoExportSnapshotV1 snapshot = SnapshotWithUnrealized(0m, 0m);
         FakeQueueWriter queue = new();
         CaptureAndQueueWorkflow workflow = new(
             new FakeCaptureClient(snapshot),
@@ -283,8 +296,7 @@ public sealed class CaptureAndQueueWorkflowTests
     {
         // A client whose export omits the field must not have every clean close
         // retried until the cutoff and then flagged.
-        AutoExportSnapshotV1 snapshot = Snapshot();
-        foreach (AccountRowV1 account in snapshot.Accounts) account.UnrealizedPnl = null;
+        AutoExportSnapshotV1 snapshot = SnapshotWithUnrealized(null, null);
         CaptureAndQueueWorkflow workflow = new(
             new FakeCaptureClient(snapshot),
             new FakeQueueWriter(),
