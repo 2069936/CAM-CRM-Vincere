@@ -278,3 +278,93 @@ describe('buildCamDayReport', () => {
     expect(rows[0].report.totals.grossRealizedPnl).toBe(500);
   });
 });
+
+/* AN EVALUATION'S PROFIT AND LOSS IS NOT THE CLIENT'S MONEY.
+ *
+ * It is a challenge account: passing or failing is the outcome that matters,
+ * and the number moves on funded capital the client does not have. Folding it
+ * into "Daily realized PnL" made the headline answer a question nobody asked.
+ *
+ * Observed on 2026-09-08: a report headlined -$1,319 where -$810 of it was a
+ * Failed evaluation. Nothing pinned this either way, which is how a policy
+ * change of this size passed 3,014 tests without one going red. */
+describe('what counts towards the daily PnL', () => {
+  const build = () => {
+    const client = {
+      name: 'Pete',
+      accountRegistry: {
+        FUND1: { accountName: 'FUND1', accountType: 'Funded', status: 'Active' },
+        EVAL1: { accountName: 'EVAL1', accountType: 'Evaluation - Standard', status: 'Active' },
+      },
+    };
+    const dailyImport = {
+      date: '2026-09-08',
+      status: 'Needs review',
+      accounts: client.accountRegistry,
+      snapshots: [
+        { accountName: 'FUND1', accountBalance: 50436, grossRealizedPnl: -509, weeklyPnl: -555 },
+        { accountName: 'EVAL1', accountBalance: 48102, grossRealizedPnl: -810, weeklyPnl: -817 },
+      ],
+      flags: [],
+    };
+    return buildDailyReportSummary(client, dailyImport);
+  };
+
+  it('leaves the evaluation out of the headline number', () => {
+    expect(build().totals.grossRealizedPnl).toBe(-509);
+  });
+
+  it('still reports what the evaluations did, beside it and not inside it', () => {
+    // Not hidden. A reader has to see the -810 without it moving the client's
+    // daily number.
+    expect(build().evaluationTotals.grossRealizedPnl).toBe(-810);
+  });
+
+  it('keeps the evaluation on the report with its own row', () => {
+    const report = build();
+    expect(report.grouped.evaluations).toHaveLength(1);
+    expect(report.counts.evaluations).toBe(1);
+  });
+
+  it('counts funded, cash and unclassified exactly as before', () => {
+    const client = {
+      name: 'Pete',
+      accountRegistry: {
+        FUND1: { accountName: 'FUND1', accountType: 'Funded', status: 'Active' },
+        CASH1: { accountName: 'CASH1', accountType: 'Cash - Straight', status: 'Active' },
+        NEW1: { accountName: 'NEW1', accountType: 'Unassigned', status: 'Active' },
+      },
+    };
+    const dailyImport = {
+      date: '2026-09-08',
+      status: 'Needs review',
+      accounts: client.accountRegistry,
+      snapshots: [
+        { accountName: 'FUND1', accountBalance: 1, grossRealizedPnl: 100 },
+        { accountName: 'CASH1', accountBalance: 1, grossRealizedPnl: 30 },
+        { accountName: 'NEW1', accountBalance: 1, grossRealizedPnl: 7 },
+      ],
+      flags: [],
+    };
+    expect(buildDailyReportSummary(client, dailyImport).totals.grossRealizedPnl).toBe(137);
+  });
+
+  it('reports zero rather than nothing when a client has only evaluations', () => {
+    // The headline must read $0, not blank: "no real money moved today" is a
+    // fact, and it is a different fact from "no data".
+    const client = {
+      name: 'Pete',
+      accountRegistry: { EVAL1: { accountName: 'EVAL1', accountType: 'Evaluation - Standard', status: 'Active' } },
+    };
+    const dailyImport = {
+      date: '2026-09-08',
+      status: 'Needs review',
+      accounts: client.accountRegistry,
+      snapshots: [{ accountName: 'EVAL1', accountBalance: 48102, grossRealizedPnl: -810 }],
+      flags: [],
+    };
+    const report = buildDailyReportSummary(client, dailyImport);
+    expect(report.totals.grossRealizedPnl).toBe(0);
+    expect(report.evaluationTotals.grossRealizedPnl).toBe(-810);
+  });
+});

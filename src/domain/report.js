@@ -304,11 +304,35 @@ export function buildDailyReportSummary(client, dailyImport) {
   // this account is not to be counted, which is a different fact from "not yet
   // looked at".
   const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash, ...grouped.unclassified];
+  /* EVALUATIONS ARE COUNTED, AND NOT TOWARDS THE DAILY PnL.
+   *
+   * An evaluation is a challenge account. Its profit and loss is not the
+   * client's money: passing or failing is the outcome that matters, and the
+   * number moves on funded capital the client does not have. Folding it into
+   * "Daily realized PnL" made the headline number answer a question nobody
+   * asked. A client with a $0 day on real capital and a failed evaluation read
+   * as having lost the evaluation's money.
+   *
+   * Observed on 2026-09-08: a report headlined -$1,319 where -$810 of it was a
+   * Failed evaluation account.
+   *
+   * They keep their row, their section and their own subtotal in `segments`, so
+   * nothing is hidden. They are simply not in the total, exactly like the
+   * simulation block beside them.
+   *
+   * THE DESK'S OWN VIEW STILL COUNTS THEM, deliberately. operationsSegments.js
+   * answers "how are the algos doing", where an evaluation's result is real
+   * evidence. This answers "what happened to this client's money today". The
+   * two disagreeing on evaluations is the correct disagreement; they agree on
+   * everything else, which is what the earlier alignment was for.
+   */
+  const countedTowardsDailyPnl = [...grouped.funded, ...grouped.cash, ...grouped.unclassified];
   // `totals` is REAL MONEY ONLY and always has been. `snapshots` above never
   // contains a simulated close (reconcile.js and buildCrmStateFromTables both
   // split first), and `simulation` below is built from its own arrays, so the
   // two can never be summed by accident.
-  const { totals } = summarizeAccountRows(allVisible);
+  const { totals } = summarizeAccountRows(countedTowardsDailyPnl);
+  const evaluationTotals = summarizeAccountRows(grouped.evaluations).totals;
   // The denominator is every LIVE CLOSE, not every close the report happened to
   // group into a tile. `allVisible` drops an Unassigned or Inactive / Ignore
   // account, so a client with two unclassified real accounts and one Sim101 was
@@ -341,6 +365,9 @@ export function buildDailyReportSummary(client, dailyImport) {
     // bullet-bot eval is tracked by pass/fail, not by balance. Cash PnL is net
     // of fees (the NinjaTrader "Realized PnL" column already subtracts them).
     segments: buildClientSegments(client, dailyImport),
+    // Shown beside the headline, never inside it. A reader has to be able to
+    // see what the evaluations did without it moving the client's daily number.
+    evaluationTotals,
     // Its own block, its own totals, never folded into `totals` or `counts`.
     // Null when the client has no simulation and nothing undetermined, so a
     // renderer can tell "no sim engagement" apart from "a sim engagement that
