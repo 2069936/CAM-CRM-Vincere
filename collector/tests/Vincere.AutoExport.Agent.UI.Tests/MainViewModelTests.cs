@@ -477,4 +477,118 @@ public sealed class MainViewModelTests
     }
 
     private sealed record Call(string Command, string EnrollmentCode, string ScheduleTime, bool Confirmed);
+
+    /* ONE BUTTON, NOT AN ERRAND, AND NOT AN AUTO-UPDATE.
+     *
+     * Copying a command still meant finding a PowerShell, pasting, and knowing
+     * what you were looking at. This installs from the window the reader is
+     * already in. A person presses it, Windows asks them to elevate, a console
+     * shows them what happens. Software that replaces itself unattended on a
+     * machine carrying live client prop-firm accounts is a different decision. */
+
+    private sealed class StubDescriptor : HttpMessageHandler
+    {
+        public string Version { get; init; } = "1.0.4";
+        public string Sha { get; init; } = new string('a', 64);
+        public string Url { get; init; } = "https://example.test/agent.zip";
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            string body = "{\"version\":\"" + Version + "\",\"sha256\":\"" + Sha + "\",\"url\":\"" + Url + "\"}";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+        }
+    }
+
+    [Fact]
+    public async Task OffersToInstallWhenThePublishedChecksumIsKnown()
+    {
+        MainViewModel viewModel = new(PairedAt("1.0.0"), new ReleaseCheck(new StubDescriptor()));
+        await viewModel.InitializeAsync();
+        await viewModel.CheckForUpdateAsync();
+        Assert.True(viewModel.CanInstallUpdate);
+    }
+
+    [Fact]
+    public async Task RefusesToOfferAnInstallWithoutAChecksum()
+    {
+        // THE LINE. The script downloads a package and runs it as
+        // administrator. Without knowing what arrived, the window hands over
+        // the command instead, which keeps a person in front of the install.
+        MainViewModel viewModel = new(
+            PairedAt("1.0.0"),
+            new ReleaseCheck(new StubManifest("1.0.3", "https://example.test/a.zip")));
+        await viewModel.InitializeAsync();
+        await viewModel.CheckForUpdateAsync();
+        Assert.False(viewModel.CanInstallUpdate);
+        Assert.False(viewModel.InstallUpdateCommand.CanExecute(null));
+        Assert.NotEmpty(viewModel.UpdateInstallCommand);
+    }
+
+    [Fact]
+    public async Task TheScriptItRunsVerifiesTheDownloadBeforeExecutingAnything()
+    {
+        string launched = null;
+        MainViewModel viewModel = new(
+            PairedAt("1.0.0"),
+            new ReleaseCheck(new StubDescriptor()),
+            null,
+            script => { launched = script; return true; });
+
+        await viewModel.InitializeAsync();
+        await viewModel.CheckForUpdateAsync();
+        await viewModel.InstallUpdateAsync();
+
+        Assert.Contains("Get-FileHash", launched);
+        Assert.Contains("does not match the published checksum", launched);
+        // The order is the point: the check and its exit come before the script
+        // ever expands or runs anything out of the archive.
+        Assert.True(launched.IndexOf("exit 1", StringComparison.Ordinal)
+            < launched.IndexOf("install-agent.ps1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SaysNothingChangedWhenTheElevationPromptIsDeclined()
+    {
+        MainViewModel viewModel = new(
+            PairedAt("1.0.0"),
+            new ReleaseCheck(new StubDescriptor()),
+            null,
+            _ => false);
+
+        await viewModel.InitializeAsync();
+        await viewModel.CheckForUpdateAsync();
+        await viewModel.InstallUpdateAsync();
+
+        Assert.Contains("Nothing has changed", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task DoesNotInstallAnUpdateItWasNeverToldAbout()
+    {
+        string launched = null;
+        MainViewModel viewModel = new(PairedAt("1.0.0"), null, null, script => { launched = script; return true; });
+        await viewModel.InitializeAsync();
+        await viewModel.InstallUpdateAsync();
+        Assert.Null(launched);
+        Assert.Contains("Check for updates first", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public void RefusesToBuildAnInstallScriptFromAnythingUnverifiable()
+    {
+        Assert.Null(ReleaseCheck.BuildVerifiedInstallScript("https://example.test/a.zip", "not-a-hash"));
+        Assert.Null(ReleaseCheck.BuildVerifiedInstallScript("https://example.test/a.zip", null));
+        Assert.Null(ReleaseCheck.BuildVerifiedInstallScript("http://example.test/a.zip", new string('a', 64)));
+        Assert.NotNull(ReleaseCheck.BuildVerifiedInstallScript("https://example.test/a.zip", new string('A', 64)));
+    }
+
+    [Fact]
+    public void ReadsTheDescriptorAndIgnoresOneItCannotTrust()
+    {
+        Assert.Null(ReleaseCheck.EvaluateDescriptor("1.0.0", JObject.Parse("{\"version\":\"1.0.4\"}")));
+        Assert.Null(ReleaseCheck.EvaluateDescriptor("1.0.0",
+            JObject.Parse("{\"version\":\"1.0.4\",\"sha256\":\"short\",\"url\":\"https://e.test/a.zip\"}")));
+        Assert.Null(ReleaseCheck.EvaluateDescriptor("1.0.0",
+            JObject.Parse("{\"version\":\"1.0.4\",\"sha256\":\"" + new string('a', 64) + "\",\"url\":\"http://e.test/a.zip\"}")));
+    }
 }

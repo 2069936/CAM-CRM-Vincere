@@ -282,6 +282,18 @@
                                      Padding="8"
                                      AutomationProperties.Name="PowerShell command that installs the published update" />
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <!-- Only when the published checksum is known. The script behind
+                                     it downloads a package and runs it as administrator, and this
+                                     machine holds live client accounts. Not an auto-update: a
+                                     person presses it, Windows asks them to elevate, and a console
+                                     shows them what happens. -->
+                                <Button Content="Install update now"
+                                        Command="{Binding InstallUpdateCommand}"
+                                        Visibility="{Binding CanInstallUpdate, Converter={StaticResource BoolToVisibility}}"
+                                        Background="{StaticResource PrimaryBrush}"
+                                        Foreground="{StaticResource TextBrush}"
+                                        Margin="0,0,10,0"
+                                        AutomationProperties.Name="Download the published update and install it on this VPS" />
                                 <Button Content="Copy install command"
                                         Command="{Binding CopyInstallCommandCommand}"
                                         Background="{StaticResource RaisedBrush}"

@@ -35,7 +35,19 @@ public sealed record ReleaseCheckResult(
     bool UpdateAvailable,
     string LatestVersion,
     string Message,
-    string InstallCommand = null);
+    string InstallCommand = null,
+    /* Only set when the published checksum is trustworthy, and that is what
+     * gates the Install button. Nothing downloads and runs a package as
+     * administrator on a machine holding live client accounts without knowing
+     * what it got. Without a checksum the window still hands over the command
+     * to copy, which puts a person in front of it. */
+    string DownloadUrl = null,
+    string Sha256 = null)
+{
+    public bool CanInstall => UpdateAvailable
+        && !string.IsNullOrWhiteSpace(DownloadUrl)
+        && !string.IsNullOrWhiteSpace(Sha256);
+}
 
 public sealed class ReleaseCheck
 {
@@ -45,15 +57,65 @@ public sealed class ReleaseCheck
     public const string DefaultManifestUrl =
         "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/release-manifest.json";
 
+    /* A SECOND DESCRIPTOR, BECAUSE THE FIRST ONE CANNOT BE CORRECTED.
+     *
+     * release-manifest.json is pinned by sha256 inside the CRM's own source
+     * (server/apiLib/collectorRelease.js), so replacing it takes the install
+     * card down for every client until that constant is changed and deployed.
+     * It is therefore frozen in practice, while the package beside it is
+     * replaced whenever a build ships. On the release serving this fleet the
+     * manifest already declares 3f3444ee... for a package that is fcb82fce...
+     *
+     * Verifying an install against a checksum that is known to be stale would
+     * refuse every real package. Not verifying at all would download and
+     * execute code as administrator on machines carrying live client accounts.
+     * Neither is acceptable, so the update flow reads a descriptor nobody pins
+     * and that ships next to the package it describes.
+     *
+     * Absent, this falls back to the manifest for the version check alone and
+     * the Install button stays off: the window can still say a version exists
+     * and hand over the command, which puts a person in front of the install. */
+    public const string DefaultUpdateDescriptorUrl =
+        "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/agent-update.json";
+
+    private static readonly Regex Sha256Pattern = new("^[0-9a-fA-F]{64}$", RegexOptions.Compiled);
+
     private static readonly Regex VersionPattern = new(@"^\d{1,5}(\.\d{1,5}){1,3}$", RegexOptions.Compiled);
 
     private readonly HttpMessageHandler handler;
     private readonly string manifestUrl;
+    private readonly string descriptorUrl;
 
-    public ReleaseCheck(HttpMessageHandler handler = null, string manifestUrl = null)
+    public ReleaseCheck(HttpMessageHandler handler = null, string manifestUrl = null, string descriptorUrl = null)
     {
         this.handler = handler;
         this.manifestUrl = string.IsNullOrWhiteSpace(manifestUrl) ? DefaultManifestUrl : manifestUrl;
+        this.descriptorUrl = string.IsNullOrWhiteSpace(descriptorUrl) ? DefaultUpdateDescriptorUrl : descriptorUrl;
+    }
+
+    /// <summary>Read {version, sha256, url} from the descriptor we control.</summary>
+    public static ReleaseCheckResult EvaluateDescriptor(string installedVersion, JObject descriptor)
+    {
+        string latest = descriptor?.Value<string>("version");
+        string sha = descriptor?.Value<string>("sha256");
+        string url = descriptor?.Value<string>("url");
+        if (!VersionPattern.IsMatch(latest ?? string.Empty)) return null;
+        if (!Sha256Pattern.IsMatch(sha ?? string.Empty)) return null;
+        if (!Uri.TryCreate(url ?? string.Empty, UriKind.Absolute, out Uri parsed)
+            || parsed.Scheme != Uri.UriSchemeHttps)
+        {
+            return null;
+        }
+        if (Compare(installedVersion, latest) >= 0)
+            return new ReleaseCheckResult(true, false, latest, $"You are up to date on {installedVersion}.");
+        return new ReleaseCheckResult(
+            true,
+            true,
+            latest,
+            $"Version {latest} is available. You are on {installedVersion}.",
+            BuildInstallCommand(url),
+            url,
+            sha.ToLowerInvariant());
     }
 
     /// <summary>Compare two dotted versions. Missing parts count as zero.</summary>
@@ -109,6 +171,52 @@ public sealed class ReleaseCheck
         });
     }
 
+    /* THE SCRIPT THE INSTALL BUTTON RUNS.
+     *
+     * The same steps as the command a person copies, with one addition that is
+     * the whole reason the button can exist: the download is checked against
+     * the published checksum BEFORE anything out of it is executed. This runs
+     * elevated on a machine holding live client accounts, and running a package
+     * off the internet there without knowing what arrived is not a thing to do
+     * because it is convenient.
+     *
+     * A mismatch stops with a sentence and installs nothing. It is far more
+     * likely to mean a half-finished upload than an attack, and either way the
+     * correct move is the same one.
+     *
+     * Written as a file rather than passed inline: a hundred-character URL and
+     * a checksum threaded through nested quoting is how an install line becomes
+     * a bug nobody can read.
+     */
+    public static string BuildVerifiedInstallScript(string artifactUrl, string sha256)
+    {
+        string url = (artifactUrl ?? string.Empty).Trim();
+        string sha = (sha256 ?? string.Empty).Trim();
+        if (!Sha256Pattern.IsMatch(sha)) return null;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri parsed) || parsed.Scheme != Uri.UriSchemeHttps) return null;
+        string quoted = url.Replace("'", "''");
+        return string.Join("\r\n", new[]
+        {
+            "$ErrorActionPreference = 'Stop'",
+            "$d = \"$env:TEMP\\vincere-agent\"",
+            "Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue",
+            "Write-Host 'Downloading the agent package...'",
+            "Invoke-WebRequest '" + quoted + "' -OutFile \"$d.zip\" -UseBasicParsing",
+            "$actual = (Get-FileHash \"$d.zip\" -Algorithm SHA256).Hash",
+            "if ($actual -ne '" + sha.ToUpperInvariant() + "') {",
+            "    Write-Host ''",
+            "    Write-Host 'The download does not match the published checksum. Nothing was installed.' -ForegroundColor Red",
+            "    Write-Host ('  expected " + sha.ToLowerInvariant() + "')",
+            "    Write-Host ('  received ' + $actual.ToLower())",
+            "    Read-Host 'Press Enter to close'",
+            "    exit 1",
+            "}",
+            "Write-Host 'Checksum verified. Installing...'",
+            "Expand-Archive \"$d.zip\" $d -Force",
+            "& \"$d\\install-agent.ps1\" -PackagePath $d",
+        });
+    }
+
     public static ReleaseCheckResult Evaluate(string installedVersion, string latestVersion, string artifactUrl = null)
     {
         if (!VersionPattern.IsMatch(latestVersion ?? string.Empty))
@@ -130,6 +238,20 @@ public sealed class ReleaseCheck
         http.Timeout = TimeSpan.FromSeconds(15);
         try
         {
+            // The descriptor first, because it is the only one that can be
+            // corrected. A machine that cannot reach it still gets a version
+            // answer from the manifest, without an Install button.
+            try
+            {
+                string descriptorBody = await http.GetStringAsync(descriptorUrl, cancellationToken).ConfigureAwait(false);
+                ReleaseCheckResult fromDescriptor = EvaluateDescriptor(installedVersion, JObject.Parse(descriptorBody));
+                if (fromDescriptor != null) return fromDescriptor;
+            }
+            catch (Exception exception) when (exception is HttpRequestException or Newtonsoft.Json.JsonException)
+            {
+                // No descriptor published for this release yet.
+            }
+
             string body = await http.GetStringAsync(manifestUrl, cancellationToken).ConfigureAwait(false);
             JObject manifest = JObject.Parse(body);
             string latest = manifest.Value<string>("version");

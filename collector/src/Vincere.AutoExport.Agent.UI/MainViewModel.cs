@@ -39,13 +39,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
     // WPF and this file is compiled into a plain net8.0 test assembly.
     private readonly Action<string> copyToClipboard;
 
+    /* Injected so a test can assert what would be launched without launching
+     * it. Runs an elevated PowerShell over a script file: the installer needs
+     * administrator, and it replaces this window's own files, so it cannot be
+     * hosted inside the process it is about to overwrite. */
+    private readonly Func<string, bool> runElevatedScript;
+
     // Injectable so the tests can answer without a network, which is the only
     // way to assert what happens when there is not one.
     public MainViewModel(
         IControlPipeClient client,
         ReleaseCheck releaseCheck = null,
-        Action<string> copyToClipboard = null)
+        Action<string> copyToClipboard = null,
+        Func<string, bool> runElevatedScript = null)
     {
+        this.runElevatedScript = runElevatedScript;
         this.client = client ?? throw new ArgumentNullException(nameof(client));
         this.releaseCheck = releaseCheck ?? new ReleaseCheck();
         this.copyToClipboard = copyToClipboard;
@@ -56,6 +64,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OpenQueueFolderCommand = new AsyncCommand(OpenQueueFolderAsync, () => true);
         CheckForUpdateCommand = new AsyncCommand(CheckForUpdateAsync, () => !IsBusy);
         CopyInstallCommandCommand = new AsyncCommand(CopyInstallCommandAsync, () => !string.IsNullOrEmpty(UpdateInstallCommand));
+        InstallUpdateCommand = new AsyncCommand(InstallUpdateAsync, () => CanInstallUpdate && !IsBusy);
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -137,6 +146,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand OpenQueueFolderCommand { get; }
     public ICommand CheckForUpdateCommand { get; }
     public ICommand CopyInstallCommandCommand { get; }
+    public ICommand InstallUpdateCommand { get; }
 
     // ASKING, RATHER THAN WAITING TO BE TOLD.
     //
@@ -169,10 +179,75 @@ public sealed class MainViewModel : INotifyPropertyChanged
         StatusMessage = result.Message;
         UpdateInstallCommand = result.InstallCommand;
         CopyConfirmation = null;
+        pendingUpdate = result;
+        CanInstallUpdate = result.CanInstall;
     }
 
     private string updateInstallCommand;
     private string copyConfirmation;
+    private bool canInstallUpdate;
+    private ReleaseCheckResult pendingUpdate;
+
+    /* THE BUTTON, AND WHY IT IS ONLY SOMETIMES THERE.
+     *
+     * Copying a command was still an errand: the reader had to find a
+     * PowerShell, paste, and know what they were looking at. This does the same
+     * install from the window they are already in.
+     *
+     * It is NOT an auto-update. A person presses it, Windows asks them to
+     * elevate, and a console shows them what happens. Software that replaces
+     * itself unattended on a machine carrying live client prop-firm accounts is
+     * a different decision, and it is not this one.
+     *
+     * It appears only when the published checksum is known, because the script
+     * behind it downloads a package and runs it as administrator. Where the
+     * checksum cannot be trusted the window still hands over the command, which
+     * keeps a person in front of the install rather than pretending. */
+    public bool CanInstallUpdate
+    {
+        get => canInstallUpdate;
+        private set
+        {
+            if (Set(ref canInstallUpdate, value))
+                (InstallUpdateCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    internal Task InstallUpdateAsync()
+    {
+        ReleaseCheckResult update = pendingUpdate;
+        if (update == null || !update.CanInstall)
+        {
+            StatusMessage = "Check for updates first.";
+            return Task.CompletedTask;
+        }
+        string script = ReleaseCheck.BuildVerifiedInstallScript(update.DownloadUrl, update.Sha256);
+        if (string.IsNullOrEmpty(script))
+        {
+            StatusMessage = "This update cannot be installed from here. Copy the command below instead.";
+            return Task.CompletedTask;
+        }
+        if (runElevatedScript == null)
+        {
+            StatusMessage = "Installing is not available in this window. Copy the command below instead.";
+            return Task.CompletedTask;
+        }
+        try
+        {
+            // The installer stops the service this window talks to and replaces
+            // the window's own files, so a console owns the rest of it. Saying
+            // that here is kinder than a window that stops answering.
+            StatusMessage = runElevatedScript(script)
+                ? $"Installing {update.LatestVersion}. A console window is doing the work; this window will close when it replaces itself."
+                : "The update was not started. Nothing has changed.";
+        }
+        catch (Exception)
+        {
+            StatusMessage = "Could not start the installer. Copy the command below and run it in PowerShell as administrator.";
+        }
+        return Task.CompletedTask;
+    }
+
 
     /* THE COMMAND ITSELF, BECAUSE THERE IS NO WAY BACK TO THE CRM SCREEN.
      *
