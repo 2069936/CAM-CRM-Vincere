@@ -35,6 +35,8 @@ builder.Services.AddSingleton<ICollectorQueue>(_ => new SnapshotQueue(
     queueRoot,
     new WindowsAgentDirectorySecurity()));
 builder.Services.AddSingleton<ICaptureHistoryStore>(new CaptureHistoryStore(paths.History));
+builder.Services.AddSingleton<IStrategyObservationStore>(
+    new StrategyObservationStore(System.IO.Path.Combine(paths.Root, "strategies.json")));
 builder.Services.AddSingleton<INinjaTraderCaptureClient, CapturePipeClient>();
 builder.Services.AddSingleton<ICaptureWorkflow>(provider => new CaptureAndQueueWorkflow(
     provider.GetRequiredService<INinjaTraderCaptureClient>(),
@@ -47,7 +49,11 @@ builder.Services.AddSingleton<ICaptureWorkflow>(provider => new CaptureAndQueueW
     // the literal that used to be hardcoded below.
     (ninjaTraderVersion, addonVersion) => provider
         .GetRequiredService<CollectorState>()
-        .RecordEnvironment(ninjaTraderVersion, addonVersion)));
+        .RecordEnvironment(ninjaTraderVersion, addonVersion),
+    // The strategies, kept from when they were still running. NinjaTrader
+    // disables them around 16:30 and a disabled strategy leaves the account
+    // entirely, so the capture timed to get the money right finds none.
+    provider.GetRequiredService<IStrategyObservationStore>()));
 builder.Services.AddSingleton<ICaptureScheduler, CaptureScheduler>();
 builder.Services.AddSingleton<ICollectorCrmClient>(provider => CrmClient.CreateProduction(
     crmBaseUri,

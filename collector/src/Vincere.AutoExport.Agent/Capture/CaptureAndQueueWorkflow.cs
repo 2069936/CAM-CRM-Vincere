@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
@@ -32,15 +33,21 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
      * class has no other reason to know the service exists. */
     private readonly Action<string, string> onEnvironmentObserved;
 
+    /* Where the strategies wait between being seen and being reported. Optional
+     * so an older host, and every existing test, keeps working without one. */
+    private readonly IStrategyObservationStore strategyObservations;
+
     public CaptureAndQueueWorkflow(
         INinjaTraderCaptureClient captureClient,
         ISnapshotQueueWriter queue,
         IMachineGuidSource machineGuidSource,
         ICaptureHistoryStore history,
         string agentVersion,
-        Action<string, string> onEnvironmentObserved = null)
+        Action<string, string> onEnvironmentObserved = null,
+        IStrategyObservationStore strategyObservations = null)
     {
         this.onEnvironmentObserved = onEnvironmentObserved;
+        this.strategyObservations = strategyObservations;
         this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.captureClient = captureClient ?? throw new ArgumentNullException(nameof(captureClient));
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
@@ -70,6 +77,7 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
 
         snapshot.Source.MachineId = MachineIdentity.ReadNormalized(machineGuidSource);
         snapshot.Source.AgentVersion = agentVersion;
+        await ApplyStrategiesAsync(snapshot, context.TradingDate, cancellationToken).ConfigureAwait(false);
         try
         {
             onEnvironmentObserved?.Invoke(
@@ -150,6 +158,58 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
                 "positions_open",
                 "The capture was taken while at least one account still held a position.");
         }
+    }
+
+    /* THE CLOSE CARRIES WHAT THE SESSION SAW.
+     *
+     * A capture taken after NinjaTrader disables the strategies finds none,
+     * because disabling removes them from the account rather than marking them
+     * off. Measured on one machine in one day: 14 at 09:21, 9 at 16:30, 0 at
+     * 18:28, every one Realtime and not one stopped.
+     *
+     * So a close with strategies keeps its own and refreshes the store, and a
+     * close with none borrows the last set actually seen that day. Never from
+     * another day, never invented, and never overwriting a real observation
+     * with an empty one.
+     */
+    private async Task ApplyStrategiesAsync(
+        AutoExportSnapshotV1 snapshot,
+        string tradingDate,
+        CancellationToken cancellationToken)
+    {
+        if (strategyObservations == null) return;
+        try
+        {
+            if (snapshot.Strategies != null && snapshot.Strategies.Count > 0)
+            {
+                await strategyObservations.SaveAsync(
+                    new StrategyObservation(tradingDate, snapshot.CapturedAt, snapshot.Strategies),
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            StrategyObservation observed = await strategyObservations
+                .LoadAsync(tradingDate, cancellationToken).ConfigureAwait(false);
+            if (observed == null) return;
+            snapshot.Strategies = new List<StrategyRowV1>(observed.Strategies);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The money is the point of this capture. A strategy column that
+            // could not be filled must never cost the close.
+        }
+    }
+
+    /// <summary>Read the strategies while they are running. Queues nothing.</summary>
+    public async Task ObserveStrategiesAsync(
+        string tradingDate,
+        CancellationToken cancellationToken = default)
+    {
+        if (strategyObservations == null) return;
+        AutoExportSnapshotV1 snapshot = await captureClient.CaptureAsync(cancellationToken).ConfigureAwait(false);
+        if (snapshot?.Strategies == null || snapshot.Strategies.Count == 0) return;
+        await strategyObservations.SaveAsync(
+            new StrategyObservation(tradingDate, snapshot.CapturedAt, snapshot.Strategies),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static string FormatDate(LocalDate date)

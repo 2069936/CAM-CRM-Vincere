@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
@@ -22,6 +23,16 @@ public interface ICaptureWorkflow
 {
     Task CaptureAndQueueAsync(
         CaptureRequestContext context,
+        CancellationToken cancellationToken = default);
+
+    /* Read the strategies while they are still running and keep them.
+     *
+     * NinjaTrader disables them around 16:30 and a disabled strategy leaves the
+     * account's collection entirely, so the capture that gets the money right
+     * gets no strategies at all. This queues nothing and records no history: it
+     * exists only so the close has something true to carry. */
+    Task ObserveStrategiesAsync(
+        string tradingDate,
         CancellationToken cancellationToken = default);
 }
 
@@ -77,7 +88,10 @@ public sealed class CaptureScheduler : ICaptureScheduler
                 now,
                 configuration.Options.LastScheduledTradingDate);
             if (decision.Kind != CaptureScheduleDecisionKind.Due)
+            {
+                await MaybeObserveStrategiesAsync(schedule, now, cancellationToken).ConfigureAwait(false);
                 return new CaptureRunResult(decision, false, null, null);
+            }
 
             CaptureRequestContext context = CreateContext(schedule, now, isManual: false);
             try
@@ -136,6 +150,48 @@ public sealed class CaptureScheduler : ICaptureScheduler
         {
             gate.Release();
         }
+    }
+
+    /* ONE READ A DAY, WHILE THE STRATEGIES ARE STILL THERE.
+     *
+     * NinjaTrader disables them around 16:30 and a disabled strategy leaves the
+     * account's collection, so the capture timed to get the money right finds
+     * none. This runs in the half hour before the scheduled capture, once per
+     * trading date, and stores what it saw for the close to carry.
+     *
+     * It is deliberately small: no queue write, no history entry, no retry, and
+     * a failure is swallowed. This runs on a machine that is trading, and a
+     * convenience read must never be able to disturb that or to fail a day.
+     */
+    private static readonly Duration ObservationLead = Duration.FromMinutes(30);
+    private static readonly Duration ObservationLatest = Duration.FromMinutes(5);
+    private string lastObservedTradingDate;
+
+    private async Task MaybeObserveStrategiesAsync(
+        CaptureSchedule schedule,
+        Instant now,
+        CancellationToken cancellationToken)
+    {
+        LocalDate tradingDate = now.InZone(DateTimeZoneProviders.Tzdb[CaptureSchedule.TimeZoneId]).Date;
+        if (!schedule.EnabledDays.Contains(tradingDate.DayOfWeek)) return;
+        string key = $"{tradingDate.Year:D4}-{tradingDate.Month:D2}-{tradingDate.Day:D2}";
+        if (string.Equals(lastObservedTradingDate, key, StringComparison.Ordinal)) return;
+
+        Instant scheduled = schedule.GetScheduledInstant(tradingDate);
+        if (now < scheduled - ObservationLead || now > scheduled - ObservationLatest) return;
+
+        try
+        {
+            await captureWorkflow.ObserveStrategiesAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Nothing about the day depends on this succeeding.
+        }
+        // Marked either way. One attempt a day is the budget; retrying a read
+        // against a trading platform to fill a reporting column is not a trade
+        // worth making.
+        lastObservedTradingDate = key;
     }
 
     private static CaptureRequestContext CreateContext(

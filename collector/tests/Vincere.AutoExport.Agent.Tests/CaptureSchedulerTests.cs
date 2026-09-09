@@ -138,6 +138,16 @@ public sealed class CaptureSchedulerTests
         public CaptureAttemptException Error { get; init; }
         public int CallCount { get; private set; }
         public CaptureRequestContext LastContext { get; private set; }
+        public List<string> ObservedDates { get; } = new();
+
+        public Task ObserveStrategiesAsync(
+            string tradingDate,
+            CancellationToken cancellationToken = default)
+        {
+            ObservedDates.Add(tradingDate);
+            events?.Add("observe-strategies");
+            return Task.CompletedTask;
+        }
 
         public Task CaptureAndQueueAsync(
             CaptureRequestContext context,

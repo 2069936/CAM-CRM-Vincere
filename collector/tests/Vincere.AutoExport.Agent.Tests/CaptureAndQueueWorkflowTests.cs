@@ -307,4 +307,164 @@ public sealed class CaptureAndQueueWorkflowTests
         await workflow.CaptureAndQueueAsync(
             new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
     }
+
+    /* ONE CAPTURE CANNOT ANSWER BOTH QUESTIONS.
+     *
+     * The day's realized PnL is only right after the desk flattens, around
+     * 16:32. The strategies are only visible before NinjaTrader disables them,
+     * around 16:30, and disabling removes them from the account rather than
+     * marking them off. Measured on one machine in one day: 14 strategies at
+     * 09:21, 9 at 16:30, 0 at 18:28, every one Realtime and not one stopped.
+     *
+     * So moving the capture later to fix the money is exactly what emptied the
+     * strategies column on every report. */
+
+    private sealed class FakeObservations : IStrategyObservationStore
+    {
+        public StrategyObservation Saved { get; private set; }
+        public StrategyObservation Stored { get; init; }
+
+        public Task SaveAsync(StrategyObservation observation, CancellationToken cancellationToken = default)
+        {
+            if (observation?.Strategies is { Count: > 0 }) Saved = observation;
+            return Task.CompletedTask;
+        }
+
+        public Task<StrategyObservation> LoadAsync(string tradingDate, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(
+                Stored != null && Stored.TradingDate == tradingDate ? Stored : null);
+        }
+    }
+
+    private static StrategyRowV1 Strategy(string name) => new()
+    {
+        StrategyId = name,
+        StrategyName = name,
+        AccountName = "ACC0",
+        Instrument = "MES SEP26",
+        State = "Realtime",
+        ParameterCaptureStatus = "captured",
+    };
+
+    [Fact]
+    public async Task ACloseWithNoStrategiesCarriesTheOnesTheSessionSaw()
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3",
+            null,
+            new FakeObservations
+            {
+                Stored = new StrategyObservation(
+                    "2026-07-23",
+                    snapshot.CapturedAt,
+                    new[] { Strategy("0 - G4M-3.4"), Strategy("0 - URGO-4.5") }),
+            });
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Equal(2, queue.Snapshot.Strategies.Count);
+    }
+
+    [Fact]
+    public async Task NeverCarriesAnotherDaysStrategies()
+    {
+        // Yesterday's algos are not evidence about today, and a stale carry
+        // forward is worse than an empty column because it looks right.
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3",
+            null,
+            new FakeObservations
+            {
+                Stored = new StrategyObservation(
+                    "2026-07-22", snapshot.CapturedAt, new[] { Strategy("0 - G4M-3.4") }),
+            });
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Empty(queue.Snapshot.Strategies);
+    }
+
+    [Fact]
+    public async Task ACloseThatHasItsOwnStrategiesKeepsThemAndRefreshesTheStore()
+    {
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        snapshot.Strategies.Add(Strategy("0 - SYFY-1.4"));
+        FakeObservations observations = new();
+        FakeQueueWriter queue = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3",
+            null,
+            observations);
+
+        await workflow.CaptureAndQueueAsync(
+            new CaptureRequestContext("2026-07-23", snapshot.CapturedAt, "America/New_York", IsManual: false));
+
+        Assert.Single(queue.Snapshot.Strategies);
+        Assert.Equal("2026-07-23", observations.Saved.TradingDate);
+    }
+
+    [Fact]
+    public async Task ObservingQueuesNothingAndRecordsNoHistory()
+    {
+        // It runs on a machine that is trading. A convenience read must not
+        // write a snapshot, mark a day, or disturb anything.
+        AutoExportSnapshotV1 snapshot = Snapshot();
+        snapshot.Strategies.Add(Strategy("0 - OGX-2.4"));
+        FakeQueueWriter queue = new();
+        FakeCaptureHistory history = new();
+        FakeObservations observations = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(snapshot),
+            queue,
+            new FixedMachineGuidSource("machine-guid"),
+            history,
+            "1.2.3",
+            null,
+            observations);
+
+        await workflow.ObserveStrategiesAsync("2026-07-23");
+
+        Assert.Null(queue.Snapshot);
+        Assert.Empty(history.Entries);
+        Assert.Single(observations.Saved.Strategies);
+    }
+
+    [Fact]
+    public async Task AnObservationThatSawNothingIsNotRecorded()
+    {
+        // Seeing none is not evidence that none were running, and writing it
+        // would overwrite a real observation taken earlier the same day.
+        FakeObservations observations = new();
+        CaptureAndQueueWorkflow workflow = new(
+            new FakeCaptureClient(Snapshot()),
+            new FakeQueueWriter(),
+            new FixedMachineGuidSource("machine-guid"),
+            new FakeCaptureHistory(),
+            "1.2.3",
+            null,
+            observations);
+
+        await workflow.ObserveStrategiesAsync("2026-07-23");
+
+        Assert.Null(observations.Saved);
+    }
 }
