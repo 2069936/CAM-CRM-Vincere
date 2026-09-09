@@ -444,4 +444,41 @@ public sealed class CollectorLoopTests
         public Task<string> LoadTokenAsync(CancellationToken cancellationToken = default) => Task.FromResult(value);
         public Task DeleteTokenAsync(CancellationToken cancellationToken = default) { value = null; Deleted = true; return Task.CompletedTask; }
     }
+
+    /* The version the CRM shows for each client comes from here. */
+
+    [Fact]
+    public void RecordsWhatTheAddOnSawSoTheHeartbeatCanStopInventingIt()
+    {
+        CollectorState state = new();
+        Assert.Null(state.Snapshot().NinjaTraderVersion);
+
+        state.RecordEnvironment("8.1.6.0", "1.0.0");
+
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+        Assert.Equal("1.0.0", state.Snapshot().AddonVersion);
+    }
+
+    [Fact]
+    public void DoesNotEraseTheLastVersionItActuallySaw()
+    {
+        // An add-on that stops answering leaves the CRM showing the last real
+        // value, which is true, rather than blanking a field that was right.
+        CollectorState state = new();
+        state.RecordEnvironment("8.1.6.0", "1.0.0");
+        state.RecordEnvironment(null, "   ");
+
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+        Assert.Equal("1.0.0", state.Snapshot().AddonVersion);
+    }
+
+    [Fact]
+    public void TakesTheNewerVersionWhenNinjaTraderIsUpgraded()
+    {
+        CollectorState state = new();
+        state.RecordEnvironment("8.1.5.2", "1.0.0");
+        state.RecordEnvironment("  8.1.6.0  ", "1.0.0");
+
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+    }
 }

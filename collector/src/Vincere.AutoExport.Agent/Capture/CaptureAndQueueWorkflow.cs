@@ -20,13 +20,27 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
     private readonly ICaptureHistoryStore history;
     private readonly string agentVersion;
 
+    /* WHERE THE REAL NinjaTrader VERSION COMES FROM.
+     *
+     * The heartbeat used to send the literal "8.1.0" for every machine on the
+     * desk, so the CRM displayed a version nobody was running. The true one is
+     * in every capture: the add-on reports it and CapturePipeClient refuses a
+     * snapshot without one. This is the only place that both holds a snapshot
+     * and runs on a schedule, so it is where the value is handed over.
+     *
+     * A callback rather than a reference to the state object, because this
+     * class has no other reason to know the service exists. */
+    private readonly Action<string, string> onEnvironmentObserved;
+
     public CaptureAndQueueWorkflow(
         INinjaTraderCaptureClient captureClient,
         ISnapshotQueueWriter queue,
         IMachineGuidSource machineGuidSource,
         ICaptureHistoryStore history,
-        string agentVersion)
+        string agentVersion,
+        Action<string, string> onEnvironmentObserved = null)
     {
+        this.onEnvironmentObserved = onEnvironmentObserved;
         this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.captureClient = captureClient ?? throw new ArgumentNullException(nameof(captureClient));
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
@@ -56,6 +70,17 @@ public sealed class CaptureAndQueueWorkflow : ICaptureWorkflow
 
         snapshot.Source.MachineId = MachineIdentity.ReadNormalized(machineGuidSource);
         snapshot.Source.AgentVersion = agentVersion;
+        try
+        {
+            onEnvironmentObserved?.Invoke(
+                snapshot.Source.NinjaTraderVersion,
+                snapshot.Source.AddonVersion);
+        }
+        catch (Exception)
+        {
+            // Reporting what NinjaTrader is must never cost the capture. The
+            // snapshot is what matters and it is about to be queued.
+        }
         await queue.EnqueueAsync(snapshot, cancellationToken).ConfigureAwait(false);
 
         // The snapshot is queued, so the day is collected whatever happens next.
