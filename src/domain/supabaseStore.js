@@ -6,6 +6,7 @@ import {
 } from './dailyImportPersistence';
 import { normalizeSubscriptionPrice } from './subscriptionPrice';
 import { normalizeClientTags } from './clientTags';
+import { normalizeAccountFocus } from './clientAccountFocus';
 import { splitSimulationRows } from './simulationAccounts';
 import { createRequestGate } from './supabaseRetry';
 
@@ -576,6 +577,9 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
       // updateProfile re-sends that object whole on every contact-card edit,
       // and a tag parked there would ride along with a phone-number correction.
       tags: normalizeClientTags(client.tags),
+      // Declared at onboarding, before any account exists to derive it from.
+      // Step 42 adds the column; where it has not run this reads as empty.
+      accountFocus: normalizeAccountFocus(client.account_focus),
       profile: {
         stage: client.stage || 'Active',
         fullName: client.full_name || client.name,
@@ -865,6 +869,7 @@ function clientPatchToDb(patch = {}) {
   // the column and, on a database where step 42 has not run, no other save can
   // fail because of it.
   if ('tags' in patch) mapped.tags = normalizeClientTags(patch.tags);
+  if ('accountFocus' in patch) mapped.account_focus = normalizeAccountFocus(patch.accountFocus);
   // The churn classification, mapped only when a patch actually carries one.
   //
   // This is the whole reason `churn` is a top-level key rather than a profile

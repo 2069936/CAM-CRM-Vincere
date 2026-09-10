@@ -1,4 +1,4 @@
--- Step 42: tags a CAM puts on a client, and a record of what a price used to be.
+-- Step 42: tags, what kind of accounts a client runs, and a price history.
 --
 -- TWO THINGS, ONE MIGRATION, BECAUSE THEY ANSWER ONE QUESTION TOGETHER.
 --
@@ -62,6 +62,38 @@ end $$;
 -- Counting "how many clients are tagged X" is the point of the column, so the
 -- containment operator gets an index rather than a sequential scan per tile.
 create index if not exists clients_tags_idx on public.clients using gin (tags);
+
+-- ---------------------------------------------------------------------------
+-- What kind of accounts the client runs, said before there are any
+--
+-- Accounts already carry their own type and the client's sidebar badge is
+-- derived from them. That works from the day the first export lands and not one
+-- day earlier, which is the wrong day: a client is onboarded knowing exactly
+-- what they will trade, and that knowledge had nowhere to go. It was being
+-- typed into the free-text Notes field as the words "Retirement Account", where
+-- nothing can count it and nobody will find it.
+--
+-- It is also finer than the badge. The derived label says Cash. It does not say
+-- whether that is straight cash or retirement money, and the difference decides
+-- which rules the account trades under.
+--
+-- Declared, never derived. The accounts remain the record of what actually
+-- showed up, and the CRM shows both so the day they disagree is visible instead
+-- of being resolved silently in favour of either one.
+-- ---------------------------------------------------------------------------
+alter table public.clients
+  add column if not exists account_focus text[] not null default '{}'::text[];
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'clients_account_focus_known_values'
+  ) then
+    alter table public.clients
+      add constraint clients_account_focus_known_values
+      check (account_focus <@ array['Cash straight', 'Cash retirement', 'Prop']::text[]);
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- Price history

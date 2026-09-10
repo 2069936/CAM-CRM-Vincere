@@ -59,6 +59,7 @@ import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
 import ClientTagPicker from "./components/ClientTagPicker";
+import ClientAccountFocusPicker from "./components/ClientAccountFocusPicker";
 import RevenueHealthPanel from "./components/RevenueHealthPanel";
 import AutoCollectionManager from "./components/AutoCollectionManager";
 import ClientExportDialog from "./components/ClientExportDialog";
@@ -11810,6 +11811,14 @@ function CredentialsTab({
           <ClientTagPicker
             tags={client.tags}
             onChange={(tags) => onUpdateClient({ tags })}
+          />
+          {/* Declared here rather than derived from the accounts, because a
+              client is onboarded knowing what they will trade and the derived
+              badge does not exist until the first export lands. */}
+          <ClientAccountFocusPicker
+            accountFocus={client.accountFocus}
+            accountRegistry={client.accountRegistry}
+            onChange={(accountFocus) => onUpdateClient({ accountFocus })}
           />
           <label>
             Preferred channel
