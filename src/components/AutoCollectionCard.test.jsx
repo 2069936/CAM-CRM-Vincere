@@ -483,3 +483,37 @@ describe('the last refused pairing attempt on the card', () => {
     expect(markup).not.toContain('auto-collection-refusal');
   });
 });
+
+/* THE LINE DISAPPEARED THE MOMENT IT WAS NEEDED AGAIN.
+ *
+ * Once a VPS pairs, step 1 is done and the whole install block hides, command
+ * included. Right on the day of the install, wrong on every day after: the
+ * same line is how a machine gets updated, and a CAM who needed it had to find
+ * a client that had not paired yet and borrow it from there. */
+describe('getting the install line back after the VPS has paired', () => {
+  const paired = {
+    ...base,
+    device: { id: 'device', status: 'active', healthStatus: 'online', lastSeenAt: '2026-07-23T16:44:00.000Z' },
+  };
+
+  it('hides the command once installed, as before', () => {
+    const html = render(paired);
+    expect(html).not.toContain('Invoke-WebRequest');
+  });
+
+  it('offers to show it again, and says what for', () => {
+    const html = render(paired);
+    expect(html).toContain('Show install line');
+    expect(html).toContain('to update this VPS');
+  });
+
+  it('does not offer it on a client that has not installed, where it is already visible', () => {
+    const html = render(base);
+    expect(html).toContain('Invoke-WebRequest');
+    expect(html).not.toContain('Show install line');
+  });
+
+  it('does not offer it when there is no release to install', () => {
+    expect(render({ ...paired, release: null })).not.toContain('Show install line');
+  });
+});

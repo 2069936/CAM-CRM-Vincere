@@ -203,6 +203,8 @@ export default function AutoCollectionCard({
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [error, setError] = useState(initialError);
+  // Declared up here with the other hooks, before any early return below.
+  const [installLineRevealed, setInstallLineRevealed] = useState(false);
   const [loading, setLoading] = useState(!initialStatus && !initialError && !disableAutoLoad);
   const [busy, setBusy] = useState(false);
   const [confirmation, setConfirmation] = useState(null);
@@ -394,7 +396,19 @@ export default function AutoCollectionCard({
   // note and the download link on screen for a VPS that is already paired and
   // sending heartbeats — the state where re-running the installer is exactly
   // what nobody should do.
-  const showInstallInstructions = hasRelease && steps.install.state !== 'done';
+  /* THE LINE DISAPPEARED THE MOMENT IT WAS NEEDED AGAIN.
+   *
+   * Once a VPS pairs, step 1 is done and the whole install block hides,
+   * command included. That is right on the day of the install and wrong on
+   * every day after: the same line is how a machine gets UPDATED, and the CAM
+   * who needed it had to go find a client that had not paired yet and borrow
+   * it from there.
+   *
+   * So a paired client gets a small "Show install line" instead, and the
+   * block comes back on request. The step stays marked done: showing the
+   * command is not the same as saying it has not been run. */
+  const installDone = steps.install.state === 'done';
+  const showInstallInstructions = hasRelease && (!installDone || installLineRevealed);
 
   return (
     <section className={`panel auto-collection-panel state-${view.state}`} aria-labelledby="auto-collection-title" aria-busy={loading || busy}>
@@ -472,6 +486,16 @@ export default function AutoCollectionCard({
               hand over as one line. Download it on the client&apos;s VPS, close
               NinjaTrader, and run it there.
             </p>
+          ) : null}
+          {hasRelease && installDone && !installLineRevealed ? (
+            <button
+              type="button"
+              className="auto-collection-step-link"
+              onClick={() => setInstallLineRevealed(true)}
+              data-action="show-install-line"
+            >
+              <Download size={13} /> Show install line (to update this VPS)
+            </button>
           ) : null}
           {showInstallInstructions && hasInstallCommand ? (
             <div className="auto-collection-code-wrap">
