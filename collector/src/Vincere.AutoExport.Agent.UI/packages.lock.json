@@ -6,7 +6,7 @@
         "type": "Direct",
         "requested": "[8.0.8, )",
         "resolved": "8.0.8",
-        "contentHash": "VNixqRa04MkHpxcjiTMFMHhGzLhkA/gy9sGwZtMgQqh+n5kpQXcp2ZWcOqh0Eqk0GzW3Td5yB9lK4n/UReFFFA==",
+        "contentHash": "Ao+kD9lZpZvvvfLHMR4/UviFGXaWhQ9AVT4fYMl62XWgIPuVIhZqLysmDNiXbsz6Pb87iyyElX2xSfigzKNZNg==",
         "dependencies": {
           "Microsoft.Data.Sqlite.Core": "8.0.8",
           "SQLitePCLRaw.bundle_e_sqlite3": "2.1.6"
@@ -15,7 +15,7 @@
       "Microsoft.Data.Sqlite.Core": {
         "type": "Transitive",
         "resolved": "8.0.8",
-        "contentHash": "lUg+100nzjDZJr8SFWbC/mtsUfbCclXP+Fv6tAG1uZyAFlxL+vbSJ+Sxy2oILWK9/hQTgPQD8yjmdYNM8F4CSA==",
+        "contentHash": "qHInO2EvOcPhjgboP0TGnXM7rASdvWXrw6jAH8Yuz5YP82VTje7d/NKiX1i+dVbE3+G3JuW1kqNVB8yLvsqgYA==",
         "dependencies": {
           "SQLitePCLRaw.core": "2.1.6"
         }
@@ -29,7 +29,7 @@
       "SQLitePCLRaw.bundle_e_sqlite3": {
         "type": "Transitive",
         "resolved": "2.1.6",
-        "contentHash": "aRaQRN70jpQ6rGJNg75yrgmwRrf0usHvzSrrvgL6mEeti8UwOwWDSzmIDAXjPOZKUaNPWIehO7w1dh1yzghrrw==",
+        "contentHash": "BmAf6XWt4TqtowmiWe4/5rRot6GerAeklmOPfviOvwLoF5WwgxcJHAxZtySuyW9r9w+HLILnm8VfJFLCUJYW8A==",
         "dependencies": {
           "SQLitePCLRaw.lib.e_sqlite3": "2.1.6",
           "SQLitePCLRaw.provider.e_sqlite3": "2.1.6"
@@ -38,7 +38,7 @@
       "SQLitePCLRaw.core": {
         "type": "Transitive",
         "resolved": "2.1.6",
-        "contentHash": "Frw5zVMl3qN+FWT8Moo1lm1tggh4KQ2UXcV0lrcW1JNbU0KFmJrzL6e9Je+aiseVtj5qGQRNP4ShBNZDMZRzvg==",
+        "contentHash": "wO6v9GeMx9CUngAet8hbO7xdm+M42p1XeJq47ogyRoYSvNSp0NGLI+MgC0bhrMk9C17MTVFlLiN6ylyExLCc5w==",
         "dependencies": {
           "System.Memory": "4.5.3"
         }
@@ -46,12 +46,12 @@
       "SQLitePCLRaw.lib.e_sqlite3": {
         "type": "Transitive",
         "resolved": "2.1.6",
-        "contentHash": "aVQ/ysavZSC2OO0Axfj43Fl0c3Y4LFYcqCkEeAIUs+dcxCkxBsSj9vZxtz1ZEZWADESvotTcUzqCV7AP33fWYw=="
+        "contentHash": "2ObJJLkIUIxRpOUlZNGuD4rICpBnrBR5anjyfUFQep4hMOIeqW+XGQYzrNmHSVz5xSWZ3klSbh7sFR6UyDj68Q=="
       },
       "SQLitePCLRaw.provider.e_sqlite3": {
         "type": "Transitive",
         "resolved": "2.1.6",
-        "contentHash": "UnzsdPLr7/I4s7sfiYY3V2ZZU3qm8sWkOEscGwlMt3K/6G8FwToQICR71z/th1nAv1aKHABZwdh7u+0tsQGHAQ==",
+        "contentHash": "PQ2Oq3yepLY4P7ll145P3xtx2bX8xF4PzaKPRpw9jZlKvfe4LE/saAV82inND9usn1XRpmxXk7Lal3MTI+6CNg==",
         "dependencies": {
           "SQLitePCLRaw.core": "2.1.6"
         }
@@ -59,7 +59,7 @@
       "System.Memory": {
         "type": "Transitive",
         "resolved": "4.5.3",
-        "contentHash": "cPzhWlLMdqrLrgXI6J4uOY0dMpA/Y/ZAp91KPldH8seoh9S/0i8qLkAnSQbPkWSN/RaXNPt8dOubT3JhQITh2w=="
+        "contentHash": "3oDzvc/zzetpTKWMShs1AADwZjQ/36HnsufHRPcOjyRAAMLDlu2iD33MBI2opxnezcVUtXyqDXXjoFMOU9c7SA=="
       },
       "vincere.autoexport.contracts": {
         "type": "Project",
