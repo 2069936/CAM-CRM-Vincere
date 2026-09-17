@@ -241,6 +241,34 @@ describe('daily snapshot ingest', () => {
     }
   });
 
+  it('answers 503 so the agent retries when persistence fails for reasons that are not the snapshot', async () => {
+    // THE QUARANTINE THAT SHOULD NOT HAVE HAPPENED. On 2026-09-14 and
+    // 2026-09-17 the database behind the CRM cancelled inserts on its
+    // statement timeout; the 422 that came back made the agent throw the
+    // capture into quarantine as if the snapshot were malformed.
+    for (const failure of [
+      Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+      Object.assign(new Error('remaining connection slots are reserved'), { code: '53300' }),
+      Object.assign(new Error('fetch failed'), { cause: Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }) }),
+      Object.assign(new Error('connection pool exhausted'), { code: 'PGRST001' }),
+      new Error('The upstream server timed out'),
+    ]) {
+      const { handler, calls } = setup({ persist: async () => { throw failure; } });
+      const res = await ingest(handler);
+      expect(res).toMatchObject({ statusCode: 503, body: { error: 'snapshot_ingest_failed' } });
+      expect(calls.storeRaw).toHaveLength(1);
+      expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'persistence_unavailable' });
+    }
+  });
+
+  it('still answers 422 when persistence fails because of the snapshot itself', async () => {
+    const { handler, calls } = setup({ persist: async () => { throw Object.assign(new Error('null value in column "account_name" violates not-null constraint'), { code: '23502' }); } });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({ statusCode: 422, body: { error: 'snapshot_processing_failed' } });
+    expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'persistence_failed' });
+    expect(JSON.stringify(res.body)).not.toMatch(/account_name/);
+  });
+
   it('retains and links a late closed-day batch without replacing the daily import', async () => {
     const { handler, calls } = setup({ persist: async () => { throw Object.assign(new DailyImportClosedError('2026-07-23'), { dailyImportId: 'daily-closed' }); } });
     const res = await ingest(handler, snapshot({ accounts: [{ accountName: 'A' }] }));

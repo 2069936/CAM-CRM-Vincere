@@ -119,7 +119,7 @@ function rpcValue(data) {
 function batchFromRow(row = {}) {
   const safeErrorCodes = new Set([
     'storage_failed', 'normalization_failed', 'registry_load_failed',
-    'reconciliation_failed', 'persistence_failed', 'ingest_failed',
+    'reconciliation_failed', 'persistence_failed', 'persistence_unavailable', 'ingest_failed',
     'immutable_object_conflict', 'unsupported_schema_version',
     'invalid_auto_import_snapshot',
   ]);

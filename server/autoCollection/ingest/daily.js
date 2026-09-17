@@ -79,14 +79,57 @@ function requireSourceMachine(snapshot, req) {
   if (sourceMachine !== authenticatedMachine) throw new ApiError(400, 'source_machine_mismatch');
 }
 
-function publicFailure(stage) {
+/* A DATABASE THAT IS SLOW IS NOT A SNAPSHOT THAT IS WRONG.
+ *
+ * Every persist failure used to come back 422 snapshot_processing_failed, and
+ * 422 is the answer the agent quarantines on: the capture leaves the queue for
+ * good, with a .reason file, and nobody uploads it again. That is the right
+ * treatment for a snapshot the CRM cannot make sense of. It is the wrong one
+ * for a snapshot the CRM never got to read, because Postgres cancelled the
+ * insert on its statement timeout while the project was starved.
+ *
+ * That is exactly what happened on 2026-09-14 and again on 2026-09-17 at
+ * 16:30: four captures, then one more, quarantined on a VPS with nothing wrong
+ * in them, while the database behind the CRM answered one-row reads in twenty
+ * seconds. The desk lost the first RBO day on that client.
+ *
+ * So a persist failure whose cause is the connection or the server, not the
+ * data, is a 503 now, which the agent retries with backoff and keeps in the
+ * queue. Normalize and reconcile stay 422: they are pure functions of the
+ * snapshot and fail the same way every time. */
+const TRANSIENT_POSTGRES_CODES = new Set([
+  '57014', // query_canceled: the statement timeout
+  '57P01', '57P02', '57P03', // admin_shutdown, crash_shutdown, cannot_connect_now
+  '53300', '53400', // too_many_connections, configuration_limit_exceeded
+  '08000', '08001', '08003', '08004', '08006', // connection_exception family
+  '40001', '40P01', // serialization_failure, deadlock_detected
+  '55P03', // lock_not_available
+  'PGRST001', 'PGRST002', 'PGRST003', // PostgREST: connection pool, schema cache, request timeout
+]);
+const TRANSIENT_NODE_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+]);
+const TRANSIENT_TEXT = /statement timeout|canceling statement|timed? ?out|fetch failed|socket hang up|too many connections|connection (?:reset|refused|terminated|closed)|could not connect|server closed the connection|temporarily unavailable|remaining connection slots|\b50[234]\b/i;
+
+export function isTransientStoreError(error) {
+  if (!error || error instanceof ApiError) return false;
+  const code = String(error.code || '');
+  if (TRANSIENT_POSTGRES_CODES.has(code) || TRANSIENT_NODE_CODES.has(code)) return true;
+  if (error.cause && isTransientStoreError(error.cause)) return true;
+  return TRANSIENT_TEXT.test(`${error.message || ''} ${error.details || ''} ${error.hint || ''}`);
+}
+
+function publicFailure(stage, error) {
   if (stage === 'storage') return new ApiError(503, 'snapshot_ingest_failed');
+  if (stage === 'persist' && isTransientStoreError(error)) return new ApiError(503, 'snapshot_ingest_failed');
   if (['normalize', 'reconcile', 'persist'].includes(stage)) return new ApiError(422, 'snapshot_processing_failed');
   if (stage === 'registry') return new ApiError(503, 'snapshot_ingest_failed');
   return new ApiError(500, 'snapshot_ingest_unavailable');
 }
 
-function failureCode(stage) {
+function failureCode(stage, error) {
+  if (stage === 'persist' && isTransientStoreError(error)) return 'persistence_unavailable';
   return ({ storage: 'storage_failed', normalize: 'normalization_failed', registry: 'registry_load_failed', reconcile: 'reconciliation_failed', persist: 'persistence_failed' })[stage] || 'ingest_failed';
 }
 
@@ -288,7 +331,7 @@ export function createHandler({
         const preciseStorageCode = stage === 'storage' && error?.message === 'immutable_object_conflict'
           ? 'immutable_object_conflict'
           : null;
-        const errorCode = preciseValidationCode || preciseStorageCode || failureCode(stage);
+        const errorCode = preciseValidationCode || preciseStorageCode || failureCode(stage, error);
         if (stage === 'storage' && error?.message !== 'immutable_object_conflict') {
           try {
             await store.releaseLease({
@@ -300,7 +343,7 @@ export function createHandler({
             if (isDeviceCredentialError(releaseError)) return sendDeviceCredentialError(res);
             // The bounded lease remains recoverable if an explicit release fails.
           }
-          return handleApiError(res, publicFailure(stage), {
+          return handleApiError(res, publicFailure(stage, error), {
             fallbackMessage: 'snapshot_ingest_unavailable',
             underlying: error,
           });
@@ -320,7 +363,7 @@ export function createHandler({
         }
         const failure = preciseValidationCode
           ? new ApiError(422, preciseValidationCode)
-          : (error instanceof ApiError && error.status === 409 ? error : publicFailure(stage));
+          : (error instanceof ApiError && error.status === 409 ? error : publicFailure(stage, error));
         return handleApiError(res, failure, {
           fallbackMessage: 'snapshot_ingest_unavailable',
           underlying: error,
