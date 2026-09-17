@@ -122,7 +122,7 @@ public sealed class DeepExportRunner
 
             // 1. The database, consistently.
             SqliteSnapshotResult database = null;
-            string livePath = Path.Combine(ninjaTraderRoot, DeepExportSources.DatabaseRelativePath);
+            string livePath = Path.GetFullPath(Path.Combine(ninjaTraderRoot, DeepExportSources.DatabaseRelativePath));
             string copyPath = Path.Combine(staging, "db", "NinjaTrader.sqlite");
             if (File.Exists(livePath))
             {

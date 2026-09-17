@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -272,8 +273,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             DeepExportProgressText = "Done";
             DeepExportPath = result.ZipPath;
             DeepExportSha256 = result.Sha256;
+            // Invariant: the number is read by a desk in New York off a screen
+            // in Bogotá, and "2,4 MB" reads as two thousand somewhere.
             string size = result.SizeBytes >= 1024 * 1024
-                ? $"{result.SizeBytes / (1024.0 * 1024.0):0.#} MB"
+                ? string.Format(CultureInfo.InvariantCulture, "{0:0.#} MB", result.SizeBytes / (1024.0 * 1024.0))
                 : $"{Math.Max(1, result.SizeBytes / 1024)} KB";
             DeepExportMessage = result.Warnings.Count == 0
                 ? $"Package ready ({size}). A copy is on the Desktop. Send that file to the desk."

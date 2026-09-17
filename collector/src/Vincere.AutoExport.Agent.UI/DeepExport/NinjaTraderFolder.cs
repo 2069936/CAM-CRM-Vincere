@@ -42,7 +42,7 @@ public static class NinjaTraderFolder
     public static string Resolve(IEnumerable<string> candidates = null)
     {
         string[] all = (candidates ?? Candidates()).ToArray();
-        return all.FirstOrDefault(c => File.Exists(Path.Combine(c, DeepExportSources.DatabaseRelativePath)))
+        return all.FirstOrDefault(c => File.Exists(Path.GetFullPath(Path.Combine(c, DeepExportSources.DatabaseRelativePath))))
             ?? all.FirstOrDefault(Directory.Exists);
     }
 }

@@ -37,12 +37,14 @@ public sealed record DeepExportSource(
 
 public static class DeepExportSources
 {
-    public const string DatabaseRelativePath = @"db\NinjaTrader.sqlite";
+    // Forward slashes: Windows accepts them, and so does every other file
+    // system the tests run on. Path.GetFullPath makes them native.
+    public const string DatabaseRelativePath = "db/NinjaTrader.sqlite";
 
     /// <summary>Folders that are never entered. Market data and compiled code.</summary>
     public static readonly IReadOnlyList<string> ExcludedFolders = new[]
     {
-        @"db\minute", @"db\tick", @"db\day", @"db\cache", @"bin\Custom",
+        "db/minute", "db/tick", "db/day", "db/cache", "bin/Custom",
     };
 
     /// <summary>Files that are never copied whole. Connection credentials live here.</summary>
@@ -53,10 +55,10 @@ public static class DeepExportSources
         new DeepExportSource("logs", DeepExportRoot.NinjaTrader, "log", "log.*.txt", "logs", false),
         new DeepExportSource("trace", DeepExportRoot.NinjaTrader, "trace", "trace.*.txt", "trace", false),
         new DeepExportSource("workspaces", DeepExportRoot.NinjaTrader, "workspaces", "*.xml", "workspaces", false),
-        new DeepExportSource("strategy templates", DeepExportRoot.NinjaTrader, @"templates\Strategy", "*.xml", @"templates\Strategy", true),
-        new DeepExportSource("sent snapshots", DeepExportRoot.Agent, @"queue\sent", "*.*", @"autoexport\sent", false),
-        new DeepExportSource("uploading snapshots", DeepExportRoot.Agent, @"queue\uploading", "*.*", @"autoexport\uploading", false),
-        new DeepExportSource("quarantined snapshots", DeepExportRoot.Agent, @"queue\quarantine", "*.*", @"autoexport\quarantine", false),
+        new DeepExportSource("strategy templates", DeepExportRoot.NinjaTrader, "templates/Strategy", "*.xml", "templates/Strategy", true),
+        new DeepExportSource("sent snapshots", DeepExportRoot.Agent, "queue/sent", "*.*", "autoexport/sent", false),
+        new DeepExportSource("uploading snapshots", DeepExportRoot.Agent, "queue/uploading", "*.*", "autoexport/uploading", false),
+        new DeepExportSource("quarantined snapshots", DeepExportRoot.Agent, "queue/quarantine", "*.*", "autoexport/quarantine", false),
     };
 
     /// <summary>The queue folders only carry these. Anything else in there is not ours to ship.</summary>
@@ -68,7 +70,7 @@ public static class DeepExportSources
         string path = Path.GetFullPath(fullPath);
         return ExcludedFolders.Any(excluded =>
         {
-            string prefix = Path.Combine(root, excluded);
+            string prefix = Path.GetFullPath(Path.Combine(root, excluded));
             return path.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(path, prefix, StringComparison.OrdinalIgnoreCase);
         });
@@ -83,7 +85,7 @@ public static class DeepExportSources
     public static string Folder(string ninjaTraderRoot, string agentRoot, DeepExportSource source)
     {
         string root = source.Root == DeepExportRoot.Agent ? agentRoot : ninjaTraderRoot;
-        return string.IsNullOrEmpty(root) ? null : Path.Combine(root, source.RelativeFolder);
+        return string.IsNullOrEmpty(root) ? null : Path.GetFullPath(Path.Combine(root, source.RelativeFolder));
     }
 
     /// <summary>Every file a source contributes, as (absolute path, path inside the ZIP).</summary>
@@ -103,7 +105,7 @@ public static class DeepExportSources
                 continue;
             }
             string relative = Path.GetRelativePath(folder, file).Replace(Path.DirectorySeparatorChar, '/');
-            yield return (file, source.ZipFolder.Replace('\\', '/') + "/" + relative);
+            yield return (file, source.ZipFolder + "/" + relative);
         }
     }
 }
