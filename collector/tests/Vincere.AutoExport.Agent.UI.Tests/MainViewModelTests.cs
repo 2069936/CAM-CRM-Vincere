@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Vincere.AutoExport.Agent.UI;
+using Vincere.AutoExport.Agent.UI.DeepExport;
 using Xunit;
 
 namespace Vincere.AutoExport.Agent.UI.Tests;
@@ -590,5 +591,102 @@ public sealed class MainViewModelTests
             JObject.Parse("{\"version\":\"1.0.4\",\"sha256\":\"short\",\"url\":\"https://e.test/a.zip\"}")));
         Assert.Null(ReleaseCheck.EvaluateDescriptor("1.0.0",
             JObject.Parse("{\"version\":\"1.0.4\",\"sha256\":\"" + new string('a', 64) + "\",\"url\":\"http://e.test/a.zip\"}")));
+    }
+
+    /* DEEP EXPORT FROM THE WINDOW.
+     *
+     * The runner is tested against a real folder in DeepExportTests. Here the
+     * question is what the window does with the outcome: which environment it
+     * hands over, what it shows when the package is ready, and that a failure
+     * lands on screen instead of in an unobserved async void. */
+
+    [Fact]
+    public async Task DeepExportHandsOverWhatTheServiceReportedAboutThisMachine()
+    {
+        DeepExportEnvironment seen = null;
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", new
+        {
+            Paired = true,
+            DeviceId = "dev-1234567890",
+            ClientName = "Todd",
+            TimeZone = "America/Chicago",
+            AgentVersion = "1.0.5",
+            AddonVersion = "1.0.0",
+            Runtime = new { UpdateRequired = false, NinjaTraderVersion = "8.1.6.2" },
+            Queue = new { PendingCount = 0 },
+        }));
+        MainViewModel viewModel = new(client, deepExport: (environment, progress, token) =>
+        {
+            seen = environment;
+            return Task.FromResult(new DeepExportResult("C:\\x\\deep_dev-1234_1.zip", new string('b', 64), 2_500_000, Array.Empty<string>(), TimeSpan.FromSeconds(3)));
+        });
+        await viewModel.InitializeAsync();
+        await viewModel.DeepExportAsync();
+
+        Assert.Equal("dev-1234567890", seen.MachineId);
+        Assert.Equal("1.0.5", seen.AgentVersion);
+        Assert.Equal("1.0.0", seen.AddonVersion);
+        Assert.Equal("8.1.6.2", seen.NinjaTraderVersion);
+        Assert.Equal("America/Chicago", seen.TimeZone);
+        Assert.Equal(Environment.MachineName, seen.Hostname);
+    }
+
+    [Fact]
+    public async Task DeepExportShowsThePackageItsChecksumAndTheSize()
+    {
+        MainViewModel viewModel = new(PairedAt("1.0.5"), deepExport: (environment, progress, token) =>
+            Task.FromResult(new DeepExportResult("C:\\x\\deep.zip", new string('c', 64), 2_500_000, Array.Empty<string>(), TimeSpan.FromSeconds(3))));
+        await viewModel.InitializeAsync();
+        await viewModel.DeepExportAsync();
+
+        Assert.True(viewModel.HasDeepExport);
+        Assert.Equal("C:\\x\\deep.zip", viewModel.DeepExportPath);
+        Assert.Equal(new string('c', 64), viewModel.DeepExportSha256);
+        Assert.Contains("2.4 MB", viewModel.DeepExportMessage);
+        Assert.Contains("Desktop", viewModel.DeepExportMessage);
+        Assert.Equal(100, viewModel.DeepExportPercent);
+        Assert.False(viewModel.IsBusy);
+        Assert.True(viewModel.OpenDeepExportFolderCommand.CanExecute(null));
+        Assert.True(viewModel.CopyDeepExportShaCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task DeepExportNamesItsWarnings()
+    {
+        // A thin package must say why it is thin, on the screen the person is
+        // looking at, not in a log they will not open.
+        MainViewModel viewModel = new(PairedAt("1.0.5"), deepExport: (environment, progress, token) =>
+            Task.FromResult(new DeepExportResult("C:\\x\\deep.zip", new string('c', 64), 900, new[] { "trace folder missing" }, TimeSpan.Zero)));
+        await viewModel.InitializeAsync();
+        await viewModel.DeepExportAsync();
+        Assert.Contains("1 warning", viewModel.DeepExportMessage);
+        Assert.Contains("trace folder missing", viewModel.DeepExportMessage);
+    }
+
+    [Fact]
+    public async Task DeepExportFailurePutsTheReasonOnScreen()
+    {
+        MainViewModel viewModel = new(PairedAt("1.0.5"), deepExport: (environment, progress, token) =>
+            throw new DeepExportUnavailableException("NinjaTrader 8 was not found under this user's Documents."));
+        await viewModel.InitializeAsync();
+        await viewModel.DeepExportAsync();
+        Assert.False(viewModel.HasDeepExport);
+        Assert.Contains("not found", viewModel.DeepExportMessage);
+        Assert.False(viewModel.IsBusy);
+        Assert.True(viewModel.DeepExportCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task DeepExportChecksumCopiesToTheClipboardWhenThereIsOne()
+    {
+        string copied = null;
+        MainViewModel viewModel = new(PairedAt("1.0.5"), copyToClipboard: text => copied = text, deepExport: (environment, progress, token) =>
+            Task.FromResult(new DeepExportResult("C:\\x\\deep.zip", new string('d', 64), 900, Array.Empty<string>(), TimeSpan.Zero)));
+        await viewModel.InitializeAsync();
+        await viewModel.DeepExportAsync();
+        await viewModel.CopyDeepExportShaAsync();
+        Assert.Equal(new string('d', 64), copied);
+        Assert.Equal("Checksum copied.", viewModel.DeepExportCopyConfirmation);
     }
 }

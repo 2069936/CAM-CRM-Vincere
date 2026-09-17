@@ -6,10 +6,12 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Vincere.AutoExport.Agent.UI.DeepExport;
 
 namespace Vincere.AutoExport.Agent.UI;
 
@@ -45,18 +47,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
      * hosted inside the process it is about to overwrite. */
     private readonly Func<string, bool> runElevatedScript;
 
+    /* Injected so a test can run the export over a folder it built, and so a
+     * test of this window can hand back a result without touching a disk. The
+     * default builds a runner over the real NinjaTrader and agent folders. */
+    private readonly Func<DeepExportEnvironment, IProgress<DeepExportProgress>, CancellationToken, Task<DeepExportResult>> deepExport;
+
     // Injectable so the tests can answer without a network, which is the only
     // way to assert what happens when there is not one.
     public MainViewModel(
         IControlPipeClient client,
         ReleaseCheck releaseCheck = null,
         Action<string> copyToClipboard = null,
-        Func<string, bool> runElevatedScript = null)
+        Func<string, bool> runElevatedScript = null,
+        Func<DeepExportEnvironment, IProgress<DeepExportProgress>, CancellationToken, Task<DeepExportResult>> deepExport = null)
     {
         this.runElevatedScript = runElevatedScript;
         this.client = client ?? throw new ArgumentNullException(nameof(client));
         this.releaseCheck = releaseCheck ?? new ReleaseCheck();
         this.copyToClipboard = copyToClipboard;
+        this.deepExport = deepExport ?? RunDeepExportOnThisMachineAsync;
+        DeepExportCommand = new AsyncCommand(DeepExportAsync, () => !IsBusy);
+        OpenDeepExportFolderCommand = new AsyncCommand(OpenDeepExportFolderAsync, () => HasDeepExport);
+        CopyDeepExportShaCommand = new AsyncCommand(CopyDeepExportShaAsync, () => HasDeepExport);
         PairCommand = new AsyncCommand(PairAsync, () => !IsBusy);
         TestCaptureCommand = new AsyncCommand(TestCaptureAsync, () => !IsBusy);
         SaveScheduleCommand = new AsyncCommand(SaveScheduleAsync, () => !IsBusy);
@@ -147,6 +159,197 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand CheckForUpdateCommand { get; }
     public ICommand CopyInstallCommandCommand { get; }
     public ICommand InstallUpdateCommand { get; }
+    public ICommand DeepExportCommand { get; }
+    public ICommand OpenDeepExportFolderCommand { get; }
+    public ICommand CopyDeepExportShaCommand { get; }
+
+    /* DEEP EXPORT. ONE PACKAGE WITH EVERYTHING THIS NinjaTrader REMEMBERS.
+     *
+     * The daily capture is a snapshot of one day. When a client's history has
+     * to be reconstructed, the desk needs the whole database, the logs, the
+     * workspaces, and every snapshot this agent already sent, and it needs it
+     * from a machine nobody on the desk can log into. This button builds that
+     * package on the VPS and leaves it on the Desktop for the client to send.
+     *
+     * It runs in this window rather than in the service because the service
+     * runs as LocalSystem and NinjaTrader's files belong to the logged-in user.
+     * Nothing is uploaded. Nothing that authenticates goes in. See
+     * DeepExport/DeepExportRunner.cs for what is and is not included. */
+    private string deepExportProgressText = string.Empty;
+    private int deepExportPercent;
+    private string deepExportPath;
+    private string deepExportSha256;
+    private string deepExportMessage;
+    private string deepExportCopyConfirmation;
+
+    public string DeepExportProgressText
+    {
+        get => deepExportProgressText;
+        private set => Set(ref deepExportProgressText, value);
+    }
+
+    public int DeepExportPercent
+    {
+        get => deepExportPercent;
+        private set => Set(ref deepExportPercent, value);
+    }
+
+    /// <summary>Where the package landed. Null until a run has finished.</summary>
+    public string DeepExportPath
+    {
+        get => deepExportPath;
+        private set
+        {
+            if (Set(ref deepExportPath, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasDeepExport)));
+                (OpenDeepExportFolderCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+                (CopyDeepExportShaCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string DeepExportSha256
+    {
+        get => deepExportSha256;
+        private set => Set(ref deepExportSha256, value);
+    }
+
+    public bool HasDeepExport => !string.IsNullOrEmpty(DeepExportPath);
+
+    /// <summary>The outcome in a sentence: size, warnings, or why it did not run.</summary>
+    public string DeepExportMessage
+    {
+        get => deepExportMessage;
+        private set => Set(ref deepExportMessage, value);
+    }
+
+    public string DeepExportCopyConfirmation
+    {
+        get => deepExportCopyConfirmation;
+        private set => Set(ref deepExportCopyConfirmation, value);
+    }
+
+    // What the status reply told us, kept for the manifest.
+    private string deviceId;
+    private string timeZone;
+    private string ninjaTraderVersion;
+    private string addonVersion;
+
+    internal DeepExportEnvironment DescribeEnvironment()
+    {
+        bool ninjaTraderRunning = false;
+        try { ninjaTraderRunning = Process.GetProcessesByName("NinjaTrader").Length > 0; } catch (Exception) { }
+        return new DeepExportEnvironment(
+            string.IsNullOrWhiteSpace(deviceId) ? Environment.MachineName : deviceId,
+            Environment.MachineName,
+            InstalledVersion,
+            addonVersion,
+            ninjaTraderVersion,
+            ninjaTraderRunning,
+            timeZone ?? "America/New_York");
+    }
+
+    internal async Task DeepExportAsync()
+    {
+        if (IsBusy) return;
+        IsBusy = true;
+        DeepExportPath = null;
+        DeepExportSha256 = null;
+        DeepExportCopyConfirmation = null;
+        DeepExportPercent = 0;
+        DeepExportProgressText = "Starting…";
+        DeepExportMessage = null;
+        try
+        {
+            var progress = new Progress<DeepExportProgress>(p =>
+            {
+                DeepExportPercent = p.Total == 0 ? 0 : (int)Math.Round(100.0 * p.Completed / p.Total);
+                DeepExportProgressText = $"{p.Source} ({p.Completed}/{p.Total})";
+            });
+            DeepExportResult result = await deepExport(DescribeEnvironment(), progress, CancellationToken.None).ConfigureAwait(true);
+            DeepExportPercent = 100;
+            DeepExportProgressText = "Done";
+            DeepExportPath = result.ZipPath;
+            DeepExportSha256 = result.Sha256;
+            string size = result.SizeBytes >= 1024 * 1024
+                ? $"{result.SizeBytes / (1024.0 * 1024.0):0.#} MB"
+                : $"{Math.Max(1, result.SizeBytes / 1024)} KB";
+            DeepExportMessage = result.Warnings.Count == 0
+                ? $"Package ready ({size}). A copy is on the Desktop. Send that file to the desk."
+                : $"Package ready ({size}) with {result.Warnings.Count} warning{(result.Warnings.Count == 1 ? string.Empty : "s")}: {string.Join("; ", result.Warnings)}. A copy is on the Desktop.";
+        }
+        catch (DeepExportUnavailableException exception)
+        {
+            DeepExportProgressText = string.Empty;
+            DeepExportMessage = exception.Message;
+        }
+        catch (Exception exception)
+        {
+            // Anything from a locked file to the SQLite native library refusing
+            // to load. The button is the whole feature, so the reason goes on
+            // screen rather than into an unobserved async void.
+            DeepExportProgressText = string.Empty;
+            DeepExportMessage = $"The export did not finish. {exception.GetType().Name}: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>The default: NinjaTrader's Documents folder, the agent's ProgramData folder, the package under NinjaTrader 8\AutoExport\deep.</summary>
+    private static Task<DeepExportResult> RunDeepExportOnThisMachineAsync(
+        DeepExportEnvironment environment, IProgress<DeepExportProgress> progress, CancellationToken cancellationToken)
+    {
+        string ninjaTrader = NinjaTraderFolder.Resolve();
+        if (ninjaTrader == null)
+        {
+            throw new DeepExportUnavailableException(
+                "NinjaTrader 8 was not found under this user's Documents. Sign in as the user who runs NinjaTrader and try again.");
+        }
+        string agentRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Vincere", "AutoExport");
+        string outputRoot = Path.Combine(ninjaTrader, "AutoExport", "deep");
+        string desktop = null;
+        try { desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory); } catch (Exception) { }
+        var runner = new DeepExportRunner(ninjaTrader, agentRoot, outputRoot, desktop, environment);
+        return Task.Run(() => runner.RunAsync(progress, cancellationToken), cancellationToken);
+    }
+
+    private Task OpenDeepExportFolderAsync()
+    {
+        if (!HasDeepExport) return Task.CompletedTask;
+        string folder = Path.GetDirectoryName(DeepExportPath);
+        try
+        {
+            Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            DeepExportMessage = $"Could not open {folder}. {exception.Message}";
+        }
+        return Task.CompletedTask;
+    }
+
+    internal Task CopyDeepExportShaAsync()
+    {
+        if (string.IsNullOrEmpty(DeepExportSha256)) return Task.CompletedTask;
+        if (copyToClipboard == null)
+        {
+            DeepExportCopyConfirmation = "Select the checksum above and copy it.";
+            return Task.CompletedTask;
+        }
+        try
+        {
+            copyToClipboard(DeepExportSha256);
+            DeepExportCopyConfirmation = "Checksum copied.";
+        }
+        catch (Exception)
+        {
+            DeepExportCopyConfirmation = "Could not reach the clipboard. Select the checksum above and copy it.";
+        }
+        return Task.CompletedTask;
+    }
 
     // ASKING, RATHER THAN WAITING TO BE TOLD.
     //
@@ -404,6 +607,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             bool paired = data.Value<bool?>("Paired") ?? data.Value<bool?>("paired") ?? false;
             ClientName = Value(data, "ClientName", "clientName");
             ScheduleTime = Value(data, "ScheduleTime", "scheduleTime") ?? "16:30";
+            deviceId = Value(data, "DeviceId", "deviceId");
+            timeZone = Value(data, "TimeZone", "timeZone");
+            addonVersion = Value(data, "AddonVersion", "addonVersion");
             string reportedVersion = Value(data, "AgentVersion", "agentVersion");
             if (!string.IsNullOrWhiteSpace(reportedVersion))
             {
@@ -414,6 +620,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             UpdateRequired = runtime?.Value<bool?>("UpdateRequired")
                 ?? runtime?.Value<bool?>("updateRequired")
                 ?? false;
+            ninjaTraderVersion = Value(runtime, "NinjaTraderVersion", "ninjaTraderVersion");
+            addonVersion ??= Value(runtime, "AddonVersion", "addonVersion");
             JObject queue = ObjectValue(data, "Queue", "queue");
             int pending = queue?.Value<int?>("PendingCount") ?? queue?.Value<int?>("pendingCount") ?? 0;
             QueueSummary = pending == 0 ? "No uploads waiting" : $"{pending} upload{(pending == 1 ? string.Empty : "s")} waiting";
@@ -557,9 +765,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void RaiseCommands()
     {
-        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand }.OfType<AsyncCommand>())
+        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand, DeepExportCommand }.OfType<AsyncCommand>())
             command.RaiseCanExecuteChanged();
     }
+}
+
+/// <summary>The export could not start on this machine, for a reason a person can act on.</summary>
+public sealed class DeepExportUnavailableException : Exception
+{
+    public DeepExportUnavailableException(string message) : base(message) { }
 }
 
 public sealed class AsyncCommand : ICommand

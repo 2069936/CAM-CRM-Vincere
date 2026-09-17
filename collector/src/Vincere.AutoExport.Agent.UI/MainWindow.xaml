@@ -305,6 +305,44 @@
                                        Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
                         </StackPanel>
                         <TextBlock Text="{Binding DiagnosticsPath}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
+
+                        <!-- DEEP EXPORT. Everything this NinjaTrader remembers, in one
+                             ZIP on the Desktop, for the desk to read when a client's
+                             history has to be reconstructed. Nothing is uploaded and
+                             nothing that authenticates goes in. It runs here, as the
+                             signed-in user, because NinjaTrader's files are theirs. -->
+                        <Border Background="{StaticResource RaisedBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,22,0,0">
+                            <StackPanel>
+                                <TextBlock Text="Deep Export" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                                <TextBlock Text="Packages NinjaTrader's full trade database, logs, workspaces, strategy templates and every daily snapshot already sent. Market data and connection credentials are left out. The ZIP lands on the Desktop; send it to the desk."
+                                           Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                                    <Button Content="Deep Export"
+                                            Command="{Binding DeepExportCommand}"
+                                            Background="{StaticResource PrimaryBrush}"
+                                            Foreground="{StaticResource TextBrush}"
+                                            AutomationProperties.Name="Build a package with NinjaTrader's full history for the desk" />
+                                    <TextBlock Text="{Binding DeepExportProgressText}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="12,0,0,0" />
+                                </StackPanel>
+                                <ProgressBar Value="{Binding DeepExportPercent, Mode=OneWay}" Minimum="0" Maximum="100" Height="4"
+                                             Foreground="{StaticResource PrimaryBrush}" Background="{StaticResource LineBrush}" Margin="0,10,0,0"
+                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Text="{Binding DeepExportMessage}" Foreground="{StaticResource TextBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                                <StackPanel Visibility="{Binding HasDeepExport, Converter={StaticResource BoolToVisibility}}" Margin="0,8,0,0">
+                                    <TextBox Text="{Binding DeepExportPath, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontFamily="Consolas"
+                                             Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" BorderThickness="0" Padding="8,4"
+                                             AutomationProperties.Name="Path of the deep export package" />
+                                    <TextBox Text="{Binding DeepExportSha256, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontFamily="Consolas"
+                                             Background="{StaticResource RaisedBrush}" Foreground="{StaticResource MutedBrush}" BorderThickness="0" Padding="8,4"
+                                             AutomationProperties.Name="SHA-256 of the deep export package" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button Content="Open folder" Command="{Binding OpenDeepExportFolderCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" AutomationProperties.Name="Open the folder holding the deep export package" />
+                                        <Button Content="Copy SHA-256" Command="{Binding CopyDeepExportShaCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}" Margin="10,0,0,0" AutomationProperties.Name="Copy the package checksum to the clipboard" />
+                                        <TextBlock Text="{Binding DeepExportCopyConfirmation}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                   </ScrollViewer>
                 </TabItem>
