@@ -332,7 +332,14 @@ export function createHandler({
           ? 'immutable_object_conflict'
           : null;
         const errorCode = preciseValidationCode || preciseStorageCode || failureCode(stage, error);
-        if (stage === 'storage' && error?.message !== 'immutable_object_conflict') {
+        // A transient persist failure takes the storage stage's exit: release
+        // the lease so the batch goes back to 'received' and the agent's
+        // retry of the SAME capture is claimed again. Finalizing it as failed
+        // here would make that retry a 409 capture_requires_replay, which the
+        // agent treats as operator action and quarantines: the 503 would have
+        // promised a retry it could not keep.
+        const transientPersist = stage === 'persist' && isTransientStoreError(error);
+        if ((stage === 'storage' && error?.message !== 'immutable_object_conflict') || transientPersist) {
           try {
             await store.releaseLease({
               batchId: batch.id,

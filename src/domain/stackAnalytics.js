@@ -116,19 +116,70 @@ export function buildAccountStreaks(series) {
   };
 }
 
-// Cross-tab combo (row) x prop firm / connection (col) -> avg PnL/day per cell.
+// The prop firm behind a snapshot's free-text `connection`. The book spells
+// BluSky eleven ways and Legends eight; a heatmap with a column per spelling
+// compares a firm against itself. Punctuation, case and spacing are dropped
+// before the lookup, so "Blusky ", "BLUSKY" and "Blue Sky" are one key. A name
+// the table does not know is kept as typed rather than guessed.
+const FIRM_ALIASES = {
+  blusky: 'BluSky', bluesky: 'BluSky', blsky: 'BluSky', bluesky1: 'BluSky',
+  legends: 'Legends', legend: 'Legends', legendstrading: 'Legends', thelegends: 'Legends', thelegendstrading: 'Legends',
+  lucid: 'Lucid', lucidtradovate: 'Lucid',
+  tradeify: 'Tradeify', tradefify: 'Tradeify',
+  mff: 'My Funded Futures', myff: 'My Funded Futures', myfundedfutures: 'My Funded Futures', fundedfutures: 'My Funded Futures',
+  fundedff: 'My Funded Futures', fffamily: 'My Funded Futures', fundedfuturesfamily: 'My Funded Futures',
+  apex: 'Apex',
+  takeprofittrader: 'TakeProfitTrader', takept: 'TakeProfitTrader',
+  bulenox: 'Bulenox',
+  tradeday: 'Tradeday',
+  tradovate: 'Tradovate',
+  live: 'Live', live1: 'Live',
+};
+
+export function normalizeFirmName(connection) {
+  const raw = String(connection || '').trim();
+  if (!raw) return 'Unknown';
+  const key = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return FIRM_ALIASES[key] || raw;
+}
+
+const fundedOnly = (meta) => meta?.accountType === 'Funded';
+
+// Cross-tab combo (row) x prop firm (col) -> avg P&L per account day per cell.
 // Different firms have different drawdown mechanics, so the best combo can be
-// firm-dependent. comboFn maps a snapshot's strategies to a combo label.
-export function buildComboByFirm(clients = [], comboFn = () => 'Unknown') {
+// firm-dependent. comboFn(snapshot, executionsForAccount) maps an account day
+// to a combo label, the same function the team table uses, and the population
+// is the same one too: the heatmap used to average every account day of every
+// type, evaluations and Bullet Bot included, two panels below a table that did
+// not, and the two disagreed on every cell.
+//
+// `window` ({ from, to }, inclusive, YYYY-MM-DD) is the same resolved window the
+// table runs on. Without it the heatmap stayed on all history while the caption
+// claimed the table's population: on the book, "Last 7 days" left the table on
+// 302 account days and the heatmap on 599. Omit it and the cross-tab covers
+// every close, which is what the callers that have no window selector want.
+export function buildComboByFirm(clients = [], comboFn = () => 'Unknown', { populationFilter = fundedOnly, normalizeFirm = normalizeFirmName, window = null } = {}) {
   const cells = {};
   const combos = new Set();
   const firms = new Set();
+  const inRange = (date) => {
+    if (!window) return true;
+    const { from, to } = window;
+    return Boolean(date) && (!from || date >= from) && (!to || date <= to);
+  };
   for (const client of clients || []) {
+    const registry = Object.fromEntries(
+      Object.entries(client.accountRegistry || {}).map(([name, meta]) => [String(name).toLowerCase(), meta]),
+    );
     for (const di of client.dailyImports || []) {
+      if (!inRange(di.date)) continue;
       for (const snapshot of di.snapshots || []) {
-        const combo = comboFn(snapshot.strategies || []);
+        const name = String(snapshot.accountName || '').toLowerCase();
+        if (populationFilter && !populationFilter(registry[name] || {}, snapshot)) continue;
+        const executions = (di.executions || []).filter((e) => String(e.accountName || '').toLowerCase() === name);
+        const combo = comboFn(snapshot, executions);
         if (!combo || combo === 'Unknown') continue;
-        const firm = snapshot.connection || 'Unknown';
+        const firm = normalizeFirm(snapshot.connection);
         combos.add(combo);
         firms.add(firm);
         const key = `${combo}|${firm}`;

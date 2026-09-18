@@ -19,7 +19,7 @@ describe('step 41 accepts ordinary heartbeat timestamp ordering', () => {
     expect(runbook).toMatch(/^\| 41 \| `step_41_heartbeat_ordering\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 41 | `step_41_heartbeat_ordering.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 39 | `step_39_client_churn_reason.sql`'));
-    expect(runbook).toContain('→ 39 → 41.');
+    expect(runbook).toMatch(/→ 39 → 41(\.| →)/);
   });
 
   it('removes both payload and effective timestamp ordering rejections', () => {

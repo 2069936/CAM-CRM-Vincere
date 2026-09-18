@@ -5678,6 +5678,10 @@ tr:nth-child(2) .rank-badge {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* A grid item sizes to its content unless told not to: the twelve-column
+     team table would otherwise widen the whole tab instead of scrolling
+     inside its own .table-wrap. */
+  min-width: 0;
 }
 .playbook-rec-grid {
   display: grid;
@@ -7248,6 +7252,21 @@ tr:nth-child(2) .rank-badge {
 @media (max-width: 720px) { .ahc-charts { grid-template-columns: 1fr; } }
 
 .window-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+
+/* Stack Playbook - team table controls (window range, grouping, attribution) */
+.playbook-range { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.playbook-range input[type="date"] { font-size: 12px; padding: 3px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+.playbook-heading { flex-wrap: wrap; }
+.playbook-heading h3 { margin-right: auto; }
+.playbook-toggles { display: flex; flex-basis: 100%; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.playbook-toggles .muted + .ghost-button { margin-left: 2px; }
+.playbook-toggles .ghost-button + .muted { margin-left: 10px; }
+.playbook-range-cell { white-space: nowrap; }
+.playbook-combo-cell { min-width: 200px; }
+.playbook-combo-cell .badge { white-space: nowrap; }
+.playbook-toggles .ghost-button { font-size: 11.5px; padding: 3px 8px; }
+.playbook-toggles .ghost-button[aria-pressed="true"] { background: var(--surface-2); border-color: var(--accent, var(--text)); font-weight: 700; }
+.playbook-basis { font-weight: 600; }
 
 /* Stack Playbook - risk scaling */
 .risk-scaling-list { display: flex; flex-direction: column; gap: 18px; }
