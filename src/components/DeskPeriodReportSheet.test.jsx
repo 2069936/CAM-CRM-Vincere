@@ -112,12 +112,18 @@ describe('the sheet', () => {
     expect(coverage).toBeLessThan(results);
   });
 
-  it('renders the ten section headings in the order the report fixes', () => {
+  it('renders the section headings in the order the report fixes', () => {
+    // THE ANSWER, THEN THE DENOMINATOR, THEN THE WORK. Coverage is still the
+    // first full section, for the reason the sheet's own header argues; what
+    // changed is that the page no longer opens on a six-column table of closes
+    // with no verdict anywhere above it, and that Results now precedes the
+    // Roster, which is the order the two questions were asked in.
     const headings = [
+      'The short answer',
       'How much of the desk this period holds',
       'Desk money in this period',
-      'Algorithm roster: running, new, stopped, history',
       'Algorithm results in this period',
+      'Algorithm roster: running, new, stopped, history',
       'This period against the period before, and against the book',
       'The stack: what combinations of algorithms did on funded client accounts',
       'What changed on the accounts in this period',
@@ -136,7 +142,7 @@ describe('the sheet', () => {
     expect(html).toContain('Desk Period Report');
     expect(html).toContain('Week of 2026-07-27');
     expect(html).toContain('2026-07-27 to 2026-08-02');
-    expect(html).toContain('3 closes of 5 weekdays');
+    expect(html).toContain('3 of 5 weekdays hold a close');
     expect(html).toContain('from a book whose newest close is 2026-07-30');
     expect(html).toContain('Built 2026-09-18 14:22 by Pedro');
   });
@@ -154,15 +160,21 @@ describe('a period that is not complete is stated as not complete', () => {
     const { html } = render();
     expect(html).toContain('This period is not complete.');
     expect(html).toContain('It runs to 2026-08-02 and the book&#x27;s newest close is 2026-07-30.');
-    expect(html).toContain('2 weekdays inside it hold no close: 2026-07-29, 2026-07-31.');
+    // 2026-07-31 sits AFTER the book's newest close, which the sentence above
+    // already states; only 2026-07-29 is a close somebody owed and did not file.
+    expect(html).toContain("1 weekday inside the book&#x27;s range holds no close: 2026-07-29.");
+    expect(html).not.toContain('2026-07-29, 2026-07-31.');
     expect(html.indexOf('This period is not complete.'))
       .toBeLessThan(html.indexOf('How much of the desk this period holds'));
   });
 
-  it('gives each weekday with no close a No close row rather than a zero', () => {
+  it('gives each weekday with no close a No close row that says WHY, rather than a zero', () => {
     const { html } = render();
-    expect(html).toContain('>No close<');
+    expect(html).toContain('No close. Inside the book');
+    expect(html).toContain('range and no close was filed.');
+    expect(html).toContain("No close. After the book&#x27;s newest close (2026-07-30).");
     expect(html).toContain('2026-07-29');
+    expect(html).toContain('2026-07-31');
   });
 
   it('says nothing of the kind when every weekday holds a close', () => {
@@ -174,7 +186,7 @@ describe('a period that is not complete is stated as not complete', () => {
     const report = buildDeskPeriodReport(full, { period });
     const html = renderToStaticMarkup(<DeskPeriodReportSheet report={report} kind="week" />);
     expect(html).not.toContain('This period is not complete.');
-    expect(html).not.toContain('>No close<');
+    expect(html).not.toContain('No close.');
   });
 });
 
@@ -201,16 +213,23 @@ describe('a thin period is stated as thin', () => {
     expect(html).toContain('Not ranked');
   });
 
-  it('warns when the states are decided on a close carrying a fraction of the desk', () => {
+  it('decides the states on a close that represents the desk, and prints which one', () => {
+    // The Saturday close carries one account against the week's 40. Deciding
+    // Running and Stopped on it is how a column headed State came to read
+    // "Stopped" against an algorithm with 212 account days that week.
     const saturday = [
       bulkClient({ id: 'weekday', accountCount: 40, dates: ['2026-07-20', '2026-07-23'] }),
-      bulkClient({ id: 'saturday', accountCount: 1, dates: ['2026-07-25'] }),
+      bulkClient({ id: 'saturday', algo: 'URGO', accountCount: 1, dates: ['2026-07-25'] }),
     ];
     const period = resolvePeriod(saturday, { kind: 'week', key: '2026-07-20' });
     const report = buildDeskPeriodReport(saturday, { period });
     const html = renderToStaticMarkup(<DeskPeriodReportSheet report={report} kind="week" />);
-    expect(html).toContain('Running and Stopped are decided on 2026-07-25');
+    expect(html).toContain('Running and Stopped are decided on 2026-07-23, not on 2026-07-25');
     expect(html).toContain('not from the desk');
+    // The deciding date is in the column header too, not only in the prose.
+    expect(html).toContain('State on 2026-07-23');
+    expect(html).toContain('Accounts on 2026-07-23');
+    expect(report.roster.rows.find((row) => row.algorithm === 'RBO 1.0').state).toBe('Running');
   });
 
   it('states the empty period by name rather than rendering blank tables', () => {
@@ -293,5 +312,119 @@ describe('the refusals block', () => {
     expect(html).toContain('Account day');
     expect(html).toContain('Evidence gate');
     expect(html).toContain('comboPerformance.js');
+  });
+});
+
+/* ---------------------------------------------------------------- */
+/* What the pre-merge review found in the markup.                    */
+
+describe('the page answers before it justifies', () => {
+  const { html, report } = render();
+
+  it('puts the summary above the first denominator table', () => {
+    const answer = html.indexOf('The short answer');
+    const coverage = html.indexOf('How much of the desk this period holds');
+    expect(answer).toBeGreaterThan(-1);
+    expect(answer).toBeLessThan(coverage);
+  });
+
+  it('builds the summary from the same object the pasted line uses, so they cannot disagree', () => {
+    for (const row of report.summary.money) {
+      expect(html).toContain(row.label);
+    }
+    expect(html).toContain(report.summary.closesSentence);
+    expect(html).toContain(report.summary.coverageLine);
+    expect(html).toContain(`Running as of ${report.summary.stateClose}`);
+  });
+
+  it('keeps coverage the first FULL section, with the link from the summary to it', () => {
+    expect(html).toContain('id="period-coverage"');
+    expect(html).toContain('href="#period-coverage"');
+  });
+});
+
+describe('the changes table on paper', () => {
+  // 30 accounts changing combination inside the period: more than the 25 the
+  // screen shows.
+  const many = [{
+    id: 'busy',
+    name: 'busy',
+    accountRegistry: Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [`B${index}`, {
+        accountName: `B${index}`, accountType: 'Funded', status: 'Active',
+      }]),
+    ),
+    dailyImports: ['2026-07-27', '2026-07-28', '2026-07-30'].map((date) => ({
+      id: `busy-${date}`,
+      date,
+      importedAt: `${date}T22:00:00Z`,
+      snapshots: Array.from({ length: 30 }, (_, index) => ({
+        accountName: `B${index}`,
+        grossRealizedPnl: -100,
+        weeklyPnl: 0,
+        accountBalance: 50000,
+        strategies: [strat(date === '2026-07-27' ? 'RBO' : 'URGO', -100)],
+      })),
+      executions: [],
+      flags: [],
+    })),
+  }];
+  const period = resolvePeriod(many, { kind: 'week', key: '2026-07-27' });
+  const report = buildDeskPeriodReport(many, { period });
+  const html = renderToStaticMarkup(<DeskPeriodReportSheet report={report} kind="week" />);
+
+  it('says on the paper that rows were cut, outside the no-print control', () => {
+    expect(report.changes.rows.length).toBe(30);
+    const caption = 'This screen shows the 25 most recent of 30 changes';
+    expect(html).toContain(caption);
+    // The sentence must not live inside the element print hides.
+    const noPrintAt = html.indexOf('ghost-button no-print');
+    expect(html.indexOf(caption)).toBeLessThan(noPrintAt);
+  });
+
+  it('renders the rows the screen cut into a group only print shows', () => {
+    expect(html).toContain('<tbody class="print-only">');
+    // Every change row is in the DOM, so the printed copy carries all 30.
+    const bodyRows = [...html.matchAll(/B\d+<\/td>/g)];
+    expect(bodyRows.length).toBe(30);
+  });
+
+  it('counts the accounts the listed changes touch, not the accounts of every change', () => {
+    expect(html).toContain(`over ${report.changes.counts.decisionAccounts} accounts`);
+    expect(report.changes.counts.decisionAccounts).toBe(30);
+  });
+});
+
+describe('the two account-day counts are never one column', () => {
+  const { html } = render();
+
+  it('heads the results column with both, and prints both in every cell', () => {
+    expect(html).toContain('Account days measured, of days it ran');
+    expect(html).toMatch(/\d+ of \d+/);
+  });
+
+  it('gives the programmes table the population, window and basis tooltips', () => {
+    const { html: withProgramme } = render();
+    const titles = [...withProgramme.matchAll(/title="([^"]+)"/g)].map((match) => match[1]);
+    // Every tooltip on the page that names a population also names a window and
+    // a basis; the programmes table used to carry no tooltip at all.
+    expect(titles.filter((title) => /Population:/.test(title)).length).toBeGreaterThan(30);
+  });
+});
+
+describe('the benchmark carries its risk level and its basis on paper', () => {
+  const { html } = render({ kind: 'week', key: '2026-07-27' }, { benchmarkSeries: BENCHMARK });
+
+  it('prints the basis sentence as text, not only as a title attribute', () => {
+    // A `title` renders in no print, no PDF and on no touch screen, and this
+    // sheet exists to be printed. Section 3 requirement 2 of the spec makes the
+    // sentence mandatory wherever an MFB number appears.
+    const withoutTitles = html.replace(/title="[^"]*"/g, '');
+    expect(withoutTitles).toContain('My Futures Book backtest, Low risk sizing');
+    expect(withoutTitles).toContain('Not client account results');
+  });
+
+  it('prints the risk level each coverage row was measured at', () => {
+    expect(html).toContain('Measured at');
   });
 });

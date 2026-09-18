@@ -56,8 +56,12 @@ export function AccountsPerCloseChart({ rows = [], period }) {
         viewBox="0 0 100 60"
         preserveAspectRatio="none"
         role="img"
-        aria-label={`Accounts reporting on each of the ${drawn.length} calendar days in `
-          + `${period.label}, ${drawn.filter((row) => !row.noClose).length} of them carrying a close`}
+        // NOT "calendar days". `coverage.rows` is the closes plus the weekdays
+        // that hold none; a weekend with no close is never a row, so a 31-day
+        // month drew 24 bars and called them the month's calendar days.
+        aria-label={`Accounts reporting on each of the ${drawn.filter((row) => !row.noClose).length} `
+          + `closes in ${period.label}, with a hollow tick for each of the `
+          + `${drawn.filter((row) => row.noClose).length} weekdays that hold none`}
         style={{ width: '100%', height: 120, display: 'block' }}
       >
         <line
@@ -79,7 +83,10 @@ export function AccountsPerCloseChart({ rows = [], period }) {
                 strokeWidth="1"
                 vectorEffect="non-scaling-stroke"
               >
-                <title>{`${row.date} — no close. Not a zero.`}</title>
+                <title>
+                  {`${row.date}: no close. Not a zero.`
+                    + `${row.noCloseReason ? ` ${row.noCloseReason}` : ''}`}
+                </title>
               </rect>
             );
           }
@@ -153,7 +160,7 @@ export function MoneyStrips({ byClose = [], businesses = [] }) {
                       vectorEffect="non-scaling-stroke"
                     >
                       <title>
-                        {`${point.date} — ${business.shortLabel} has no account close on this `
+                        {`${point.date}: ${business.shortLabel} has no account close on this `
                           + 'date. Not a zero.'}
                       </title>
                     </rect>
@@ -193,6 +200,7 @@ export function DeploymentGrid({ rows = [], closes = [] }) {
   if (!rows.length || !closes.length) {
     return <Empty>No algorithm ran on any close inside this period.</Empty>;
   }
+  const middle = closes[Math.floor((closes.length - 1) / 2)];
   return (
     <div className="period-grid">
       {rows.map((row) => {
@@ -208,14 +216,30 @@ export function DeploymentGrid({ rows = [], closes = [] }) {
                   <span
                     key={date}
                     className={accounts ? 'period-grid-cell on' : 'period-grid-cell off'}
-                    style={{
-                      background: accounts ? 'var(--accent)' : 'var(--surface-3)',
-                      // Against this algorithm's own busiest close, never
-                      // against another row's: a shared scale would paint a
-                      // three-account algorithm invisible beside a
-                      // hundred-account one and read as "not running".
-                      opacity: accounts ? 0.25 + 0.75 * (accounts / busiest) : 0.4,
-                    }}
+                    style={accounts
+                      ? {
+                        background: 'var(--accent)',
+                        // Against this algorithm's own busiest close, never
+                        // against another row's: a shared scale would paint a
+                        // three-account algorithm invisible beside a
+                        // hundred-account one and read as "not running".
+                        //
+                        // The floor is 0.35 rather than 0.25 because on the
+                        // white sheet a single account against a busiest close
+                        // of 76 rendered paler than the grey that meant "did
+                        // not run" — absence drawn heavier than presence, which
+                        // is this file's rule 4 inverted.
+                        opacity: 0.35 + 0.65 * (accounts / busiest),
+                      }
+                      : {
+                        // ABSENCE IS THE LIGHTEST MARK ON THE ROW. An outline on
+                        // the sheet's own ground, never a filled cell: a filled
+                        // grey square is a stronger mark than a pale blue one,
+                        // and the grid is for reading where an algorithm RAN.
+                        background: 'transparent',
+                        boxShadow: 'inset 0 0 0 1px var(--border)',
+                        opacity: 1,
+                      }}
                     title={accounts
                       ? `${row.algorithm} on ${date}: ${plural(accounts, 'account', 'accounts')}`
                       : `${row.algorithm} on ${date}: no account carried it. Not a zero.`}
@@ -229,9 +253,23 @@ export function DeploymentGrid({ rows = [], closes = [] }) {
           </div>
         );
       })}
+      {/* The dates lived only in `title` attributes, which print on no paper
+          and open on no touch screen, so a printed grid had unreadable
+          columns. Same three-label pattern the other charts use. */}
+      <div className="period-grid-row period-grid-dates" aria-hidden="true">
+        <span className="period-grid-label" />
+        <div className="period-chart-axis">
+          <span>{closes[0]}</span>
+          {closes.length > 2 ? <span className="muted">{middle}</span> : null}
+          <span>{closes[closes.length - 1]}</span>
+        </div>
+        <span className="period-grid-count" />
+      </div>
       <p className="muted period-grid-legend">
-        Shade is accounts carrying that algorithm on that close, relative to that algorithm’s own
-        busiest close in this period. Shades are not comparable between rows.
+        {`One column per close, ${closes[0]} to ${closes[closes.length - 1]}, left to right. Shade `}
+        is accounts carrying that algorithm on that close, relative to that algorithm’s own busiest
+        close in this period, so shades are not comparable between rows. An empty outline is a close
+        on which no account carried it, which is not a zero.
       </p>
     </div>
   );
@@ -297,14 +335,25 @@ export function IntervalChart({ rows = [] }) {
                   />
                 </>
               ) : null}
-              <circle
-                cx={x(row.meanPerAccountDay)}
-                cy={y}
-                r="1.4"
-                fill={row.meanPerAccountDay >= 0 ? 'var(--success)' : 'var(--error)'}
+              {/* A SHORT VERTICAL TICK, NOT A CIRCLE.
+                  `preserveAspectRatio="none"` stretches x by (pixel width / 100)
+                  and leaves y alone, so on a 900px sheet an r=1.4 circle drew as
+                  an ellipse ~25px wide and ~2.8px tall: a horizontal smear whose
+                  width was a visible fraction of the interval it sits inside,
+                  under a caption telling the reader to compare the intervals and
+                  not the dots. A zero-width line with a non-scaling stroke is
+                  the same mark at any aspect. */}
+              <line
+                x1={x(row.meanPerAccountDay)}
+                y1={y - 5}
+                x2={x(row.meanPerAccountDay)}
+                y2={y + 5}
+                stroke={row.meanPerAccountDay >= 0 ? 'var(--success)' : 'var(--error)'}
+                strokeWidth="3"
+                vectorEffect="non-scaling-stroke"
               >
                 <title>{title}</title>
-              </circle>
+              </line>
             </g>
           );
         })}
@@ -373,12 +422,21 @@ export function SlopeChart({ rows = [], periodLabel = '', priorLabel = '' }) {
               >
                 <title>{title}</title>
               </line>
-              <circle cx="14" cy={y(row.priorMean)} r="1.2" fill={stroke}>
+              {/* Vertical ticks for the same reason as the interval chart's:
+                  a circle inside `preserveAspectRatio="none"` is drawn as a
+                  horizontal ellipse whose width is the x scale over the y. */}
+              <line
+                x1="14" y1={y(row.priorMean) - 3} x2="14" y2={y(row.priorMean) + 3}
+                stroke={stroke} strokeWidth="3" vectorEffect="non-scaling-stroke"
+              >
                 <title>{title}</title>
-              </circle>
-              <circle cx="86" cy={y(row.periodMean)} r="1.2" fill={stroke}>
+              </line>
+              <line
+                x1="86" y1={y(row.periodMean) - 3} x2="86" y2={y(row.periodMean) + 3}
+                stroke={stroke} strokeWidth="3" vectorEffect="non-scaling-stroke"
+              >
                 <title>{title}</title>
-              </circle>
+              </line>
             </g>
           );
         })}
@@ -407,7 +465,16 @@ export function SlopeChart({ rows = [], periodLabel = '', priorLabel = '' }) {
 /* Chart 6 — average per account day by combination.                 */
 
 export function ComboBarChart({ rows = [], limit = 12 }) {
-  const drawn = rows.filter((row) => !row.lowSample).slice(0, limit);
+  // WHAT WAS TRUNCATED IS SAID, NOT IMPLIED. This drew the first 12 gated rows
+  // and labelled itself "the 12 combinations that clear the sample gate" under a
+  // footnote reading "Low sample rows are in the table above and are not drawn
+  // here" — which tells the reader that everything gated IS drawn. On 2026-07
+  // sixteen combinations clear the gate and four of them were removed with no
+  // sign on the page. The interval chart and the slope chart already name what
+  // they leave out; this one now does the same.
+  const gated = rows.filter((row) => !row.lowSample);
+  const drawn = gated.slice(0, limit);
+  const notDrawn = gated.slice(limit);
   if (!drawn.length) return null;
   const peak = Math.max(...drawn.map((row) => Math.abs(row.avgPnl || 0)), 1);
   const rowHeight = 20;
@@ -421,8 +488,11 @@ export function ComboBarChart({ rows = [], limit = 12 }) {
         viewBox={`0 0 100 ${height}`}
         preserveAspectRatio="none"
         role="img"
-        aria-label={`Average P&L per account day for the ${drawn.length} combinations that clear `
-          + 'the sample gate in this period'}
+        aria-label={notDrawn.length
+          ? `Average P&L per account day for the ${drawn.length} best-performing of the `
+            + `${gated.length} combinations that clear the sample gate in this period`
+          : `Average P&L per account day for the ${drawn.length} combination`
+            + `${drawn.length === 1 ? '' : 's'} that clear the sample gate in this period`}
         style={{ width: '100%', height, display: 'block' }}
       >
         <line
@@ -467,6 +537,20 @@ export function ComboBarChart({ rows = [], limit = 12 }) {
           </li>
         ))}
       </ol>
+      {notDrawn.length ? (
+        <p className="muted">
+          {`Drawn: the ${drawn.length} best-performing of the ${gated.length} combinations that `}
+          {`clear the sample gate. Not drawn: ${notDrawn
+            .map((row) => `${row.key} (${money(row.avgPnl)} per account day over `
+              + `${plural(row.days, 'account day', 'account days')})`)
+            .join(', ')}.`}
+        </p>
+      ) : (
+        <p className="muted">
+          {`Drawn: every one of the ${gated.length} combination${gated.length === 1 ? '' : 's'} `}
+          that clears the sample gate.
+        </p>
+      )}
       <p className="muted">Low sample rows are in the table above and are not drawn here.</p>
     </div>
   );
@@ -485,12 +569,29 @@ export function BenchmarkCurves({ curves = [], period }) {
         const max = Math.max(...values, 0);
         const span = max - min || 1;
         const y = (value) => 46 - ((value - min) / span) * 42;
-        const x = (index) => (index / Math.max(curve.points.length - 1, 1)) * 100;
+        // X IS CALENDAR TIME, NOT THE TRADE'S ORDINAL.
+        //
+        // Drawn by index, every day with a trade took equal width: a backtest
+        // that traded twice in March and daily in July drew March as wide as
+        // July, and the shaded band marking this period was the share of TRADES
+        // inside it rather than the share of time — which on a one-week period
+        // over a year-to-date curve reads as the week's length. Nothing on the
+        // chart disclosed the compression, because the axis gives only the first
+        // and last date.
+        const startMs = Date.parse(`${curve.from}T00:00:00Z`);
+        const endMs = Date.parse(`${curve.to}T00:00:00Z`);
+        const timeSpan = Math.max(endMs - startMs, 1);
+        const x = (date) => {
+          const at = Date.parse(`${String(date).slice(0, 10)}T00:00:00Z`);
+          if (Number.isNaN(at)) return 0;
+          return Math.min(Math.max(((at - startMs) / timeSpan) * 100, 0), 100);
+        };
         const path = curve.points
-          .map((point, index) => `${index === 0 ? 'M' : 'L'}${x(index).toFixed(2)},${y(point.cumulative).toFixed(2)}`)
+          .map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.date).toFixed(2)},${y(point.cumulative).toFixed(2)}`)
           .join(' ');
-        const shadeFrom = curve.points.findIndex((point) => point.date >= period.from);
-        const shadeTo = curve.points.length - 1;
+        const shadeFrom = curve.to >= period.from ? x(period.from > curve.from ? period.from : curve.from) : -1;
+        const shadeTo = x(period.to < curve.to ? period.to : curve.to);
+        const middle = curve.points[Math.floor((curve.points.length - 1) / 2)]?.date || '';
         return (
           <figure className="period-benchmark-curve" key={curve.key}>
             <figcaption>
@@ -508,9 +609,9 @@ export function BenchmarkCurves({ curves = [], period }) {
             >
               {shadeFrom >= 0 ? (
                 <rect
-                  x={x(shadeFrom)}
+                  x={shadeFrom}
                   y="0"
-                  width={Math.max(x(shadeTo) - x(shadeFrom), 0.6)}
+                  width={Math.max(shadeTo - shadeFrom, 0.6)}
                   height="50"
                   fill="var(--surface-3)"
                   opacity="0.5"
@@ -539,8 +640,17 @@ export function BenchmarkCurves({ curves = [], period }) {
             </svg>
             <div className="period-chart-axis">
               <span>{curve.from}</span>
-              <span className="muted">{`${money(min)} to ${money(max)} cumulative`}</span>
+              <span className="muted">{middle}</span>
               <span>{curve.to}</span>
+            </div>
+            <div className="period-chart-axis">
+              <span className="muted">{`${money(min)} to ${money(max)} cumulative`}</span>
+              <span className="muted">
+                {`Horizontal axis is calendar time from ${curve.from} to ${curve.to}; `}
+                {`the shaded band is ${period.from} to ${period.to}. `}
+                {`${plural(curve.points.length, 'day', 'days')} carry a trade and the rest carry `}
+                the line forward unchanged.
+              </span>
             </div>
             <p className="muted">{curve.basis}</p>
           </figure>

@@ -71,6 +71,10 @@ Re-keyed on "enabled at export OR named in that account-day's fills" (family via
 
 Per family, account-days credited by the app vs days it actually traded: URGO 136 → 219, IFSP 116 → 171, B2X 64 → 104, RBO 41 → 96, **OGX 22 → 85**, G4M 60 → 72, ARPD 15 → 43.
 
+**Where this now stands.** `comboPerformance.js` fixed it for the stack table; the desk period report's Results and Movement sections stood on `algorithmRanking.buildStrategyRanking`, which kept the export-time flag, so the two put different measurements under one "Account days" header six rows apart on one page — URGO 216 against 344 on 2026-07. `buildStrategyRanking` now takes `basis`, the period report passes `'traded'`, and every section of that report attributes the same way. The Operations ranking panel still uses `'enabled'`, which is the default and is named in `basis.attributionLabel` on screen.
+
+One consequence is worth stating rather than discovering. Re-keyed on traded attribution the ranking gains the days, and almost none of them carry a measurement: a grid row the desk switched off reports `realized = 0` whether or not it traded (455 of the 456 all-disabled days), so those days are counted as days the algorithm RAN and are in no mean. Desk wide over 2026-07 that is 1,051 measured account-days of 1,833 that carried an algorithm, 57%. The report prints both counts in every cell and the gap in its refusals table. Folding the zeros in as measurements would have put hundreds of false flat days into the denominator of every algorithm under a column headed "measured P&L", which is the same mislabel one layer down.
+
 [^ifsp]: This row keeps the app's `includes('IFSP')` fold so the two columns compare like with like. Section 4.1 removes the fold, so the shipped table splits those 31 days: IFSP -$222.91 / 27 days (-$6,018.60) and IFSP_PF -$120.00 / 4 days (-$480.00). 27 + 4 = 31 and -$6,498.60 / 31 = -$209.63. Every other row of this table is unaffected by the fold and reproduces exactly.
 
 ### 2.2 Blocker: "Best" and 100% of suggestions rest on one account-day

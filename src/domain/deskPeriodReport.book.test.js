@@ -21,7 +21,7 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { buildDeskPeriodReport } from './deskPeriodReport';
+import { buildDeskPeriodReport, formatDeskPeriodReport } from './deskPeriodReport';
 import { listPeriods, resolvePeriod } from './deskPeriod';
 import { buildBenchmarkSeries, parseBenchmarkCsv } from './algorithmBenchmark';
 import { buildCrmStateFromTables } from './supabaseStore';
@@ -73,14 +73,19 @@ describe('what periods this book holds', () => {
       .toEqual([['2026-07-27', 3], ['2026-07-20', 6], ['2026-07-13', 5]]);
   });
 
-  it('runs 2026-07-13 to 2026-07-30 and holds no close on two weekdays inside that span', () => {
+  it('separates the weekday nobody exported from the one past the book’s end', () => {
     const period = resolvePeriod(clients, { kind: 'custom', from: '2026-07-13', to: '2026-07-30' });
     expect([period.bookFirstClose, period.bookLastClose]).toEqual(['2026-07-13', '2026-07-30']);
     expect(period.closes).toHaveLength(14);
     // 07-31 is a Friday too, and it is outside a range that ends on the 30th.
     expect(period.missingWeekdays).toEqual(['2026-07-29']);
-    expect(resolvePeriod(clients, { kind: 'custom', from: '2026-07-13', to: '2026-07-31' })
-      .missingWeekdays).toEqual(['2026-07-29', '2026-07-31']);
+    // Extend a day past the book and 07-31 is not a close anyone owed either:
+    // the book ends on the 30th, which `weekdaysAfterBook` says and
+    // `missingWeekdays` no longer claims.
+    const past = resolvePeriod(clients, { kind: 'custom', from: '2026-07-13', to: '2026-07-31' });
+    expect(past.missingWeekdays).toEqual(['2026-07-29']);
+    expect(past.weekdaysAfterBook).toEqual(['2026-07-31']);
+    expect(past.weekdaysWithoutClose).toEqual(['2026-07-29', '2026-07-31']);
   });
 
   it('holds one Saturday close, which is inside its week and outside its weekdays', () => {
@@ -98,7 +103,11 @@ describe('coverage, Week of 2026-07-27', () => {
     expect(report.period.partial).toBe(true);
     expect(report.period.partialReasons.join(' '))
       .toContain("It runs to 2026-08-02 and the book's newest close is 2026-07-30.");
-    expect(report.period.partialReasons.join(' ')).toContain('2026-07-29, 2026-07-31');
+    // 2026-07-31 is after the book's newest close, which the sentence above
+    // already states; only 2026-07-29 is a close somebody owed and did not file.
+    expect(report.period.partialReasons.join(' '))
+      .toContain("1 weekday inside the book's range holds no close: 2026-07-29.");
+    expect(report.period.partialReasons.join(' ')).not.toContain('2026-07-29, 2026-07-31');
   });
 
   it('holds 3 closes, 61 clients, 376 accounts and 960 account closes', () => {
@@ -175,19 +184,49 @@ describe('the prior period, where there is none', () => {
 describe('results, Week of 2026-07-27', () => {
   const report = reportFor(WEEK_27);
 
-  it('ranks 5 of 12 algorithms and leaves the rest with their counts and no position', () => {
+  it('ranks 5 of 15 algorithms and leaves the rest with their counts and no position', () => {
     expect(report.results.rankedCount).toBe(5);
-    expect(report.results.unrankedCount).toBe(7);
+    expect(report.results.unrankedCount).toBe(10);
     expect(report.results.rows.filter((row) => row.ranked).map((row) => row.name))
       .toEqual(['G4M', 'URGO', 'IFSP', 'RBO', 'B2X']);
   });
 
+  it('ranks on the days something measured, and counts every day the algorithm ran', () => {
+    // TWO COUNTS, AND THEY ARE NOT THE SAME UNIT. The ranking used to attribute
+    // on the export-time `enabled` flag while the roster on the same page used
+    // traded attribution, so the two put different measurements under one
+    // "Account days" header six rows apart. Both attribute the same way now,
+    // and the narrower count — the days something stated what the algorithm
+    // made — is what the mean and the gate divide by.
+    const urgo = rankRow(report, 'URGO');
+    expect(urgo).toMatchObject({ ranked: true, accountDays: 69, accounts: 66 });
+    expect(urgo.accountDays + urgo.unmeasuredAccountDays).toBe(109);
+    expect(rosterRow(report, 'URGO 4.5').accountDaysInPeriod).toBe(109);
+    // Desk wide: 287 of the 613 account days that carried an algorithm this
+    // week state what it made.
+    expect(report.results.measuredAccountDays).toBe(287);
+    expect(report.results.ranAccountDays).toBe(613);
+    expect(report.results.measuredShare).toBe(47);
+    expect(report.results.attribution).toBe('traded');
+  });
+
   it('clears the gate for URGO and refuses it for OGX, with OGX’s counts kept', () => {
-    expect(rankRow(report, 'URGO')).toMatchObject({ ranked: true, accountDays: 69, accounts: 42 });
     const ogx = rankRow(report, 'OGX');
     expect(ogx.ranked).toBe(false);
     expect(ogx.accountDays).toBe(17);
+    expect(ogx.unmeasuredAccountDays).toBe(44);
     expect(ogx.rankRefusal).toContain('17 reported account-days');
+  });
+
+  it('carries an algorithm the fills named and nothing measured, rather than dropping it', () => {
+    // FSA and MST run on one account each this week and the grid states no
+    // realized for either. Under the export-time flag they were absent from
+    // the report entirely; now they are rows with their counts and no verdict.
+    const fsa = rankRow(report, 'FSA');
+    expect(fsa.accountDays).toBe(0);
+    expect(fsa.unmeasuredAccountDays).toBe(3);
+    expect(fsa.meanPerAccountDay).toBeNull();
+    expect(fsa.ranked).toBe(false);
   });
 
   it('publishes no dollar keyed to a single algorithm anywhere in results or movement', () => {
@@ -217,7 +256,7 @@ describe('results, Week of 2026-07-27', () => {
     expect(rankRow(report, 'Bullet Bot')).toBeNull();
     const month = reportFor(MONTH);
     expect(month.results.programmes.map((row) => [row.name, row.accountDays, row.accounts]))
-      .toEqual([['Bullet Bot', 337, 115]]);
+      .toEqual([['Bullet Bot', 338, 161]]);
     expect(month.results.programmes[0].rankRefusal).toContain('Not ranked here');
   });
 });
@@ -246,23 +285,36 @@ describe('movement, Week of 2026-07-27 against Week of 2026-07-20', () => {
       .toEqual(['B2X', 'G4M', 'IFSP', 'RBO', 'URGO']);
     const arpd = movementRow(report, 'ARPD');
     expect(arpd.change).toBeNull();
-    expect(arpd.changeRefusal).toContain('19 account-days over 12 accounts here, 23 over 11 then');
+    expect(arpd.changeRefusal).toContain('19 account-days over 29 accounts here, 23 over 21 then');
   });
 
   it('finds URGO and B2X crossing from a positive mean to a negative one', () => {
     expect(movementRow(report, 'URGO')).toMatchObject({
-      priorMean: 29.24, periodMean: -52.64, change: -81.88, crossedIntoLoss: true, reading: 'Moved down',
+      priorMean: 30.64, periodMean: -52.64, change: -83.28, crossedIntoLoss: true, reading: 'Moved down',
     });
     expect(movementRow(report, 'B2X')).toMatchObject({
-      priorMean: 32.38, periodMean: -146.63, crossedIntoLoss: true, reading: 'Moved down',
+      priorMean: 43.03, periodMean: -146.63, crossedIntoLoss: true, reading: 'Moved down',
     });
   });
 
   it('carries the book to date beside them and states that it contains this period', () => {
     const urgo = movementRow(report, 'URGO');
-    expect(urgo.bookMean).toBe(-22.04);
-    expect(urgo.bookAccountDays).toBe(216);
+    expect(urgo.bookMean).toBe(-21.24);
+    expect(urgo.bookAccountDays).toBe(217);
+    expect(report.movement.bookIsThisPeriod).toBe(false);
     expect(report.movement.bookNote).toContain('CONTAINS this period');
+  });
+
+  it('withholds the book column on a period that holds every close the book has', () => {
+    // 2026-07 starts before the book's first close, so "the book to date" and
+    // "this period" are the same set of closes and every difference is 0 by
+    // construction. A column of eight $0.00 cells reads as a finding about the
+    // desk rather than as one window measured against itself.
+    const month = reportFor(MONTH);
+    expect(month.movement.bookIsThisPeriod).toBe(true);
+    expect(month.movement.rows.every((row) => row.againstBook === null)).toBe(true);
+    expect(movementRow(month, 'URGO').againstBookRefusal)
+      .toContain('this same measurement over these same days');
   });
 
   it('finds four of the five comparable algorithms moved down', () => {
@@ -303,14 +355,40 @@ describe('the roster', () => {
     });
   });
 
-  it('publishes the coverage of the close its states are decided on, and warns when it is thin', () => {
+  it('does not decide the states on a Saturday close carrying 7 of 338 account rows', () => {
+    // THE DEFECT THIS REPLACES, on the week the desk would actually report on.
+    // 2026-07-25 is a Saturday carrying one client and 7 account rows against
+    // the week's fullest close of 338. Deciding Running and Stopped on it
+    // printed `Stopped` against twelve algorithms — Bullet Bot after 212
+    // account days that week, IFSP after 121, OGX after 101 — while the results
+    // section four rows below ranked five of the twelve.
     const thin = reportFor(WEEK_20);
     expect(thin.roster.lastClose).toBe('2026-07-25');
     expect(thin.roster.lastCloseAccounts).toBe(7);
     expect(thin.roster.lastCloseShareOfFullest).toBe(2);
-    expect(thin.roster.thinLastCloseNote).toContain('2% of the 338');
+    expect(thin.roster.stateClose).toBe('2026-07-24');
+    expect(thin.roster.stateCloseAccounts).toBe(327);
+    expect(thin.roster.thinLastCloseNote)
+      .toContain('Running and Stopped are decided on 2026-07-24, not on 2026-07-25');
+
+    // Bullet Bot ran on more than two hundred account days that week and is
+    // Running; nothing with a three-figure week reads Stopped.
+    expect(rosterRow(thin, 'Bullet Bot 1.1').state).toBe('Running');
+    expect(rosterRow(thin, 'Bullet Bot 1.1').accountDaysInPeriod).toBeGreaterThan(200);
+    for (const row of thin.roster.rows) {
+      if (row.state === 'Stopped') expect(row.accountDaysInPeriod).toBeLessThan(50);
+    }
+
+    // And the Roster no longer contradicts the Results table beside it.
+    for (const ranked of thin.results.rows.filter((row) => row.ranked)) {
+      const onRoster = thin.roster.rows.filter((row) => row.family === ranked.name);
+      expect(onRoster.some((row) => row.bucket === 'alive')).toBe(true);
+    }
+
     const even = reportFor(WEEK_27);
-    expect(even.roster.thinLastClose).toBe(false);
+    expect(even.roster.stateClose).toBe('2026-07-30');
+    expect(even.roster.stateCloseIsLastClose).toBe(true);
+    expect(even.roster.thinLastCloseNote).toBeNull();
   });
 
   it('names one version per family on this book, prop-firm variants kept apart', () => {
@@ -455,8 +533,14 @@ describe('what the whole report costs and what it stamps', () => {
     expect(report.stamp.closesInPeriod).toBe(3);
     expect(report.stamp.accountCloses).toBe(960);
     expect(report.stamp.latestImportedAt).toBeTruthy();
+    // The ranking's attribution is stamped too, because it is the field that
+    // decides whether a "Account days" column means the same thing as the
+    // roster's.
     expect(report.stamp.moduleVersions).toEqual({
-      comboPerformance: 'traded/version', evidenceGate: '30/10', sampleGate: '10/3',
+      comboPerformance: 'traded/version',
+      algorithmRanking: 'traded/traded',
+      evidenceGate: '30/10',
+      sampleGate: '10/3',
     });
   });
 
@@ -464,5 +548,154 @@ describe('what the whole report costs and what it stamps', () => {
     const started = Date.now();
     reportFor(MONTH);
     expect(Date.now() - started).toBeLessThan(4000);
+  });
+});
+
+/* ---------------------------------------------------------------- */
+/* What the pre-merge review found, measured on the book.            */
+
+describe('the closes-of-weekdays line on the week that holds a Saturday close', () => {
+  const report = reportFor(WEEK_20);
+
+  it('does not print six closes over five weekdays', () => {
+    expect(report.coverage.totals.closesInPeriod).toBe(6);
+    expect(report.coverage.totals.weekdayCloses).toBe(5);
+    expect(report.coverage.totals.weekendCloseDates).toEqual(['2026-07-25']);
+    expect(report.coverage.totals.closesSentence)
+      .toBe('5 of 5 weekdays hold a close, plus 1 weekend close (2026-07-25)');
+  });
+
+  it('prints the same sentence in the pasted summary', () => {
+    expect(formatDeskPeriodReport(report))
+      .toContain('5 of 5 weekdays hold a close, plus 1 weekend close (2026-07-25)');
+  });
+
+  it('splits the month’s ten weekdays with no close into before-the-book and inside it', () => {
+    const month = reportFor(MONTH);
+    expect(month.coverage.totals.weekdaysWithNoClose).toBe(10);
+    expect(month.coverage.totals.weekdaysBeforeBook).toHaveLength(8);
+    expect(month.coverage.totals.missingWeekdays).toEqual(['2026-07-29']);
+    expect(month.coverage.totals.weekdaysAfterBook).toEqual(['2026-07-31']);
+    expect(month.coverage.totals.closesSentence)
+      .toBe('13 of 23 weekdays hold a close, plus 1 weekend close (2026-07-25)');
+  });
+});
+
+describe('the counts beside the changes table', () => {
+  const report = reportFor(MONTH);
+
+  it('counts the accounts the listed changes touch, not the accounts of the gaps', () => {
+    // "239 changes over 320 accounts" was a decision count over an account
+    // count taken from the full list, 562 of which are attribution gaps the
+    // paragraph below the table says are counted elsewhere and not listed.
+    expect(report.changes.counts.decisions).toBe(239);
+    expect(report.changes.counts.decisionAccounts).toBe(91);
+    expect(report.changes.counts.attributionGaps).toBe(562);
+    expect(report.changes.counts.accounts).toBe(320);
+  });
+
+  it('never runs an account’s after side across a later change on the same account', () => {
+    for (const row of report.changes.rows) {
+      if (!row.nextChangeDate) continue;
+      expect(row.afterTo < row.nextChangeDate).toBe(true);
+    }
+  });
+
+  it('says how few changes hold five closes a side, rather than printing 239 refusals', () => {
+    expect(report.changes.counts.compared).toBeLessThan(5);
+    expect(report.changes.sidesSummary).toContain(`${report.changes.counts.compared} of 239`);
+    expect(report.changes.sidesSummary).toContain('configuration cadence');
+  });
+});
+
+describe('the stack caption counts the funded population it names', () => {
+  it('prints attributed accounts against funded accounts, on the month', () => {
+    const report = reportFor(MONTH);
+    expect(report.stack.population.includedDays).toBe(599);
+    expect(report.stack.population.fundedDays).toBe(896);
+    expect(report.stack.population.accounts).toBe(149);
+    expect(report.stack.population.fundedAccounts).toBe(180);
+    expect(report.stack.population.clients).toBe(44);
+    expect(report.stack.population.fundedClients).toBe(48);
+    expect(report.stack.populationNote).toContain('599 attributed of 896 funded account days');
+    expect(report.stack.populationNote).toContain('149 of 180 accounts');
+    expect(report.stack.populationNote).toContain('44 of 48 clients attributed');
+  });
+});
+
+describe('the results and the roster now count the same account days', () => {
+  const report = reportFor(MONTH);
+
+  it('matches every ranked family’s two counts to the roster’s one', () => {
+    // Left column = what the Results table prints, right = what the Roster
+    // prints for the same family. They used to differ by 22% to 65%.
+    const expected = {
+      ARPD: 137, OGX: 221, URGO: 344, B2X: 191, IFSP: 281, G4M: 141, RBO: 260, SYFY: 90,
+    };
+    for (const [family, ran] of Object.entries(expected)) {
+      const row = rankRow(report, family);
+      const roster = report.roster.rows
+        .filter((entry) => entry.family === family)
+        .reduce((sum, entry) => sum + entry.accountDaysInPeriod, 0);
+      expect([family, roster]).toEqual([family, ran]);
+      expect([family, row.accountDays + row.unmeasuredAccountDays]).toEqual([family, ran]);
+    }
+  });
+
+  it('states desk wide how much of what ran was measured', () => {
+    expect(report.results.measuredAccountDays).toBe(1051);
+    expect(report.results.ranAccountDays).toBe(1833);
+    expect(report.results.measuredShare).toBe(57);
+    const refusal = report.refusals.find(
+      (entry) => entry.figure === 'A mean over every account day an algorithm ran on',
+    );
+    expect(refusal.value).toBe('1051 of 1833 account days measured');
+  });
+
+  it('ranks 8 of 16 and keeps the rest with their counts', () => {
+    expect(report.results.rankedCount).toBe(8);
+    expect(report.results.unrankedCount).toBe(8);
+    expect(report.results.rows.filter((row) => row.ranked).map((row) => row.name))
+      .toEqual(['ARPD', 'OGX', 'URGO', 'B2X', 'IFSP', 'G4M', 'RBO', 'SYFY']);
+  });
+});
+
+describe('the CAM scope measures what the page says it measures', () => {
+  const period = resolvePeriod(clients, MONTH);
+  const camBook = clients.slice(0, 8);
+  const scoped = buildDeskPeriodReport(camBook, {
+    period,
+    deskClients: clients,
+    scope: { kind: 'cam', camName: 'Ana', camProfileId: 'cam-1', deskClientCount: clients.length },
+  });
+  const deskWide = buildDeskPeriodReport(clients, { period });
+
+  it('ranks the desk’s algorithms on a CAM’s copy, not the CAM’s eight clients’', () => {
+    // Over an eight-client book the same month ranked a different algorithm
+    // first, on a different population, under identical column headers and the
+    // sentence "The roster, the results, the movement, the stack and the
+    // benchmark are desk wide for everybody".
+    expect(scoped.results.rows.map((row) => [row.name, row.accountDays, row.meanPerAccountDay]))
+      .toEqual(deskWide.results.rows.map((row) => [row.name, row.accountDays, row.meanPerAccountDay]));
+    expect(scoped.results.rankedCount).toBe(deskWide.results.rankedCount);
+    expect(scoped.roster.rows.map((row) => row.algorithm))
+      .toEqual(deskWide.roster.rows.map((row) => row.algorithm));
+    expect(scoped.stack.population.fundedDays).toBe(deskWide.stack.population.fundedDays);
+  });
+
+  it('keeps coverage, money and the account changes on the CAM’s own book', () => {
+    const own = buildDeskPeriodReport(camBook, { period });
+    expect(scoped.coverage.totals.accountCloses).toBe(own.coverage.totals.accountCloses);
+    expect(scoped.coverage.totals.accountCloses)
+      .toBeLessThan(deskWide.coverage.totals.accountCloses);
+    expect(scoped.changes.counts.decisions).toBe(own.changes.counts.decisions);
+    expect(scoped.money.rows.map((row) => row.accounts))
+      .toEqual(own.money.rows.map((row) => row.accounts));
+  });
+
+  it('says so on the object, and the claim matches the measurement', () => {
+    expect(scoped.scope.pooledIsDeskWide).toBe(true);
+    expect(scoped.scope.pooledClientCount).toBe(clients.length);
+    expect(scoped.scope.deskWideNote).toContain('desk wide for everybody');
   });
 });

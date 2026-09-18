@@ -69,7 +69,7 @@ import {
 } from './algorithmBenchmark';
 import { instrumentRoot } from './instrumentSpecs';
 import { SEGMENTS, segmentForAccount } from './operationsSegments';
-import { resolvePeriod } from './deskPeriod';
+import { isWeekday, resolvePeriod } from './deskPeriod';
 
 /**
  * Account closes a business needs on BOTH sides before this report prints a
@@ -256,10 +256,30 @@ function buildCoverage(clients, period) {
   // close` across it. It is not a zero: nobody reported, which is a different
   // claim from "the desk made nothing", and the two have been confused on this
   // codebase's charts before.
-  for (const date of period.missingWeekdays) {
+  //
+  // Three different reasons, named on the row. A weekday before the book's
+  // first close or after its last is a fact about where the export begins and
+  // ends; only a weekday inside that range is a close somebody owed and did not
+  // file. `resolvePeriod` draws the same line for `partialReasons`.
+  const beforeBook = new Set(period.weekdaysBeforeBook || []);
+  const afterBook = new Set(period.weekdaysAfterBook || []);
+  // Weekdays with no close IN SCOPE, not in the book. On a CAM's copy the
+  // report's coverage is that CAM's, and a weekday the desk filed and this CAM
+  // did not is a gap in this table whatever the desk did.
+  const measuredDates = new Set(measured.map((row) => row.date));
+  const weekdaysWithoutClose = (period.weekdayDates || [])
+    .filter((date) => !measuredDates.has(date));
+  for (const date of weekdaysWithoutClose) {
     rows.push({
       date,
       noClose: true,
+      noCloseReason: beforeBook.has(date)
+        ? `Before the book's first close (${period.bookFirstClose}).`
+        : (afterBook.has(date)
+          ? `After the book's newest close (${period.bookLastClose}).`
+          : 'Inside the book’s range and no close was filed.'),
+      beforeBook: beforeBook.has(date),
+      afterBook: afterBook.has(date),
       clientsReporting: null,
       accountsReporting: null,
       accounts: null,
@@ -274,6 +294,9 @@ function buildCoverage(clients, period) {
   const quiet = buildQuietAccounts(clients, { asOf: period.to });
   const filedNothing = (quiet.collection?.filedNothing || [])
     .filter((entry) => entry.date >= period.from && entry.date <= period.to);
+  // One entry per (client, close), so the count of entries is a count of client
+  // closes and not of clients. A client quiet on two closes is one client.
+  const filedNothingClients = new Set(filedNothing.map((entry) => entry.clientId)).size;
 
   // Accounts that reported earlier in the period and are absent from its last
   // close. Absence, not status: `accountLifecycle` finds accounts the desk has
@@ -302,19 +325,56 @@ function buildCoverage(clients, period) {
     ? round2(fullest.accountRows / thinnest.accountRows)
     : null;
 
+  // THE HEADER SENTENCE'S NUMERATOR AND DENOMINATOR, FROM ONE SET.
+  //
+  // "6 closes of 5 weekdays" is what the header printed for Week of 2026-07-20,
+  // because 2026-07-25 is a Saturday close: the numerator counted every close
+  // and the denominator counted Monday to Friday. Split here, once, and both
+  // the sheet and the pasted summary read this.
+  const weekendCloseDates = measured.map((row) => row.date).filter((date) => !isWeekday(date));
+  const weekdayCloseDates = measured.map((row) => row.date).filter(isWeekday);
+  const closesSentence = `${weekdayCloseDates.length} of ${period.weekdays} weekday`
+    + `${period.weekdays === 1 ? '' : 's'} hold${weekdayCloseDates.length === 1 ? 's' : ''} a close`
+    + (weekendCloseDates.length
+      ? `, plus ${weekendCloseDates.length} weekend close`
+        + `${weekendCloseDates.length === 1 ? '' : 's'} (${weekendCloseDates.join(', ')})`
+      : '');
+
   return {
     rows,
     totals: {
       closesInPeriod: measured.length,
       weekdaysInPeriod: period.weekdays,
-      weekendCloses: period.weekendCloses.length,
+      // The header sentence divides closes by weekdays, so the weekend closes
+      // have to be visible or the numerator and the denominator come from
+      // different sets: Week of 2026-07-20 holds six closes over five weekdays
+      // because 2026-07-25 is a Saturday. `resolvePeriod` computes these with a
+      // comment naming that exact trap; here is where they are published.
+      weekendCloses: weekendCloseDates.length,
+      weekendCloseDates,
+      weekdayCloses: weekdayCloseDates.length,
+      weekdaysWithAClose: weekdayCloseDates.length,
+      weekdaysWithNoClose: weekdaysWithoutClose.length,
+      missingWeekdays: weekdaysWithoutClose.filter(
+        (date) => !beforeBook.has(date) && !afterBook.has(date),
+      ),
+      weekdaysBeforeBook: weekdaysWithoutClose.filter((date) => beforeBook.has(date)),
+      weekdaysAfterBook: weekdaysWithoutClose.filter((date) => afterBook.has(date)),
+      // One sentence, used verbatim by the sheet header, the "What this period
+      // holds" table and the pasted summary. Three copies of this arithmetic is
+      // how the three disagree.
+      closesSentence,
       clientsReporting: clientsInPeriod.size,
       accountsReporting: accountsInPeriod.size,
       accountCloses,
       fullestClose: fullest ? { date: fullest.date, accounts: fullest.accountRows, clients: fullest.clients.size } : null,
       thinnestClose: thinnest ? { date: thinnest.date, accounts: thinnest.accountRows, clients: thinnest.clients.size } : null,
       coverageRatio: ratio,
-      clientsThatFiledNothing: filedNothing.length,
+      // Two counts, because the entries are (client, close) pairs. Printing the
+      // entry count under a row label reading "clients" made two quiet closes of
+      // one client read as two clients.
+      clientsThatFiledNothing: filedNothingClients,
+      clientClosesThatFiledNothing: filedNothing.length,
       filedNothing,
       accountsThatStoppedFiling: stoppedFiling.length,
       // Absence from the period's last close. Reported with that close's own
@@ -370,7 +430,7 @@ function buildMoney(clients, period) {
           ? `Withheld: ${row.accounts} account close${row.accounts === 1 ? '' : 's'} in this `
             + `period and ${before.accounts} in ${period.priorLabel}, and this report will not `
             + `subtract two means under ${MIN_CLOSES_FOR_MONEY_CHANGE} account closes on either `
-            + 'side — at that size a difference is one account’s day.'
+            + 'side. At that size a difference is one account’s day.'
           : null),
     };
   });
@@ -410,9 +470,64 @@ function buildMoney(clients, period) {
 /* 3. The roster: what is running, what started, what stopped, what is */
 /*    not here any more.                                               */
 
+/**
+ * The close the roster decides Running and Stopped on.
+ *
+ * NOT "whichever date sorts last", and that is the whole point. On this book the
+ * week of 2026-07-20 ends on a Saturday close carrying one client and 7 account
+ * rows against the 338 of the week's fullest close. Deciding the states on it
+ * printed `Stopped` against twelve algorithms, Bullet Bot among them after 212
+ * account days that week, while the Results section four rows below ranked five
+ * of the twelve. A prose caveat under the heading does not stop a column headed
+ * State from reading "Stopped".
+ *
+ * The rule: the LAST close in the period that carries at least half the account
+ * rows of the period's fullest close. Half, because the question the column
+ * answers is "is this still running on the desk", and a close carrying less than
+ * half the desk cannot answer it either way. When no close clears the bar — a
+ * period of nothing but thin closes — the fullest close decides, because a
+ * measurement on the best evidence the period holds beats one on the worst.
+ *
+ * The deciding date is published, printed in the column header and in the note,
+ * and `lastClose` stays on the object for the coverage section, which is asking
+ * a different question about a different date.
+ */
+export const STATE_CLOSE_SHARE = 0.5;
+
+function decideStateClose(period, coverage) {
+  const closes = period.closes || [];
+  const lastClose = closes[closes.length - 1] || '';
+  const fullest = coverage?.totals?.fullestClose || null;
+  const accountsByDate = new Map(
+    (coverage?.rows || []).filter((row) => !row.noClose).map((row) => [row.date, row.accountsReporting]),
+  );
+  const floor = fullest && fullest.accounts ? fullest.accounts * STATE_CLOSE_SHARE : 0;
+  let chosen = '';
+  for (const date of closes) {
+    if ((accountsByDate.get(date) || 0) >= floor) chosen = date;
+  }
+  // Reachable only when the period holds no measured close at all: the fullest
+  // close always clears half of itself, so any period with a close has one.
+  const noCloseClears = !chosen;
+  if (noCloseClears) chosen = fullest?.date || lastClose;
+  const accounts = accountsByDate.get(chosen) ?? null;
+  const share = accounts !== null && fullest && fullest.accounts
+    ? Math.round((accounts / fullest.accounts) * 100)
+    : null;
+  return {
+    stateClose: chosen,
+    lastClose,
+    stateCloseAccounts: accounts,
+    stateCloseShareOfFullest: share,
+    stateCloseIsLastClose: chosen === lastClose,
+    stateCloseFellBackToFullest: noCloseClears,
+  };
+}
+
 function buildRoster(clients, period, coverage) {
   const all = new Map();
-  const lastClose = period.closes[period.closes.length - 1] || '';
+  const chosen = decideStateClose(period, coverage);
+  const { stateClose, lastClose } = chosen;
   // "New in period" is only a fact when the book holds history BEFORE the
   // period to be new against. A period that starts on the book's first close
   // makes every algorithm's first appearance fall inside it, and marking them
@@ -449,7 +564,7 @@ function buildRoster(clients, period, coverage) {
             accountDaysInPeriod: 0,
             closesPresent: new Set(),
             accountsByClose: new Map(),
-            accountsOnLastClose: new Set(),
+            accountsOnStateClose: new Set(),
             instruments: new Map(),
             bookAccountDays: 0,
           };
@@ -463,7 +578,7 @@ function buildRoster(clients, period, coverage) {
             const onDate = held.accountsByClose.get(date) || new Set();
             onDate.add(accountKey);
             held.accountsByClose.set(date, onDate);
-            if (date === lastClose) held.accountsOnLastClose.add(accountKey);
+            if (date === stateClose) held.accountsOnStateClose.add(accountKey);
             for (const strategy of snapshot?.strategies || []) {
               const family = strategy?.strategyFamily || '';
               const instrument = String(strategy?.instrument || '').trim();
@@ -486,7 +601,7 @@ function buildRoster(clients, period, coverage) {
 
   const rows = [...all.values()].map((entry) => {
     const inPeriod = entry.accountDaysInPeriod > 0;
-    const onLast = entry.accountsOnLastClose.size > 0;
+    const onLast = entry.accountsOnStateClose.size > 0;
     const isNew = newMeasurable
       && entry.firstSeen >= period.from
       && entry.firstSeen <= period.to;
@@ -506,7 +621,7 @@ function buildRoster(clients, period, coverage) {
       state,
       bucket,
       isNew,
-      accountsOnLastClose: entry.accountsOnLastClose.size,
+      accountsOnStateClose: entry.accountsOnStateClose.size,
       accountsInPeriod: entry.accountsInPeriod.size,
       accountDaysInPeriod: entry.accountDaysInPeriod,
       closesPresent: entry.closesPresent.size,
@@ -544,15 +659,11 @@ function buildRoster(clients, period, coverage) {
 
   const count = (bucket) => rows.filter((row) => row.bucket === bucket).length;
 
-  // HOW MUCH OF THE DESK THE LAST CLOSE ACTUALLY HELD.
+  // WHICH CLOSE DECIDED, AND HOW MUCH OF THE DESK IT HELD.
   //
-  // Every state in this table is decided on one close, and on this book that
-  // close is sometimes a Saturday carrying 7 of the 338 account rows the week's
-  // fullest close carried. Under the rule as written, twelve algorithms then
-  // read `Stopped` — which is true of that close and false of the desk. The
-  // rule is not bent for it (a rule that moves with coverage is worse than one
-  // that is stated), so the coverage of the deciding close is published beside
-  // the states and the page prints the caveat when it is thin.
+  // Published beside the states rather than left in a tooltip: the deciding date
+  // is part of the measurement, the same way a window is, and it is printed in
+  // the column header, in the note and in the pasted summary.
   const lastRow = (coverage?.rows || []).find((row) => row.date === lastClose) || null;
   const fullest = coverage?.totals?.fullestClose || null;
   const lastShare = lastRow && fullest && fullest.accounts
@@ -562,17 +673,26 @@ function buildRoster(clients, period, coverage) {
 
   return {
     rows,
-    lastClose,
+    ...chosen,
     lastCloseAccounts: lastRow ? lastRow.accountsReporting : null,
     lastCloseShareOfFullest: lastShare,
+    stateCloseShare: STATE_CLOSE_SHARE,
     thinLastClose,
-    thinLastCloseNote: thinLastClose
-      ? `Read the states with care. Running and Stopped are decided on ${lastClose}, which carried `
-        + `${lastRow.accountsReporting} account row${lastRow.accountsReporting === 1 ? '' : 's'} — `
-        + `${lastShare}% of the ${fullest.accounts} on ${fullest.date}, the fullest close in this `
-        + 'period. An algorithm absent from a close that thin is absent from a small slice of the '
-        + 'desk, not from the desk.'
-      : null,
+    // Only when the period's last close is NOT the one that decided. The
+    // sentence says which date was used instead and why, so a reader who
+    // expected the last close is told where the states came from.
+    thinLastCloseNote: chosen.stateCloseIsLastClose
+      ? null
+      : `Running and Stopped are decided on ${stateClose}, not on ${lastClose}. `
+        + `${lastClose} is the last close inside this period and it carried `
+        + `${lastRow ? lastRow.accountsReporting : 0} account row`
+        + `${lastRow && lastRow.accountsReporting === 1 ? '' : 's'}, `
+        + `${lastShare === null ? 'an unmeasured share' : `${lastShare}%`} of the `
+        + `${fullest ? fullest.accounts : 0} on ${fullest ? fullest.date : 'the fullest close'}. `
+        + `${stateClose} is the last close in this period carrying at least half of that, `
+        + `${chosen.stateCloseAccounts ?? 0} account row`
+        + `${chosen.stateCloseAccounts === 1 ? '' : 's'}. An algorithm absent from a close that `
+        + 'thin is absent from a small slice of the desk, not from the desk.',
     counts: {
       total: rows.length,
       running: rows.filter((row) => row.bucket === BUCKETS.ALIVE).length,
@@ -589,10 +709,14 @@ function buildRoster(clients, period, coverage) {
       : 'No algorithm is marked New in this period: the period starts on or before the book’s '
         + `first close (${period.bookFirstClose}), so every algorithm’s first appearance falls `
         + 'inside it and "new" would mean "the export begins here".',
-    stateNote: `Running is decided on ${lastClose || 'the last close inside this period'}, the last `
-      + 'close inside this period. Not seen means no account in this population carried it inside '
-      + 'this period — it does not mean retired, and on a book this short an algorithm can be '
-      + 'absent here and enabled on an account type this population excludes.',
+    stateNote: `Running is decided on ${stateClose || 'the last close inside this period'}`
+      + `${chosen.stateCloseIsLastClose
+        ? ', the last close inside this period.'
+        : ', the last close inside this period carrying at least half the account rows of its '
+          + 'fullest close.'}`
+      + ' Not seen means no account in this population carried it inside this period. It does not '
+      + 'mean retired, and on a book this short an algorithm can be absent here and enabled on an '
+      + 'account type this population excludes.',
     populationNote: 'Every account not marked Inactive / Ignore, which is wider than the funded '
       + 'population the stack table below measures.',
   };
@@ -617,6 +741,16 @@ function buildMovement(periodRanking, priorRanking, bookRanking, period) {
   const inPeriod = rankingIndex(periodRanking);
   const inPrior = rankingIndex(priorRanking);
   const inBook = rankingIndex(bookRanking);
+  // THE BOOK TO DATE IS SOMETIMES THIS PERIOD, EXACTLY.
+  //
+  // `bookRanking` runs from the book's first close to the period's last day. On
+  // a month that starts on or before the book's first close those are the same
+  // closes, so every difference is 0 by construction and a column of eight
+  // $0.00 cells reads as a finding about the desk. Withheld with the reason,
+  // the way every other comparison here is withheld.
+  const bookIsThisPeriod = Boolean(period.bookFirstClose) && period.from <= period.bookFirstClose;
+  const bookSameRefusal = `Withheld: this period holds every close the book has up to ${period.to}, `
+    + 'so the book to date is this same measurement over these same days.';
 
   const names = [...new Set([...inPeriod.keys(), ...inBook.keys()])];
   const rows = names.map((name) => {
@@ -625,7 +759,7 @@ function buildMovement(periodRanking, priorRanking, bookRanking, period) {
     const book = inBook.get(name) || null;
     const gated = (row) => Boolean(row && row.sufficient);
     const bothWindows = gated(here) && gated(before);
-    const bookComparable = gated(here) && gated(book);
+    const bookComparable = !bookIsThisPeriod && gated(here) && gated(book);
     const change = bothWindows
       ? round2(here.meanPerAccountDay - before.meanPerAccountDay)
       : null;
@@ -666,7 +800,9 @@ function buildMovement(periodRanking, priorRanking, bookRanking, period) {
       againstBook: bookComparable && here && book
         ? round2(here.meanPerAccountDay - book.meanPerAccountDay)
         : null,
-      againstBookRefusal: bookComparable ? null : 'Withheld under the same gate.',
+      againstBookRefusal: bookComparable
+        ? null
+        : (bookIsThisPeriod ? bookSameRefusal : 'Withheld under the same gate.'),
       reading: readingFor(
         here ? here.meanPerAccountDay : null,
         before ? before.meanPerAccountDay : 0,
@@ -690,8 +826,13 @@ function buildMovement(periodRanking, priorRanking, bookRanking, period) {
     rows,
     drawable: rows.filter((row) => row.drawable),
     notDrawable: rows.filter((row) => !row.drawable),
-    bookNote: `The book to date runs from the book’s first close to ${period.to} and CONTAINS this `
-      + 'period, so the two are not independent windows.',
+    bookIsThisPeriod,
+    bookNote: bookIsThisPeriod
+      ? `The book to date runs from its first close (${period.bookFirstClose}) to ${period.to}, `
+        + 'which on this period is the very same set of closes. The column is withheld on every '
+        + 'row rather than printed as a column of zeros.'
+      : `The book to date runs from the book’s first close to ${period.to} and CONTAINS this `
+        + 'period, so the two are not independent windows.',
     changeBand: CHANGE_BAND,
   };
 }
@@ -728,10 +869,23 @@ function buildStack(clients, period) {
   }));
 
   const gated = rows.filter((row) => !row.lowSample);
+  const population = perf.population;
   return {
     perf,
     priorPerf,
     rows,
+    population,
+    // WRITTEN HERE, NOT IN THE MARKUP, and every count in it names what it
+    // counts. The version this replaces read "599 attributed of 896 funded
+    // account days · 149 accounts · 44 clients" inside a sentence whose subject
+    // was the funded population — but those two counts are of accounts and
+    // clients that ATTRIBUTED, 31 accounts and 4 clients short of the
+    // population the same sentence claimed to describe.
+    populationNote: 'Funded accounts, failed ones included, over each account’s own alive range · '
+      + `${population.includedDays} attributed of ${population.fundedDays} funded account days · `
+      + `${population.accounts} of ${population.fundedAccounts} accounts · `
+      + `${population.clients} of ${population.fundedClients} clients attributed · `
+      + 'traded attribution at version level',
     gatedCount: gated.length,
     lowSampleCount: rows.length - gated.length,
     best: perf.best,
@@ -773,8 +927,12 @@ function buildComboChanges(clients, period) {
         const meta = registry[name.toLowerCase()];
         if (!inReportPopulation(meta, name)) continue;
         const key = name.toLowerCase();
-        const held = byAccount.get(key) || { name, meta, points: [] };
-        held.points.push({
+        const held = byAccount.get(key) || { name, meta, byDate: new Map() };
+        // ONE POINT PER TRADING DATE, latest import wins. A client that filed
+        // two imports for one date would otherwise be diffed against its own
+        // duplicate and print a combination change nobody made. `imports` is
+        // sorted by date, so the last write for a date is the later import.
+        held.byDate.set(date, {
           date,
           combo: comboKeyFromDay(
             snapshot,
@@ -788,17 +946,51 @@ function buildComboChanges(clients, period) {
     }
 
     for (const account of byAccount.values()) {
-      const { points } = account;
+      const points = [...account.byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+      // Where every change on this account sits, so each one's two sides can be
+      // bounded by its NEIGHBOURS rather than by the period.
+      //
+      // The boundaries are the DECISIONS only. A change to or from Unknown is
+      // the export losing or regaining the algorithm's name, which this section
+      // counts apart for exactly that reason, and letting one truncate the
+      // evidence window of a real change would let a gap in the data decide how
+      // much data a decision gets measured on. On this book the attribution
+      // flickers often enough that bounding on every change left 0 of 239
+      // monthly rows with five closes a side.
+      const changeAt = [];
+      const decisionAt = [];
       for (let index = 1; index < points.length; index += 1) {
+        if (points[index].combo === points[index - 1].combo) continue;
+        changeAt.push(index);
+        if (points[index].combo !== UNKNOWN_KEY && points[index - 1].combo !== UNKNOWN_KEY) {
+          decisionAt.push(index);
+        }
+      }
+      for (let nth = 0; nth < changeAt.length; nth += 1) {
+        const index = changeAt[nth];
         const here = points[index];
         const before = points[index - 1];
-        if (here.combo === before.combo) continue;
         if (here.date < period.from || here.date > period.to) continue;
-        const inPeriod = points.filter(
-          (point) => point.date >= period.from && point.date <= period.to,
-        );
-        const after = inPeriod.filter((point) => point.date >= here.date);
-        const priorSide = inPeriod.filter((point) => point.date < here.date);
+        // THE TWO SIDES ARE THE TWO COMBINATIONS, NOT THE TWO HALVES OF A WEEK.
+        //
+        // Both bugs this replaces were the report's own class. Clipping the
+        // sides to the period made "5 before and 5 after" arithmetically
+        // impossible on a week (6 closes at most on this book), so the column
+        // printed a refusal on every one of 103 rows; and running the after side
+        // to the end of the period swept in days run on a THIRD combination on
+        // 168 of the month's 239 rows, under a column labelled the P&L on each
+        // side of this change.
+        //
+        // So: the before side runs from the previous change on this account (or
+        // its first close) to the day before this one, the after side from this
+        // change to the day before the next one (or the account's last close),
+        // and neither is clipped by the period. The change is dated inside the
+        // period; the evidence for it need not be, and the two bounds are
+        // printed on the row.
+        const previousIndex = decisionAt.filter((at) => at < index).pop() ?? 0;
+        const nextIndex = decisionAt.find((at) => at > index) ?? points.length;
+        const priorSide = points.slice(previousIndex, index);
+        const after = points.slice(index, nextIndex);
         const mean = (list) => (list.length
           ? round2(list.reduce((sum, point) => sum + point.pnl, 0) / list.length)
           : null);
@@ -811,6 +1003,9 @@ function buildComboChanges(clients, period) {
         // listed apart, because a table headed "the decisions" whose rows are
         // mostly evidence gaps is the same defect as a mislabelled column.
         const involvesUnknown = here.combo === UNKNOWN_KEY || before.combo === UNKNOWN_KEY;
+        const nextChangeDate = nextIndex < points.length ? points[nextIndex].date : '';
+        const sideFrom = priorSide[0]?.date || '';
+        const sideTo = after[after.length - 1]?.date || '';
         changes.push({
           involvesUnknown,
           date: here.date,
@@ -820,15 +1015,41 @@ function buildComboChanges(clients, period) {
           accountAlias: account.meta?.alias || '',
           from: before.combo,
           to: here.combo,
+          // Closes on the NEW combination only: the count stops at this
+          // account's next change, whose date is on the row beside it.
           accountDaysSince: after.length,
+          nextChangeDate,
+          endsAtNextChange: Boolean(nextChangeDate),
           beforeDays: priorSide.length,
           afterDays: after.length,
+          beforeFrom: sideFrom,
+          beforeTo: before.date,
+          afterFrom: here.date,
+          afterTo: sideTo,
+          outsidePeriod: Boolean(
+            (sideFrom && sideFrom < period.from) || (sideTo && sideTo > period.to),
+          ),
+          // The two bounds, short enough to PRINT in the cell. The long form is
+          // the cell's title; a title renders on no paper and on no touch
+          // screen, and a window nobody can read is a window nobody checks.
+          sidesWindowShort: `${sideFrom || '—'} to ${before.date} · ${here.date} to ${sideTo || '—'}`,
+          sidesWindow: `${priorSide.length} close${priorSide.length === 1 ? '' : 's'} on `
+            + `${before.combo} (${sideFrom || 'none'} to ${before.date}), `
+            + `${after.length} on ${here.combo} (${here.date} to ${sideTo || 'none'}`
+            + `${nextChangeDate ? `, cut at the next change on ${nextChangeDate}` : ''}). `
+            + 'This account’s own closes, which may run outside this period.',
           perAccountDayBefore: comparable ? mean(priorSide) : null,
           perAccountDayAfter: comparable ? mean(after) : null,
+          // The counts, short enough for a cell. The full sentence is the
+          // cell's title and the gate is stated once under the table: the long
+          // form printed in every cell made the widest column of a 103-row
+          // table a wall of identical refusals.
+          sidesCountsShort: `${priorSide.length} before / ${after.length} after, needs 5 each`,
           sidesRefusal: comparable
             ? null
-            : `Withheld: ${priorSide.length} account day${priorSide.length === 1 ? '' : 's'} before `
-              + `and ${after.length} after inside this period, and each side needs 5.`,
+            : `Withheld: ${priorSide.length} account day${priorSide.length === 1 ? '' : 's'} on `
+              + `${before.combo} and ${after.length} on ${here.combo}, this account’s own closes `
+              + 'either side of the change, and each side needs 5.',
         });
       }
     }
@@ -843,6 +1064,9 @@ function buildComboChanges(clients, period) {
 function summariseChanges(rows, period) {
   const decisions = rows.filter((row) => !row.involvesUnknown);
   const attribution = rows.filter((row) => row.involvesUnknown);
+  const accountsOf = (list) => new Set(
+    list.map((row) => `${row.clientId}::${row.accountName}`),
+  ).size;
   return {
     rows: decisions,
     attributionGaps: attribution,
@@ -850,16 +1074,38 @@ function summariseChanges(rows, period) {
       total: rows.length,
       decisions: decisions.length,
       attributionGaps: attribution.length,
-      accounts: new Set(rows.map((row) => `${row.clientId}::${row.accountName}`)).size,
+      // THE COUNT THE TABLE'S OWN SENTENCE DIVIDES BY. `accounts` counts every
+      // account touched by any change including the attribution gaps, which are
+      // explicitly not listed in the table; printing the decisions over THAT
+      // read as "239 changes over 320 accounts" when the 239 rows below touch 91.
+      decisionAccounts: accountsOf(decisions),
+      attributionGapAccounts: accountsOf(attribution),
+      accounts: accountsOf(rows),
       compared: decisions.filter((row) => row.perAccountDayBefore !== null).length,
     },
     attributionNote: `${attribution.length} further change${attribution.length === 1 ? '' : 's'} `
-      + 'in this period were to or from Unknown — the export stopped naming an algorithm, or '
-      + 'started. They are a change in evidence, not a change somebody made, and they are counted '
-      + 'here rather than listed above.',
-    sidesNote: `Each side of a change needs 5 account days inside ${period.label} before the two `
-      + 'figures are printed. That is the floor comboPerformance already uses to split its trend '
-      + 'halves, and it is not a new number.',
+      + `in this period, over ${accountsOf(attribution)} account`
+      + `${accountsOf(attribution) === 1 ? '' : 's'}, were to or from Unknown: the export stopped `
+      + 'naming an algorithm, or started. They are a change in evidence, not a change somebody '
+      + 'made, and they are counted here rather than listed above.',
+    sidesGate: 5,
+    // WHAT THE COLUMN ACTUALLY DELIVERED, said once, above a column that mostly
+    // cannot deliver it. On this book an account changes combination often
+    // enough that five of its own closes on one combination either side of a
+    // decision is rare: 2 of 239 on 2026-07. That is a fact about the book, and
+    // a sentence stating it is worth more than 237 identical refusals.
+    sidesSummary: `${decisions.filter((row) => row.perAccountDayBefore !== null).length} of `
+      + `${decisions.length} change${decisions.length === 1 ? '' : 's'} hold five of the `
+      + 'account’s own closes on each side and print the two figures. The rest print their two '
+      + 'counts and no figures. An account that changes combination every few closes has no run '
+      + 'long enough to measure either side of a change, which is a fact about this desk’s '
+      + 'configuration cadence and not about the algorithms.',
+    sidesNote: 'Each side of a change is this account’s own closes between the change before it '
+      + 'and the change after it, and each side needs 5 of them before the two figures are '
+      + `printed. Those closes are not clipped to ${period.label}: the change is dated inside the `
+      + 'period, the evidence for it need not be, and every row prints its own two bounds. Five is '
+      + 'the floor comboPerformance already uses to split its trend halves, and it is not a new '
+      + 'number.',
   };
 }
 
@@ -871,6 +1117,7 @@ function buildBenchmark(roster, series, period, riskLevel) {
   const list = Array.isArray(series) ? series : [];
   const coverage = buildBenchmarkCoverage(
     roster.rows.map((row) => ({
+      element: row.algorithm,
       algorithm: row.family,
       version: row.version,
       instruments: row.instruments.map((entry) => entry.name),
@@ -903,7 +1150,22 @@ function buildBenchmark(roster, series, period, riskLevel) {
       netPerDayWithATrade: days.length ? round2(net / days.length) : null,
       basis: entry.basis || benchmarkBasisLabel(entry),
       sourceFile: entry.sourceFile,
+      sourceFiles: entry.sourceFiles || (entry.sourceFile ? [entry.sourceFile] : []),
       quantities: entry.quantities,
+      // The vendor's own running total against ours, carried onto the row.
+      // `buildBenchmarkSeries` merges two files describing the same series on
+      // purpose, and the realistic re-download collides by name: parsing
+      // `RBO_-_M2K_-_Low_Risk.csv` twice, once as `... (1).csv`, doubles the
+      // trades and the net with nothing on screen to say so. The Data Tools
+      // card already prints this; the report printed nothing.
+      reconciliation: entry.reconciliation || null,
+      reconciliationRefusal: entry.reconciliation && entry.reconciliation.matches === false
+        ? `This series disagrees with the vendor’s own running total by `
+          + `${entry.reconciliation.difference}. Its file${(entry.sourceFiles || []).length === 1 ? ' is' : 's are'} `
+          + `${(entry.sourceFiles || [entry.sourceFile]).join(', ')}. Two downloads of one series `
+          + 'merge into one, so the usual cause is the same file imported twice under two names, '
+          + 'which doubles every figure on this row.'
+        : null,
     };
   }).sort((a, b) => a.algorithm.localeCompare(b.algorithm));
 
@@ -943,8 +1205,90 @@ function buildBenchmark(roster, series, period, riskLevel) {
     coverage,
     rows,
     curves,
+    // Series whose figures cannot be believed as they stand, named so the
+    // section carries the refusal rather than the numbers alone.
+    disagreeingSeries: rows.filter((row) => row.reconciliationRefusal),
     minCommonCloses: BENCHMARK_MIN_COMMON_CLOSES,
     separation: BENCHMARK_SEPARATION,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* 6b. The answer, first, from the same fields the pasted line uses.   */
+
+/**
+ * The three questions the desk manager asked, answered above the denominators.
+ *
+ * WHY THIS EXISTS AT ALL. Coverage goes first on this page and that is still
+ * the right call — every rate under it divides by a denominator that moves by a
+ * factor of fifty between closes. But "coverage first" was implemented as "no
+ * answer at all until section four": the reader met a 6-column, 31-row table of
+ * closes, a chart and a 9-row totals table before a single verdict. The
+ * arithmetic for the answer already existed and was reachable only through the
+ * clipboard.
+ *
+ * SO IT IS ONE OBJECT AND BOTH SURFACES READ IT. The sheet renders this and
+ * `formatDeskPeriodReport` prints this; neither computes anything of its own, so
+ * the page and the pasted WhatsApp line cannot disagree about what the desk made
+ * or which algorithm came first. Every figure here is a rate with its own
+ * denominator beside it, and there is no total across businesses.
+ */
+function buildSummary({ period, scope, coverage, money, roster, results, stack, changes }) {
+  const totals = coverage.totals;
+  const ranked = results.rows.filter((row) => row.ranked);
+  return {
+    title: `Desk period report, ${period.label}`,
+    periodLabel: period.label,
+    dates: `${period.from} to ${period.to}`,
+    closesSentence: totals.closesSentence,
+    scopeLabel: scope.label,
+    partial: period.partial,
+    partialReasons: period.partialReasons,
+    coverageLine: `${totals.accountCloses} account close`
+      + `${totals.accountCloses === 1 ? '' : 's'} over ${totals.accountsReporting} account`
+      + `${totals.accountsReporting === 1 ? '' : 's'} and ${totals.clientsReporting} client`
+      + `${totals.clientsReporting === 1 ? '' : 's'}`,
+    coverageRange: totals.fullestClose && totals.thinnestClose
+      ? `Fullest close ${totals.fullestClose.date} (${totals.fullestClose.accounts} account rows), `
+        + `thinnest ${totals.thinnestClose.date} (${totals.thinnestClose.accounts}), a factor of `
+        + `${totals.coverageRatio}`
+      : null,
+    // Per business, per account close, with the count it divides by. Never
+    // added: see `money.rowsDoNotSum`.
+    money: money.rows.map((row) => ({
+      key: row.key,
+      label: row.label,
+      shortLabel: row.shortLabel,
+      perAccountClose: row.perAccountClose,
+      accountCloses: row.accounts,
+    })),
+    moneyNote: money.rowsDoNotSum,
+    ranked: ranked.map((row) => ({
+      rank: row.rank,
+      name: row.name,
+      meanPerAccountDay: row.meanPerAccountDay,
+      accountDays: row.accountDays,
+      ranAccountDays: row.accountDays + (row.unmeasuredAccountDays || 0),
+      accounts: row.accounts,
+    })),
+    rankedCount: results.rankedCount,
+    rankableCount: results.rankedCount + results.unrankedCount,
+    // The roster's answer to "which are alive right now", with the date that
+    // decided it, because Running is a fact about one close.
+    stateClose: roster.stateClose,
+    running: roster.rows.filter((row) => row.bucket === BUCKETS.ALIVE).map((row) => row.algorithm),
+    newInPeriod: roster.rows.filter((row) => row.isNew).map((row) => row.algorithm),
+    stopped: roster.rows
+      .filter((row) => row.state === ROSTER_STATES.STOPPED).map((row) => row.algorithm),
+    changesLine: `${changes.counts.decisions} combination change`
+      + `${changes.counts.decisions === 1 ? '' : 's'} over ${changes.counts.decisionAccounts} `
+      + `account${changes.counts.decisionAccounts === 1 ? '' : 's'}`,
+    noVerdictLine: `${results.unrankedCount} algorithm`
+      + `${results.unrankedCount === 1 ? '' : 's'} and ${stack.lowSampleCount} combination`
+      + `${stack.lowSampleCount === 1 ? '' : 's'} carry their counts and no verdict: too few `
+      + 'account days or too few accounts in this period',
+    measuredLine: `${results.measuredAccountDays} of ${results.ranAccountDays} account days that `
+      + 'carried an algorithm state what it made; every rate below divides by the first number',
   };
 }
 
@@ -956,6 +1300,7 @@ export function periodReportRefusals(report) {
   const results = report?.results || {};
   const stack = report?.stack || {};
   const benchmark = report?.benchmark || {};
+  const movement = report?.movement || {};
   const thin = coverage.thinnestClose?.accounts ?? 0;
   const full = coverage.fullestClose?.accounts ?? 0;
   const ranked = results.rankedCount ?? 0;
@@ -1002,6 +1347,29 @@ export function periodReportRefusals(report) {
         + 'to stop.',
     },
     {
+      figure: 'A mean over every account day an algorithm ran on',
+      value: results.measuredShare === null || results.measuredShare === undefined
+        ? 'not stated'
+        : `${results.measuredAccountDays} of ${results.ranAccountDays} account days measured`,
+      reason: 'Every rate in the results and movement tables divides by REPORTED account days. '
+        + `${results.ranAccountDays ?? 0} account days in this period carried an algorithm under `
+        + `traded attribution and ${results.measuredAccountDays ?? 0} of them state what it made. `
+        + 'The rest are on the row beside the mean and in no mean: a grid row the desk switched '
+        + 'off reports realized 0 whether or not it traded, and counting that 0 would put hundreds '
+        + 'of false flat days into the denominator of every algorithm.',
+    },
+    ...(movement.bookIsThisPeriod ? [{
+      figure: 'This period against the book to date',
+      value: 'not stated',
+      reason: movement.bookNote,
+    }] : []),
+    ...((benchmark.disagreeingSeries || []).length ? [{
+      figure: 'The backtest figures for '
+        + `${benchmark.disagreeingSeries.map((row) => row.algorithm).join(', ')}`,
+      value: 'not to be believed as printed',
+      reason: benchmark.disagreeingSeries.map((row) => row.reconciliationRefusal).join(' '),
+    }] : []),
+    {
       figure: 'Any agreement between this desk and My Futures Book',
       value: 'not stated',
       reason: benchmark.coverage?.refusal
@@ -1044,7 +1412,18 @@ const DEFINITIONS = [
   ['Account close', 'The same unit on the money side: one account, one close. Owned by deskMoney.js.'],
   ['Traded attribution', 'An algorithm ran on an account day when the grid says it was enabled, or '
     + 'the fills name it, or the grid reports a non-zero realized on a row it had switched off. '
-    + 'Owned by comboPerformance.js.'],
+    + 'Every section of this report attributes this way: the roster, the results, the movement, '
+    + 'the stack and the account changes. Owned by comboPerformance.js.'],
+  ['Enabled-at-export attribution', 'The other rule, and the one this report does NOT use: an '
+    + 'algorithm counts on an account day only when its Strategies grid checkbox was still ticked '
+    + 'at the moment the CAM exported. An algorithm that hit its daily stop and switched itself '
+    + 'off before the export vanishes, and with it the day it lost. It drops 64% of funded account '
+    + 'days on this book and whether a day counts moves with the hour of the export. The '
+    + 'Operations ranking panel still quotes it; nothing on this page does.'],
+  ['Reported account day', 'An account day on which the algorithm ran AND something stated what it '
+    + 'made: a figure derived from the fills, or a realized the grid reported. The mean, the '
+    + 'interval, the win rate and the evidence gate all divide by this. A grid row switched off '
+    + 'reads realized 0 whether or not it traded, so that 0 is not counted as a measurement.'],
   ['Measured P&L', 'Realized net of commission where the Strategies grid reported it, derived from '
     + 'the fills otherwise. Owned by algorithmRanking.js.'],
   ['Funded population', 'Accounts whose registry type is Funded, failed ones included, over each '
@@ -1080,6 +1459,7 @@ export function buildDeskPeriodReport(clients = [], {
   key = '',
   from = '',
   to = '',
+  deskClients = null,
   scope = null,
   benchmarkSeries = [],
   benchmarkRisk = 'Low',
@@ -1087,45 +1467,92 @@ export function buildDeskPeriodReport(clients = [], {
   builtBy = '',
 } = {}) {
   const list = clients || [];
-  const resolved = period || resolvePeriod(list, { kind, key, from, to });
-  const book = bookCloses(list);
+  // THE TWO POPULATIONS, AND WHICH SECTION EACH ONE ANSWERS.
+  //
+  // `list` is the clients the reader owns: their coverage, their money, their
+  // accounts' configuration changes. `pooled` is the desk — every client the
+  // report can see — and it is what the roster, the three rankings, the stack
+  // and the benchmark are measured over.
+  //
+  // This is not a refinement. Without it a CAM's copy computed every one of
+  // those sections over that CAM's eight clients and printed the sentence "The
+  // roster, the results, the movement, the stack and the benchmark are desk
+  // wide for everybody" underneath. Desk wide, 2026-07 ranks ARPD first at
+  // -$3.57 per account day over 61 account days; over an eight-client book it
+  // ranks URGO first at -$39.05 over 56, with two of nine algorithms clearing
+  // the gate. Same column headers, same sentence. That is the exact defect this
+  // branch exists to close, one level up from the ones it closed.
+  //
+  // With no desk list handed in, the two are the same list and the scope block
+  // says `desk`.
+  const pooled = deskClients && deskClients.length ? deskClients : list;
+  const resolved = period || resolvePeriod(pooled, { kind, key, from, to });
+  const book = bookCloses(pooled);
+  const isCam = scope?.kind === 'cam';
 
   const scopeBlock = {
-    kind: scope?.kind === 'cam' ? 'cam' : 'desk',
+    kind: isCam ? 'cam' : 'desk',
     camProfileId: scope?.camProfileId || null,
     camName: scope?.camName || '',
     clientsInScope: list.length,
-    deskClientCount: scope?.deskClientCount ?? list.length,
-    label: scope?.kind === 'cam'
-      ? `Your book, ${list.length} of the desk’s ${scope?.deskClientCount ?? list.length} clients`
+    deskClientCount: scope?.deskClientCount ?? pooled.length,
+    // Whether the pooled sections really were pooled, computed rather than
+    // asserted: a caller that forgets `deskClients` on a CAM shell must not be
+    // able to print the desk-wide sentence over one CAM's book.
+    pooledClientCount: pooled.length,
+    pooledIsDeskWide: pooled !== list,
+    label: isCam
+      ? `Your book, ${list.length} of the desk’s ${scope?.deskClientCount ?? pooled.length} clients`
       : `Desk wide, ${list.length} client${list.length === 1 ? '' : 's'}`,
     // Which sections the scope actually narrows. Stated on the object rather
     // than only in the component: a CAM's coverage and money are their own
     // book, and the algorithm sections are the desk's, pooled — a ranking over
     // one CAM's eight clients under the same column header would be a different
     // measurement wearing the same label.
-    scopedSections: scope?.kind === 'cam'
-      ? ['coverage', 'money', 'changes']
-      : [],
-    deskWideNote: 'The roster, the results, the movement, the stack and the benchmark are desk '
-      + 'wide for everybody. A ranking computed over one CAM’s clients under the same column '
-      + 'header would be a different measurement wearing the same label, and almost every row of '
-      + 'it would fall under the evidence gate.',
+    scopedSections: isCam ? ['coverage', 'money', 'changes'] : [],
+    pooledSections: isCam ? ['roster', 'results', 'movement', 'stack', 'benchmark'] : [],
+    deskWideNote: isCam && pooled === list
+      ? 'The roster, the results, the movement, the stack and the benchmark were computed over '
+        + 'this book alone, because no desk-wide client list was handed to this report. They are '
+        + 'NOT comparable with another CAM’s copy and they are not the desk’s figures.'
+      : 'The roster, the results, the movement, the stack and the benchmark are desk wide for '
+        + `everybody, measured over ${pooled.length} client${pooled.length === 1 ? '' : 's'}. A `
+        + 'ranking computed over one CAM’s clients under the same column header would be a '
+        + 'different measurement wearing the same label, and almost every row of it would fall '
+        + 'under the evidence gate.',
   };
 
   const coverage = buildCoverage(list, resolved);
   const money = buildMoney(list, resolved);
-  const roster = buildRoster(list, resolved, coverage);
+  // The roster's own coverage, over the pooled book, so the close its states are
+  // decided on is chosen against the desk's fullest close and not against this
+  // CAM's. On the desk shell the two calls have the same argument.
+  const pooledCoverage = pooled === list ? coverage : buildCoverage(pooled, resolved);
+  const roster = buildRoster(pooled, resolved, pooledCoverage);
 
-  const periodRanking = buildStrategyRanking(list, {
+  // TRADED ATTRIBUTION, THE SAME AS EVERY OTHER SECTION OF THIS REPORT.
+  //
+  // `buildStrategyRanking` defaults to the export-time `enabled` flag, which is
+  // what the Operations panel quotes and what `docs/stack-playbook-spec.md`
+  // §2.1 documents as a blocker: it drops 64% of funded account-days, and the
+  // dropped days are where the losses sit. The roster and the stack on this
+  // same page already attribute on `traded`, so the two put different
+  // measurements under one "Account days" header six rows apart — URGO 216
+  // against 344 on 2026-07. Every ranking here now asks for the same basis the
+  // rest of the page uses, and `results.attribution` prints it.
+  const rankingOptions = { basis: 'traded' };
+  const periodRanking = buildStrategyRanking(pooled, {
+    ...rankingOptions,
     fromDate: resolved.from,
     asOfDate: resolved.to,
   });
-  const priorRanking = resolved.priorEmpty ? null : buildStrategyRanking(list, {
+  const priorRanking = resolved.priorEmpty ? null : buildStrategyRanking(pooled, {
+    ...rankingOptions,
     fromDate: resolved.priorFrom,
     asOfDate: resolved.priorTo,
   });
-  const bookRanking = buildStrategyRanking(list, {
+  const bookRanking = buildStrategyRanking(pooled, {
+    ...rankingOptions,
     asOfDate: resolved.to,
     windows: {
       recentFrom: resolved.from,
@@ -1137,8 +1564,33 @@ export function buildDeskPeriodReport(clients = [], {
     },
   });
 
+  // What the Results table's own denominator is, in account days rather than in
+  // closes and clients. The ranking gates and ranks on REPORTED account days —
+  // days something measured what the algorithm made — while the roster on the
+  // same page counts every account day it ran on. Both numbers are on every row
+  // now, so a reader can see that ARPD is ranked first on 61 of the 137 account
+  // days it ran.
+  const rankingAttribution = {
+    rankedOn: 'reported account days',
+    ranOn: 'account days the algorithm ran on, under the same traded attribution the roster uses',
+    note: 'Two counts per row, and they are not the same unit. An algorithm runs on an account '
+      + 'day when the grid says it was enabled, or the fills name it, or the grid reports a '
+      + 'non-zero realized on a row it had switched off. It is MEASURED on that day only when '
+      + 'something states what it made: a figure derived from the fills, or a realized the grid '
+      + 'reported. The mean, the interval, the win rate and the evidence gate all divide by the '
+      + 'measured count; the roster above counts every day it ran.',
+  };
+  const attributed = periodRanking.ranking.rows.reduce(
+    (sum, row) => sum + row.accountDays, 0,
+  );
+  const ranOn = periodRanking.ranking.rows.reduce(
+    (sum, row) => sum + row.accountDays + (row.unmeasuredAccountDays || 0), 0,
+  );
+
   const results = {
     basis: periodRanking.basis,
+    attribution: periodRanking.basis.attribution,
+    attributionLabel: periodRanking.basis.attributionLabel,
     rows: periodRanking.ranking.rows,
     rankedCount: periodRanking.ranking.rankedCount,
     unrankedCount: periodRanking.ranking.unrankedCount,
@@ -1147,6 +1599,29 @@ export function buildDeskPeriodReport(clients = [], {
     instrumentCaveat: periodRanking.ranking.instrumentCaveat,
     gate: periodRanking.gate,
     reconciliation: periodRanking.reconciliation,
+    // Attributed against unmeasured account days per business: the row a client
+    // asking "what did you leave out" is entitled to see, and where the gap
+    // between running and measuring shows per business rather than per family.
+    //
+    // COUNTS ONLY. `buildStrategyRanking().businesses[].coverage` carries
+    // `accountPnl`, `attributedPnl` and `unattributedPnl`, and those belong to
+    // the money section, which states money per business under its own labels.
+    // Copying them onto `results` would put a dollar on the object the ranking
+    // lives on, which is the key the next caller sums — the defect
+    // `finishStats` refuses money for in the first place.
+    businesses: periodRanking.businesses.map((business) => ({
+      key: business.key,
+      label: business.label,
+      shortLabel: business.shortLabel,
+      note: business.note,
+      measuredAccountDays: business.coverage.accountDays,
+      unmeasuredAccountDays: business.coverage.unmeasuredAccountDays,
+      ranAccountDays: business.coverage.accountDays + business.coverage.unmeasuredAccountDays,
+    })),
+    measuredAccountDays: attributed,
+    ranAccountDays: ranOn,
+    measuredShare: ranOn ? Math.round((attributed / ranOn) * 100) : null,
+    accountDayNote: rankingAttribution.note,
     accountTypeRefusal: ACCOUNT_TYPE_REFUSAL,
     noRankNote: periodRanking.ranking.rankedCount === 0
       ? `No algorithm clears ${EVIDENCE_GATE.minAccountDays} reported account days and `
@@ -1156,7 +1631,7 @@ export function buildDeskPeriodReport(clients = [], {
   };
 
   const movement = buildMovement(periodRanking, priorRanking, bookRanking, resolved);
-  const stack = buildStack(list, resolved);
+  const stack = buildStack(pooled, resolved);
   const changes = {
     ...summariseChanges(buildComboChanges(list, resolved), resolved),
     drift: buildConfigDrift(list, { asOfDate: resolved.to }),
@@ -1193,6 +1668,7 @@ export function buildDeskPeriodReport(clients = [], {
       latestImportedAt,
       moduleVersions: {
         comboPerformance: 'traded/version',
+        algorithmRanking: `traded/${periodRanking.basis.attribution}`,
         evidenceGate: `${EVIDENCE_GATE.minAccountDays}/${EVIDENCE_GATE.minAccounts}`,
         sampleGate: `${MIN_DAYS}/${MIN_ACCOUNTS}`,
       },
@@ -1208,6 +1684,16 @@ export function buildDeskPeriodReport(clients = [], {
     benchmark,
     definitions: DEFINITIONS.map(([term, meaning]) => ({ term, meaning })),
   };
+  report.summary = buildSummary({
+    period: resolved,
+    scope: scopeBlock,
+    coverage,
+    money,
+    roster,
+    results,
+    stack,
+    changes,
+  });
   report.refusals = periodReportRefusals(report);
   return report;
 }
@@ -1236,48 +1722,36 @@ function signedMoney(value) {
  */
 export function formatDeskPeriodReport(report) {
   if (!report) return '';
-  const { period, coverage, money, roster, results, stack } = report;
+  const summary = report.summary || buildSummary(report);
   const lines = [];
-  lines.push(`*${report.title}*`);
-  lines.push(`${period.from} to ${period.to} · ${coverage.totals.closesInPeriod} close`
-    + `${coverage.totals.closesInPeriod === 1 ? '' : 's'} of ${period.weekdays} weekday`
-    + `${period.weekdays === 1 ? '' : 's'} · ${report.scope.label}`);
-  if (period.partial) lines.push(`_This period is not complete. ${period.partialReasons.join(' ')}_`);
+  lines.push(`*${summary.title}*`);
+  lines.push(`${summary.dates} · ${summary.closesSentence} · ${summary.scopeLabel}`);
+  if (summary.partial) lines.push(`_This period is not complete. ${summary.partialReasons.join(' ')}_`);
   lines.push('');
-  lines.push(`*Coverage* ${coverage.totals.accountCloses} account closes over `
-    + `${coverage.totals.accountsReporting} accounts and `
-    + `${coverage.totals.clientsReporting} clients.`);
-  if (coverage.totals.fullestClose && coverage.totals.thinnestClose) {
-    lines.push(`Fullest close ${coverage.totals.fullestClose.date} `
-      + `(${coverage.totals.fullestClose.accounts} account rows), thinnest `
-      + `${coverage.totals.thinnestClose.date} (${coverage.totals.thinnestClose.accounts}).`);
-  }
+  lines.push(`*Coverage* ${summary.coverageLine}.`);
+  if (summary.coverageRange) lines.push(`${summary.coverageRange}.`);
   lines.push('');
-  lines.push('*Money, per business, per account close — never added*');
-  for (const row of money.rows) {
+  lines.push('*Money, per business, per account close. Never added*');
+  for (const row of summary.money) {
     lines.push(`${row.shortLabel}: ${signedMoney(row.perAccountClose)} per account close over `
-      + `${row.accounts} account close${row.accounts === 1 ? '' : 's'}`);
+      + `${row.accountCloses} account close${row.accountCloses === 1 ? '' : 's'}`);
   }
   lines.push('');
-  const ranked = results.rows.filter((row) => row.ranked);
-  lines.push(`*Algorithms ranked this period: ${ranked.length} of `
-    + `${results.rankedCount + results.unrankedCount}*`);
-  for (const row of ranked) {
+  lines.push(`*Algorithms ranked this period: ${summary.rankedCount} of ${summary.rankableCount}*`);
+  for (const row of summary.ranked) {
     lines.push(`${row.rank}. ${row.name}: ${signedMoney(row.meanPerAccountDay)} per account day `
-      + `over ${row.accountDays} account days on ${row.accounts} accounts`);
+      + `over ${row.accountDays} measured of ${row.ranAccountDays} account days it ran, on `
+      + `${row.accounts} accounts`);
   }
-  const newRows = roster.rows.filter((row) => row.isNew);
-  const stopped = roster.rows.filter((row) => row.state === 'Stopped');
-  if (newRows.length) {
-    lines.push(`New in period: ${newRows.map((row) => row.algorithm).join(', ')}`);
+  if (summary.newInPeriod.length) {
+    lines.push(`New in period: ${summary.newInPeriod.join(', ')}`);
   }
-  if (stopped.length) {
-    lines.push(`Stopped in period: ${stopped.map((row) => row.algorithm).join(', ')}`);
+  if (summary.stopped.length) {
+    lines.push(`Stopped as of ${summary.stateClose}: ${summary.stopped.join(', ')}`);
   }
   lines.push('');
-  lines.push(`${results.unrankedCount} algorithm${results.unrankedCount === 1 ? '' : 's'} and `
-    + `${stack.lowSampleCount} combination${stack.lowSampleCount === 1 ? '' : 's'} carry their `
-    + 'counts and no verdict: too few account days or too few accounts in this period.');
+  lines.push(`${summary.noVerdictLine}.`);
+  lines.push(`${summary.measuredLine}.`);
   lines.push('');
   lines.push('_Generated by Vincere CRM · Drive Insight_');
   return lines.join('\n');

@@ -103,9 +103,51 @@ describe('resolvePeriod, week', () => {
     const period = resolvePeriod(clients, { kind: 'week', key: '2026-07-27' });
     expect(period.partial).toBe(true);
     expect(period.runsPastBook).toBe(true);
-    expect(period.missingWeekdays).toEqual(['2026-07-29', '2026-07-31']);
+    // 2026-07-31 is AFTER the book's newest close, so it is not a weekday
+    // somebody failed to export: it is the same fact `runsPastBook` already
+    // states. Only 07-29 sits inside the book's range with no close.
+    expect(period.missingWeekdays).toEqual(['2026-07-29']);
+    expect(period.weekdaysAfterBook).toEqual(['2026-07-31']);
+    expect(period.weekdaysWithoutClose).toEqual(['2026-07-29', '2026-07-31']);
     expect(period.partialReasons.join(' ')).toContain('It runs to 2026-08-02');
-    expect(period.partialReasons.join(' ')).toContain('2026-07-29, 2026-07-31');
+    expect(period.partialReasons.join(' ')).toContain(
+      "1 weekday inside the book's range holds no close: 2026-07-29.",
+    );
+  });
+
+  it('separates weekdays before the book begins from weekdays nobody exported', () => {
+    // These were one list, and the sentence they produced was printed in bold
+    // at the top of the sheet and pasted into WhatsApp. On the real book's
+    // 2026-07 it read "10 weekdays inside it hold no close" and named eight
+    // dates that sit before the first export exists: a fact about where the
+    // book starts, reported as ten closes the desk owed. `buildRoster` already
+    // draws this line for `newMeasurable`; the period now draws it too.
+    const late = book(['2026-07-22', '2026-07-23', '2026-07-24']);
+    const period = resolvePeriod(late, { kind: 'month', key: '2026-07' });
+    expect(period.weekdaysBeforeBook).toEqual([
+      '2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06', '2026-07-07',
+      '2026-07-08', '2026-07-09', '2026-07-10', '2026-07-13', '2026-07-14',
+      '2026-07-15', '2026-07-16', '2026-07-17', '2026-07-20', '2026-07-21',
+    ]);
+    expect(period.missingWeekdays).toEqual([]);
+    expect(period.weekdaysAfterBook).toEqual([
+      '2026-07-27', '2026-07-28', '2026-07-29', '2026-07-30', '2026-07-31',
+    ]);
+    const reasons = period.partialReasons.join(' ');
+    expect(reasons).toContain('The book begins on 2026-07-22, so 15 weekdays of this period fall '
+      + 'before any export');
+    expect(reasons).not.toContain('inside the book');
+  });
+
+  it('counts the weekend closes apart from the weekday ones, so a ratio has one set on each side', () => {
+    // 2026-07-25 is a Saturday. A "closes of weekdays" line whose numerator
+    // counts it and whose denominator does not reads "6 closes of 5 weekdays".
+    const weekend = book(['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24', '2026-07-25']);
+    const period = resolvePeriod(weekend, { kind: 'week', key: '2026-07-20' });
+    expect(period.closeCount).toBe(6);
+    expect(period.weekendCloses).toEqual(['2026-07-25']);
+    expect(period.weekdayCloses).toHaveLength(5);
+    expect(period.weekdays).toBe(5);
   });
 
   it('is not partial when every weekday holds a close and the period ends inside the book', () => {

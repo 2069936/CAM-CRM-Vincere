@@ -4,6 +4,8 @@ import {
   BENCHMARK_MIN_COMMON_CLOSES,
   benchmarkBasisLabel,
   benchmarkMonthlyRows,
+  benchmarkSeriesFromStoredRows,
+  buildBenchmarkCoverage,
   buildBenchmarkSeries,
   parseBenchmarkCsv,
   parseBenchmarkDateTime,
@@ -367,7 +369,19 @@ describe('what the import card is handed', () => {
   it('writes one monthly row per algorithm, version, instrument, risk level and month', () => {
     const rows = benchmarkMonthlyRows(buildBenchmarkSeries([parseBenchmarkCsv(fixture, FIXTURE_NAME)]));
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toEqual({
+    // The month's own days ride with the month. Step 44 stores them because the
+    // period report asks which days inside one WEEK the backtest traded, and a
+    // month cannot answer that: stored monthly only, the table fed nothing.
+    expect(rows[0].days.map((day) => day.date)).toEqual(
+      rows[0].days.map((day) => day.date).slice().sort(),
+    );
+    expect(rows[0].days).toHaveLength(rows[0].tradingDays);
+    expect(rows[0].days.every((day) => day.date.startsWith('2020-01'))).toBe(true);
+    expect(rows[0].days.reduce((sum, day) => sum + day.trades, 0)).toBe(rows[0].trades);
+    expect(Math.round(rows[0].days.reduce((sum, day) => sum + day.net, 0) * 100) / 100)
+      .toBe(rows[0].netProfit);
+    expect({ ...rows[0], days: undefined }).toEqual({
+      days: undefined,
       vendor: 'My Futures Book',
       algorithm: 'RBO',
       version: '1.8',
@@ -397,5 +411,162 @@ describe('what the import card is handed', () => {
     // The stored gross is the stored net plus the stored commission, the one
     // arithmetic relation the table asserts about itself.
     expect(rows.every((row) => Math.abs(row.grossProfit - (row.netProfit + row.commission)) < 0.01)).toBe(true);
+  });
+});
+
+/* ---------------------------------------------------------------- */
+/* What the pre-merge review found.                                 */
+
+const series = ({
+  algorithm = 'URGO', version = '4.5', instrument = 'MNQ', riskLevel = 'Low',
+  days = ['2026-07-27', '2026-07-28'],
+} = {}) => ({
+  key: [algorithm, version, instrument, riskLevel].join('|'),
+  algorithm,
+  version,
+  instrument,
+  riskLevel,
+  basis: benchmarkBasisLabel({ algorithm, version, instrument, riskLevel }),
+  firstDate: days[0],
+  lastDate: days[days.length - 1],
+  days: days.map((date) => ({ date, net: 100, trades: 2 })),
+});
+
+describe('benchmark coverage never borrows another risk level’s numbers', () => {
+  const roster = [{
+    element: 'URGO 4.5', algorithm: 'URGO', version: '4.5', instruments: ['MNQ'],
+    closesPresent: ['2026-07-27', '2026-07-28'], accountDays: 40, accounts: 12,
+  }];
+
+  it('says No series when the requested risk level was not imported', () => {
+    // `found.find(risk) || found[0]` measured the row off whatever series
+    // happened to be first: importing only the High files and asking for Low
+    // returned `riskLevel: 'Low'` on the coverage while the row carried High's
+    // 1,166 benchmark days, under a heading reading "(Low risk)". The same
+    // fields decide whether a comparison is refused at all.
+    const coverage = buildBenchmarkCoverage(roster, [series({ riskLevel: 'High' })], {
+      from: '2026-07-27', to: '2026-08-02', riskLevel: 'Low',
+    });
+    expect(coverage.riskLevel).toBe('Low');
+    expect(coverage.rows[0].hasSeries).toBe(false);
+    expect(coverage.rows[0].riskLevel).toBeNull();
+    expect(coverage.rows[0].benchmarkDays).toBe(0);
+    expect(coverage.rows[0].commonCloses).toBe(0);
+    expect(coverage.rows[0].seriesNote).toContain('No Low risk series for URGO');
+    expect(coverage.rows[0].seriesNote).toContain('this import holds High');
+  });
+
+  it('carries the risk level it measured at, so the figure always states its sizing', () => {
+    const coverage = buildBenchmarkCoverage(roster, [series({ riskLevel: 'Low' })], {
+      from: '2026-07-27', to: '2026-08-02', riskLevel: 'Low',
+    });
+    expect(coverage.rows[0].hasSeries).toBe(true);
+    expect(coverage.rows[0].riskLevel).toBe('Low');
+    expect(coverage.rows[0].riskLevelRequested).toBe('Low');
+    expect(coverage.rows[0].benchmarkDays).toBe(2);
+  });
+});
+
+describe('benchmark coverage rows are named by the roster row they belong to', () => {
+  // Two versions of one family, which spec §2.3 records as existing on a hidden
+  // client (URGO 2.0, B2X 1.3) and which would surface the moment that client
+  // became visible.
+  const roster = [
+    {
+      element: 'URGO 4.5', algorithm: 'URGO', version: '4.5', instruments: ['MNQ'],
+      closesPresent: ['2026-07-27'], accountDays: 40, accounts: 12,
+    },
+    {
+      element: 'URGO 2.0', algorithm: 'URGO', version: '2.0', instruments: ['MNQ'],
+      closesPresent: ['2026-07-27'], accountDays: 7, accounts: 2,
+    },
+  ];
+  const coverage = buildBenchmarkCoverage(roster, [series({ version: '4.5' })], {
+    from: '2026-07-27', to: '2026-08-02', riskLevel: 'Low',
+  });
+
+  it('gives each roster row its own row, keyed by family AND version', () => {
+    expect(coverage.rows.map((row) => row.element)).toEqual(['URGO 4.5', 'URGO 2.0']);
+    expect(new Set(coverage.rows.map((row) => row.element)).size).toBe(2);
+  });
+
+  it('gives each row its OWN version verdict, not the first row’s', () => {
+    // Looked up by family, the 2.0 row read "4.5 · version matches": a claim
+    // that the desk runs the benchmarked version when it does not.
+    expect(coverage.rows[0].versionMatch).toBe('yes');
+    expect(coverage.rows[1].versionMatch).toBe('no');
+    expect(coverage.rows[1].benchmarkVersion).toBe('4.5');
+  });
+
+  it('prefers the series whose version matches the roster row, where one exists', () => {
+    const both = buildBenchmarkCoverage(
+      roster,
+      [series({ version: '4.5' }), series({ version: '2.0' })],
+      { from: '2026-07-27', to: '2026-08-02', riskLevel: 'Low' },
+    );
+    expect(both.rows[0].benchmarkVersion).toBe('4.5');
+    expect(both.rows[1].benchmarkVersion).toBe('2.0');
+    expect(both.rows.every((row) => row.versionMatch === 'yes')).toBe(true);
+  });
+});
+
+describe('the vendor’s running total is read in file order', () => {
+  it('uses the file’s final Cum. net profit, not the last trade by exit time', () => {
+    // `Cum. net profit` is a running sum in FILE order. Several of the desk's
+    // real downloads are not in exit-time order (DJDR 164 rows, IFSP High 223),
+    // and they reconcile today only because each file's last row also happens
+    // to hold its latest exit. A file where it did not would have this module
+    // accusing the vendor of disagreeing with itself.
+    const parsed = parseBenchmarkCsv(fixture, FIXTURE_NAME);
+    const [built] = buildBenchmarkSeries([parsed]);
+    expect(built.reconciliation.reportedNet).toBe(parsed.reportedFinalCumulative);
+    expect(built.reconciliation.matches).toBe(true);
+  });
+
+  it('adds the two files’ totals when a re-download merges into one series', () => {
+    const parsed = parseBenchmarkCsv(fixture, FIXTURE_NAME);
+    const again = parseBenchmarkCsv(fixture, 'RBO_-_M2K_-_Low_Risk (1).csv');
+    const [built] = buildBenchmarkSeries([parsed, again]);
+    // The merged series holds both copies, so its own net doubles and the
+    // vendor's total doubles with it: the two still agree, and the doubling is
+    // the Data Tools card's subject, not this one's.
+    expect(built.reconciliation.reportedNet).toBe(parsed.reportedFinalCumulative * 2);
+    expect(built.reconciliation.matches).toBe(true);
+    expect(built.sourceFiles).toHaveLength(2);
+  });
+
+  it('states nothing rather than something wrong when one file feeds two series', () => {
+    const mixed = parseBenchmarkCsv(tradeList([
+      { profit: 100, entry: '1/6/2020 8:50:00 AM', exit: '1/6/2020 9:20:00 AM', strategy: '0 - RBO-1.8' },
+      { profit: 50, entry: '1/7/2020 8:50:00 AM', exit: '1/7/2020 9:20:00 AM', strategy: '0 - RBO-2.0' },
+    ]), FIXTURE_NAME);
+    const built = buildBenchmarkSeries([mixed]);
+    expect(built).toHaveLength(2);
+    for (const entry of built) {
+      expect(entry.reconciliation.matches).toBeNull();
+      expect(entry.reconciliation.refusal).toContain('more than one series');
+    }
+  });
+});
+
+describe('stored rows read back as the series the report consumes', () => {
+  it('rebuilds days, months and the basis label from what step 44 keeps', () => {
+    const built = buildBenchmarkSeries([parseBenchmarkCsv(fixture, FIXTURE_NAME)]);
+    const stored = benchmarkMonthlyRows(built);
+    const [back] = benchmarkSeriesFromStoredRows(stored);
+    expect(back.algorithm).toBe(built[0].algorithm);
+    expect(back.version).toBe(built[0].version);
+    expect(back.riskLevel).toBe(built[0].riskLevel);
+    expect(back.days.map((day) => day.date)).toEqual(built[0].days.map((day) => day.date));
+    expect(back.firstDate).toBe(built[0].firstDate);
+    expect(back.lastDate).toBe(built[0].lastDate);
+    expect(back.basis).toBe(built[0].basis);
+  });
+
+  it('refuses a reconciliation it cannot make, rather than claiming one', () => {
+    const built = buildBenchmarkSeries([parseBenchmarkCsv(fixture, FIXTURE_NAME)]);
+    const [back] = benchmarkSeriesFromStoredRows(benchmarkMonthlyRows(built));
+    expect(back.reconciliation.matches).toBeNull();
+    expect(back.reconciliation.refusal).toContain('the file is not kept');
   });
 });

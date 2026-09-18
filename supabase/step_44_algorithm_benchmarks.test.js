@@ -73,8 +73,11 @@ describe('step 44 stores the My Futures Book backtests', () => {
   it('replaces a re-import instead of doubling it', () => {
     // Without this unique index the desk's next monthly download adds a second
     // copy of every historical month and no screen looks wrong.
+    // `source_vendor` leads the key. Without it a second vendor's row for the
+    // same series and month replaces the My Futures Book row instead of sitting
+    // beside it, which is the opposite of what the column was added for.
     expect(sql).toMatch(
-      /create unique index if not exists \w+ on public\.algorithm_benchmarks \(algorithm, version, instrument, risk_level, month\)/,
+      /create unique index if not exists \w+ on public\.algorithm_benchmarks \(source_vendor, algorithm, version, instrument, risk_level, month\)/,
     );
   });
 
@@ -90,7 +93,7 @@ describe('step 44 stores the My Futures Book backtests', () => {
     // points apart depending only on which risk file was opened, so the risk
     // level is part of the key and part of the domain.
     expect(sql).toMatch(/check \(risk_level in \('low', 'medium', 'high'\)\)/);
-    expect(sql).toMatch(/\(algorithm, version, instrument, risk_level, month\)/);
+    expect(sql).toMatch(/\(source_vendor, algorithm, version, instrument, risk_level, month\)/);
   });
 
   it('pins a month to the first of the month, and the rest of the arithmetic to a magnitude', () => {

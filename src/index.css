@@ -8649,3 +8649,144 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
 
 .period-benchmark-import { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
 .period-benchmark-import input[type="file"] { font: inherit; font-size: 12px; }
+
+/* ── Desk period report: the sheet is white paper ────────────────────
+   `.report-sheet` is a fixed light sheet in both the app and print
+   (`background:#ffffff; color:#12202b`), and this page is the first one in the
+   codebase to nest `.ops-table` inside `.table-wrap` inside it. Those two
+   classes are styled for the DARK app chrome, so without the overrides below:
+
+     * every one of the report's fifteen tables rendered as a dark navy panel
+       (`.table-wrap { background: var(--surface-2) }` = #1b2733) on white paper,
+       and `@media print` sets `print-color-adjust: exact` on `.report-sheet`, so
+       the PDF printed them that way too;
+     * every `<th scope="row">` — the Algorithm, Business and Combo name cells —
+       picked up `.ops-table th`: 11px, uppercase, muted, on a dark ground. Row
+       labels rendered styled as column headers;
+     * `.muted` and `.desk-refusal` are `var(--muted)` = #90a4b8, which against
+       #ffffff is 2.56:1. WCAG AA needs 4.5:1, and those two classes carry the
+       separation sentence, the "This period is not complete" warning, the
+       coverage sentence, the thin-close caveat, "Compare the intervals, not the
+       dots", the benchmark separation and every population/window/basis caption
+       under every chart. The honesty apparatus was the least legible text on the
+       page.
+
+   #4a5b6b on #ffffff is 7.0:1 and 6.7:1 on the muted row's #f8fafc; #40515f is
+   8.2:1 on white and 7.5:1 on the header's #f1f5f9; the link blue is 6.7:1.
+   Measured, not assumed. Scoped to
+   `.desk-period-report .report-sheet` so no other surface moves. */
+/*
+   The tokens themselves, restated for the sheet's own ground.
+
+   The charts draw with tokens by design — rule 1 of DeskPeriodReportCharts.jsx
+   is "no literal hex", so the same chart renders in both themes and on paper —
+   and the app's `--text-muted` is #90a4b8, which is 2.6:1 on white. It strokes
+   the interval chart's INTERVALS, the marks whose caption tells the reader to
+   compare them rather than the dots, and every hollow tick that means "not
+   measured, and not a zero". Restating the token fixes the marks and the text
+   in one place.
+
+   `--border` deliberately stays dark: it draws the zero line every bar on this
+   page is read against, and a pale zero line is a bar chart with no baseline.
+*/
+.desk-period-report .report-sheet {
+  --text-muted: #4a5b6b;
+  --muted: #4a5b6b;
+}
+/*
+   The one mark that wants the opposite. The deployment grid's "did not run"
+   cell is an outline drawn with `var(--border)` from an inline style, and on
+   white that dark rule reads as a filled mark again. Absence has to be the
+   lightest thing on the row; `!important` because the colour is inline.
+*/
+.desk-period-report .report-sheet .period-grid-cell.off {
+  box-shadow: inset 0 0 0 1px #d8e2ea !important;
+}
+.desk-period-report .report-sheet .table-wrap,
+.desk-period-report .report-sheet .ops-table-wrap {
+  background: transparent;
+  border-color: #d8e2ea;
+  box-shadow: none;
+}
+.desk-period-report .report-sheet .ops-table th,
+.desk-period-report .report-sheet .ops-table td {
+  border-bottom-color: #e2e8f0;
+}
+.desk-period-report .report-sheet .ops-table td { color: #12202b; }
+.desk-period-report .report-sheet .ops-table th {
+  background: #f1f5f9;
+  color: #40515f;
+}
+.desk-period-report .report-sheet .ops-table th[scope="row"] {
+  background: transparent;
+  color: #12202b;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+}
+.desk-period-report .report-sheet .ops-table tbody tr:hover td,
+.desk-period-report .report-sheet .ops-table tbody tr:hover th[scope="row"] {
+  background: #f8fafc;
+}
+.desk-period-report .report-sheet .row-muted td,
+.desk-period-report .report-sheet .row-muted th[scope="row"] {
+  opacity: 1;
+  color: #4a5b6b;
+  background: #f8fafc;
+}
+.desk-period-report .report-sheet .badge {
+  background: #eef2f6;
+  color: #40515f;
+}
+.desk-period-report .report-sheet .muted,
+.desk-period-report .report-sheet .period-chart-axis,
+.desk-period-report .report-sheet .period-chart-key .muted,
+.desk-period-report .report-sheet .period-definitions dd,
+.desk-period-report .report-sheet .desk-refusal {
+  color: #4a5b6b;
+}
+.desk-period-report .report-sheet a { color: #1d4ed8; }
+/*
+   `cursor: help` and a dotted underline announce a tooltip. Most `.desk-refusal`
+   elements on this sheet are paragraphs with no `title`, so the cue promised one
+   that was not there. The refusals here are read, not hovered: they keep the
+   left rule that marks them as a caveat and lose the false affordance. Cells
+   that DO carry a title keep both.
+*/
+.desk-period-report .report-sheet p.desk-refusal {
+  text-decoration: none;
+  cursor: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  border-left: 3px solid #cbd5e1;
+  padding-left: 10px;
+  margin: 8px 0;
+}
+.desk-period-report .report-sheet .period-summary { margin-top: 18px; }
+.desk-period-report .report-sheet .period-summary h2 { margin-bottom: 4px; }
+
+/* The two bounds of a combination change's before/after sides, printed in the
+   cell rather than left in a `title` that renders on no paper. */
+.period-side-window { display: block; font-size: 11px; margin-top: 2px; }
+
+/* The dates under the deployment grid, which otherwise exist only in `title`
+   attributes and so print as unlabelled columns. */
+.period-grid-dates .period-chart-axis { margin-top: 2px; }
+
+/*
+   Rows a printed copy carries and the screen does not.
+
+   The changes table shows the 25 most recent on screen behind a button; the
+   button is `.no-print`, so a printed copy carried 25 of 103 rows with nothing
+   on paper saying the rest existed. A `@media print` rule cannot change React
+   state, so the remaining rows are rendered into a second `<tbody>` that only
+   print displays.
+*/
+.print-only { display: none; }
+@media print {
+  .print-only { display: table-row-group; }
+  tr.print-only { display: table-row; }
+  span.print-only, .print-only.inline { display: inline; }
+}

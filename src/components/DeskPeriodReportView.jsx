@@ -1,5 +1,12 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { buildBenchmarkSeries, parseBenchmarkCsv } from '../domain/algorithmBenchmark';
+import {
+  NO_SERIES,
+  readSavedBenchmarks,
+  readSavedImportNow,
+  readSessionImport,
+  setSessionImport,
+} from '../domain/benchmarkSessionCache';
 import { listPeriods, resolvePeriod } from '../domain/deskPeriod';
 import { buildDeskPeriodReport, formatDeskPeriodReport } from '../domain/deskPeriodReport';
 import DeskPeriodReportSheet from './DeskPeriodReportSheet';
@@ -18,14 +25,36 @@ import DeskPeriodReportSheet from './DeskPeriodReportSheet';
  * empty period prints zeros that read as a flat desk. `deskMoney.monthFor` and
  * the ranking anchor both carry the same note for the same reason.
  *
+ * THE PERIOD IS RESOLVED OVER THE DESK'S BOOK, NOT THE READER'S. A week is a
+ * week: two CAMs opening "Week of 2026-07-27" must be looking at the same seven
+ * days, and the roster, the results, the stack and the benchmark below are
+ * measured over the desk's clients whoever is reading. Coverage is then the
+ * reader's own closes inside those bounds, which is what `buildCoverage`
+ * computes and what the header prints.
+ *
  * THE CAM SCOPE IS PARTIAL AND IS LABELLED. A CAM is handed their own clients
- * for coverage, money and the account changes, and the DESK's clients for the
- * roster, the results, the movement and the stack — because a ranking computed
- * over one CAM's eight clients under the same column header would be a
- * different measurement wearing the same label, and on this book almost every
- * row of it would fall under the evidence gate and print a refusal. Two CAMs
- * comparing their own copies would reach opposite conclusions about the same
- * algorithm. One pooled measurement, labelled as pooled, is the honest answer.
+ * for coverage, money and the account changes, and the DESK's clients — through
+ * `deskClients` — for the roster, the results, the movement and the stack,
+ * because a ranking computed over one CAM's eight clients under the same column
+ * header would be a different measurement wearing the same label, and on this
+ * book almost every row of it would fall under the evidence gate and print a
+ * refusal. Two CAMs comparing their own copies would reach opposite conclusions
+ * about the same algorithm. One pooled measurement, labelled as pooled, is the
+ * honest answer. `buildDeskPeriodReport` checks that it was actually handed the
+ * desk list before it prints the desk-wide sentence.
+ */
+
+/**
+ * WHY `benchmarkSeries` DEFAULTS TO A SHARED CONSTANT.
+ *
+ * `benchmarkSeries = []` as a default PARAMETER allocates a new array on every
+ * render, and neither call site passes the prop, so `series` changed identity
+ * every render and the `report` memo below rebuilt the whole report each time:
+ * three `buildStrategyRanking` passes, two `buildComboPerformance` passes and a
+ * `buildDeskMoneyForRange` per close, around 60 ms on the real book. Clicking
+ * "Copy summary" cost two full rebuilds on its own, because `copied` flips
+ * twice. The files themselves live in `benchmarkSessionCache.js`, outside this
+ * component, so navigating away and back does not lose a 36-file import.
  */
 export default function DeskPeriodReportView({
   clients = [],
@@ -33,21 +62,26 @@ export default function DeskPeriodReportView({
   scope = 'desk',
   camName = '',
   camProfileId = null,
-  benchmarkSeries = [],
+  benchmarkSeries = NO_SERIES,
   builtBy = '',
 }) {
   const book = scopedClients || clients;
   const [selection, setSelection] = useState({ kind: 'week', key: '', from: '', to: '' });
   const [benchmarkRisk, setBenchmarkRisk] = useState('Low');
   const [copied, setCopied] = useState(false);
-  // The benchmark files, read in the browser and held for this visit only.
-  //
-  // NOT loaded from `algorithm_benchmarks`: that table stores MONTHLY
-  // aggregates, and this report's benchmark block states days with a trade
-  // inside a week and draws a day-by-day curve, neither of which a month can
-  // answer. Reading the CSVs here is the same parse the Data Tools import runs,
-  // through the same function, so the two cannot disagree about a file.
-  const [imported, setImported] = useState({ series: [], accepted: 0, rejected: [] });
+  const [imported, setImported] = useState(readSessionImport);
+  const [saved, setSaved] = useState(readSavedImportNow);
+
+  // The saved import, read once per session and shared by every mount of this
+  // view. Step 44 stores each month's own days precisely so this can feed the
+  // report: without them the table held monthly aggregates the report could not
+  // use, the section was empty on every open, and the manager re-imported the
+  // files each visit.
+  useEffect(() => {
+    let alive = true;
+    readSavedBenchmarks().then((result) => { if (alive) setSaved(result); });
+    return () => { alive = false; };
+  }, []);
 
   const onImportBenchmark = useCallback(async (files) => {
     const list = [...(files || [])];
@@ -56,23 +90,25 @@ export default function DeskPeriodReportView({
       parseBenchmarkCsv(await file.text(), file.name)
     )));
     const accepted = parsed.filter((file) => file.ok);
-    setImported({
+    setImported(setSessionImport({
       series: buildBenchmarkSeries(accepted),
       accepted: accepted.length,
+      files: accepted.map((file) => file.fileName),
+      parsedAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
       // A refused file is named with the reason it was refused. A file silently
       // dropped is a figure silently missing from every row below.
       rejected: parsed.filter((file) => !file.ok)
         .map((file) => ({ fileName: file.fileName, reason: file.reason })),
-    });
+    }));
   }, []);
 
   const periods = useMemo(
-    () => listPeriods(book, selection.kind),
-    [book, selection.kind],
+    () => listPeriods(clients, selection.kind),
+    [clients, selection.kind],
   );
 
   const period = useMemo(
-    () => resolvePeriod(book, {
+    () => resolvePeriod(clients, {
       kind: selection.kind,
       // With nothing chosen for this kind yet, take the newest period the book
       // holds a close in rather than a key from another kind.
@@ -80,14 +116,36 @@ export default function DeskPeriodReportView({
       from: selection.from || periods[0]?.from || '',
       to: selection.to || periods[0]?.to || '',
     }),
-    [book, selection, periods],
+    [clients, selection, periods],
   );
 
-  const series = imported.series.length ? imported.series : benchmarkSeries;
+  // Files read in this visit win over the saved import, which wins over
+  // anything a caller passed. Memoised so the identity is stable across
+  // renders: it is a dependency of the report below.
+  const series = useMemo(() => {
+    if (imported.series.length) return imported.series;
+    if (saved?.series?.length) return saved.series;
+    return benchmarkSeries;
+  }, [imported.series, saved, benchmarkSeries]);
+
+  const benchmarkSource = useMemo(() => ({
+    fromFiles: imported.series.length > 0,
+    accepted: imported.accepted,
+    files: imported.files,
+    parsedAt: imported.parsedAt,
+    rejected: imported.rejected,
+    savedRows: saved?.rows || 0,
+    savedSeries: saved?.series?.length || 0,
+    savedImportedAt: saved?.importedAt || null,
+    savedError: saved?.error || null,
+    loading: saved === null,
+  }), [imported, saved]);
 
   const report = useMemo(
     () => buildDeskPeriodReport(book, {
       period,
+      // The desk's clients, for the sections the page prints as desk wide.
+      deskClients: clients,
       scope: {
         kind: scope,
         camName,
@@ -99,7 +157,7 @@ export default function DeskPeriodReportView({
       builtAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
       builtBy,
     }),
-    [book, clients.length, period, scope, camName, camProfileId, series, benchmarkRisk, builtBy],
+    [book, clients, period, scope, camName, camProfileId, series, benchmarkRisk, builtBy],
   );
 
   return (
@@ -117,6 +175,7 @@ export default function DeskPeriodReportView({
       onBenchmarkRiskChange={setBenchmarkRisk}
       onImportBenchmark={onImportBenchmark}
       benchmarkImport={imported}
+      benchmarkSource={benchmarkSource}
       onCopySummary={() => {
         navigator.clipboard.writeText(formatDeskPeriodReport(report)).then(() => {
           setCopied(true);

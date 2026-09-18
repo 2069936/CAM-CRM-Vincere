@@ -13332,7 +13332,15 @@ export default function App() {
     visibleCamProfiles[0] ||
     state.camProfiles?.[0] ||
     null;
-  const currentCamClients = clientsForCam(state.clients, currentCamProfile, state.coverage || []);
+  // Memoised because `clientsForCam` ends in `clients.filter(...)`: recomputed
+  // inline it returned a new array identity on every render of this shell, and
+  // every memo keyed on it downstream — the period report's period, its report,
+  // the sidebar order — churned with it. The period report rebuild alone is
+  // three ranking passes and two combo passes over the whole book.
+  const currentCamClients = useMemo(
+    () => clientsForCam(state.clients, currentCamProfile, state.coverage || []),
+    [state.clients, currentCamProfile, state.coverage],
+  );
   // Sidebar order: the CAM's manual drag order when they've set one, otherwise
   // the default pinned + urgency sort. Clients missing from a saved order (newly
   // added) fall to the bottom.

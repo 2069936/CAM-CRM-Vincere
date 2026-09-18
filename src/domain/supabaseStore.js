@@ -2201,6 +2201,10 @@ function algorithmBenchmarkFromRow(row = {}) {
     commissionPerContract: row.commission_per_contract == null ? null : Number(row.commission_per_contract),
     sourceFile: row.source_file || '',
     importedAt: row.imported_at || null,
+    // The month's own days, which is what makes this table readable by the
+    // period report at all: the report asks which days inside one WEEK the
+    // backtest closed a trade on, and a month cannot answer that.
+    days: Array.isArray(row.days) ? row.days : [],
   };
 }
 
@@ -2232,9 +2236,11 @@ export async function loadAlgorithmBenchmarks({ riskLevel = '', from = '', to = 
 /**
  * Write the monthly aggregates `benchmarkMonthlyRows` produced.
  *
- * Upserted on the table's own unique key (algorithm, version, instrument, risk
- * level, month), so re-importing next month's download replaces the months it
- * covers instead of adding a second copy of every year the desk already holds.
+ * Upserted on the table's own unique key (vendor, algorithm, version,
+ * instrument, risk level, month), so re-importing next month's download replaces
+ * the months it covers instead of adding a second copy of every year the desk
+ * already holds, and a second vendor's rows sit beside My Futures Book's rather
+ * than overwriting them.
  * `imported_at` and the importing user are rewritten on each import, because
  * the question a reader asks of a benchmark row is when it was pulled and by
  * whom, not when it was first seen.
@@ -2259,13 +2265,18 @@ export async function saveAlgorithmBenchmarks(rows = []) {
     win_rate: row.winRate,
     commission_per_contract: row.commissionPerContract ?? null,
     max_drawdown: row.maxDrawdown,
+    days: row.days || [],
     source_file: row.sourceFile || '',
     imported_at: importedAt,
     imported_by_user_id: importedByUserId,
   }));
   const { data, error } = await supabase
     .from('algorithm_benchmarks')
-    .upsert(payload, { onConflict: 'algorithm,version,instrument,risk_level,month' })
+    // The table's own unique key, vendor first. Without the vendor a second
+    // vendor's row for the same series and month would REPLACE the My Futures
+    // Book row rather than sit beside it, which is the opposite of what the
+    // `source_vendor` column was added for.
+    .upsert(payload, { onConflict: 'source_vendor,algorithm,version,instrument,risk_level,month' })
     .select();
   if (error) throw new Error(error.message);
   return (data || []).map(algorithmBenchmarkFromRow);

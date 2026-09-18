@@ -20,7 +20,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 41 | `step_41_heartbeat_ordering.sql` | replaces `record_ingest_heartbeat` without the invalid capture/success ordering rule | Collector heartbeats remain valid after a successful upload |
 | 42 | `step_42_client_tags_and_price_history.sql` | `tags` and `account_focus` on `clients`, and the `client_price_changes` log | Client tags and the revenue movement figures |
 | 43 | `step_43_row_level_security.sql` | Row Level Security on every table that lacked it, plus `login_email_for_username` | Closes the database to the publishable key that ships in the browser bundle |
-| 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report |
+| 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates with each month's own days, keyed by vendor first, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report, which reads the saved import instead of asking for the 36 files again |
 
 ## These three groups behave differently
 
@@ -126,10 +126,12 @@ Tools still parses the CSVs and still shows what it found — the algorithm, the
 version, the instrument, the risk level, the date range and the trade count —
 and the Save button is disabled with the title
 **`Saving needs migration step 44. The parse above still shows what the files hold.`**
-Nothing else on any
-screen changes: no other feature reads `algorithm_benchmarks`, and the desk
-period report's benchmark section is empty rather than wrong when the table is
-absent.
+The desk period report's benchmark section then holds only the
+files the reader drags into the sheet in that visit, which is what it held for
+everybody before this table was read at all: empty rather than wrong. With the
+step run it reads the saved import on open, so the manager does not re-upload
+36 CSVs every visit. Nothing else on any screen changes; no other feature reads
+`algorithm_benchmarks`.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either

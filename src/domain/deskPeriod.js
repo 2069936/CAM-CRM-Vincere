@@ -221,21 +221,47 @@ export function resolvePeriod(clients = [], {
   const calendarDays = datesBetween(periodFrom, periodTo);
   const weekdays = calendarDays.filter(isWeekday);
   const held = new Set(inPeriod);
-  const missingWeekdays = weekdays.filter((date) => !held.has(date));
+  const weekdaysWithoutClose = weekdays.filter((date) => !held.has(date));
+  // TWO DIFFERENT FACTS, AND THEY WERE ONE LIST.
+  //
+  // A weekday before the book's first close is a fact about where the export
+  // begins; a weekday inside the book's range with no close is a fact about
+  // somebody's reporting. On this book's 2026-07 the two were printed as one
+  // sentence naming ten weekdays "hold no close", eight of which are simply
+  // before any export exists. `buildRoster` already draws this line for
+  // `newMeasurable`; the period draws it here, once, for everything downstream.
+  const weekdaysBeforeBook = bookFirstClose
+    ? weekdaysWithoutClose.filter((date) => date < bookFirstClose)
+    : [];
+  const weekdaysAfterBook = bookLastClose
+    ? weekdaysWithoutClose.filter((date) => date > bookLastClose)
+    : [];
+  const missingWeekdays = weekdaysWithoutClose.filter((date) => (
+    (!bookFirstClose || date >= bookFirstClose) && (!bookLastClose || date <= bookLastClose)
+  ));
   // Closes on a Saturday or a Sunday. This book has one (2026-07-25, one
   // client), and a "closes of weekdays" line that ignored it would be a count
   // whose numerator and denominator come from different sets.
   const weekendCloses = inPeriod.filter((date) => !isWeekday(date));
+  const weekdayCloses = inPeriod.filter(isWeekday);
 
   const runsPastBook = Boolean(bookLastClose) && periodTo > bookLastClose;
   const partialReasons = [];
   if (runsPastBook) {
     partialReasons.push(`It runs to ${periodTo} and the book's newest close is ${bookLastClose}.`);
   }
+  if (weekdaysBeforeBook.length) {
+    partialReasons.push(
+      `The book begins on ${bookFirstClose}, so ${weekdaysBeforeBook.length} weekday`
+      + `${weekdaysBeforeBook.length === 1 ? '' : 's'} of this period fall before any export: `
+      + `${weekdaysBeforeBook.join(', ')}.`,
+    );
+  }
   if (missingWeekdays.length) {
     partialReasons.push(
-      `${missingWeekdays.length} weekday${missingWeekdays.length === 1 ? '' : 's'} inside it `
-      + `hold${missingWeekdays.length === 1 ? 's' : ''} no close: ${missingWeekdays.join(', ')}.`,
+      `${missingWeekdays.length} weekday${missingWeekdays.length === 1 ? '' : 's'} inside the `
+      + `book's range hold${missingWeekdays.length === 1 ? 's' : ''} no close: `
+      + `${missingWeekdays.join(', ')}.`,
     );
   }
 
@@ -257,7 +283,14 @@ export function resolvePeriod(clients = [], {
     weekdays: weekdays.length,
     weekdayDates: weekdays,
     missingWeekdays,
+    weekdaysBeforeBook,
+    weekdaysAfterBook,
+    // Every weekday the period holds with no close, whatever the reason. The
+    // coverage table draws a row for each of these; the two lists above say
+    // which kind of gap each one is.
+    weekdaysWithoutClose,
     weekendCloses,
+    weekdayCloses,
     priorFrom,
     priorTo,
     priorLabel,
@@ -267,7 +300,7 @@ export function resolvePeriod(clients = [], {
     // report on this book has no comparison column at all; `partial` is why the
     // period it does report on is not a full week either.
     priorEmpty: inPrior.length === 0,
-    partial: runsPastBook || missingWeekdays.length > 0,
+    partial: runsPastBook || missingWeekdays.length > 0 || weekdaysBeforeBook.length > 0,
     partialReasons,
     runsPastBook,
     bookFirstClose,

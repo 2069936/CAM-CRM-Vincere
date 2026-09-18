@@ -129,6 +129,7 @@ import { businessForSegment, segmentForAccount, BUSINESS_KEYS } from './operatio
 import { PROGRAMME_BOUNDARY, isProgrammeFamily, programmeFor, thresholdRefusal } from './algorithmProgrammes';
 import { DESK_BUSINESS_ORDER, bookCloses, deskBusinessColumns } from './deskMoney';
 import { configKeyOf, shortConfigLabel } from './strategyConfigDrift';
+import { comboKeyFromDay, executionsForAccount, familyOfStrategyRow } from './comboPerformance';
 
 /**
  * The evidence a row needs before it is given a rank.
@@ -144,6 +145,39 @@ export const EVIDENCE_GATE = { minAccountDays: 30, minAccounts: 10 };
 
 /** Two-sided 95%. Named rather than inlined so the interval's meaning is legible. */
 const Z_95 = 1.959964;
+
+/**
+ * Which algorithms are counted as having run on an account-day.
+ *
+ * TWO BASES, AND THE DIFFERENCE IS NOT A ROUNDING. `enabled` is the
+ * Strategies-grid checkbox as it stood at the moment the CAM exported, which is
+ * what this module has always used and what the Operations ranking panel still
+ * uses. `docs/stack-playbook-spec.md` §2.1 measures what that costs: 64.0% of
+ * funded account-days are dropped because an algorithm that hit its daily stop
+ * and switched itself off before the export vanishes, and with it the day it
+ * lost. Whether a day counts moves with the hour the CAM exported.
+ *
+ * `traded` is the basis `comboPerformance.js` owns and the desk period report
+ * asks for: enabled, OR named on that account-day's fills, OR carrying a
+ * non-zero realized on a row the grid had switched off. It is opt-in rather
+ * than the default because the Operations panel's figures are quoted daily and
+ * a silent re-basing of them is exactly the class of change this codebase keeps
+ * paying for.
+ *
+ * A family named on the fills with NO grid row carries no measured P&L: the
+ * fills say which algorithm ran and nothing says what it made. It is counted as
+ * an account-day that ran, in `unmeasuredAccountDays`, and it is in no mean.
+ */
+export const ATTRIBUTION_BASES = ['enabled', 'traded'];
+
+export const ATTRIBUTION_LABELS = {
+  enabled: 'Enabled at export: an algorithm ran on an account-day when its Strategies grid '
+    + 'checkbox was still ticked when the CAM exported. A day whose grid is all off is dropped '
+    + 'whole, whatever the fills say.',
+  traded: 'Traded attribution: an algorithm ran on an account-day when the grid says it was '
+    + 'enabled, or the fills name it, or the grid reports a non-zero realized on a row it had '
+    + 'switched off.',
+};
 
 /**
  * Field separator for composite keys.
@@ -533,7 +567,8 @@ function foldStrategy(entry, strategy, pnl) {
  * is per client, and every other figure on the Operations screen already counts
  * those as two accounts.
  */
-function collectObservations(clients, { throughDate, fromDate = '' }) {
+function collectObservations(clients, { throughDate, fromDate = '', basis = 'enabled' }) {
+  const traded = basis === 'traded';
   const rows = new Map();
   // Per business: the account-days it covers and what the ACCOUNTS made on them,
   // so each business can say how much of its own money no algorithm claims.
@@ -559,15 +594,50 @@ function collectObservations(clients, { throughDate, fromDate = '' }) {
       // whole book's mean under a heading naming the week.
       if (fromDate && date < fromDate) continue;
       for (const snapshot of dailyImport?.snapshots || []) {
-        // Fold this account-day's enabled strategies into one figure per family,
-        // and one per (family, configuration).
+        // Which algorithms ran on this account-day, on the basis the caller
+        // asked for. Resolved once per account-day: `comboKeyFromDay` scans the
+        // close's executions, and doing that per strategy row would rescan them
+        // once for every row on the grid.
+        const tradedFamilies = traded
+          ? new Set(comboKeyFromDay(
+            snapshot,
+            executionsForAccount(dailyImport, snapshot?.accountName),
+            { basis: 'traded', level: 'family' },
+          ).elements)
+          : null;
+        // Fold this account-day's attributed strategies into one figure per
+        // family, and one per (family, configuration).
         const perFamily = new Map();
         const perConfig = new Map();
         const configLabels = new Map();
         for (const strategy of snapshot.strategies || []) {
-          if (!strategy?.enabled) continue;
+          const enabledHere = strategy?.enabled === true;
+          if (traded) {
+            // An enabled row is always in. A row the grid had switched off is
+            // in when the fills or its own realized say it traded anyway.
+            if (!enabledHere && !tradedFamilies.has(familyOfStrategyRow(strategy))) continue;
+          } else if (!enabledHere) continue;
           const algo = strategy.strategyFamily || strategy.strategyName || 'Unknown';
-          const pnl = measuredPnl(strategy);
+          const reported = measuredPnl(strategy);
+          // WHAT A SWITCHED-OFF ROW'S ZERO MEANS, and it is not "made nothing".
+          //
+          // 455 of the 456 all-disabled account-days on this book carry
+          // `realized = 0` on every row while the account itself moved on 271 of
+          // them (`docs/stack-playbook-spec.md` §2.1). The grid zeroes a row it
+          // has switched off; it does not measure it. Folding that 0 in as a
+          // measurement would put hundreds of false flat days into the
+          // denominator of every mean and drag every algorithm toward zero
+          // under a column headed "measured P&L" — the same mislabel one layer
+          // down. So a row attributed only because the fills name it is
+          // MEASURED only when something actually measured it: a derived figure
+          // (which comes from those fills), or a non-zero realized the grid
+          // reported anyway. Otherwise it is an account-day it ran on and no
+          // money, which `finishStats` counts in `unmeasuredAccountDays`.
+          const pnl = (enabledHere
+            || measuredSource(strategy) === 'derived'
+            || (reported != null && reported !== 0))
+            ? reported
+            : null;
           const config = configurationOf(strategy);
           const familyEntry = perFamily.get(algo) || emptyEntry();
           foldStrategy(familyEntry, strategy, pnl);
@@ -579,9 +649,20 @@ function collectObservations(clients, { throughDate, fromDate = '' }) {
           foldStrategy(configEntry, strategy, pnl);
           perConfig.set(configKey, configEntry);
         }
-        // An account-day with nothing enabled is not this panel's subject. It is
-        // not counted anywhere here, including in the reconciliation line, whose
-        // denominator has to be the same population as the ranking's.
+        // A family the fills name with no grid row at all — 98 funded
+        // account-days on this book carry no strategy rows — runs on the day
+        // and states nothing about what it made. It gets an entry with no P&L,
+        // so the day counts as one the algorithm ran on and lands in
+        // `unmeasuredAccountDays`, never in a mean.
+        if (traded) {
+          for (const family of tradedFamilies) {
+            if (!family || perFamily.has(family)) continue;
+            perFamily.set(family, emptyEntry());
+          }
+        }
+        // An account-day with nothing attributed is not this panel's subject. It
+        // is not counted anywhere here, including in the reconciliation line,
+        // whose denominator has to be the same population as the ranking's.
         if (!perFamily.size) continue;
 
         const segment = segmentForAccount(registry[snapshot.accountName], snapshot.accountName);
@@ -1015,14 +1096,15 @@ function buildProgrammeRow(row, { topRanked }) {
 }
 
 export function buildStrategyRanking(clients = [], {
-  asOfDate = '', fromDate = '', withDetail = false, windows = null,
+  asOfDate = '', fromDate = '', withDetail = false, windows = null, basis = 'enabled',
 } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const anchor = day(asOfDate) || book.latest || '';
   const lower = day(fromDate);
+  const attribution = ATTRIBUTION_BASES.includes(basis) ? basis : 'enabled';
   const { rows, coverage, unmeasured, reconciliation, clientsSeen, dates } =
-    collectObservations(list, { throughDate: anchor, fromDate: lower });
+    collectObservations(list, { throughDate: anchor, fromDate: lower, basis: attribution });
 
   const finished = [];
   for (const row of rows.values()) {
@@ -1139,15 +1221,23 @@ export function buildStrategyRanking(clients = [], {
       // reading "every close" would be the report's own bug class: a figure
       // whose label names a wider population than the figure was measured over.
       fromDate: lower || null,
+      // The attribution is part of the basis, not a footnote to it. Two rankings
+      // of the same window on the two bases differ by 22% to 65% of each
+      // algorithm's account-days on this book, and a label that named the window
+      // and the clients but not this is the report's own bug class.
+      attribution,
+      attributionLabel: ATTRIBUTION_LABELS[attribution],
       label: closes.length
         ? (lower
           ? `Closes from ${lower} to ${anchor} that carry an algorithm split`
             + ` · ${closes.length} of ${closesToAnchor.length} closes in range`
             + ` · ${clientsSeen.size} of ${list.length} clients`
+            + ` · ${ATTRIBUTION_LABELS[attribution]}`
           : `Every close from ${closes[0]} to ${closes[closes.length - 1]} that carries an algorithm`
             + ` split · ${closes.length} of ${closesToAnchor.length} closes`
             + ` · ${clientsSeen.size} of ${list.length} clients`
-            + ` · seven-day windows end ${anchor}`)
+            + ` · seven-day windows end ${anchor}`
+            + ` · ${ATTRIBUTION_LABELS[attribution]}`)
         : (lower
           ? `No close from ${lower} to ${anchor} carries an algorithm split.`
           : 'No close on this book carries an algorithm split.'),

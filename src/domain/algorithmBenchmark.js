@@ -234,7 +234,7 @@ export function parseBenchmarkCsv(csvText, fileName = '') {
   if (!riskLevel) {
     return refusal(
       fileName,
-      `The risk level is not in the file name "${fileName}". A backtest figure cannot be labelled without it — the same algorithm reads a win rate up to 19.8 points apart depending only on which risk file was opened — so the import is refused. Keep the name My Futures Book downloads, for example "RBO_-_M2K_-_Low_Risk.csv".`,
+      `The risk level is not in the file name "${fileName}". A backtest figure cannot be labelled without it: the same algorithm reads a win rate up to 19.8 points apart depending only on which risk file was opened, so the import is refused. Keep the name My Futures Book downloads, for example "RBO_-_M2K_-_Low_Risk.csv".`,
     );
   }
 
@@ -474,9 +474,33 @@ function seriesKeyOf(trade) {
 export function buildBenchmarkSeries(parsedFiles = []) {
   const files = Array.isArray(parsedFiles) ? parsedFiles : [parsedFiles];
   const bySeries = new Map();
+  // THE VENDOR'S OWN RUNNING TOTAL IS A PROPERTY OF THE FILE, NOT OF EXIT TIME.
+  //
+  // `Cum. net profit` is a running sum in FILE order, and several of the desk's
+  // real downloads are not in exit-time order: scanning row by row, DJDR has 164
+  // rows whose exit precedes the previous row's, IFSP High 223, FSA 123. Reading
+  // the total off the last trade after sorting by exit time happens to work on
+  // all 36 today only because each file's final row also holds its latest exit,
+  // and nothing enforces that. A file where it did not hold would have this
+  // module accusing the vendor of disagreeing with itself.
+  //
+  // `parseBenchmarkCsv` already tracks the final value in file order and returns
+  // it as `reportedFinalCumulative`. It belongs to the whole file, so when one
+  // file feeds two series (the export mixes versions) it cannot be attributed to
+  // either and the reconciliation says nothing rather than something wrong.
+  const reportedByKey = new Map();
+  const unattributable = new Set();
 
   for (const file of files) {
     if (!file?.ok) continue;
+    const keysInFile = new Set();
+    for (const trade of file.trades || []) keysInFile.add(seriesKeyOf(trade));
+    if (keysInFile.size !== 1 || file.reportedFinalCumulative == null) {
+      for (const key of keysInFile) unattributable.add(key);
+    } else {
+      const [only] = [...keysInFile];
+      reportedByKey.set(only, (reportedByKey.get(only) || 0) + file.reportedFinalCumulative);
+    }
     for (const trade of file.trades || []) {
       const key = seriesKeyOf(trade);
       let series = bySeries.get(key);
@@ -532,9 +556,9 @@ export function buildBenchmarkSeries(parsedFiles = []) {
       // The file's own running total against ours. It has matched on every row
       // of every file the desk has downloaded; if it ever stops matching, the
       // series says so rather than the report quietly disagreeing with the vendor.
-      const reportedCumulative = sorted.length
-        ? sorted.reduce((last, trade) => (trade.reportedCumulative != null ? trade.reportedCumulative : last), null)
-        : null;
+      const reportedCumulative = unattributable.has(series.key)
+        ? null
+        : (reportedByKey.has(series.key) ? money(reportedByKey.get(series.key)) : null);
       const difference = reportedCumulative == null ? null : money(history.net - reportedCumulative);
 
       const quantities = [...series.quantities].sort((a, b) => a - b);
@@ -566,6 +590,14 @@ export function buildBenchmarkSeries(parsedFiles = []) {
           reportedNet: reportedCumulative,
           difference,
           matches: difference == null ? null : Math.abs(difference) < 0.01,
+          // Why there is nothing to compare, when there is nothing to compare.
+          refusal: difference != null
+            ? null
+            : (unattributable.has(series.key)
+              ? 'One of the files feeding this series carries more than one series, or states no '
+                + 'running total of its own, so the vendor’s figure cannot be attributed to this '
+                + 'series alone.'
+              : 'No running total was read from the file.'),
         },
       };
     })
@@ -589,14 +621,26 @@ export function buildBenchmarkSeries(parsedFiles = []) {
  */
 export function benchmarkMonthlyRows(series = []) {
   const list = Array.isArray(series) ? series : [series];
-  return list.flatMap((entry) =>
-    (entry.months || []).map((month) => ({
+  return list.flatMap((entry) => {
+    const daysByMonth = new Map();
+    for (const bucket of entry.days || []) {
+      const key = String(bucket.date || '').slice(0, 7);
+      if (!key) continue;
+      const held = daysByMonth.get(key) || [];
+      held.push(bucket);
+      daysByMonth.set(key, held);
+    }
+    return (entry.months || []).map((month) => ({
       vendor: entry.vendor || BENCHMARK_VENDOR,
       algorithm: entry.algorithm,
       version: entry.version,
       instrument: entry.instrument,
       riskLevel: entry.riskLevel,
       month: `${month.month}-01`,
+      // The month's own days ride with it. A month cannot answer "which days
+      // inside this week did the backtest trade", which is the count that
+      // decides whether the report states a comparison at all.
+      days: daysByMonth.get(month.month) || [],
       trades: month.trades,
       tradingDays: month.days,
       contracts: month.contracts,
@@ -607,8 +651,109 @@ export function benchmarkMonthlyRows(series = []) {
       commissionPerContract: month.commissionPerContract,
       maxDrawdown: month.maxDrawdown,
       sourceFile: entry.sourceFile,
-    })),
-  );
+    }));
+  });
+}
+
+/**
+ * Stored monthly rows read back as the series the report consumes.
+ *
+ * THE INVERSE OF `benchmarkMonthlyRows`, AND IT EXISTS BECAUSE THE PERSISTENCE
+ * FED NOTHING. The table stored a benchmark import and the period report read
+ * only files dragged into the sheet in that visit, so the section was empty on
+ * every open and a manager who navigated away lost the 36 files they had just
+ * imported. Storing the days on the month row (step 44) is what makes this
+ * possible: the report asks which days inside one week the backtest traded, and
+ * a month cannot answer that.
+ *
+ * WHAT DOES NOT SURVIVE THE ROUND TRIP, stated rather than silently absent.
+ * `reconciliation` is a claim about the FILES that were parsed, so a series read
+ * back from the table carries none and says so in `refusal`; `quantities` and
+ * `contractMonths` are properties of the trade rows the table does not keep. The
+ * basis label is rebuilt from the four fields that identify a series, which is
+ * all it has ever used.
+ */
+export function benchmarkSeriesFromStoredRows(rows = []) {
+  const list = Array.isArray(rows) ? rows : [rows];
+  const bySeries = new Map();
+  for (const row of list) {
+    if (!row) continue;
+    const key = [row.algorithm, row.version, row.instrument, row.riskLevel].join('|');
+    let series = bySeries.get(key);
+    if (!series) {
+      series = {
+        key,
+        vendor: row.vendor || BENCHMARK_VENDOR,
+        algorithm: row.algorithm || '',
+        version: row.version || '',
+        instrument: row.instrument || '',
+        riskLevel: row.riskLevel || '',
+        sourceFiles: [],
+        months: [],
+        days: [],
+        importedAt: row.importedAt || null,
+      };
+      bySeries.set(key, series);
+    }
+    if (row.sourceFile && !series.sourceFiles.includes(row.sourceFile)) {
+      series.sourceFiles.push(row.sourceFile);
+    }
+    if (row.importedAt && (!series.importedAt || row.importedAt > series.importedAt)) {
+      series.importedAt = row.importedAt;
+    }
+    series.months.push({
+      month: String(row.month || '').slice(0, 7),
+      trades: Number(row.trades || 0),
+      days: Number(row.tradingDays || 0),
+      contracts: Number(row.contracts || 0),
+      gross: Number(row.grossProfit || 0),
+      commission: Number(row.commission || 0),
+      net: Number(row.netProfit || 0),
+      winRate: row.winRate == null ? null : Number(row.winRate),
+      commissionPerContract: row.commissionPerContract == null
+        ? null
+        : Number(row.commissionPerContract),
+      maxDrawdown: Number(row.maxDrawdown || 0),
+    });
+    for (const bucket of row.days || []) {
+      if (!bucket?.date) continue;
+      series.days.push(bucket);
+    }
+  }
+
+  return [...bySeries.values()]
+    .map((series) => {
+      const days = series.days.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      const months = series.months.sort((a, b) => a.month.localeCompare(b.month));
+      return {
+        ...series,
+        days,
+        months,
+        sourceFile: series.sourceFiles[0] || '',
+        contractMonths: [],
+        quantities: [],
+        quantityRange: { min: 0, max: 0 },
+        firstDate: days[0]?.date || '',
+        lastDate: days[days.length - 1]?.date || '',
+        basis: benchmarkBasisLabel(series),
+        storedRows: months.length,
+        reconciliation: {
+          computedNet: null,
+          reportedNet: null,
+          difference: null,
+          matches: null,
+          refusal: 'Read back from the saved import. The vendor’s own running total is a claim '
+            + 'about the file that was parsed, and the file is not kept, so nothing is checked '
+            + 'against it here. It was checked when the file was imported.',
+        },
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.algorithm.localeCompare(b.algorithm)
+        || a.instrument.localeCompare(b.instrument)
+        || BENCHMARK_RISK_LEVELS.indexOf(a.riskLevel) - BENCHMARK_RISK_LEVELS.indexOf(b.riskLevel),
+    );
 }
 
 /**
@@ -693,7 +838,28 @@ export function buildBenchmarkCoverage(rosterRows = [], series = [], {
     const family = member.algorithm || member.name || '';
     seenAlgorithms.add(family);
     const found = byAlgorithm.get(family) || [];
-    const atRisk = found.find((entry) => entry.riskLevel === risk) || found[0] || null;
+    const risksImported = BENCHMARK_RISK_LEVELS.filter(
+      (level) => found.some((entry) => entry.riskLevel === level),
+    );
+    // NO FALLBACK TO ANOTHER RISK LEVEL, and this is the whole of it.
+    //
+    // `found.find(...) || found[0]` measured the row off whatever series
+    // happened to be first when the requested risk level had not been imported.
+    // Importing only the twelve High Risk files and asking for Low returned
+    // `coverage.riskLevel === 'Low'` with URGO's 1,166 benchmark days and its
+    // one common close taken from the High series, under a section heading
+    // reading "My Futures Book, measured separately (Low risk)". Section 3 of
+    // the spec forbids exactly that: a benchmark figure quoted without its true
+    // risk level, on the two fields (`commonCloses`, `comparable`) that decide
+    // whether a comparison is refused at all.
+    //
+    // Within the requested risk level, the entry whose VERSION matches the one
+    // this desk runs is preferred, so a family running two versions reads its
+    // own verdict rather than the first row's.
+    const atThisRisk = found.filter((entry) => entry.riskLevel === risk);
+    const atRisk = (member.version
+      ? atThisRisk.find((entry) => entry.version === member.version)
+      : null) || atThisRisk[0] || null;
     const base = family.endsWith('_PF') ? family.slice(0, -3) : '';
     const baseHasSeries = Boolean(base && byAlgorithm.has(base));
 
@@ -717,15 +883,32 @@ export function buildBenchmarkCoverage(rosterRows = [], series = [], {
     return {
       algorithm: family,
       version: member.version || '',
+      // The roster row this coverage row belongs to, family AND version. Rows
+      // were identified by family alone while the roster is keyed by both, so a
+      // family running two versions produced two coverage rows under one name:
+      // the second read the first's version verdict, and the two shared a React
+      // key. No family on today's book runs two versions (spec §2.3), and the
+      // older URGO 2.0 and B2X 1.3 sit on a hidden client that would surface it
+      // the moment that client became visible.
+      element: member.element || [family, member.version || ''].filter(Boolean).join(' '),
       accountDays: member.accountDays || 0,
       accounts: member.accounts || 0,
       hasSeries: Boolean(atRisk),
+      // The risk level this row was actually measured at. Printed as a column,
+      // so a figure always carries its sizing even if a future caller reaches
+      // past `hasSeries`.
+      riskLevelRequested: risk,
       seriesNote: atRisk
         ? null
-        : (baseHasSeries
-          ? `No series for ${family}. ${base} has one; a prop-firm variant is not the same `
-            + 'catalogue entry, and the vendor publishes no track record under this name.'
-          : `No series. ${BENCHMARK_VENDOR} publishes no file for ${family || 'this algorithm'}.`),
+        : (atThisRisk.length === 0 && found.length
+          ? `No ${risk} risk series for ${family}. ${BENCHMARK_VENDOR} publishes one and this `
+            + `import holds ${risksImported.join(', ')}. A figure measured off another risk level `
+            + `under a ${risk} heading would be a different sizing wearing this one’s label: the `
+            + 'same algorithm reads a win rate up to 19.8 points apart on the three files.'
+          : (baseHasSeries
+            ? `No series for ${family}. ${base} has one; a prop-firm variant is not the same `
+              + 'catalogue entry, and the vendor publishes no track record under this name.'
+            : `No series. ${BENCHMARK_VENDOR} publishes no file for ${family || 'this algorithm'}.`)),
       benchmarkVersion: atRisk ? atRisk.version : null,
       versionMatch: atRisk && member.version
         ? (atRisk.version === member.version ? 'yes' : 'no')
@@ -740,9 +923,7 @@ export function buildBenchmarkCoverage(rosterRows = [], series = [], {
           ? `${instrumentsHere.filter((name) => !instrumentsThere.includes(name)).join(', ')} `
             + 'is not benchmarked.'
           : null),
-      riskLevelsAvailable: BENCHMARK_RISK_LEVELS.filter((level) =>
-        found.some((entry) => entry.riskLevel === level),
-      ),
+      riskLevelsAvailable: risksImported,
       riskLevel: atRisk ? atRisk.riskLevel : null,
       benchmarkDays: benchmarkDays.length,
       closesHere: closesHere.length,

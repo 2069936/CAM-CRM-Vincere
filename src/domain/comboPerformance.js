@@ -85,6 +85,19 @@ function familyOfStrategy(strategy) {
   return strategy.strategyFamily || familyFromName(strategy.strategyName) || null;
 }
 
+/**
+ * The family a single Strategies-grid row belongs to, by this module's rule.
+ *
+ * Exported so `algorithmRanking.js` can gate its own rows against the family
+ * set `comboKeyFromDay` resolved, rather than reimplementing the `-PF` → `_PF`
+ * normalisation and the fill-name fallback a second time. Two copies of an
+ * identity rule is how IFSP_PF ended up folded into IFSP on one screen and kept
+ * apart on another.
+ */
+export function familyOfStrategyRow(strategy) {
+  return familyOfStrategy(strategy || {});
+}
+
 const elementOf = (family, version, level) => (
   level === 'family' || !version ? family : `${family} ${version}`
 );
@@ -349,6 +362,13 @@ export function buildComboPerformance(clients = [], options = {}) {
     hiddenClients: Number(options.hiddenClientCount || 0),
     accounts: new Set(),
     clients: new Set(),
+    // The FUNDED population, counted before attribution. `accounts` and
+    // `clients` below are filled only after the Unknown `continue`, so they
+    // count accounts with at least one attributed day — which is a different
+    // set, and a caption naming the funded population while printing those two
+    // was 31 accounts and 4 clients short on 2026-07.
+    fundedAccounts: new Set(),
+    fundedClients: new Set(),
   };
 
   for (const client of clients || []) {
@@ -386,8 +406,11 @@ export function buildComboPerformance(clients = [], options = {}) {
         if (!inWindow(di.date, range.first, aliveTo)) continue;
 
         const pnl = Number(snap.grossRealizedPnl || 0);
+        const accountId = `${client.id}::${name}`;
         population.fundedDays += 1;
         population.fundedPnl += pnl;
+        population.fundedAccounts.add(accountId);
+        population.fundedClients.add(client.id);
 
         const day = dayKeys(snap, executionsForAccount(di, snap.accountName), basis, level);
         if (day.key === UNKNOWN_KEY) {
@@ -396,7 +419,6 @@ export function buildComboPerformance(clients = [], options = {}) {
           continue;
         }
 
-        const accountId = `${client.id}::${name}`;
         const isFailed = meta.status === ACCOUNT_STATUSES.FAILED;
         population.includedDays += 1;
         population.includedPnl += pnl;
@@ -448,8 +470,14 @@ export function buildComboPerformance(clients = [], options = {}) {
       unknownPnl: population.unknownPnl,
       failedAccountDays: population.failedAccountDays,
       hiddenClients: population.hiddenClients,
+      // Accounts and clients with at least one ATTRIBUTED day, against the
+      // funded population they are a subset of. Both pairs are published so a
+      // caption can print "149 of 180 accounts" rather than pick one and name
+      // the other.
       accounts: population.accounts.size,
       clients: population.clients.size,
+      fundedAccounts: population.fundedAccounts.size,
+      fundedClients: population.fundedClients.size,
     },
   };
 }

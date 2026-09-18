@@ -82,6 +82,22 @@ create table if not exists public.algorithm_benchmarks (
   -- MGC, $4.36 on YM and $4.80 on NG and PL. Null only when a month traded no
   -- contracts, which the trades check makes unreachable.
   commission_per_contract numeric(8, 4),
+  -- The month's own days, as `[{"date":"2026-07-14","trades":6,"days":1,...}]`
+  -- exactly as `src/domain/algorithmBenchmark.js` seals them.
+  --
+  -- WHY A MONTH IS NOT ENOUGH, which is what this column exists to fix. The
+  -- desk period report asks two questions a month cannot answer: which days
+  -- inside THIS WEEK did the backtest close a trade on (the `commonCloses` count
+  -- that decides whether any comparison is stated at all), and what does the
+  -- cumulative curve do day by day. Stored monthly and nothing else, the table
+  -- fed nothing and the report made the manager re-import 36 CSVs on every
+  -- visit.
+  --
+  -- Kept as jsonb on the month row rather than a second table: the row count
+  -- stays at roughly 2,900 for the desk's 36 files instead of ~60,000, the days
+  -- of a month are only ever read with that month, and a re-import replaces the
+  -- month and its days in one write through the unique key below.
+  days jsonb not null default '[]'::jsonb,
   source_file text not null,
   imported_at timestamptz not null default now(),
   imported_by_user_id uuid references public.app_users(id) on delete set null,
@@ -103,14 +119,24 @@ create table if not exists public.algorithm_benchmarks (
   -- writer that stored Profit as gross would double-count the commission on
   -- every chart drawn from these rows, and would fail here instead.
   constraint algorithm_benchmarks_gross_is_net_plus_commission
-    check (abs(gross_profit - (net_profit + commission)) < 0.01)
+    check (abs(gross_profit - (net_profit + commission)) < 0.01),
+  -- An array, so a reader can iterate it without checking its shape first.
+  constraint algorithm_benchmarks_days_is_an_array
+    check (jsonb_typeof(days) = 'array')
 );
 
 -- Re-import replaces. Without this a desk that downloads the 36 files again
 -- next month doubles every historical month it already holds, and nothing on
 -- the page would look wrong.
+--
+-- `source_vendor` LEADS THE KEY. The column's own comment above says its purpose
+-- is that rows from My Futures Book stay identifiable if a second vendor is ever
+-- imported — and without the vendor in the key, that second vendor's row for the
+-- same series and month would REPLACE the My Futures Book row rather than sit
+-- beside it. The column would then still be identifiable and the data gone.
+-- `saveAlgorithmBenchmarks` names the same columns in its onConflict.
 create unique index if not exists algorithm_benchmarks_series_month_key
-  on public.algorithm_benchmarks (algorithm, version, instrument, risk_level, month);
+  on public.algorithm_benchmarks (source_vendor, algorithm, version, instrument, risk_level, month);
 
 -- The report reads one risk level across algorithms for a period.
 create index if not exists algorithm_benchmarks_period_idx

@@ -57,12 +57,16 @@ describe('the week the desk would be reporting on', () => {
 
   it('says out loud that the week is not complete, naming both causes', () => {
     expect(html).toContain('This period is not complete.');
-    expect(html).toContain('2026-07-29, 2026-07-31');
+    expect(html).toContain('It runs to 2026-08-02');
+    expect(html).toContain('2026-07-29');
   });
 
   it('renders the 3 closes it holds and the 2 weekdays it does not', () => {
-    expect(html).toContain('3 closes of 5 weekdays');
-    expect((html.match(/>No close</g) || [])).toHaveLength(2);
+    // NOT "3 closes of 5 weekdays": the numerator counted every close including
+    // Saturdays and the denominator counted Monday to Friday, which on Week of
+    // 2026-07-20 printed "6 closes of 5 weekdays".
+    expect(html).toContain('3 of 5 weekdays hold a close');
+    expect((html.match(/No close\./g) || [])).toHaveLength(2);
   });
 
   it('renders the five ranked algorithms and marks the rest Not ranked', () => {
