@@ -249,6 +249,74 @@ function mapExecution(row, accountNamesByLower) {
   };
 }
 
+/* NINJATRADER LISTS A STRATEGY TWICE, AND THAT USED TO COST THE WHOLE DAY.
+ *
+ * On 2026-09-14 the desk enabled RBO on one of Todd Grehl's accounts in the
+ * morning. Every capture that day, including the 16:30 close, carried the
+ * strategy twice under the same strategyId: NinjaTrader keeps the previous
+ * instance in account.Strategies beside the live one for a while after an
+ * enable, the first with no position and the second with the real one. The
+ * duplicate check here read that as a corrupt file, the CRM answered 422, the
+ * agent quarantined all four captures, and the first RBO day never reached
+ * anyone. The same thing took Yousef Asaad's close on 2026-09-17.
+ *
+ * A duplicate strategy row is NinjaTrader's state, not our data going wrong,
+ * and strategies carry no money. So the strategies section is repaired before
+ * validation: one row per strategyId, keeping the one that knows its position
+ * (or the later one when neither does), and a strategy row whose account is
+ * not in the accounts section is dropped rather than fatal, for the same
+ * reason: the accounts, orders and executions are what the close is made of.
+ * What was dropped is written into the metadata so it can be seen, and
+ * orders and executions stay as strict as they were: a duplicate execution
+ * or an execution on an unknown account is still a refusal. */
+function strategyRowScore(row) {
+  const position = trimText(row.position);
+  const state = trimText(row.state).toLowerCase();
+  return (position && position.toLowerCase() !== 'null' ? 2 : 0) + (/realtime|active|running/.test(state) ? 1 : 0);
+}
+
+function repairStrategies(snapshot) {
+  const accountsByLower = new Set(snapshot.accounts.map((account) => trimText(account.accountName).toLowerCase()));
+  const keptByStrategyId = new Map();
+  const duplicateStrategyIds = new Set();
+  const unknownAccounts = new Set();
+  const order = [];
+  let unknownAccountRowsDropped = 0;
+  let duplicateRowsDropped = 0;
+  for (const row of snapshot.strategies) {
+    const accountName = trimText(row.accountName);
+    if (!accountsByLower.has(accountName.toLowerCase())) {
+      unknownAccounts.add(accountName === '' ? '(blank)' : accountName);
+      unknownAccountRowsDropped += 1;
+      continue;
+    }
+    const key = trimText(row.strategyId);
+    const current = keptByStrategyId.get(key);
+    if (!current) {
+      keptByStrategyId.set(key, row);
+      order.push(key);
+      continue;
+    }
+    duplicateStrategyIds.add(key);
+    duplicateRowsDropped += 1;
+    // The later row wins a tie: NinjaTrader appends the live instance after
+    // the one it is retiring.
+    if (strategyRowScore(row) >= strategyRowScore(current)) keptByStrategyId.set(key, row);
+  }
+  const repairs = {
+    strategies: {
+      duplicateRowsDropped,
+      duplicateStrategyIds: [...duplicateStrategyIds],
+      unknownAccountRowsDropped,
+      unknownAccounts: [...unknownAccounts],
+    },
+  };
+  const repaired = duplicateRowsDropped || unknownAccountRowsDropped
+    ? { ...snapshot, strategies: order.map((key) => keptByStrategyId.get(key)) }
+    : snapshot;
+  return { snapshot: repaired, repairs };
+}
+
 function validationError(snapshot) {
   const validation = validateAutoExportSnapshot(snapshot);
   const errors = [...validation.errors];
@@ -261,7 +329,11 @@ function validationError(snapshot) {
   return new AutoImportValidationError(unsupported ? 'unsupported_schema_version' : 'invalid_auto_import_snapshot', errors);
 }
 
-export function normalizeAutoImportSnapshot(snapshot) {
+export function normalizeAutoImportSnapshot(rawSnapshot) {
+  const structural = validateAutoExportSnapshot(rawSnapshot);
+  let snapshot = rawSnapshot;
+  let repairs = null;
+  if (structural.ok) ({ snapshot, repairs } = repairStrategies(rawSnapshot));
   const error = validationError(snapshot);
   if (error) throw error;
 
@@ -297,6 +369,7 @@ export function normalizeAutoImportSnapshot(snapshot) {
       missingSections: [],
       emptySections,
       isComplete: emptySections.length === 0,
+      repairs,
       /* A CLOSE TAKEN WHILE THE TRADES WERE STILL OPEN IS NOT A CLOSE.
        *
        * On 2026-09-08 the scheduled capture fired at 16:30:00 and reported
