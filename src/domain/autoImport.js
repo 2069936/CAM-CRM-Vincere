@@ -1,4 +1,4 @@
-import { openPositionsAt } from './openPositions';
+import { openPositionsAt } from './openPositions.js';
 import { normalizeStrategyFamily, parseStrategyVersion } from './csvImport.js';
 import { validateAutoExportSnapshot } from './autoExportContract.js';
 
