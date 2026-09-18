@@ -86,14 +86,17 @@ describe('buildAccountStreaks', () => {
 });
 
 describe('buildComboByFirm', () => {
+  // comboFn sees the account day, not the strategy list: the heatmap keys a
+  // day the same way the team table does. Only Funded accounts count.
+  const comboFn = (snapshot) => snapshot.strategies[0]?.combo || 'Unknown';
+  const day = (connection, grossRealizedPnl, accountName = 'F1') => ({
+    snapshots: [{ accountName, strategies: [{ combo: 'URGO' }], connection, grossRealizedPnl }],
+  });
+
   it('cross-tabs avg PnL by combo and firm', () => {
-    const comboFn = (strats) => strats[0]?.combo || 'Unknown';
     const clients = [{
-      dailyImports: [
-        { snapshots: [{ strategies: [{ combo: 'URGO' }], connection: 'Lucid', grossRealizedPnl: 100 }] },
-        { snapshots: [{ strategies: [{ combo: 'URGO' }], connection: 'Lucid', grossRealizedPnl: 200 }] },
-        { snapshots: [{ strategies: [{ combo: 'URGO' }], connection: 'Tradeify', grossRealizedPnl: -50 }] },
-      ],
+      accountRegistry: { F1: { accountName: 'F1', accountType: 'Funded', status: 'Active' } },
+      dailyImports: [day('Lucid', 100), day('Lucid', 200), day('Tradeify', -50)],
     }];
     const result = buildComboByFirm(clients, comboFn);
     expect(result.combos).toEqual(['URGO']);
@@ -101,5 +104,17 @@ describe('buildComboByFirm', () => {
     const lucid = result.matrix[0].cells.find((c) => c.firm === 'Lucid');
     expect(lucid.avgPnl).toBeCloseTo(150);
     expect(lucid.days).toBe(2);
+  });
+
+  it('keeps evaluation and unregistered accounts out of the cells', () => {
+    const clients = [{
+      accountRegistry: {
+        F1: { accountName: 'F1', accountType: 'Funded', status: 'Active' },
+        E1: { accountName: 'E1', accountType: 'Evaluation - Standard', status: 'Active' },
+      },
+      dailyImports: [day('Lucid', 100), day('Lucid', 900, 'E1'), day('Lucid', 900, 'NOBODY')],
+    }];
+    const result = buildComboByFirm(clients, comboFn);
+    expect(result.matrix[0].cells[0]).toEqual({ firm: 'Lucid', avgPnl: 100, days: 1 });
   });
 });
