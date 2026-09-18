@@ -204,6 +204,7 @@ import {
   UploadCoverageGrid,
 } from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
+import { parseBenchmarkCsv, summarizeBenchmarkImport } from "./domain/algorithmBenchmark";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import { buildReportReasons } from "./domain/reportReasons";
 import ClientKindBadge from "./components/ClientKindBadge";
@@ -254,6 +255,8 @@ import {
   upsertStrategyClassification,
   loadLogAlgoHistory,
   saveLogAlgoHistory,
+  saveAlgorithmBenchmarks,
+  isMissingBenchmarkTable,
   replaceSupabaseOperationalFlags,
   replaceSupabasePriceChecks,
   softDeleteSupabaseClient,
@@ -2460,6 +2463,10 @@ function DataToolsPanel({
   const [isParsingTradovate, setIsParsingTradovate] = useState(false);
   const [isParsingLogs, setIsParsingLogs] = useState(false);
   const [logPersisting, setLogPersisting] = useState(false);
+  const [benchmarkImport, setBenchmarkImport] = useState(null);
+  const [isParsingBenchmark, setIsParsingBenchmark] = useState(false);
+  const [benchmarkSaving, setBenchmarkSaving] = useState(false);
+  const [benchmarkSaveNeedsMigration, setBenchmarkSaveNeedsMigration] = useState(false);
 
   const duplicateKeys = useMemo(
     () => {
@@ -2705,6 +2712,86 @@ function DataToolsPanel({
       setStatus("error");
     } finally {
       setLogPersisting(false);
+    }
+  }
+
+  // My Futures Book backtest trade lists. Parsing and every figure below it
+  // live in src/domain/algorithmBenchmark.js; this function only reads the
+  // files and hands the result to the card.
+  async function parseBenchmarkFiles(files = []) {
+    const csvFiles = [...files].filter((file) => file.name.toLowerCase().endsWith(".csv"));
+    if (!csvFiles.length) {
+      setBenchmarkImport({ error: "No CSV files selected. Drop the trade lists downloaded from My Futures Book." });
+      return;
+    }
+    setIsParsingBenchmark(true);
+    setBenchmarkImport(null);
+    setBenchmarkSaveNeedsMigration(false);
+    try {
+      const parsed = [];
+      for (const file of csvFiles) {
+        const text = await readTextFile(file);
+        parsed.push(parseBenchmarkCsv(text, file.name));
+      }
+      const summary = summarizeBenchmarkImport(parsed);
+      setBenchmarkImport(summary);
+      if (summary.totals.series) {
+        setMessage(
+          `Parsed ${summary.totals.series} backtest series, ${summary.totals.trades} trades, ${summary.totals.firstDate} to ${summary.totals.lastDate}.`,
+        );
+        setStatus("ready");
+        auditSilently({
+          entityType: "data_import",
+          action: "data_import.benchmark.parse",
+          afterData: {
+            files: summary.totals.files,
+            series: summary.totals.series,
+            trades: summary.totals.trades,
+            refused: summary.rejected.length,
+            manager: session?.displayName || session?.username || "",
+          },
+        });
+      }
+    } catch (error) {
+      console.error("[CRM] Failed to parse My Futures Book CSV:", error);
+      setBenchmarkImport({ error: error.message || "Could not read the CSV files." });
+      setStatus("error");
+    } finally {
+      setIsParsingBenchmark(false);
+    }
+  }
+
+  async function persistBenchmarkSeries() {
+    const rows = benchmarkImport?.monthlyRows || [];
+    if (!rows.length) return;
+    setBenchmarkSaving(true);
+    try {
+      await saveAlgorithmBenchmarks(rows);
+      setMessage(`Saved ${rows.length} benchmark month${rows.length === 1 ? "" : "s"} across ${benchmarkImport.totals.series} series.`);
+      setStatus("ready");
+      auditSilently({
+        entityType: "data_import",
+        action: "data_import.benchmark.persist",
+        afterData: {
+          series: benchmarkImport.totals.series,
+          months: rows.length,
+          firstDate: benchmarkImport.totals.firstDate,
+          lastDate: benchmarkImport.totals.lastDate,
+        },
+      });
+    } catch (error) {
+      console.error("[CRM] Failed to save My Futures Book benchmarks:", error);
+      // Step 44 not run is not a failure the CAM can fix by trying again, so it
+      // is named rather than shown as a Postgres error. The parse above stays
+      // on screen either way: it is the part that needed no database.
+      if (isMissingBenchmarkTable(error)) {
+        setBenchmarkSaveNeedsMigration(true);
+      } else {
+        setBenchmarkImport((current) => ({ ...(current || {}), error: error.message || "Could not save the benchmark series." }));
+      }
+      setStatus("error");
+    } finally {
+      setBenchmarkSaving(false);
     }
   }
 
@@ -3103,6 +3190,165 @@ function DataToolsPanel({
                 disabled={logPersisting || !logImportResult.files.some((file) => (file.accounts || []).some((row) => row.clientId))}
               >
                 <Upload size={14} /> {logPersisting ? "Saving..." : "Save matched activity"}
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div className="data-tool-card">
+          <strong>My Futures Book backtest import</strong>
+          <p className="muted">
+            Upload the NinjaTrader trade lists downloaded from the desk's My
+            Futures Book portfolio page, one per algorithm, instrument and risk
+            level (<code>RBO_-_M2K_-_Low_Risk.csv</code>). The risk level is read
+            from the file name, because the file does not carry it.
+          </p>
+          <p className="muted">
+            <b>
+              These are backtest results, not client money. Each file is the
+              version the desk runs today re-run over history on one simulated
+              account. Position size is whatever that risk file traded — Qty
+              varies inside a single file as the strategy scales, so a risk level
+              is a base size and not one contract. P&amp;L is the vendor's Profit
+              column, already net of commission. Nothing imported here is summed
+              with, ranked against or charted beside a client account figure.
+            </b>
+          </p>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            multiple
+            onChange={(event) => {
+              parseBenchmarkFiles(event.target.files || []);
+              event.target.value = "";
+            }}
+          />
+          {isParsingBenchmark ? (
+            <div className="notice info">Parsing My Futures Book trade lists...</div>
+          ) : null}
+          {benchmarkImport?.error ? (
+            <div className="notice error">{benchmarkImport.error}</div>
+          ) : null}
+          {benchmarkSaveNeedsMigration ? (
+            <div className="notice warning">
+              Saving needs migration step 44. The parse below still shows what the files hold.
+            </div>
+          ) : null}
+          {benchmarkImport?.rejected?.length ? (
+            <div className="notice warning">
+              <strong>
+                {benchmarkImport.rejected.length} file
+                {benchmarkImport.rejected.length === 1 ? "" : "s"} refused
+              </strong>
+              <ul>
+                {benchmarkImport.rejected.map((file) => (
+                  <li key={file.fileName}>
+                    <code>{file.fileName}</code>: {file.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {benchmarkImport?.warnings?.length ? (
+            <div className="notice info">
+              <ul>
+                {benchmarkImport.warnings.map((entry, index) => (
+                  <li key={`${entry.fileName}-${index}`}>
+                    <code>{entry.fileName}</code>: {entry.warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {benchmarkImport?.series?.length ? (
+            <div className="intake-preview">
+              <div className="intake-preview-head">
+                <strong>Backtest series found</strong>
+                <span className="muted">
+                  {benchmarkImport.totals.series} series · {benchmarkImport.totals.trades} trades ·{" "}
+                  {benchmarkImport.totals.firstDate} to {benchmarkImport.totals.lastDate} ·{" "}
+                  {benchmarkImport.totals.monthlyRows} months to save
+                </span>
+              </div>
+              <div className="table-wrap">
+                <table className="ops-table compact-table">
+                  <thead>
+                    <tr>
+                      <th>Algorithm</th>
+                      <th>Instrument</th>
+                      <th>Risk</th>
+                      <th title="Every Qty the file traded. A risk level is a base size, not a fixed one.">
+                        Qty traded
+                      </th>
+                      <th>Date range</th>
+                      <th title="Days on which the backtest closed at least one trade. A day with no trade is absent, not zero.">
+                        Days
+                      </th>
+                      <th>Trades</th>
+                      <th title="Trades above zero, over all trades. A larger size splits an exit into more legs, so this rate moves with the risk level over identical history.">
+                        Win rate
+                      </th>
+                      <th title="Sum of the vendor's Profit column, already net of commission. One simulated account. Not client money.">
+                        Backtest net
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {benchmarkImport.series.map((entry) => (
+                      <tr key={entry.key}>
+                        <td>
+                          <strong>{entry.algorithm}</strong>{" "}
+                          <span className="muted">{entry.version}</span>
+                        </td>
+                        <td>
+                          <code>{entry.instrument}</code>
+                        </td>
+                        <td>{entry.riskLevel}</td>
+                        <td className="muted">{entry.quantities.join(" / ")}</td>
+                        <td className="muted">
+                          {entry.firstDate} to {entry.lastDate}
+                        </td>
+                        <td>{entry.history.days}</td>
+                        <td>{entry.history.trades}</td>
+                        <td>
+                          {entry.history.winRate == null
+                            ? "-"
+                            : `${Math.round(entry.history.winRate * 1000) / 10}%`}
+                        </td>
+                        <td
+                          className={entry.history.net >= 0 ? "positive" : "negative"}
+                          title={entry.basis}
+                        >
+                          {formatCurrency(entry.history.net)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <small className="muted">
+                Backtest dollars, one simulated account per row, sized as that
+                risk file traded. Not comparable with each other across risk
+                levels, and not comparable with anything a client account did.
+                {benchmarkImport.totals.unreconciled
+                  ? ` ${benchmarkImport.totals.unreconciled} series disagree with the vendor's own running total; check those files before saving.`
+                  : benchmarkImport.totals.unchecked
+                    ? ` ${benchmarkImport.totals.unchecked} series carried no "Cum. net profit" column and were not checked against the vendor's own total.`
+                    : " Every series matches the vendor's own running total."}
+              </small>
+              <button
+                className="primary-button"
+                onClick={persistBenchmarkSeries}
+                disabled={benchmarkSaving || benchmarkSaveNeedsMigration || !benchmarkImport.totals.monthlyRows}
+                title={
+                  benchmarkSaveNeedsMigration
+                    ? "Saving needs migration step 44. The parse above still shows what the files hold."
+                    : "Saves one row per algorithm, version, instrument, risk level and month. A re-import replaces those months."
+                }
+              >
+                <Upload size={14} />{" "}
+                {benchmarkSaving
+                  ? "Saving..."
+                  : `Save ${benchmarkImport.totals.monthlyRows} monthly row${benchmarkImport.totals.monthlyRows === 1 ? "" : "s"}`}
               </button>
             </div>
           ) : null}

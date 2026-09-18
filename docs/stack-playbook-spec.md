@@ -156,25 +156,32 @@ Default +$800/month per funded account (`:223`), `min={100}` (`:233`). Book: 865
 
 ## 3. What My Futures Book measures instead (labelling requirement)
 
-My Futures Book publishes, per algorithm, the algorithm's own track record: one algorithm, on its own, one contract, one continuous series. Nothing in this repository or in the export carries My Futures Book data (grep over `src`, `server`, `docs` for "futures book", "myfuturesbook", "MFB": zero hits), so the CRM cannot validate an MFB figure and MFB cannot validate a Playbook figure. The two are different measurements of different things:
+My Futures Book publishes, per algorithm, the algorithm's own track record: one algorithm, on its own, one continuous series. The CRM cannot validate an MFB figure and MFB cannot validate a Playbook figure. The two are different measurements of different things:
 
 | | Stack Playbook (this tab) | My Futures Book |
 |---|---|---|
 | Unit | A client's funded account-day | The algorithm |
 | Population | Live client accounts of this desk's visible clients, funded, current status | The algorithm's own run |
 | Attribution | Whatever the account did on a day the combo was switched on (multi-algo days, fills from non-enabled algos, days with every algo disabled dropped) | The algorithm alone |
-| Size | posSizes as configured per account (URGO 1/1/0, B2X 3/3/2, RBO 2/2/2, G4M 2/1/1...) and unknown start balance on 123 of 178 accounts | One contract |
+| Size | posSizes as configured per account (URGO 1/1/0, B2X 3/3/2, RBO 2/2/2, G4M 2/1/1...) and unknown start balance on 123 of 178 accounts | The risk level's own sizing, which is a base size and not a fixed one: `Qty` varies inside a single file as the strategy scales (ARPD MGC Low holds 1, 2 and 4; RBO M2K High reaches 36) |
 | P&L basis | Realized net of commission where the grid reported it, gross otherwise (csvImport.js:244) | Whatever MFB states |
 | Time | 14 closes 2026-07-13..07-30 in this book | MFB's own history |
 
-The nearest thing the CRM can produce to an MFB-style figure is the strategy row's own `realized` on solo days (exactly one strategy enabled): 166 such days, and even there account gross equals the strategy's realized on only 108. It still is not one contract.
+The nearest thing the CRM can produce to an MFB-style figure is the strategy row's own `realized` on solo days (exactly one strategy enabled): 166 such days, and even there account gross equals the strategy's realized on only 108. It is still a different sizing, a different population and a different P&L basis.
+
+**Corrected on this branch, by the files themselves.** This section was written when nothing in the repository carried My Futures Book data. The desk's 36 downloaded trade lists now exist and they contradict two sentences of it, so both are fixed above and here rather than left standing:
+
+- **"One contract" was wrong.** `Qty` is not one, and is not even constant inside one file. The label required below states the risk level instead, and `src/domain/algorithmBenchmark.js` stores every `Qty` a series traded so the page can say so.
+- **"Whatever MFB states" for the P&L basis is now known.** The `Profit` column is already NET of the separate `Commission` column, verified by price arithmetic on every checkable row of all 36 files; `Cum. net profit` is its running sum. Adding `Commission` to `Profit` double-counts it. The commission rate belongs to the instrument, not to the vendor — $1.30 a contract per round turn on the micros, $1.80 on MGC, $4.36 on YM, $4.80 on NG and PL — so it is measured per row rather than assumed.
+
+One more property of these files matters more than either: they are backtests of the version the desk runs **today**, re-run over history. A 2026-01 row is not what any client experienced in January.
 
 Requirements:
 
 1. The Team Algo Performance panel MUST carry the sentence, verbatim, under its heading: **"Client account results while the combo was running. Not the algorithm's own track record. Not comparable to My Futures Book."**
-2. Wherever an MFB number is shown in the CRM (none today; if added later) it MUST be labelled **"My Futures Book, one contract, algorithm alone"** and MUST NOT be placed in the same table or bar chart as Playbook rows.
+2. Wherever an MFB number is shown in the CRM it MUST be labelled **"My Futures Book backtest of {algorithm} {version}. One simulated account, {risk} risk sizing, {instrument}, algorithm alone, net of commission. Not client account results."** — the sentence `benchmarkBasisLabel` in `src/domain/algorithmBenchmark.js` produces — and MUST NOT be placed in the same table, bar chart or total as Playbook rows. A win rate in particular MUST NOT be quoted without its risk level: IFSP reads 48.66% Low, 61.26% Medium and 68.46% High over identical history, because a larger base size splits one exit into more scale-out legs and every leg counts as its own trade.
 3. The desk MUST NOT quote a Playbook combo average as the algorithm's performance, and MUST NOT quote an MFB figure as what client accounts made. The labels in section 4.8 enforce this on screen.
-4. No reconciliation claim ("validated against My Futures Book") may appear until an MFB series is imported with its basis (gross or net, contracts, instrument, dates) stored beside it.
+4. No reconciliation claim ("validated against My Futures Book") may appear until an MFB series is imported with its basis (gross or net, contracts, instrument, dates) stored beside it — `supabase/step_44_algorithm_benchmarks.sql` now stores that basis — **and** the two series hold enough closes in common to say anything: `BENCHMARK_MIN_COMMON_CLOSES` is 20 and this book's best covered algorithm has 11. Coverage may be published; the comparison is refused until it clears.
 
 ---
 

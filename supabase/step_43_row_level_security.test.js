@@ -24,12 +24,18 @@ const runbook = readFileSync(runbookUrl, 'utf8');
 const auth = readFileSync(authUrl, 'utf8');
 
 describe('step 43 closes the database to the browser key', () => {
-  it('is documented last, after the migration that adds the newest table', () => {
+  it('is documented after every table that existed when it was written', () => {
     expect(exists).toBe(true);
     expect(runbook).toMatch(/^\| 43 \| `step_43_row_level_security\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 43 | `step_43_row_level_security.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 42 | `step_42_client_tags_and_price_history.sql`'));
-    expect(runbook).toContain('→ 42 → 43.');
+    // 43 ran after 42 so the table 42 creates is covered. It is no longer the
+    // last step in the runbook and this assertion no longer requires it to be:
+    // 44 adds a table after 43 has run, which 43's enumeration cannot reach, so
+    // 44 carries its own RLS inline. step_44_algorithm_benchmarks.test.js is
+    // where that obligation is pinned — the rule this file protects is "no
+    // table in public is open", not "43 is last".
+    expect(runbook).toMatch(/→ 42 → 43(\.| → 44\.)/);
   });
 
   it('enables row level security on every table that lacks it, by enumeration', () => {

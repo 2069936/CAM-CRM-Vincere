@@ -20,6 +20,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 41 | `step_41_heartbeat_ordering.sql` | replaces `record_ingest_heartbeat` without the invalid capture/success ordering rule | Collector heartbeats remain valid after a successful upload |
 | 42 | `step_42_client_tags_and_price_history.sql` | `tags` and `account_focus` on `clients`, and the `client_price_changes` log | Client tags and the revenue movement figures |
 | 43 | `step_43_row_level_security.sql` | Row Level Security on every table that lacked it, plus `login_email_for_username` | Closes the database to the publishable key that ships in the browser bundle |
+| 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report |
 
 ## These three groups behave differently
 
@@ -93,14 +94,15 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
 
-**43 runs last, and it is the one that cannot wait.** It enables Row Level
+**43 closes everything that existed before it, and it is the one that cannot
+wait.** It enables Row Level
 Security on every table that did not have it, which on 2026-09-18 was all of
 them except the auto collection tables, `client_forms` and `client_price_changes`.
 Until it runs, the publishable key that ships inside the browser bundle can read
@@ -112,6 +114,22 @@ server endpoints use the service role and are unaffected. The one browser read
 that happens before a session, looking a username's email up to sign in, moves
 into `login_email_for_username`; the app falls back to the old select when the
 function is not there yet, so the code can deploy before the migration runs.
+
+**44 creates a table after 43 has already run, so it carries its own RLS and its
+own `authenticated full access` policy inline** rather than relying on 43's
+enumeration, and it ends with the same "no table in public is open" check 43
+does. Every table added from here on has to do the same; 43 cannot cover what
+did not exist when it ran.
+
+**44 degrades like 31–38.** Without it the My Futures Book import card in Data
+Tools still parses the CSVs and still shows what it found — the algorithm, the
+version, the instrument, the risk level, the date range and the trade count —
+and the Save button is disabled with the title
+**`Saving needs migration step 44. The parse above still shows what the files hold.`**
+Nothing else on any
+screen changes: no other feature reads `algorithm_benchmarks`, and the desk
+period report's benchmark section is empty rather than wrong when the table is
+absent.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either
