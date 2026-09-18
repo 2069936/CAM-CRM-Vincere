@@ -15667,6 +15667,7 @@ export default function App() {
                         dailyImport={dailyImport}
                         onUpdateAccount={handleAccountUpdate}
                         allClients={state.clients || []}
+                        hiddenClientCount={state.hiddenClientCount || 0}
                         classifications={strategyClassifications}
                         onClassify={handleClassifyStrategy}
                         logAlgoHistory={logAlgoHistory}

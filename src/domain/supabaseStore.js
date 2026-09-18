@@ -384,6 +384,11 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
   const visibleClientRows = (clientRows || []).filter((client) => (
     !client.deleted_at && client.status !== 'Inactive'
   ));
+  // How many the rule above dropped. The Stack Playbook states it under its
+  // team table: the hidden clients' account days (51 funded ones on the book,
+  // every RBO_PF day among them) are not in any figure on that screen, and a
+  // caption that says so is the only honest way to leave the rule as it is.
+  const hiddenClientCount = (clientRows || []).length - visibleClientRows.length;
   const clientByUuid = byId(visibleClientRows);
   const accountByUuid = byId(accountRows);
   const accountByClient = {};
@@ -633,6 +638,7 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
     },
     camProfiles,
     clients,
+    hiddenClientCount,
     timeOff: (timeOffRows || []).map((row) => timeOffFromRow(row, camIdByUuid)),
     coverage: (coverageRows || []).map((row) => coverageFromRow(row, camIdByUuid, clientIdByUuid)),
     selectedClientId,
