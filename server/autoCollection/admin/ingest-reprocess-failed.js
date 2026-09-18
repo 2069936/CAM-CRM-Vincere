@@ -22,6 +22,11 @@ import { createReplayStore, processStoredReplay } from './ingest-reprocess.js';
  * is visible rather than averaged away. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const MAX_BATCHES_PER_CALL = 50;
+// Vercel stops a function at its maxDuration (10 seconds on the plan this runs
+// on) and drops whatever it had. Replays run one at a time against a database
+// that has been the slow part, so the loop stops itself well inside that and
+// hands back what it did not reach; the desk presses the button again.
+export const DEFAULT_TIME_BUDGET_MS = 6500;
 
 export function parseBulkReplayBody(body = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'invalid_reprocess_request');
@@ -43,14 +48,23 @@ function publicOutcome(error) {
   return 'batch_reprocess_failed';
 }
 
-export async function replayOne({ batchId, store, actorId, reason, processReplay, createProcessingToken }) {
-  const batch = await store.getBatch(batchId);
-  if (!batch) return { batchId, outcome: 'not_found' };
-  const base = { batchId, clientUuid: batch.clientId, clientName: batch.clientName, tradingDate: batch.tradingDate };
-  if (batch.status !== 'failed') return { ...base, outcome: 'skipped', reason: `status_${batch.status}` };
-  if (batch.reprocessMode === 'closed_day' || batch.closedDay) return { ...base, outcome: 'skipped', reason: 'closed_day_needs_confirmation' };
-  const processingToken = createProcessingToken();
+function reportReplayFailure(batchId, error) {
+  // Name, code and message only: the same discipline as handleApiError's
+  // reporter. Without this line a replay that fails again leaves no trace
+  // of why, which is how the original quarantine took two days to place.
+  const parts = [error?.name, error?.code, error?.message].filter(Boolean);
+  console.error(`[CRM] bulk replay failed for batch ${batchId}: ${parts.join(' ') || 'unknown'}`);
+}
+
+export async function replayOne({ batchId, store, actorId, reason, processReplay, createProcessingToken, report = reportReplayFailure }) {
+  let base = { batchId };
   try {
+    const batch = await store.getBatch(batchId);
+    if (!batch) return { batchId, outcome: 'not_found' };
+    base = { batchId, clientUuid: batch.clientId, clientName: batch.clientName, tradingDate: batch.tradingDate };
+    if (batch.status !== 'failed') return { ...base, outcome: 'skipped', reason: `status_${batch.status}` };
+    if (batch.reprocessMode === 'closed_day' || batch.closedDay) return { ...base, outcome: 'skipped', reason: 'closed_day_needs_confirmation' };
+    const processingToken = createProcessingToken();
     const claim = await store.claimReplay({ batchId: batch.id, actorId, processingToken, confirmClosedDay: false, reason });
     if (claim.outcome === 'terminal') return { ...base, outcome: 'already_terminal', status: batch.status };
     if (claim.outcome === 'busy') return { ...base, outcome: 'busy' };
@@ -60,6 +74,7 @@ export async function replayOne({ batchId, store, actorId, reason, processReplay
   } catch (error) {
     // The batch is recorded failed again by processStoredReplay; what the
     // caller needs is that THIS one did not make it, not a 500 for the lot.
+    report(batchId, error);
     return { ...base, outcome: 'failed', error: publicOutcome(error) };
   }
 }
@@ -70,6 +85,9 @@ export function createHandler({
   createStore = createReplayStore,
   processReplay = processStoredReplay,
   createProcessingToken = randomUUID,
+  timeBudgetMs = DEFAULT_TIME_BUDGET_MS,
+  now = Date.now,
+  report = reportReplayFailure,
 } = {}) {
   return async function handler(req, res) {
     try {
@@ -79,14 +97,19 @@ export function createHandler({
       const input = parseBulkReplayBody(await readJsonBody(req, { maxBytes: 8192 }));
       const store = createStore(admin);
       const results = [];
+      const started = now();
+      const remaining = [...input.batchIds];
       // One at a time on purpose: each replay holds a lease and writes a
       // daily import, and the database behind this has been the bottleneck.
-      for (const batchId of input.batchIds) {
-        results.push(await replayOne({ batchId, store, actorId: actor.id, reason: input.reason, processReplay, createProcessingToken }));
+      while (remaining.length) {
+        if (results.length && now() - started >= timeBudgetMs) break;
+        const batchId = remaining.shift();
+        results.push(await replayOne({ batchId, store, actorId: actor.id, reason: input.reason, processReplay, createProcessingToken, report }));
       }
+      for (const batchId of remaining) results.push({ batchId, outcome: 'not_attempted' });
       const replayed = results.filter((result) => result.outcome === 'replayed').length;
       res.setHeader('Cache-Control', 'private, no-store');
-      return sendJson(res, 200, { ok: true, requested: input.batchIds.length, replayed, results });
+      return sendJson(res, 200, { ok: true, requested: input.batchIds.length, replayed, remaining, results });
     } catch (error) {
       return handleApiError(res, error instanceof ApiError ? error : new ApiError(500, 'batch_reprocess_failed'), { fallbackMessage: 'batch_reprocess_failed' });
     }

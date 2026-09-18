@@ -1,0 +1,38 @@
+name: CRM
+
+# THE GATE THAT WAS MISSING.
+#
+# PR #24 deployed with an import that Vite resolves and plain Node does not,
+# and every auto collection function answered 500 from the moment it went
+# live. The test that catches that class of failure existed only on
+# developers' machines, because nothing here ran the JavaScript suite: the
+# only workflow was the collector's. This runs the suite and the production
+# build on every pull request to main and on main itself, so a red check
+# stands between a merge and the desk.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Every API entry point loads under plain Node, the way Vercel runs it
+        run: npx vitest run server/tests/api/entrypointsLoadUnderNode.test.js
+      - name: Unit and integration tests
+        run: npx vitest run
+      - name: Production build
+        run: npm run build

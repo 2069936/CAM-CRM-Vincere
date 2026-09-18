@@ -394,6 +394,19 @@ describe('normalizeAutoImportSnapshot strategy repairs', () => {
     });
   });
 
+  it('still refuses a capture that lost its account list entirely', () => {
+    // A close with no accounts and four strategy rows is not a close with a
+    // flapping strategy row; it is a capture taken while the connection was
+    // gone (2026-09-14 17:10 on the same VPS). Repairing it would let it
+    // replace the real close of that day with an empty one.
+    const snapshot = snapshotWithLiveAccount();
+    snapshot.accounts = [];
+    snapshot.orders = [];
+    snapshot.executions = [];
+    const error = expectValidationFailure(snapshot);
+    expect(error.errors.join(' ')).toContain('does not reference an account');
+  });
+
   it('reports no repairs on a clean close', () => {
     const normalized = normalizeAutoImportSnapshot(snapshotWithLiveAccount());
     expect(normalized.metadata.repairs.strategies).toEqual({
