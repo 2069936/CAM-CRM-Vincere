@@ -276,6 +276,13 @@ function strategyRowScore(row) {
 }
 
 function repairStrategies(snapshot) {
+  // A close with no accounts at all is not a close with a flapping strategy
+  // row; it is a capture that lost its account list. Left unrepaired, the
+  // reference check below refuses it as before, so it can never replace a
+  // real close of the same day with an empty one.
+  if (snapshot.accounts.length === 0 && snapshot.strategies.length > 0) {
+    return { snapshot, repairs: null };
+  }
   const accountsByLower = new Set(snapshot.accounts.map((account) => trimText(account.accountName).toLowerCase()));
   const keptByStrategyId = new Map();
   const duplicateStrategyIds = new Set();

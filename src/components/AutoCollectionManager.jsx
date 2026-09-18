@@ -43,7 +43,9 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     try {
       const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const result = await api.loadFailedBatches({ from: since, pageSize: 50, signal });
-      setFailedBatches(result.batches || []);
+      // Closed days are never replayed from here (they keep their typed
+      // confirmation in the client drawer), so they are not offered here.
+      setFailedBatches((result.batches || []).filter((batch) => batch.reprocessMode !== 'closed_day'));
     } catch (caught) { if (caught?.name !== 'AbortError') setError(caught.message); }
   }
 
@@ -76,8 +78,20 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     if (bulkBusy || !failedBatches?.length) return;
     setBulkBusy(true); setError(''); setBulkResults(null);
     try {
-      const result = await api.reprocessFailedBatches({ batchIds: failedBatches.map((batch) => batch.id), reason: bulkReason });
-      setBulkResults(result);
+      // The server stops inside Vercel's time limit and returns what it did
+      // not reach; keep asking until nothing remains or nothing moves.
+      let ids = failedBatches.map((batch) => batch.id);
+      const merged = { ok: true, requested: ids.length, replayed: 0, results: [] };
+      for (let round = 0; ids.length && round < 20; round += 1) {
+        const result = await api.reprocessFailedBatches({ batchIds: ids, reason: bulkReason });
+        merged.replayed += result.replayed || 0;
+        merged.results.push(...(result.results || []).filter((r) => r.outcome !== 'not_attempted'));
+        const next = result.remaining || [];
+        if (next.length === ids.length) break;
+        ids = next;
+      }
+      for (const batchId of ids) merged.results.push({ batchId, outcome: 'not_attempted' });
+      setBulkResults(merged);
       setBulkReason('');
       await loadFailed();
       await loadFleet();
@@ -129,7 +143,7 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     <div className="page-header manager-subpage-header"><div><span className="eyebrow">Manager Operations</span><h1>Auto Collection</h1><div className="occ-status-row"><Server size={14} /><span>Expected versus received NinjaTrader snapshots across every VPS.</span></div></div><button className="ghost-button" type="button" disabled={loading} onClick={() => loadFleet()}><RefreshCw size={14} /> Refresh</button></div>
     {error ? <div className="notice error" role="alert"><AlertTriangle size={15} /> {error}</div> : null}
     {failedBatches?.length ? <section className="panel collector-failed" aria-label="Failed closes">
-      <div className="collector-toolbar"><div><span className="eyebrow">Failed closes, last 30 days</span><h2>{failedBatches.length} close{failedBatches.length === 1 ? '' : 's'} the CRM refused</h2><p className="muted">Each one is a capture a VPS quarantined after this CRM answered 422. The raw snapshot is stored here. When the refusal was fixed on this side, replay them from here; the VPS needs nothing.</p></div></div>
+      <div className="collector-toolbar"><div><span className="eyebrow">Failed closes, last 30 days</span><h2>{failedBatches.length} close{failedBatches.length === 1 ? '' : 's'} the CRM refused{failedBatches.length >= 50 ? ' (first 50 shown)' : ''}</h2><p className="muted">Each one is a capture a VPS quarantined after this CRM answered 422. The raw snapshot is stored here. When the refusal was fixed on this side, replay them from here; the VPS needs nothing.</p></div></div>
       <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client</th><th>Trading date</th><th>Received</th><th>Rows</th><th>Refused as</th></tr></thead><tbody>{failedBatches.map((batch) => <tr key={batch.id}><td><strong>{clientNames.get(batch.clientUuid) || batch.clientUuid}</strong></td><td>{batch.tradingDate}</td><td>{fmt(batch.receivedAt)}</td><td><small>{counts(batch.rowCounts)}</small></td><td><span className="negative">{batch.errorCode || 'unknown'}</span></td></tr>)}</tbody></table></div>
       <form className="collector-replay-confirm" onSubmit={runBulkReplay}><label>Operational reason (applies to all)<textarea value={bulkReason} maxLength={500} onChange={(event) => setBulkReason(event.target.value)} /></label><div><button type="submit" className="primary-button" disabled={bulkBusy || bulkReason.trim().length < 10}><RotateCcw size={13} /> {bulkBusy ? 'Replaying…' : `Reprocess all ${failedBatches.length}`}</button></div><p className="muted">Closed days are skipped here and keep their typed confirmation in the client drawer.</p></form>
     </section> : null}
