@@ -185,6 +185,20 @@ describe('buildComboPerformance', () => {
     expect(row(buildComboPerformance([worse], ALL), 'URGO 4.5').trend).toBe('down');
   });
 
+  it('splits the closes the window holds, not the empty calendar in front of them', () => {
+    // Ten closes 06-01..06-10 inside a 30 day window that opens on 05-12.
+    // Halving the calendar put every close in the second half and left the
+    // first one empty, so the column read n/a on a row with ten days; halving
+    // the closes gives five and five.
+    const ten = client({ days: Array.from({ length: 10 }, (_, i) => ({ date: june(i + 1), pnl: i < 5 ? -100 : -50 })) });
+    const perf = buildComboPerformance([ten], { window: { preset: 30 } });
+    expect(perf.window.from).toBe('2026-05-12');
+    const urgo = row(perf, 'URGO 4.5');
+    expect(urgo).toMatchObject({ days: 10, priorDays: 5, recentDays: 5, trend: 'up' });
+    expect(urgo.priorAvg).toBeCloseTo(-100);
+    expect(urgo.recentAvg).toBeCloseTo(-50);
+  });
+
   it('exposes the defaults the screen starts from', () => {
     expect(DEFAULT_OPTIONS).toEqual({
       basis: 'traded',
@@ -235,6 +249,19 @@ describe('buildClientComboInsights', () => {
     expect(insight.teamAvg).toBeNull();
   });
 
+  it('separates "nothing passed the gate" from "nothing that passed it makes money"', () => {
+    // Ten accounts on ten clients, one close each, all losing: the row passes
+    // MIN_DAYS and MIN_ACCOUNTS, so a note saying nothing passes the gate is a
+    // sentence the Sample column contradicts on every row.
+    const crowd = teamCrowd(-10);
+    const perf = buildComboPerformance(crowd, ALL);
+    expect(row(perf, 'URGO 4.5').lowSample).toBe(false);
+    expect(perf.best).toBeNull();
+    const [insight] = buildClientComboInsights(crowd[0], crowd[0].dailyImports[0], perf);
+    expect(insight.suggestion).toBeNull();
+    expect(insight.note).toBe('No combo with a positive average passes the sample gate');
+  });
+
   it('14. suggests only when the best clears the team figure by the larger of $25 and 15%', () => {
     const mine = client({ id: 'me', accountName: 'ME', days: [{ date: june(1), pnl: 10 }] });
     const fire = (bestAvg) => {
@@ -270,5 +297,24 @@ describe('buildComboByFirm', () => {
     expect(result.firms).toEqual(['BluSky']);
     expect(result.combos).toEqual(['URGO 4.5']);
     expect(result.matrix[0].cells).toEqual([{ firm: 'BluSky', avgPnl: 100, days: 3 }]);
+  });
+
+  it('counts only the closes inside the window it is given', () => {
+    // The caption says "same population as the table above"; the table runs on
+    // the selected window, so the cross-tab has to as well.
+    const day = (date, grossRealizedPnl) => ({
+      date,
+      snapshots: [{ accountName: 'F1', connection: 'Lucid', grossRealizedPnl, strategies: [strategy('URGO', '4.5')] }],
+      executions: [],
+    });
+    const c = {
+      id: 'c1',
+      accountRegistry: { F1: { accountName: 'F1', accountType: 'Funded', status: 'Active' } },
+      dailyImports: [day(june(1), -400), day(june(5), 100), day(june(6), 300)],
+    };
+    const comboFn = (snap, execs) => comboKeyFromDay(snap, execs).key;
+    expect(buildComboByFirm([c], comboFn).matrix[0].cells[0]).toEqual({ firm: 'Lucid', avgPnl: 0, days: 3 });
+    const windowed = buildComboByFirm([c], comboFn, { window: { from: june(5), to: june(6) } });
+    expect(windowed.matrix[0].cells[0]).toEqual({ firm: 'Lucid', avgPnl: 200, days: 2 });
   });
 });

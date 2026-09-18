@@ -152,15 +152,27 @@ const fundedOnly = (meta) => meta?.accountType === 'Funded';
 // is the same one too: the heatmap used to average every account day of every
 // type, evaluations and Bullet Bot included, two panels below a table that did
 // not, and the two disagreed on every cell.
-export function buildComboByFirm(clients = [], comboFn = () => 'Unknown', { populationFilter = fundedOnly, normalizeFirm = normalizeFirmName } = {}) {
+//
+// `window` ({ from, to }, inclusive, YYYY-MM-DD) is the same resolved window the
+// table runs on. Without it the heatmap stayed on all history while the caption
+// claimed the table's population: on the book, "Last 7 days" left the table on
+// 302 account days and the heatmap on 599. Omit it and the cross-tab covers
+// every close, which is what the callers that have no window selector want.
+export function buildComboByFirm(clients = [], comboFn = () => 'Unknown', { populationFilter = fundedOnly, normalizeFirm = normalizeFirmName, window = null } = {}) {
   const cells = {};
   const combos = new Set();
   const firms = new Set();
+  const inRange = (date) => {
+    if (!window) return true;
+    const { from, to } = window;
+    return Boolean(date) && (!from || date >= from) && (!to || date <= to);
+  };
   for (const client of clients || []) {
     const registry = Object.fromEntries(
       Object.entries(client.accountRegistry || {}).map(([name, meta]) => [String(name).toLowerCase(), meta]),
     );
     for (const di of client.dailyImports || []) {
+      if (!inRange(di.date)) continue;
       for (const snapshot of di.snapshots || []) {
         const name = String(snapshot.accountName || '').toLowerCase();
         if (populationFilter && !populationFilter(registry[name] || {}, snapshot)) continue;

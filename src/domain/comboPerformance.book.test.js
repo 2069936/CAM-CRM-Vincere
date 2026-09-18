@@ -7,10 +7,12 @@
 // for the OLD rules, reproduces the old table to the cent, and that asked for
 // the new ones it says what docs/stack-playbook-spec.md says it should.
 //
-// Every figure below was computed from the raw tables by
-// scratchpad/playbook/spec_numbers.py and cross-checked against the previous
-// component aggregator (audit.md, recompute.md), not read off this module.
-// Each test carries its number from the spec's section 5.
+// Every figure below was computed from the raw tables by an independent
+// replication of the rules and cross-checked against the previous component
+// aggregator, not read off this module. Those scripts were scratch work and are
+// not in the repository; this file is the reproducible record of what they
+// found, and docs/stack-playbook-spec.md points here for it. Each test carries
+// its number from the spec's section 5.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -162,9 +164,21 @@ describe('the new rules', () => {
   });
 
   it('25. starts the income projection from the book, not from +$800', () => {
-    const perf = buildComboPerformance(clients, { basis: 'traded', includeFailed: false, window: ALL });
-    expect(perf.population.avgPnlPerAccountDay).toBeCloseTo(-147.16, 2);
-    expect(Math.round(perf.population.avgPnlPerAccountDay * 21)).toBe(-3090);
-    expect(Math.round(-147.16 * 21)).toBe(-3090);
+    // What the panel actually computes: the component builds perf with the
+    // module defaults, which keep the days of accounts marked Failed today, and
+    // multiplies by a 21 close month. Asserting the includeFailed:false figure
+    // here pinned a number no screen has ever shown.
+    const onScreen = buildComboPerformance(clients, { window: { preset: 30 } });
+    expect(onScreen.population.fundedDays).toBe(896);
+    expect(onScreen.population.avgPnlPerAccountDay).toBeCloseTo(-147.89, 2);
+    expect(Math.round(onScreen.population.avgPnlPerAccountDay * 21)).toBe(-3106);
+
+    // The old population, the six Failed accounts' 31 days dropped, is the
+    // -$3,090 the audit quotes. Both are negative, which is the point: the
+    // default the panel replaced was +$800.
+    const excludingFailed = buildComboPerformance(clients, { basis: 'traded', includeFailed: false, window: ALL });
+    expect(excludingFailed.population.fundedDays).toBe(865);
+    expect(excludingFailed.population.avgPnlPerAccountDay).toBeCloseTo(-147.16, 2);
+    expect(Math.round(excludingFailed.population.avgPnlPerAccountDay * 21)).toBe(-3090);
   });
 });
