@@ -50,3 +50,27 @@ it('keeps failed closed-day attempts on the protected replacement path', () => {
   expect(html).toContain('REPLACE Rome McMahon 2026-07-23');
   expect(html).not.toContain('REPROCESS Rome McMahon 2026-07-23');
 });
+
+/* THE QUARANTINE THE DESK CAN CLEAR FROM ITS OWN SCREEN.
+ *
+ * Every 422 quarantine on a VPS is also a failed batch here, raw snapshot
+ * included. The desk should see them in one place and replay them in one go
+ * once the refusal has been fixed on this side. */
+it('lists every failed close across the fleet with one replay for all of them', () => {
+  const failed = [
+    { id: 'b1', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-09-14', receivedAt: '2026-09-14T20:30:09Z', rowCounts: { accounts: 8, strategies: 4, orders: 16, executions: 6 }, errorCode: 'normalization_failed', status: 'failed' },
+    { id: 'b2', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-09-17', receivedAt: '2026-09-17T20:30:09Z', rowCounts: { accounts: 8, strategies: 13, orders: 49, executions: 19 }, errorCode: 'normalization_failed', status: 'failed' },
+  ];
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={failed} disableAutoLoad />);
+  expect(html).toContain('2 closes the CRM refused');
+  expect(html).toContain('2026-09-14');
+  expect(html).toContain('2026-09-17');
+  expect(html).toContain('normalization_failed');
+  expect(html).toContain('Reprocess all 2');
+  expect(html).toContain(fleet.rows[0].client.name);
+});
+
+it('shows no failed closes panel when there is nothing to replay', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={[]} disableAutoLoad />);
+  expect(html).not.toContain('the CRM refused');
+});

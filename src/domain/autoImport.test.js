@@ -212,8 +212,10 @@ describe('normalizeAutoImportSnapshot', () => {
     expect(error.errors).toContain('accounts[1].accountName duplicates accounts[0].accountName');
   });
 
+  // Strategies are not in this list any more: a duplicate strategyId is
+  // NinjaTrader's own state after an enable and is repaired, not refused.
+  // See the strategy repairs block below.
   it.each([
-    ['strategies', 'strategyId'],
     ['orders', 'orderId'],
     ['executions', 'executionId'],
   ])('rejects duplicate %s %s values after trimming', (section, identifier) => {
@@ -336,6 +338,87 @@ describe('normalizeAutoImportSnapshot', () => {
     expect(lines).toHaveLength(2);
     expect(lines.join(' ')).toContain('GONE-9371');
     expect(lines.join(' ')).toContain('GONE-0556');
+  });
+});
+
+/* NINJATRADER LISTS A STRATEGY TWICE, AND THAT USED TO COST THE WHOLE DAY.
+ *
+ * 2026-09-14: RBO was enabled on one of Todd Grehl's accounts in the morning
+ * and every capture that day carried it twice under the same strategyId, the
+ * first row with no position and the second with the real one. The CRM read
+ * that as a corrupt file, answered 422, and the agent quarantined all four
+ * captures. 2026-09-17: the same on Yousef Asaad's Bullet Bot. */
+describe('normalizeAutoImportSnapshot strategy repairs', () => {
+  it('keeps one row per strategyId, the one that knows its position, and says so', () => {
+    const snapshot = snapshotWithLiveAccount();
+    const live = snapshot.strategies[0];
+    snapshot.strategies = [
+      { ...live, position: null, state: 'Terminated' },
+      { ...live, position: 'Flat', state: 'Realtime' },
+    ];
+
+    const normalized = normalizeAutoImportSnapshot(snapshot);
+    expect(normalized.parsed.strategies).toHaveLength(1);
+    expect(normalized.parsed.strategies[0].position).toBe('Flat');
+    expect(normalized.metadata.repairs.strategies).toMatchObject({
+      duplicateRowsDropped: 1,
+      duplicateStrategyIds: [String(live.strategyId)],
+      unknownAccountRowsDropped: 0,
+    });
+    expect(normalized.metadata.sectionCounts.strategies).toBe(1);
+  });
+
+  it('lets the later row win when neither duplicate knows its position', () => {
+    const snapshot = snapshotWithLiveAccount();
+    const live = snapshot.strategies[0];
+    snapshot.strategies = [
+      { ...live, position: null, strategyDisplayName: 'retiring' },
+      { ...live, position: null, strategyDisplayName: 'live' },
+    ];
+    const normalized = normalizeAutoImportSnapshot(snapshot);
+    expect(normalized.parsed.strategies).toHaveLength(1);
+  });
+
+  it('drops a strategy row on an account the close does not list, and names the account', () => {
+    // Strategies carry no money. Refusing the accounts, orders and executions
+    // of a whole day over a strategy row for a flapping connection is the
+    // wrong trade.
+    const snapshot = snapshotWithLiveAccount();
+    const live = snapshot.strategies[0];
+    snapshot.strategies = [live, { ...live, strategyId: `${live.strategyId}-b`, accountName: 'GONE-9371' }];
+    const normalized = normalizeAutoImportSnapshot(snapshot);
+    expect(normalized.parsed.strategies).toHaveLength(1);
+    expect(normalized.metadata.repairs.strategies).toMatchObject({
+      unknownAccountRowsDropped: 1,
+      unknownAccounts: ['GONE-9371'],
+    });
+  });
+
+  it('still refuses a capture that lost its account list entirely', () => {
+    // A close with no accounts and four strategy rows is not a close with a
+    // flapping strategy row; it is a capture taken while the connection was
+    // gone (2026-09-14 17:10 on the same VPS). Repairing it would let it
+    // replace the real close of that day with an empty one.
+    const snapshot = snapshotWithLiveAccount();
+    snapshot.accounts = [];
+    snapshot.orders = [];
+    snapshot.executions = [];
+    const error = expectValidationFailure(snapshot);
+    expect(error.errors.join(' ')).toContain('does not reference an account');
+  });
+
+  it('reports no repairs on a clean close', () => {
+    const normalized = normalizeAutoImportSnapshot(snapshotWithLiveAccount());
+    expect(normalized.metadata.repairs.strategies).toEqual({
+      duplicateRowsDropped: 0, duplicateStrategyIds: [], unknownAccountRowsDropped: 0, unknownAccounts: [],
+    });
+  });
+
+  it('still refuses duplicate orders and executions, which are money', () => {
+    const snapshot = snapshotWithLiveAccount();
+    snapshot.executions = [snapshot.executions[0], { ...snapshot.executions[0] }];
+    const error = expectValidationFailure(snapshot);
+    expect(error.errors.join(' ')).toContain('executions[1].executionId duplicates executions[0].executionId');
   });
 });
 
