@@ -26,18 +26,44 @@ async function fetchAppUserByAuthId(authUserId) {
   return mapAppUser(data);
 }
 
+/* SIGNING IN BY USERNAME IS THE ONE READ THAT HAPPENS BEFORE A SESSION.
+ *
+ * This used to select from app_users directly, which only worked because that
+ * table had no row level security: the key in the browser bundle could read
+ * every user, their email and their role, signed in or not. Step 43 closes
+ * every table and moves this one lookup into login_email_for_username, a
+ * function that answers with the email for one username and nothing else.
+ *
+ * The fallback exists for a deployment where step 43 has not run yet: the RPC
+ * is missing there, so the old select still answers. It can be deleted once
+ * every environment has the migration. */
 async function resolveLoginEmail(login) {
   const value = String(login || '').trim();
   if (value.includes('@')) return value.toLowerCase();
 
-  const { data, error } = await supabase
+  const { data, error } = await supabase.rpc('login_email_for_username', { p_username: value });
+  if (!error) {
+    if (!data) throw new Error('Unknown username or email.');
+    return data;
+  }
+  if (!isMissingFunction(error)) throw new Error(error.message);
+
+  const fallback = await supabase
     .from('app_users')
     .select('email')
     .eq('username', value.toLowerCase())
     .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data?.email) throw new Error('Unknown username or email.');
-  return data.email;
+  if (fallback.error) throw new Error(fallback.error.message);
+  if (!fallback.data?.email) throw new Error('Unknown username or email.');
+  return fallback.data.email;
+}
+
+function isMissingFunction(error) {
+  // PostgREST answers PGRST202 for a function it cannot find in its schema
+  // cache, and 404 before the cache is built.
+  return error?.code === 'PGRST202'
+    || error?.status === 404
+    || /could not find the function|does not exist/i.test(error?.message || '');
 }
 
 export async function authenticateSupabaseAppUser(login, password) {

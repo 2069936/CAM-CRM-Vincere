@@ -5678,6 +5678,10 @@ tr:nth-child(2) .rank-badge {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* A grid item sizes to its content unless told not to: the twelve-column
+     team table would otherwise widen the whole tab instead of scrolling
+     inside its own .table-wrap. */
+  min-width: 0;
 }
 .playbook-rec-grid {
   display: grid;
@@ -7249,6 +7253,21 @@ tr:nth-child(2) .rank-badge {
 
 .window-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
 
+/* Stack Playbook - team table controls (window range, grouping, attribution) */
+.playbook-range { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.playbook-range input[type="date"] { font-size: 12px; padding: 3px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+.playbook-heading { flex-wrap: wrap; }
+.playbook-heading h3 { margin-right: auto; }
+.playbook-toggles { display: flex; flex-basis: 100%; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.playbook-toggles .muted + .ghost-button { margin-left: 2px; }
+.playbook-toggles .ghost-button + .muted { margin-left: 10px; }
+.playbook-range-cell { white-space: nowrap; }
+.playbook-combo-cell { min-width: 200px; }
+.playbook-combo-cell .badge { white-space: nowrap; }
+.playbook-toggles .ghost-button { font-size: 11.5px; padding: 3px 8px; }
+.playbook-toggles .ghost-button[aria-pressed="true"] { background: var(--surface-2); border-color: var(--accent, var(--text)); font-weight: 700; }
+.playbook-basis { font-weight: 600; }
+
 /* Stack Playbook - risk scaling */
 .risk-scaling-list { display: flex; flex-direction: column; gap: 18px; }
 .risk-curve-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
@@ -8519,4 +8538,255 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
 .revenue-caveat {
   font-size: 12px; color: var(--text-muted); margin: 8px 0 0;
   padding: 8px 10px; border-left: 3px solid var(--danger, #c0392b); line-height: 1.5;
+}
+
+/* ── Desk period report ──────────────────────────────────────────────
+   The sheet reuses `.report-sheet`, `.report-actions`, `.ops-table` and
+   `.desk-refusal`; only the period controls, the charts and the definition
+   list are new. Colour comes from the same tokens the rest of the app uses so
+   the charts print and theme like every other chart in this build. */
+/*
+   The toolbar sits OUTSIDE the sheet on this page, which is what keeps the
+   period controls out of the `outerHTML` the PDF route posts. That also puts it
+   outside `.report-sheet`'s own light palette — and `.ghost-button` is
+   `color: var(--text)`, which under the app's dark theme is near-white. Print
+   and Month rendered as blank boxes on a near-white bar until this block
+   restated the palette the bar actually sits on.
+*/
+.desk-period-report .report-actions {
+  position: static;
+  margin: 0 0 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  color: #12202b;
+}
+.desk-period-report .report-actions .ghost-button,
+.desk-period-report .report-actions .secondary-button,
+.desk-period-report .report-actions button { color: #12202b; }
+.desk-period-report .report-actions .secondary-button { color: #fff; }
+.desk-period-report .period-field select,
+.desk-period-report .period-field input {
+  background: #ffffff; color: #12202b; border: 1px solid #cbd5e1;
+  border-radius: 6px; min-height: 34px; padding: 0 8px; font: inherit;
+}
+.desk-period-report .period-field > span { color: #536477; }
+/* A full-page destination, not the modal overlay `.report-sheet` was written
+   for: the page scrolls, not a 92vh box inside it. */
+.desk-period-report .report-sheet {
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+}
+.period-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.period-kind { display: flex; gap: 4px; }
+.period-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.period-field > span { color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+.desk-period-report .report-section { margin-top: 26px; }
+.desk-period-report .report-section h3 { margin: 18px 0 6px; font-size: 13px; }
+.report-period-label { margin: 6px 0 2px; font-size: 16px; }
+.report-separation { margin: 10px 0 0; }
+
+.period-chart { margin: 8px 0 4px; }
+.period-chart-axis {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 11px; color: var(--text-muted); margin-top: 4px;
+}
+/* The numbers beside every mark. Colour is never the only cue on these charts:
+   the key repeats each row's value and the counts behind it, which is also
+   what makes the chart legible on paper and to a screen reader. */
+.period-chart-key { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+.period-chart-key li {
+  display: flex; flex-wrap: wrap; gap: 10px; padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.period-chart-key li span:last-child, .period-chart-key .muted { color: var(--text-muted); }
+
+.period-strips { display: flex; flex-direction: column; gap: 8px; }
+.period-strip { display: grid; grid-template-columns: 90px 1fr 110px; gap: 8px; align-items: center; }
+.period-strip-label { font-size: 12px; font-weight: 600; }
+.period-strip-peak { font-size: 11px; text-align: right; }
+
+.period-grid { display: flex; flex-direction: column; gap: 3px; }
+.period-grid-row { display: grid; grid-template-columns: 130px 1fr 110px; gap: 8px; align-items: center; }
+.period-grid-label { font-size: 12px; }
+.period-grid-cells { display: flex; gap: 2px; }
+.period-grid-cell { flex: 1 1 0; height: 14px; border-radius: 2px; min-width: 6px; }
+.period-grid-count { font-size: 11px; text-align: right; }
+.period-grid-legend { margin-top: 8px; font-size: 11px; }
+
+.period-benchmark-curves { display: flex; flex-direction: column; gap: 14px; }
+.period-benchmark-curve { margin: 0; }
+.period-benchmark-curve figcaption { font-size: 12px; margin-bottom: 4px; }
+
+.period-definitions { margin: 8px 0 0; font-size: 12px; }
+.period-definitions > div { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.period-definitions dt { font-weight: 600; }
+.period-definitions dd { margin: 2px 0 0; color: var(--text-muted); }
+
+@media print {
+  /* The same division the client report already draws: a table may break, a
+     chart and its caption may not — half a chart is not a smaller chart. */
+  .desk-period-report .period-chart,
+  .desk-period-report .period-strips,
+  .desk-period-report .period-grid,
+  .desk-period-report .period-benchmark-curve,
+  .desk-period-report .report-header {
+    break-inside: avoid;
+  }
+  .desk-period-report .report-section {
+    break-inside: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .period-strip, .period-grid-row { grid-template-columns: 80px 1fr; }
+  .period-strip-peak, .period-grid-count { grid-column: 2; text-align: left; }
+}
+
+.period-benchmark-import { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
+.period-benchmark-import input[type="file"] { font: inherit; font-size: 12px; }
+
+/* ── Desk period report: the sheet is white paper ────────────────────
+   `.report-sheet` is a fixed light sheet in both the app and print
+   (`background:#ffffff; color:#12202b`), and this page is the first one in the
+   codebase to nest `.ops-table` inside `.table-wrap` inside it. Those two
+   classes are styled for the DARK app chrome, so without the overrides below:
+
+     * every one of the report's fifteen tables rendered as a dark navy panel
+       (`.table-wrap { background: var(--surface-2) }` = #1b2733) on white paper,
+       and `@media print` sets `print-color-adjust: exact` on `.report-sheet`, so
+       the PDF printed them that way too;
+     * every `<th scope="row">` — the Algorithm, Business and Combo name cells —
+       picked up `.ops-table th`: 11px, uppercase, muted, on a dark ground. Row
+       labels rendered styled as column headers;
+     * `.muted` and `.desk-refusal` are `var(--muted)` = #90a4b8, which against
+       #ffffff is 2.56:1. WCAG AA needs 4.5:1, and those two classes carry the
+       separation sentence, the "This period is not complete" warning, the
+       coverage sentence, the thin-close caveat, "Compare the intervals, not the
+       dots", the benchmark separation and every population/window/basis caption
+       under every chart. The honesty apparatus was the least legible text on the
+       page.
+
+   #4a5b6b on #ffffff is 7.0:1 and 6.7:1 on the muted row's #f8fafc; #40515f is
+   8.2:1 on white and 7.5:1 on the header's #f1f5f9; the link blue is 6.7:1.
+   Measured, not assumed. Scoped to
+   `.desk-period-report .report-sheet` so no other surface moves. */
+/*
+   The tokens themselves, restated for the sheet's own ground.
+
+   The charts draw with tokens by design — rule 1 of DeskPeriodReportCharts.jsx
+   is "no literal hex", so the same chart renders in both themes and on paper —
+   and the app's `--text-muted` is #90a4b8, which is 2.6:1 on white. It strokes
+   the interval chart's INTERVALS, the marks whose caption tells the reader to
+   compare them rather than the dots, and every hollow tick that means "not
+   measured, and not a zero". Restating the token fixes the marks and the text
+   in one place.
+
+   `--border` deliberately stays dark: it draws the zero line every bar on this
+   page is read against, and a pale zero line is a bar chart with no baseline.
+*/
+.desk-period-report .report-sheet {
+  --text-muted: #4a5b6b;
+  --muted: #4a5b6b;
+}
+/*
+   The one mark that wants the opposite. The deployment grid's "did not run"
+   cell is an outline drawn with `var(--border)` from an inline style, and on
+   white that dark rule reads as a filled mark again. Absence has to be the
+   lightest thing on the row; `!important` because the colour is inline.
+*/
+.desk-period-report .report-sheet .period-grid-cell.off {
+  box-shadow: inset 0 0 0 1px #d8e2ea !important;
+}
+.desk-period-report .report-sheet .table-wrap,
+.desk-period-report .report-sheet .ops-table-wrap {
+  background: transparent;
+  border-color: #d8e2ea;
+  box-shadow: none;
+}
+.desk-period-report .report-sheet .ops-table th,
+.desk-period-report .report-sheet .ops-table td {
+  border-bottom-color: #e2e8f0;
+}
+.desk-period-report .report-sheet .ops-table td { color: #12202b; }
+.desk-period-report .report-sheet .ops-table th {
+  background: #f1f5f9;
+  color: #40515f;
+}
+.desk-period-report .report-sheet .ops-table th[scope="row"] {
+  background: transparent;
+  color: #12202b;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+}
+.desk-period-report .report-sheet .ops-table tbody tr:hover td,
+.desk-period-report .report-sheet .ops-table tbody tr:hover th[scope="row"] {
+  background: #f8fafc;
+}
+.desk-period-report .report-sheet .row-muted td,
+.desk-period-report .report-sheet .row-muted th[scope="row"] {
+  opacity: 1;
+  color: #4a5b6b;
+  background: #f8fafc;
+}
+.desk-period-report .report-sheet .badge {
+  background: #eef2f6;
+  color: #40515f;
+}
+.desk-period-report .report-sheet .muted,
+.desk-period-report .report-sheet .period-chart-axis,
+.desk-period-report .report-sheet .period-chart-key .muted,
+.desk-period-report .report-sheet .period-definitions dd,
+.desk-period-report .report-sheet .desk-refusal {
+  color: #4a5b6b;
+}
+.desk-period-report .report-sheet a { color: #1d4ed8; }
+/*
+   `cursor: help` and a dotted underline announce a tooltip. Most `.desk-refusal`
+   elements on this sheet are paragraphs with no `title`, so the cue promised one
+   that was not there. The refusals here are read, not hovered: they keep the
+   left rule that marks them as a caveat and lose the false affordance. Cells
+   that DO carry a title keep both.
+*/
+.desk-period-report .report-sheet p.desk-refusal {
+  text-decoration: none;
+  cursor: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  border-left: 3px solid #cbd5e1;
+  padding-left: 10px;
+  margin: 8px 0;
+}
+.desk-period-report .report-sheet .period-summary { margin-top: 18px; }
+.desk-period-report .report-sheet .period-summary h2 { margin-bottom: 4px; }
+
+/* The two bounds of a combination change's before/after sides, printed in the
+   cell rather than left in a `title` that renders on no paper. */
+.period-side-window { display: block; font-size: 11px; margin-top: 2px; }
+
+/* The dates under the deployment grid, which otherwise exist only in `title`
+   attributes and so print as unlabelled columns. */
+.period-grid-dates .period-chart-axis { margin-top: 2px; }
+
+/*
+   Rows a printed copy carries and the screen does not.
+
+   The changes table shows the 25 most recent on screen behind a button; the
+   button is `.no-print`, so a printed copy carried 25 of 103 rows with nothing
+   on paper saying the rest existed. A `@media print` rule cannot change React
+   state, so the remaining rows are rendered into a second `<tbody>` that only
+   print displays.
+*/
+.print-only { display: none; }
+@media print {
+  .print-only { display: table-row-group; }
+  tr.print-only { display: table-row; }
+  span.print-only, .print-only.inline { display: inline; }
 }

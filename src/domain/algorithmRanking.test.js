@@ -1435,3 +1435,131 @@ describe('the programme, which is not a peer of the algorithms', () => {
     expect(detail.programmes.map((row) => row.name)).toEqual(['Bullet Bot']);
   });
 });
+
+/* ---------------------------------------------------------------- */
+/* The attribution basis.                                            */
+
+describe('the attribution basis is an argument, and the default does not move', () => {
+  // One account-day the algorithm traded with its Strategies-grid checkbox
+  // already switched off: the fills name it, the grid reports realized 0. This
+  // is the shape of 456 of the book's 865 funded account-days.
+  const switchedOff = (date) => ({
+    id: `c1-${date}`,
+    date,
+    accounts: {},
+    flags: [],
+    snapshots: [{
+      accountName: 'A1',
+      grossRealizedPnl: -300,
+      weeklyPnl: 0,
+      accountBalance: 50000,
+      strategies: [strat('RBO', { realized: 0, enabled: false })],
+    }],
+    executions: [{ accountName: 'A1', strategyName: '0 - RBO-1.0', instrument: 'MNQ SEP26' }],
+  });
+  const enabledDay = (date) => ({
+    id: `c1-${date}`,
+    date,
+    accounts: {},
+    flags: [],
+    snapshots: [{
+      accountName: 'A1',
+      grossRealizedPnl: -100,
+      weeklyPnl: 0,
+      accountBalance: 50000,
+      strategies: [strat('RBO', { realized: -100 })],
+    }],
+    executions: [],
+  });
+  const clients = [{
+    id: 'c1',
+    name: 'Pedro',
+    accountRegistry: { A1: { accountName: 'A1', accountType: 'Funded', status: 'Active' } },
+    dailyImports: [enabledDay('2026-07-10'), switchedOff('2026-07-13')],
+  }];
+
+  it('drops the switched-off day by default, which is what the Operations panel quotes', () => {
+    const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13' });
+    const row = rowFor(result, 'RBO');
+    expect(row.accountDays).toBe(1);
+    expect(row.unmeasuredAccountDays).toBe(0);
+    expect(result.basis.attribution).toBe('enabled');
+    expect(result.basis.label).toContain('Enabled at export');
+  });
+
+  it('counts it on the traded basis, as an account-day nothing measured', () => {
+    // `docs/stack-playbook-spec.md` §2.1: the export-time flag drops 64% of
+    // funded account-days and the dropped days are where the losses sit. The
+    // fills say the algorithm ran; nothing says what it made.
+    const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13', basis: 'traded' });
+    const row = rowFor(result, 'RBO');
+    expect(row.accountDays).toBe(1);
+    expect(row.unmeasuredAccountDays).toBe(1);
+    expect(result.basis.attribution).toBe('traded');
+    expect(result.basis.label).toContain('Traded attribution');
+  });
+
+  it('never counts a switched-off row’s zero as a flat day', () => {
+    // 455 of the 456 all-disabled account-days on this book read realized 0
+    // while the account moved on 271 of them. Folding that 0 in as a
+    // measurement would put hundreds of false flat days into the denominator of
+    // every mean and drag every algorithm toward zero under a column headed
+    // "measured P&L".
+    const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13', basis: 'traded' });
+    const row = rowFor(result, 'RBO');
+    expect(row.flatDays).toBe(0);
+    expect(row.meanPerAccountDay).toBe(-100);
+  });
+
+  it('measures a switched-off row that DOES carry a figure', () => {
+    const withRealized = [{
+      ...clients[0],
+      dailyImports: [{
+        ...switchedOff('2026-07-13'),
+        snapshots: [{
+          accountName: 'A1',
+          grossRealizedPnl: -300,
+          weeklyPnl: 0,
+          accountBalance: 50000,
+          strategies: [strat('RBO', { realized: -300, enabled: false })],
+        }],
+      }],
+    }];
+    const result = buildStrategyRanking(withRealized, { asOfDate: '2026-07-13', basis: 'traded' });
+    const row = rowFor(result, 'RBO');
+    expect(row.accountDays).toBe(1);
+    expect(row.unmeasuredAccountDays).toBe(0);
+    expect(row.meanPerAccountDay).toBe(-300);
+  });
+
+  it('counts a family the fills name with no grid row at all', () => {
+    // 98 funded account-days on this book carry no strategy rows.
+    const noRows = [{
+      id: 'c1',
+      name: 'Pedro',
+      accountRegistry: { A1: { accountName: 'A1', accountType: 'Funded', status: 'Active' } },
+      dailyImports: [{
+        id: 'c1-2026-07-13',
+        date: '2026-07-13',
+        accounts: {},
+        flags: [],
+        snapshots: [{
+          accountName: 'A1', grossRealizedPnl: -50, weeklyPnl: 0, accountBalance: 50000, strategies: [],
+        }],
+        executions: [{ accountName: 'A1', strategyName: '0 - URGO-4.5', instrument: 'MNQ SEP26' }],
+      }],
+    }];
+    expect(rowFor(buildStrategyRanking(noRows, { asOfDate: '2026-07-13' }), 'URGO')).toBeNull();
+    const traded = rowFor(
+      buildStrategyRanking(noRows, { asOfDate: '2026-07-13', basis: 'traded' }), 'URGO',
+    );
+    expect(traded.accountDays).toBe(0);
+    expect(traded.unmeasuredAccountDays).toBe(1);
+    expect(traded.meanPerAccountDay).toBeNull();
+  });
+
+  it('falls back to the default basis rather than inventing a third one', () => {
+    const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13', basis: 'guesswork' });
+    expect(result.basis.attribution).toBe('enabled');
+  });
+});

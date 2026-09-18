@@ -108,15 +108,18 @@ describe('the algorithm risk profile scatter', () => {
     expect(mentionsOf('buildStrategyRiskProfile')).toEqual([]);
   });
 
-  it('kept strategyFamilyOf, which three other modules read', () => {
+  it('kept strategyFamilyOf, which the other modules read', () => {
     // The removal's one seam. buildStrategyRiskProfile owned the file, but
     // liveAccounts, setFileMatch and strategyConfigDrift import this one
     // function to know that `0 - OGX-PF-2.4` and `1 - OGX-PF-3.0` are the same
     // product. Deleting the module wholesale would have taken all three with it.
+    // comboPerformance joined them later: it reads the same function off the
+    // fills to name the algo an account day traded.
     expect(existsSync(join(ROOT, 'src/domain/strategyFamily.js'))).toBe(true);
     const importers = SOURCES.filter((file) => codeLines(file)
       .some(({ text }) => text.includes("from './strategyFamily'")));
     expect(importers.sort()).toEqual([
+      'src/domain/comboPerformance.js',
       'src/domain/liveAccounts.js',
       'src/domain/setFileMatch.js',
       'src/domain/strategyConfigDrift.js',

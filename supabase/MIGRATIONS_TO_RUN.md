@@ -18,6 +18,9 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 38 | `step_38_flag_acknowledged_to_resolved.sql` | `acknowledged_before_step_38` on `operational_flags`, and the 460 `Acknowledged` rows set to `Resolved` | Retiring the Acknowledge action on flags |
 | 39 | `step_39_client_churn_reason.sql` | `churn_reason`, `churn_note`, `churned_at` on `clients` | The churn drill-down, and the reason captured when a CAM marks a client Inactive |
 | 41 | `step_41_heartbeat_ordering.sql` | replaces `record_ingest_heartbeat` without the invalid capture/success ordering rule | Collector heartbeats remain valid after a successful upload |
+| 42 | `step_42_client_tags_and_price_history.sql` | `tags` and `account_focus` on `clients`, and the `client_price_changes` log | Client tags and the revenue movement figures |
+| 43 | `step_43_row_level_security.sql` | Row Level Security on every table that lacked it, plus `login_email_for_username` | Closes the database to the publishable key that ships in the browser bundle |
+| 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates with each month's own days, keyed by vendor first, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report, which reads the saved import instead of asking for the 36 files again |
 
 ## These three groups behave differently
 
@@ -91,12 +94,44 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
+
+**43 closes everything that existed before it, and it is the one that cannot
+wait.** It enables Row Level
+Security on every table that did not have it, which on 2026-09-18 was all of
+them except the auto collection tables, `client_forms` and `client_price_changes`.
+Until it runs, the publishable key that ships inside the browser bundle can read
+and write `clients`, `trading_accounts`, `account_snapshots`, `app_users`,
+`reports`, `audit_logs` and `client_credentials` with no session at all; that was
+verified from outside the app. It must run after 42 so the table 42 creates is
+covered too. Signed in users keep exactly the access they have today, and the
+server endpoints use the service role and are unaffected. The one browser read
+that happens before a session, looking a username's email up to sign in, moves
+into `login_email_for_username`; the app falls back to the old select when the
+function is not there yet, so the code can deploy before the migration runs.
+
+**44 creates a table after 43 has already run, so it carries its own RLS and its
+own `authenticated full access` policy inline** rather than relying on 43's
+enumeration, and it ends with the same "no table in public is open" check 43
+does. Every table added from here on has to do the same; 43 cannot cover what
+did not exist when it ran.
+
+**44 degrades like 31–38.** Without it the My Futures Book import card in Data
+Tools still parses the CSVs and still shows what it found — the algorithm, the
+version, the instrument, the risk level, the date range and the trade count —
+and the Save button is disabled with the title
+**`Saving needs migration step 44. The parse above still shows what the files hold.`**
+The desk period report's benchmark section then holds only the
+files the reader drags into the sheet in that visit, which is what it held for
+everybody before this table was read at all: empty rather than wrong. With the
+step run it reads the saved import on open, so the manager does not re-upload
+36 CSVs every visit. Nothing else on any screen changes; no other feature reads
+`algorithm_benchmarks`.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either

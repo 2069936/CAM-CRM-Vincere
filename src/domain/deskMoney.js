@@ -191,6 +191,12 @@ function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted,
   } else if (mode === 'month') {
     label = `Every close in ${requested} · ${dateCount} date${dateCount === 1 ? '' : 's'}`
       + ` · ${clientsCounted} client${clientsCounted === 1 ? '' : 's'}`;
+  } else if (mode === 'range') {
+    // `requested` is `from..to` for a range, so the label prints the bounds
+    // rather than a month nobody asked for.
+    const [from = '', to = ''] = String(requested || '').split('..');
+    label = `Every close from ${from} to ${to} · ${dateCount} date${dateCount === 1 ? '' : 's'}`
+      + ` · ${clientsCounted} client${clientsCounted === 1 ? '' : 's'}`;
   }
 
   return {
@@ -209,11 +215,11 @@ function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted,
     clientsOffLatestClose: mode === 'latest-per-client' ? clientsCounted - onRequested : 0,
     // True only when every figure in this object comes from one close on one day.
     singleDate: dateCount === 1,
-    // What `row.accounts` counts. Over one close it is accounts; over a month the
-    // same account is read once per close it reported on, so 1,234 is a count of
-    // account closes and calling it "accounts" on a desk of 584 would be a lie
-    // by label.
-    countNoun: mode === 'month' ? 'account close' : 'account',
+    // What `row.accounts` counts. Over one close it is accounts; over a month or
+    // any other range the same account is read once per close it reported on, so
+    // 1,234 is a count of account closes and calling it "accounts" on a desk of
+    // 584 would be a lie by label.
+    countNoun: mode === 'month' || mode === 'range' ? 'account close' : 'account',
     label,
   };
 }
@@ -401,6 +407,45 @@ export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
     clientsInScope: list.length,
     book,
     // Both refused across a range, each with the reason on the row.
+    weeklyAdditive: false,
+    balanceComparable: false,
+  });
+}
+
+/**
+ * Every close inside an inclusive date range, through the same segmentation.
+ *
+ * `buildDeskMoneyForMonth` with a different filter and nothing else, because a
+ * week is not a calendar month and the period report needs one that is not.
+ * Both refusals the month already carries apply here for the same reasons: a
+ * weekly P&L column summed over a range counts the same trades once per close,
+ * and a balance summed over a range counts the same money once per close.
+ *
+ * The range is INCLUSIVE at both ends. A `to` that is a Sunday therefore holds
+ * the Saturday close this book has on 2026-07-25; dropping it because it is a
+ * weekend would make the money in this object disagree with the coverage table
+ * printed above it.
+ */
+export function buildDeskMoneyForRange(clients = [], { from = '', to = '' } = {}) {
+  const list = clients || [];
+  const book = bookCloses(list);
+  const first = day(from);
+  const last = day(to);
+  const entries = [];
+  for (const client of list) {
+    for (const dailyImport of client?.dailyImports || []) {
+      const date = day(dailyImport?.date);
+      if (!date) continue;
+      if (first && date < first) continue;
+      if (last && date > last) continue;
+      entries.push({ client, dailyImport });
+    }
+  }
+  return assemble(entries, {
+    mode: 'range',
+    requested: `${first}..${last}`,
+    clientsInScope: list.length,
+    book,
     weeklyAdditive: false,
     balanceComparable: false,
   });

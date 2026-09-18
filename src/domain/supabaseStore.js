@@ -384,6 +384,11 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
   const visibleClientRows = (clientRows || []).filter((client) => (
     !client.deleted_at && client.status !== 'Inactive'
   ));
+  // How many the rule above dropped. The Stack Playbook states it under its
+  // team table: the hidden clients' account days (51 funded ones on the book,
+  // every RBO_PF day among them) are not in any figure on that screen, and a
+  // caption that says so is the only honest way to leave the rule as it is.
+  const hiddenClientCount = (clientRows || []).length - visibleClientRows.length;
   const clientByUuid = byId(visibleClientRows);
   const accountByUuid = byId(accountRows);
   const accountByClient = {};
@@ -633,6 +638,7 @@ export function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = n
     },
     camProfiles,
     clients,
+    hiddenClientCount,
     timeOff: (timeOffRows || []).map((row) => timeOffFromRow(row, camIdByUuid)),
     coverage: (coverageRows || []).map((row) => coverageFromRow(row, camIdByUuid, clientIdByUuid)),
     selectedClientId,
@@ -2159,4 +2165,119 @@ export async function saveLogAlgoHistory(rows = []) {
     .select();
   if (error) throw new Error(error.message);
   return (data || []).map(logAlgoHistoryFromRow);
+}
+
+// ---------------------------------------------------------------------------
+// My Futures Book backtest series (supabase/step_44_algorithm_benchmarks.sql)
+//
+// These rows are BACKTESTS: one simulated account, the version the desk runs
+// today re-run over history, downloaded from the vendor's portfolio page. They
+// are not client money and they never share a table, a chart series or a total
+// with anything read out of `account_snapshots`. Everything that keeps that
+// true — the risk level in the key, the vendor's already-net Profit, the
+// month-local drawdown — is decided in src/domain/algorithmBenchmark.js; this
+// pair of functions only carries the rows across.
+// ---------------------------------------------------------------------------
+
+function algorithmBenchmarkFromRow(row = {}) {
+  return {
+    id: row.id,
+    vendor: row.source_vendor || 'My Futures Book',
+    algorithm: row.algorithm || '',
+    version: row.version || '',
+    instrument: row.instrument || '',
+    riskLevel: row.risk_level || '',
+    month: String(row.month || '').slice(0, 10),
+    trades: Number(row.trades || 0),
+    tradingDays: Number(row.trading_days || 0),
+    contracts: Number(row.contracts || 0),
+    grossProfit: Number(row.gross_profit || 0),
+    commission: Number(row.commission || 0),
+    netProfit: Number(row.net_profit || 0),
+    // A rate the file had no trades to compute stays null: 0% would read as
+    // "never won" rather than "nothing to divide".
+    winRate: row.win_rate == null ? null : Number(row.win_rate),
+    maxDrawdown: Number(row.max_drawdown || 0),
+    commissionPerContract: row.commission_per_contract == null ? null : Number(row.commission_per_contract),
+    sourceFile: row.source_file || '',
+    importedAt: row.imported_at || null,
+    // The month's own days, which is what makes this table readable by the
+    // period report at all: the report asks which days inside one WEEK the
+    // backtest closed a trade on, and a month cannot answer that.
+    days: Array.isArray(row.days) ? row.days : [],
+  };
+}
+
+// True when step 44 has not been run. PostgREST answers PGRST205 for a table
+// missing from its schema cache, and the message names it before the cache is
+// built. Callers use this to disable saving and say why, rather than showing a
+// raw Postgres error to a CAM holding 36 files.
+export function isMissingBenchmarkTable(error) {
+  const message = error?.message || '';
+  return error?.code === 'PGRST205'
+    || error?.code === '42P01'
+    || (/algorithm_benchmarks/i.test(message) && /(does not exist|schema cache)/i.test(message));
+}
+
+export async function loadAlgorithmBenchmarks({ riskLevel = '', from = '', to = '' } = {}) {
+  if (!isSupabaseConfigured || !supabase) return [];
+  let query = supabase.from('algorithm_benchmarks').select('*');
+  if (riskLevel) query = query.eq('risk_level', riskLevel);
+  if (from) query = query.gte('month', from);
+  if (to) query = query.lte('month', to);
+  const { data, error } = await query.order('month', { ascending: true });
+  if (error) {
+    if (isMissingBenchmarkTable(error)) return [];
+    throw new Error(error.message);
+  }
+  return (data || []).map(algorithmBenchmarkFromRow);
+}
+
+/**
+ * Write the monthly aggregates `benchmarkMonthlyRows` produced.
+ *
+ * Upserted on the table's own unique key (vendor, algorithm, version,
+ * instrument, risk level, month), so re-importing next month's download replaces
+ * the months it covers instead of adding a second copy of every year the desk
+ * already holds, and a second vendor's rows sit beside My Futures Book's rather
+ * than overwriting them.
+ * `imported_at` and the importing user are rewritten on each import, because
+ * the question a reader asks of a benchmark row is when it was pulled and by
+ * whom, not when it was first seen.
+ */
+export async function saveAlgorithmBenchmarks(rows = []) {
+  if (!isSupabaseConfigured || !supabase || !rows.length) return [];
+  const importedByUserId = await getCurrentAppUserId();
+  const importedAt = new Date().toISOString();
+  const payload = rows.map((row) => ({
+    source_vendor: row.vendor || 'My Futures Book',
+    algorithm: row.algorithm || '',
+    version: row.version || '',
+    instrument: row.instrument || '',
+    risk_level: row.riskLevel || '',
+    month: row.month,
+    trades: row.trades,
+    trading_days: row.tradingDays,
+    contracts: row.contracts,
+    gross_profit: row.grossProfit,
+    commission: row.commission,
+    net_profit: row.netProfit,
+    win_rate: row.winRate,
+    commission_per_contract: row.commissionPerContract ?? null,
+    max_drawdown: row.maxDrawdown,
+    days: row.days || [],
+    source_file: row.sourceFile || '',
+    imported_at: importedAt,
+    imported_by_user_id: importedByUserId,
+  }));
+  const { data, error } = await supabase
+    .from('algorithm_benchmarks')
+    // The table's own unique key, vendor first. Without the vendor a second
+    // vendor's row for the same series and month would REPLACE the My Futures
+    // Book row rather than sit beside it, which is the opposite of what the
+    // `source_vendor` column was added for.
+    .upsert(payload, { onConflict: 'source_vendor,algorithm,version,instrument,risk_level,month' })
+    .select();
+  if (error) throw new Error(error.message);
+  return (data || []).map(algorithmBenchmarkFromRow);
 }
