@@ -257,8 +257,26 @@ describe('daily snapshot ingest', () => {
       const res = await ingest(handler);
       expect(res).toMatchObject({ statusCode: 503, body: { error: 'snapshot_ingest_failed' } });
       expect(calls.storeRaw).toHaveLength(1);
-      expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'persistence_unavailable' });
+      // The lease is released, the batch is NOT finalized as failed: the
+      // agent retries the same capture and must be claimed again, not told
+      // 409 capture_requires_replay and sent to quarantine.
+      expect(calls.release).toHaveLength(1);
+      expect(calls.terminal).toHaveLength(0);
     }
+  });
+
+  it('claims the same capture again after a transient persistence failure', async () => {
+    let attempts = 0;
+    const { handler, calls } = setup({ persist: async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+      return { id: 'daily-1', status: 'Needs review' };
+    } });
+    expect((await ingest(handler)).statusCode).toBe(503);
+    const second = await ingest(handler);
+    expect(second).toMatchObject({ statusCode: 201, body: { ok: true } });
+    expect(calls.claim).toHaveLength(2);
+    expect(calls.terminal.at(-1)).toMatchObject({ status: expect.stringMatching(/processed|incomplete/) });
   });
 
   it('still answers 422 when persistence fails because of the snapshot itself', async () => {

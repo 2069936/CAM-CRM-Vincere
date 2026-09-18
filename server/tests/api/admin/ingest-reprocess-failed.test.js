@@ -19,9 +19,9 @@ function batch(id, extra = {}) {
 
 function response() { return { headers: {}, setHeader(k, v) { this.headers[k] = v; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } }; }
 
-function setup({ batches = {}, claim = () => ({ outcome: 'owned' }), replay, role = 'Manager' } = {}) {
+function setup({ batches = {}, claim = () => ({ outcome: 'owned' }), replay, role = 'Manager', getBatch, timeBudgetMs, now } = {}) {
   const store = {
-    getBatch: vi.fn(async (id) => batches[id] || null),
+    getBatch: vi.fn(getBatch || (async (id) => batches[id] || null)),
     claimReplay: vi.fn(async (payload) => claim(payload)),
   };
   const processReplay = vi.fn(replay || (async () => ({ status: 'processed', dailyImportId: 'daily-1' })));
@@ -29,8 +29,9 @@ function setup({ batches = {}, claim = () => ({ outcome: 'owned' }), replay, rol
     if (!roles.includes(role)) throw new ApiError(403, 'forbidden');
     return { id: 'manager-1', role };
   });
-  const handler = createHandler({ createClients: () => ({ admin: {}, auth: {} }), authorize, createStore: () => store, processReplay, createProcessingToken: () => '99999999-9999-4999-8999-999999999999' });
-  return { store, processReplay, handler };
+  const report = vi.fn();
+  const handler = createHandler({ createClients: () => ({ admin: {}, auth: {} }), authorize, createStore: () => store, processReplay, createProcessingToken: () => '99999999-9999-4999-8999-999999999999', timeBudgetMs, now, report });
+  return { store, processReplay, handler, report };
 }
 
 describe('bulk replay of failed batches', () => {
@@ -88,6 +89,30 @@ describe('bulk replay of failed batches', () => {
     await handler({ method: 'POST', body: { batchIds: [A, B], reason: 'Replaying after the fix' } }, res);
     expect(res.body.results.map((r) => r.outcome)).toEqual(['busy', 'already_terminal']);
     expect(processReplay).not.toHaveBeenCalled();
+  });
+
+  it('stops inside the time budget and hands back what it did not reach', async () => {
+    // Vercel drops the whole response at maxDuration. Better to answer with
+    // the batches still to do than to lose the ones already done.
+    let clock = 0;
+    const replay = vi.fn(async () => { clock += 4000; return { status: 'processed', dailyImportId: 'daily-1' }; });
+    const { handler } = setup({ batches: { [A]: batch(A), [B]: batch(B), [C]: batch(C) }, replay, timeBudgetMs: 6500, now: () => clock });
+    const res = response();
+    await handler({ method: 'POST', body: { batchIds: [A, B, C], reason: 'Replaying after the fix' } }, res);
+    expect(res.body.replayed).toBe(2);
+    expect(res.body.remaining).toEqual([C]);
+    expect(res.body.results.map((r) => r.outcome)).toEqual(['replayed', 'replayed', 'not_attempted']);
+    expect(replay).toHaveBeenCalledTimes(2);
+  });
+
+  it('turns a batch lookup failure into that batch\'s outcome and logs the cause', async () => {
+    const { handler, report } = setup({ batches: { [B]: batch(B) }, getBatch: async (id) => { if (id === A) throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }); return batch(B); } });
+    const res = response();
+    await handler({ method: 'POST', body: { batchIds: [A, B], reason: 'Replaying after the fix' } }, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.results[0]).toMatchObject({ batchId: A, outcome: 'failed', error: 'batch_reprocess_failed' });
+    expect(res.body.results[1]).toMatchObject({ batchId: B, outcome: 'replayed' });
+    expect(report).toHaveBeenCalledWith(A, expect.objectContaining({ code: '57014' }));
   });
 
   it('is for managers only', async () => {
