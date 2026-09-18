@@ -144,6 +144,44 @@ function sendDeviceCredentialError(res) {
   });
 }
 
+/* THE STOPWATCH, SO NOBODY HAS TO GUESS AGAIN.
+ *
+ * On 2026-09-17 and 18 the only way to say how slow the ingest was running was
+ * to read a Supabase dashboard afterwards and infer. Five of the six stages are
+ * timed here and handed to the finalize RPC, which adds its own and stores the
+ * lot on the batch row; the Auto Collection fleet view reads them back.
+ *
+ * The sum of the stages is LESS than the total, and that gap is the point of
+ * keeping both: what it holds is authentication, the gzip decode and the claim
+ * itself, none of which is a stage anyone can act on separately.
+ */
+export function createStageTimer(clock = () => Date.now()) {
+  const durations = {};
+  const openedAt = clock();
+  let current = null;
+  let enteredAt = openedAt;
+  function close(at) {
+    if (current) durations[current] = (durations[current] || 0) + (at - enteredAt);
+    current = null;
+  }
+  return {
+    enter(name) {
+      const at = clock();
+      close(at);
+      current = name;
+      enteredAt = at;
+      return name;
+    },
+    // Called once, as the finalize payload is built: it closes whatever stage
+    // was open and freezes the total at that moment.
+    seal() {
+      const at = clock();
+      close(at);
+      return { stageDurationsMs: { ...durations }, ingestDurationMs: at - openedAt };
+    },
+  };
+}
+
 async function completeBatch(store, payload) {
   if (typeof store.completeBatch === 'function') return store.completeBatch(payload);
   await store.finalizeBatch(payload);
@@ -173,6 +211,7 @@ export function createHandler({
     positiveLimit(env.AUTO_COLLECTION_PROCESSING_LEASE_SECONDS, 120))),
   createProcessingToken = randomUUID,
   now = () => new Date(),
+  monotonic = () => Date.now(),
 } = {}) {
   return async function handler(req, res) {
     let store;
@@ -181,6 +220,7 @@ export function createHandler({
     let info;
     let processingToken;
     let stage = 'request';
+    const timer = createStageTimer(monotonic);
     try {
       requireMethod(req, 'POST');
       const admin = createClient();
@@ -221,20 +261,41 @@ export function createHandler({
           batchId: batch.id, status: batch.status,
         });
       }
+      /* THE DOOR. A DIFFERENT ANSWER FROM 'busy', DELIBERATELY.
+       *
+       * 409 capture_processing says this capture is already being processed;
+       * this says the server is full and has nothing to do with this capture.
+       * They are kept apart in the outcome, in the status code and in the
+       * public error name so that a desk reading the fleet view can tell a
+       * duplicate upload from a shed one.
+       *
+       * 429 with Retry-After because that is what the fleet already obeys:
+       * RetryPolicy in 1.0.3, 1.0.4 and 1.0.5 retries a 429, uses the header,
+       * caps the wait at two minutes, and leaves the item in the queue
+       * afterwards. Nothing is finalized here, nothing is stored, and the batch
+       * row the claim left behind is still claimable, so the retry is the
+       * ordinary first attempt it would have been a minute earlier. */
+      if (claim.outcome === 'at_capacity') {
+        if (claim.retryAfterSeconds > 0) res.setHeader('Retry-After', String(claim.retryAfterSeconds));
+        return sendJson(res, 429, {
+          error: 'ingest_at_capacity', batchId: batch.id, status: batch.status,
+          retryAfterSeconds: claim.retryAfterSeconds || 0,
+        });
+      }
       if (claim.outcome !== 'owned') throw new ApiError(500, 'snapshot_ingest_unavailable');
 
-      stage = 'storage';
+      stage = timer.enter('storage');
       await store.ensureRaw(storagePath, decoded.gzip, {
         sha256: decoded.sha256,
         byteCount: decoded.utf8.length,
         compressedByteCount: decoded.gzip.length,
         maxCompressedBytes,
       });
-      stage = 'normalize';
+      stage = timer.enter('normalize');
       const normalized = normalizeSnapshot(decoded.snapshot);
-      stage = 'registry';
+      stage = timer.enter('registry');
       const registry = await store.loadRegistry(device.clientId);
-      stage = 'reconcile';
+      stage = timer.enter('reconcile');
       // NO `priorImports` HERE, AND THAT IS A KNOWN GAP, NOT A DECISION THAT
       // NOTHING WAS OPEN. reconcileDailyImport uses the client's previous closes
       // to price a lot opened yesterday and closed today (carryForwardLots.js).
@@ -254,7 +315,7 @@ export function createHandler({
         registry,
         parsed: normalized.parsed,
       });
-      stage = 'persist';
+      stage = timer.enter('persist');
       let dailyImport;
       try {
         dailyImport = await persist({
@@ -274,6 +335,7 @@ export function createHandler({
           capturedAt: info.capturedAt, success: true,
           status: 'late_closed_day', rowCounts: info.rowCounts,
           completeness: normalized.metadata,
+          ...timer.seal(),
         });
         return sendJson(res, 202, { ok: true, duplicate: false, batchId: batch.id, dailyImportId, status: 'late_closed_day' });
       }
@@ -289,6 +351,7 @@ export function createHandler({
             isComplete: normalized.metadata.isComplete,
             emptySections: normalized.metadata.emptySections,
           },
+          ...timer.seal(),
         });
         return sendJson(res, 201, {
           ok: true, duplicate: false, batchId: batch.id,
@@ -308,6 +371,7 @@ export function createHandler({
           isComplete: normalized.metadata.isComplete,
           emptySections: normalized.metadata.emptySections,
         },
+        ...timer.seal(),
       });
       return sendJson(res, 201, {
         ok: true, duplicate: false, batchId: batch.id,
@@ -363,6 +427,9 @@ export function createHandler({
             capturedAt: info?.capturedAt || new Date().toISOString(),
             success: false, status: 'failed', errorCode,
             completeness: {}, rowCounts: info?.rowCounts || {},
+            // A failure is worth timing too: the stage it died in and how long
+            // it took there is the first question anyone asks about one.
+            ...timer.seal(),
           });
         } catch (completionError) {
           if (isDeviceCredentialError(completionError)) return sendDeviceCredentialError(res);

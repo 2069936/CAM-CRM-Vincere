@@ -45,6 +45,16 @@ public sealed class CollectorState
     private readonly object gate = new();
     private CollectorStatusSnapshot value = new(null, null, null, null, null, false, "unpaired");
 
+    /* THE SPREAD'S HOLD, WHICH IS A FACT ABOUT ONE DAY AND NOT ABOUT THE QUEUE.
+     *
+     * The scheduled capture sets it; the uploader reads it; a manual capture
+     * clears it. It names the trading date as well as the instant so that only
+     * the capture that was just taken waits. A day still sitting in the queue
+     * from last week is a retry of work that has already waited hours, and
+     * making it wait four more minutes would be a delay with nothing to gain. */
+    private Instant? uploadHoldUntil;
+    private string uploadHoldTradingDate;
+
     public CollectorStatusSnapshot Snapshot()
     {
         lock (gate) return value;
@@ -74,6 +84,16 @@ public sealed class CollectorState
         ArgumentNullException.ThrowIfNull(result);
         lock (gate)
         {
+            // Only a capture that actually reached the queue moves the hold.
+            // This runs every fifteen seconds and most passes are a weekend or
+            // an already-collected day, neither of which has anything to say
+            // about when the next upload should start.
+            if (result.CaptureQueued)
+            {
+                uploadHoldUntil = result.UploadNotBefore;
+                uploadHoldTradingDate = result.UploadNotBefore is null ? null : result.Decision?.TradingDate;
+            }
+
             bool? addonAvailable = result.ErrorCode == "addon_unavailable"
                 ? false
                 : result.CaptureQueued ? true : value.AddonAvailable;
@@ -110,6 +130,26 @@ public sealed class CollectorState
     public void RecordUnpaired()
     {
         lock (gate) value = value with { DeviceStatus = "unpaired" };
+    }
+
+    /// <summary>
+    /// Whether this machine's own spread offset still has this day's first
+    /// upload waiting. Expiry clears the hold, so it is asked once and never
+    /// has to be cleaned up.
+    /// </summary>
+    public bool IsUploadHeld(string tradingDate, Instant now)
+    {
+        lock (gate)
+        {
+            if (uploadHoldUntil is null) return false;
+            if (now >= uploadHoldUntil.Value)
+            {
+                uploadHoldUntil = null;
+                uploadHoldTradingDate = null;
+                return false;
+            }
+            return string.Equals(uploadHoldTradingDate, tradingDate, StringComparison.Ordinal);
+        }
     }
 }
 
@@ -168,6 +208,7 @@ public sealed class UploadLoop : ICollectorLoop
     private readonly CollectorState state;
     private readonly ICaptureHistoryStore history;
     private readonly IServiceReporter reporter;
+    private readonly ICollectorClock clock;
     private string lastReportedCode;
 
     public UploadLoop(
@@ -176,7 +217,8 @@ public sealed class UploadLoop : ICollectorLoop
         IDeviceTokenStore tokenStore,
         CollectorState state,
         ICaptureHistoryStore history,
-        IServiceReporter reporter = null)
+        IServiceReporter reporter = null,
+        ICollectorClock clock = null)
     {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
@@ -184,6 +226,7 @@ public sealed class UploadLoop : ICollectorLoop
         this.state = state ?? throw new ArgumentNullException(nameof(state));
         this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.reporter = reporter;
+        this.clock = clock ?? new SystemCollectorClock();
     }
 
     // A REJECTION THE CRM SENDS BACK IS NOT A SILENT EVENT ANY MORE.
@@ -224,6 +267,21 @@ public sealed class UploadLoop : ICollectorLoop
 
         QueueItem item = await queue.ClaimNextAsync(cancellationToken).ConfigureAwait(false);
         if (item == null) return;
+
+        /* THE SPREAD, AND IT HOLDS ONE DAY RATHER THAN THE QUEUE.
+         *
+         * Only the capture this machine has just taken waits, and only until
+         * its own offset has passed. A day left over from an earlier failure is
+         * a retry and goes straight out; so does a manual test capture, which
+         * clears the hold as it is queued. The item goes back to pending
+         * untouched, so the next pass ten seconds later claims it again with
+         * nothing lost and no attempt counted. */
+        if (state.IsUploadHeld(item.TradingDate, clock.GetCurrentInstant()))
+        {
+            await queue.RetryAsync(item, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         try
         {
             UploadAcknowledgement acknowledgement = await crm.UploadAsync(item, cancellationToken).ConfigureAwait(false);

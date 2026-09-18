@@ -341,9 +341,102 @@ public sealed class CollectorLoopTests
     private sealed class FakeClock : ICollectorClock
     {
         public FakeClock(Instant now) => Now = now;
-        public Instant Now { get; }
+        public Instant Now { get; set; }
         public Instant GetCurrentInstant() => Now;
         public DateTimeOffset GetCurrentDateTimeOffset() => Now.ToDateTimeOffset();
+    }
+
+    /* THE SPREAD, SEEN FROM THE LOOP THAT OBEYS IT.
+     *
+     * The capture keeps its schedule exactly; only the first upload of it
+     * waits, and only by this machine's own offset. A manual test capture and a
+     * day left over from an earlier failure both go straight out. */
+    private static CaptureRunResult ScheduledCapture(Instant uploadNotBefore) => new(
+        new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-07-23", null),
+        true,
+        null,
+        null,
+        uploadNotBefore);
+
+    [Fact]
+    public async Task TheFirstUploadAfterAScheduledCaptureWaitsForThisMachinesOffset()
+    {
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        FakeQueue queue = new() { Next = Item };
+        FakeClock clock = new(captured + Duration.FromSeconds(10));
+        UploadLoop loop = new(queue, new FakeCrm(), new FakeTokenStore("token"), state, new FakeCaptureHistory(), null, clock);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        // Returned to pending untouched: nothing uploaded, nothing quarantined,
+        // nothing counted as an attempt. The next pass claims it again.
+        Assert.Same(Item, queue.Retried);
+        Assert.Null(queue.Completed);
+
+        clock.Now = captured + Duration.FromSeconds(91);
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(Item, queue.Completed);
+    }
+
+    [Fact]
+    public async Task AManualCaptureClearsTheHoldItWouldOtherwiseHaveWaitedBehind()
+    {
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        // A manual capture queues with no hold, which is what drops the one the
+        // scheduled capture set a moment ago.
+        state.RecordCapture(
+            new CaptureRunResult(new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-07-23", null), true, null, null),
+            captured.ToDateTimeOffset());
+        FakeQueue queue = new() { Next = Item };
+        UploadLoop loop = new(
+            queue, new FakeCrm(), new FakeTokenStore("token"), state, new FakeCaptureHistory(),
+            null, new FakeClock(captured + Duration.FromSeconds(10)));
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(Item, queue.Completed);
+        Assert.Null(queue.Retried);
+    }
+
+    [Fact]
+    public async Task ADayLeftOverFromAnEarlierFailureIsNeverHeld()
+    {
+        // A retry of an already queued item has waited long enough. The hold
+        // names the trading date it belongs to so it can only hold that one.
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        QueueItem older = Item with { TradingDate = "2026-07-20" };
+        FakeQueue queue = new() { Next = older };
+        UploadLoop loop = new(
+            queue, new FakeCrm(), new FakeTokenStore("token"), state, new FakeCaptureHistory(),
+            null, new FakeClock(captured + Duration.FromSeconds(10)));
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(older, queue.Completed);
+        Assert.Null(queue.Retried);
+    }
+
+    [Fact]
+    public void AWeekendPassDoesNotDisturbAHoldOrInventOne()
+    {
+        // This loop runs every fifteen seconds and most passes have nothing to
+        // report. Only a capture that actually reached the queue moves the hold.
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        state.RecordCapture(
+            new CaptureRunResult(new CaptureScheduleDecision(CaptureScheduleDecisionKind.AlreadyCaptured, "2026-07-23", null), false, null, null),
+            captured.ToDateTimeOffset());
+
+        Assert.True(state.IsUploadHeld("2026-07-23", captured + Duration.FromSeconds(10)));
+        Assert.False(state.IsUploadHeld("2026-07-23", captured + Duration.FromSeconds(90)));
     }
 
     private sealed class FakeScheduler : ICaptureScheduler

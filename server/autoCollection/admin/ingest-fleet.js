@@ -2,10 +2,22 @@ import process from 'node:process';
 import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
-import { classifyFleetRow, newYorkTradingClock, summarizeFleet } from '../../../src/domain/autoCollectionFleet.js';
+import { classifyFleetRow, newYorkTradingClock, summarizeFleet, summarizeIngestDay } from '../../../src/domain/autoCollectionFleet.js';
 
 const DEVICE_COLUMNS = 'id,client_id,status,health_status,schedule_time,schedule_timezone,agent_version,addon_version,ninjatrader_version,last_seen_at,last_capture_at,last_success_at,last_error_code,revoked_at,created_at';
 const BATCH_COLUMNS = 'id,capture_id,client_id,device_id,trading_date,captured_at,received_at,processed_at,status,row_counts,completeness,daily_import_id,replaces_batch_id,error_code';
+/* THE TWO COLUMNS STEP 45 ADDS, ASKED FOR SEPARATELY SO THEIR ABSENCE IS NOT
+ * THIS SCREEN'S PROBLEM. PostgREST answers a select naming a column that does
+ * not exist with an error, not with nulls, so asking for them unconditionally
+ * would turn "the migration has not run yet" into a fleet view that shows the
+ * manager nothing at all. The day line disappears instead. */
+const BATCH_TIMING_COLUMNS = `${BATCH_COLUMNS},ingest_duration_ms,admission_deferrals`;
+
+function isMissingColumn(error) {
+  if (String(error?.code || '') === '42703') return true;
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('column') && message.includes('does not exist');
+}
 const SAFE_DEVICE_ERRORS = new Set(['ninjatrader_not_running', 'addon_unavailable', 'capture_timeout', 'capture_failed', 'contract_mismatch', 'queue_capacity_warning', 'upload_failed', 'configuration_error']);
 const SAFE_BATCH_ERRORS = new Set(['storage_failed', 'normalization_failed', 'registry_load_failed', 'reconciliation_failed', 'persistence_failed', 'ingest_failed', 'immutable_object_conflict', 'unsupported_schema_version', 'invalid_auto_import_snapshot']);
 
@@ -62,16 +74,24 @@ function publicBatch(row) {
     completeness: row.completeness || {}, dailyImportId: row.daily_import_id || null,
     replacesBatchId: row.replaces_batch_id || null,
     errorCode: SAFE_BATCH_ERRORS.has(row.error_code) ? row.error_code : row.error_code ? 'ingest_failed' : null,
+    ingestDurationMs: Number.isInteger(row.ingest_duration_ms) ? row.ingest_duration_ms : null,
+    admissionDeferrals: Number.isInteger(row.admission_deferrals) ? row.admission_deferrals : 0,
   };
 }
 
 export function createFleetStore(admin) {
   return {
     async list({ page, pageSize, search, tradingDate, now, releaseVersion }) {
+      const dayBatches = (query) => query.eq('trading_date', tradingDate).order('received_at', { ascending: false });
+      let timed = true;
       const [clients, devices, batches] = await Promise.all([
         loadAll(admin, 'clients', 'id,name', (query) => query.order('name', { ascending: true }).order('id', { ascending: true })),
         loadAll(admin, 'ingest_devices', DEVICE_COLUMNS, (query) => query.order('created_at', { ascending: false })),
-        loadAll(admin, 'ingest_batches', BATCH_COLUMNS, (query) => query.eq('trading_date', tradingDate).order('received_at', { ascending: false })),
+        loadAll(admin, 'ingest_batches', BATCH_TIMING_COLUMNS, dayBatches).catch((error) => {
+          if (!isMissingColumn(error)) throw error;
+          timed = false;
+          return loadAll(admin, 'ingest_batches', BATCH_COLUMNS, dayBatches);
+        }),
       ]);
       const deviceByClient = firstByClient(devices);
       const batchByClient = firstByClient(batches);
@@ -88,7 +108,14 @@ export function createFleetStore(admin) {
         || String(row.client.name || '').toLocaleLowerCase('en-US').includes(normalizedSearch)
         || String(row.device?.id || '').toLocaleLowerCase('en-US').includes(normalizedSearch));
       const start = (page - 1) * pageSize;
-      return { rows: matchingRows.slice(start, start + pageSize), total: matchingRows.length, summary: summarizeFleet(allRows) };
+      return {
+        rows: matchingRows.slice(start, start + pageSize),
+        total: matchingRows.length,
+        summary: summarizeFleet(allRows),
+        // One pass over rows already in memory. The search box and the page
+        // number do not narrow it: this line is about the day, not the page.
+        ingestDay: timed ? summarizeIngestDay(batches.map(publicBatch)) : null,
+      };
     },
   };
 }
@@ -118,7 +145,10 @@ export function createHandler({
       const releaseVersion = (await resolveRelease(env, { production, fetchImpl: fetchRelease }))?.version || null;
       const result = await createStore(admin).list({ ...filters, tradingDate, now: serverTime, releaseVersion });
       res.setHeader('Cache-Control', 'private, no-store');
-      return sendJson(res, 200, { serverTime: serverTime.toISOString(), ...filters, ...result });
+      // The New York trading date the day line and every row's status were
+      // computed against. Without it the screen would have to re-derive it from
+      // a UTC timestamp and would name the wrong day for part of every evening.
+      return sendJson(res, 200, { serverTime: serverTime.toISOString(), tradingDate, ...filters, ...result });
     } catch (error) {
       return handleApiError(res, safeError(error), { fallbackMessage: 'collector_fleet_failed' });
     }

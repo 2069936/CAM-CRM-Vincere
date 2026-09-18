@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, parseFleetQuery } from '../../../autoCollection/admin/ingest-fleet.js';
+import { createFleetStore, createHandler, parseFleetQuery } from '../../../autoCollection/admin/ingest-fleet.js';
 import { ApiError } from '../../../apiLib/http.js';
 
 function response() {
@@ -85,4 +85,77 @@ describe('Manager collector fleet endpoint', () => {
   it('normalizes safe defaults', () => {
     expect(parseFleetQuery({})).toEqual({ page: 1, pageSize: 25, search: '' });
   });
+
+  it('names the New York trading date the day line and the statuses were computed against', async () => {
+    const list = vi.fn(async () => ({ rows: [], summary: { total: 0 }, total: 0, ingestDay: null }));
+    const handler = createHandler({
+      createClients: () => ({ admin: {}, auth: {} }),
+      authorize: async () => ({ role: 'Manager' }),
+      createStore: () => ({ list }),
+      // 21:00 UTC on the 23rd is still the 23rd in New York; the UTC date the
+      // screen would otherwise slice out of serverTime rolls over first.
+      now: () => new Date('2026-07-24T02:30:00.000Z'),
+    });
+    const res = response();
+    await handler({ method: 'GET', query: {} }, res);
+    expect(res.body.tradingDate).toBe('2026-07-23');
+  });
+});
+
+/* THE DAY LINE, AND THE TWO COLUMNS IT NEEDS THAT MAY NOT BE THERE YET. */
+function fleetAdmin({ batchRows = [], failOnTimingColumns = false } = {}) {
+  const asked = [];
+  return {
+    asked,
+    from(table) {
+      const builder = {
+        select(columns) {
+          asked.push({ table, columns });
+          builder.columns = columns;
+          return builder;
+        },
+        eq: () => builder,
+        order: () => builder,
+        range: async () => {
+          if (table === 'ingest_batches' && failOnTimingColumns && builder.columns.includes('ingest_duration_ms')) {
+            return { data: null, error: { code: '42703', message: 'column ingest_batches.ingest_duration_ms does not exist' } };
+          }
+          if (table === 'ingest_batches') return { data: batchRows, error: null };
+          return { data: [], error: null };
+        },
+      };
+      return builder;
+    },
+  };
+}
+
+const dayRows = [
+  { id: 'b1', client_id: 'c1', trading_date: '2026-07-23', status: 'processed', row_counts: {}, ingest_duration_ms: 400, admission_deferrals: 0 },
+  { id: 'b2', client_id: 'c2', trading_date: '2026-07-23', status: 'processed', row_counts: {}, ingest_duration_ms: 2600, admission_deferrals: 3 },
+];
+
+it('reads the timings from the batches it already loaded, without a second query', async () => {
+  const admin = fleetAdmin({ batchRows: dayRows });
+  const result = await createFleetStore(admin).list({
+    page: 1, pageSize: 25, search: '', tradingDate: '2026-07-23',
+    now: new Date('2026-07-23T21:00:00.000Z'), releaseVersion: '1.0.5',
+  });
+  expect(result.ingestDay).toMatchObject({ accepted: 2, shed: 3, measured: 2, medianMs: 400, slowestMs: 2600 });
+  // Three selects for the whole screen: clients, devices, batches. The day line
+  // adds none.
+  expect(admin.asked.map((call) => call.table)).toEqual(['clients', 'ingest_devices', 'ingest_batches']);
+});
+
+it('still renders the fleet when migration step 45 has not run, with no day line at all', async () => {
+  // PostgREST answers a select naming a column that does not exist with an
+  // error rather than with nulls, so asking for the two new columns
+  // unconditionally would turn a pending migration into a blank screen.
+  const admin = fleetAdmin({ batchRows: dayRows, failOnTimingColumns: true });
+  const result = await createFleetStore(admin).list({
+    page: 1, pageSize: 25, search: '', tradingDate: '2026-07-23',
+    now: new Date('2026-07-23T21:00:00.000Z'), releaseVersion: '1.0.5',
+  });
+  expect(result.ingestDay).toBeNull();
+  expect(result.total).toBe(0);
+  expect(admin.asked.filter((call) => call.table === 'ingest_batches')).toHaveLength(2);
 });

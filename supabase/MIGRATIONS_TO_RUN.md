@@ -21,6 +21,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 42 | `step_42_client_tags_and_price_history.sql` | `tags` and `account_focus` on `clients`, and the `client_price_changes` log | Client tags and the revenue movement figures |
 | 43 | `step_43_row_level_security.sql` | Row Level Security on every table that lacked it, plus `login_email_for_username` | Closes the database to the publishable key that ships in the browser bundle |
 | 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates with each month's own days, keyed by vendor first, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report, which reads the saved import instead of asking for the 36 files again |
+| 45 | `step_45_ingest_admission_control.sql` | `ingest_admission_settings` with the tunable cap, `claim_ingest_batch_v4` with the `at_capacity` outcome and its per device retry spread, `finalize_ingest_batch_v3`, and `admission_deferrals` / `stage_durations_ms` / `ingest_duration_ms` on `ingest_batches` | The door that answers 429 with Retry-After when too many uploads are in flight at once, and the ingest timing line on the Auto Collection fleet view |
 
 ## These three groups behave differently
 
@@ -94,7 +95,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -132,6 +133,24 @@ everybody before this table was read at all: empty rather than wrong. With the
 step run it reads the saved import on open, so the manager does not re-upload
 36 CSVs every visit. Nothing else on any screen changes; no other feature reads
 `algorithm_benchmarks`.
+
+**45 degrades gracefully, and it is the first step that has to survive being run
+either side of its deploy.** It adds `claim_ingest_batch_v4` and
+`finalize_ingest_batch_v3` and leaves `claim_ingest_batch_v3` and
+`finalize_ingest_batch_v2` exactly as they are, granted and callable, because
+the server that is running at the moment the migration executes is still calling
+them. The new server asks for v4 first and falls back to v3 for the life of the
+process when the database answers that no such function exists, the same way the
+login lookup in 43 falls back to its old select.
+
+So without it the collector behaves precisely as it does today: every upload is
+accepted the moment it arrives, nothing is ever answered 429 at the door, and the
+Auto Collection fleet view simply omits its ingest line rather than showing
+zeroes. With it, uploads past the cap are answered 429 with a per device
+Retry-After, the capture stays queued on the VPS and arrives a minute later, and
+the fleet view gains one line for the selected day: accepted, shed at the door,
+median and slowest ingest time. No VPS needs updating for any of that; the agents
+already deployed honour 429 and Retry-After.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either

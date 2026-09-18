@@ -74,3 +74,33 @@ it('shows no failed closes panel when there is nothing to replay', () => {
   const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={[]} disableAutoLoad />);
   expect(html).not.toContain('the CRM refused');
 });
+
+/* THE LINE THAT ANSWERS "IS THE INGEST SLOW?" WITHOUT A DASHBOARD. */
+it('shows the day\'s ingest line with what was accepted, what was shed and how long it took', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager
+    initialFleet={{ ...fleet, tradingDate: '2026-07-23', ingestDay: { accepted: 9, shed: 4, measured: 9, medianMs: 820, slowestMs: 4310 } }}
+    disableAutoLoad
+  />);
+  expect(html).toContain('Ingest on 2026-07-23');
+  expect(html).toContain('9 accepted');
+  expect(html).toContain('4 shed at the door');
+  expect(html).toContain('median 820 ms');
+  expect(html).toContain('slowest 4.3 s');
+});
+
+it('omits the ingest line entirely when nothing has been measured yet', () => {
+  // Before migration step 45 runs there are no timings at all. Zeroes would
+  // read as "every upload was instant", which is the opposite of what is known.
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={{ ...fleet, ingestDay: null }} disableAutoLoad />);
+  expect(html).not.toContain('shed at the door');
+  expect(html).not.toContain('Ingest on');
+});
+
+it('says a measurement is missing rather than calling it zero', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager
+    initialFleet={{ ...fleet, tradingDate: '2026-07-23', ingestDay: { accepted: 0, shed: 2, measured: 0, medianMs: null, slowestMs: null } }}
+    disableAutoLoad
+  />);
+  expect(html).toContain('2 shed at the door');
+  expect(html).toContain('median not measured');
+});

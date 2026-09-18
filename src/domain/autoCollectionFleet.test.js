@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFleetRow, newYorkTradingClock } from './autoCollectionFleet';
+import { classifyFleetRow, newYorkTradingClock, summarizeIngestDay } from './autoCollectionFleet';
 
 const onlineDevice = {
   status: 'active',
@@ -58,5 +58,45 @@ describe('collector fleet state priority', () => {
 
   it('marks a processed current-date batch received', () => {
     expect(classify('2026-07-23T21:01:00.000Z', { todayBatch: { status: 'processed' } }).state).toBe('received');
+  });
+});
+
+describe("the day's ingest line", () => {
+  const day = [
+    { status: 'processed', ingestDurationMs: 400, admissionDeferrals: 0 },
+    { status: 'incomplete', ingestDurationMs: 1200, admissionDeferrals: 2 },
+    { status: 'replaced', ingestDurationMs: 900, admissionDeferrals: 0 },
+    { status: 'failed', ingestDurationMs: 6000, admissionDeferrals: 1 },
+    { status: 'received', ingestDurationMs: null, admissionDeferrals: 3 },
+  ];
+
+  it('counts what the CRM stored, not what it was sent', () => {
+    // A batch still in 'received' has not been accepted yet and a 'failed' one
+    // was not accepted at all.
+    expect(summarizeIngestDay(day).accepted).toBe(3);
+  });
+
+  it('counts door firings rather than machines, because that is what sizes the cap', () => {
+    // Six refusals across three captures. A count of distinct machines would
+    // read three and would say nothing about how hard the door was working.
+    expect(summarizeIngestDay(day).shed).toBe(6);
+  });
+
+  it('measures every batch that carries a time, including the ones that failed', () => {
+    const summary = summarizeIngestDay(day);
+    expect(summary.measured).toBe(4);
+    expect(summary.slowestMs).toBe(6000);
+    // Four measurements: 400, 900, 1200, 6000. The lower middle, so the median
+    // is an upload somebody can go and look at.
+    expect(summary.medianMs).toBe(900);
+  });
+
+  it('reports nothing measured as null rather than as zero', () => {
+    // Before migration step 45 runs, no batch carries a duration. Zero would
+    // read as "every upload was instant".
+    expect(summarizeIngestDay([{ status: 'processed' }])).toMatchObject({
+      accepted: 1, shed: 0, measured: 0, medianMs: null, slowestMs: null,
+    });
+    expect(summarizeIngestDay()).toMatchObject({ accepted: 0, shed: 0, medianMs: null });
   });
 });

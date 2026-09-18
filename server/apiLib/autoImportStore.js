@@ -208,10 +208,37 @@ function registryFromRows(rows = []) {
   }]));
 }
 
+/* THE MIGRATION AND THE DEPLOY DO NOT HAVE TO HAPPEN IN THAT ORDER.
+ *
+ * Step 45 adds `claim_ingest_batch_v4` and `finalize_ingest_batch_v3` and
+ * leaves v3 and v2 in place. This code asks for the new one and, only when the
+ * database answers that no such function exists, calls the old one instead —
+ * the same shape as the login lookup step 43 added, and for the same reason: a
+ * server deployed before its migration has run must keep collecting rather
+ * than refuse every upload until somebody opens the SQL editor.
+ *
+ * Deliberately NOT remembered between calls. A memo would spare one round trip
+ * during the gap between the deploy and the migration, at the cost of a piece
+ * of process-wide state that, set wrongly once, would silently disable the door
+ * for the life of that lambda.
+ */
+function isMissingFunction(error) {
+  const code = String(error?.code || '');
+  if (code === 'PGRST202' || code === '42883') return true;
+  const message = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+  return /could not find the function|function .* does not exist/.test(message);
+}
+
+async function rpcWithFallback(admin, current, legacy, args, legacyArgs = args) {
+  const attempt = await admin.rpc(current, args);
+  if (!attempt.error || !isMissingFunction(attempt.error)) return attempt;
+  return admin.rpc(legacy, legacyArgs);
+}
+
 export function createAutoImportStore(admin) {
   return {
     async claimBatch(payload) {
-      const { data, error } = await admin.rpc('claim_ingest_batch_v3', {
+      const { data, error } = await rpcWithFallback(admin, 'claim_ingest_batch_v4', 'claim_ingest_batch_v3', {
         p_device_id: payload.deviceId,
         p_capture_id: payload.captureId,
         p_trading_date: payload.tradingDate,
@@ -234,7 +261,10 @@ export function createAutoImportStore(admin) {
         throw deviceRevokedError(error) || error;
       }
       const result = rpcValue(data);
-      if (!result || !['owned', 'busy', 'terminal', 'failed'].includes(result.outcome) || !result.batch?.id) {
+      // 'at_capacity' is its own outcome and never folded into 'busy': one says
+      // this capture is already being processed, the other says the server is
+      // full, and the desk counts them apart.
+      if (!result || !['owned', 'busy', 'terminal', 'failed', 'at_capacity'].includes(result.outcome) || !result.batch?.id) {
         throw new Error('Batch claim RPC returned no result.');
       }
       return {
@@ -319,7 +349,7 @@ export function createAutoImportStore(admin) {
     },
 
     async completeBatch(payload) {
-      const { data, error } = await admin.rpc('finalize_ingest_batch_v2', {
+      const legacyArgs = {
         p_batch_id: payload.batchId,
         p_device_id: payload.deviceId,
         p_client_id: payload.clientId,
@@ -332,7 +362,20 @@ export function createAutoImportStore(admin) {
         p_completeness: payload.completeness || {},
         p_row_counts: payload.rowCounts || {},
         p_event_type: payload.eventType,
-      });
+      };
+      const { data, error } = await rpcWithFallback(
+        admin,
+        'finalize_ingest_batch_v3',
+        'finalize_ingest_batch_v2',
+        {
+          ...legacyArgs,
+          // The stopwatch. The sixth stage, finalize itself, is measured inside
+          // the function: this call cannot time the call that stores the time.
+          p_stage_durations_ms: payload.stageDurationsMs || null,
+          p_ingest_duration_ms: Number.isInteger(payload.ingestDurationMs) ? payload.ingestDurationMs : null,
+        },
+        legacyArgs,
+      );
       if (error) throw deviceRevokedError(error) || leaseError(error) || error;
       const row = rpcValue(data);
       if (!row?.id) throw new Error('Batch finalization RPC returned no result.');

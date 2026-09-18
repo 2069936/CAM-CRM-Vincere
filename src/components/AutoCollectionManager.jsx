@@ -20,6 +20,24 @@ function isClosedReplay(batch) {
   return batch?.status === 'late_closed_day' || batch?.reprocessMode === 'closed_day';
 }
 
+/* HOW LONG THE UPLOADS TOOK, WHERE THE DESK ALREADY LOOKS.
+ *
+ * For two days the only answer to "is the ingest slow?" was somebody opening
+ * the Supabase dashboard afterwards and inferring. The numbers come from the
+ * fleet payload, which already loads the day's batches, so this line costs
+ * nothing extra. It is absent rather than zeroed when migration step 45 has not
+ * run: nothing measured is not the same as measured as fast. */
+function duration(value) {
+  if (!Number.isInteger(value)) return 'not measured';
+  return value < 1000 ? `${value} ms` : `${(value / 1000).toFixed(1)} s`;
+}
+
+function ingestLine(day) {
+  if (!day) return null;
+  const shed = `${day.shed} shed at the door`;
+  return `${day.accepted} accepted · ${shed} · median ${duration(day.medianMs)} · slowest ${duration(day.slowestMs)}`;
+}
+
 export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false }) {
   const [fleet, setFleet] = useState(initialFleet);
   const [page, setPage] = useState(initialFleet?.page || 1);
@@ -149,6 +167,7 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     </section> : null}
     {bulkResults ? <div className={`notice ${bulkResults.replayed === bulkResults.requested ? 'success' : 'warning'}`} role="status">Replayed {bulkResults.replayed} of {bulkResults.requested}.{bulkResults.results.filter((r) => r.outcome !== 'replayed').map((r) => ` ${clientNames.get(r.clientUuid) || r.batchId} ${r.tradingDate || ''}: ${r.outcome}${r.reason ? ` (${r.reason})` : ''}${r.error ? ` (${r.error})` : ''}.`).join('')}</div> : null}
     <section className="collector-summary" aria-label="Fleet summary"><div><strong>{fleet?.summary?.total || 0}</strong><span>Clients</span></div><div><strong>{fleet?.summary?.received || 0}</strong><span>Received</span></div><div><strong>{fleet?.summary?.expected || 0}</strong><span>Expected</span></div><div className="attention"><strong>{fleet?.summary?.attention || 0}</strong><span>Need attention</span></div></section>
+    {fleet?.ingestDay ? <p className="muted collector-ingest-line" aria-label="Ingest timing for the selected day">Ingest on {fleet.tradingDate || 'the selected day'}: {ingestLine(fleet.ingestDay)}</p> : null}
     <section className="panel"><div className="collector-toolbar"><form onSubmit={(event) => { event.preventDefault(); setPage(1); setQuery(search.trim()); }}><Search size={15} /><input aria-label="Search clients or VPS" placeholder="Search clients or VPS" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="secondary-button" type="submit">Search</button></form><span>{fleet?.total || 0} clients</span></div>
       <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client / VPS</th><th>Schedule</th><th>Last seen</th><th>Today&apos;s batch</th><th>Rows</th><th>Version</th><th>Status</th></tr></thead><tbody>{(fleet?.rows || []).map((row) => <tr key={row.client.uuid}><td><button type="button" className="collector-client-button" onClick={() => openHistory(row.client)}><strong>{row.client.name}</strong><small>{row.device?.id || 'Not paired'}</small></button></td><td>{schedule(row.device?.schedule)}</td><td>{fmt(row.device?.lastSeenAt)}</td><td>{row.todayBatch?.status || '—'}</td><td><small>{counts(row.todayBatch?.rowCounts)}</small></td><td>{row.device?.agentVersion || '—'}</td><td><span className={`collector-status state-${row.operationalStatus.state}`} aria-label={`Collector status: ${row.operationalStatus.label}`}>{row.operationalStatus.label}</span></td></tr>)}</tbody></table></div>
       <div className="collector-pagination"><button className="ghost-button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {totalPages}</span><button className="ghost-button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>Next</button></div>

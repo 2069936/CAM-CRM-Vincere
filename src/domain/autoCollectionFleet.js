@@ -100,6 +100,57 @@ export function classifyFleetRow({
   return result('late');
 }
 
+/* WHAT THE INGEST COST TODAY, IN ONE LINE.
+ *
+ * The question "is the upload slow?" was answered for two days by reading a
+ * Supabase dashboard after the fact and inferring. Step 45 stores the time each
+ * upload took on its own batch row, and the fleet view already loads every one
+ * of the selected day's batches to decide each client's status, so this reads
+ * numbers that are already in memory rather than asking the database anything
+ * new.
+ *
+ * ACCEPTED counts uploads the CRM took in and stored: the four terminal success
+ * states. A batch still sitting in 'received' has not been accepted yet and a
+ * 'failed' one was not accepted at all, so neither is counted here.
+ *
+ * SHED counts door firings, not machines: a capture turned away three times
+ * before it got in contributes three. That is the number that says whether the
+ * cap is set right, which a count of distinct machines would not.
+ *
+ * MEDIAN AND SLOWEST come from the batches that carry a measurement. Before the
+ * migration runs there are none, and every field but the two counts is null
+ * rather than zero: nothing measured is not the same as measured as fast.
+ */
+const ACCEPTED_BATCH_STATES = new Set(['processed', 'incomplete', 'late_closed_day', 'replaced']);
+
+export function summarizeIngestDay(batches = []) {
+  let accepted = 0;
+  let shed = 0;
+  const durations = [];
+  for (const batch of batches) {
+    if (ACCEPTED_BATCH_STATES.has(batch?.status)) accepted += 1;
+    // Tested directly rather than through Number(), which turns a null into a
+    // zero: a batch with no measurement would have counted as an upload that
+    // took no time at all, which is the one reading this line must never give.
+    const deferrals = batch?.admissionDeferrals;
+    if (Number.isInteger(deferrals) && deferrals > 0) shed += deferrals;
+    const duration = batch?.ingestDurationMs;
+    if (Number.isInteger(duration) && duration >= 0) durations.push(duration);
+  }
+  durations.sort((left, right) => left - right);
+  const middle = Math.floor(durations.length / 2);
+  return {
+    accepted,
+    shed,
+    measured: durations.length,
+    // The lower of the two middles on an even count, rather than their mean: a
+    // median that is one of the uploads actually seen is one somebody can go
+    // and look at.
+    medianMs: durations.length ? durations[durations.length % 2 ? middle : middle - 1] : null,
+    slowestMs: durations.length ? durations[durations.length - 1] : null,
+  };
+}
+
 export function summarizeFleet(rows = []) {
   return rows.reduce((summary, row) => {
     const state = row.operationalStatus?.state || row.state || 'failed';

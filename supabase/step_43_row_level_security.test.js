@@ -35,7 +35,9 @@ describe('step 43 closes the database to the browser key', () => {
     // 44 carries its own RLS inline. step_44_algorithm_benchmarks.test.js is
     // where that obligation is pinned — the rule this file protects is "no
     // table in public is open", not "43 is last".
-    expect(runbook).toMatch(/→ 42 → 43(\.| → 44\.)/);
+    // Written so the tail of the order line can keep growing: every step after
+    // 43 carries its own RLS inline and its own test says so.
+    expect(runbook).toMatch(/→ 42 → 43(?: →|\.)/);
   });
 
   it('enables row level security on every table that lacks it, by enumeration', () => {

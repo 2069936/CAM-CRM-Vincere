@@ -29,7 +29,9 @@ describe('step 44 stores the My Futures Book backtests', () => {
     expect(runbook).toMatch(/^\| 44 \| `step_44_algorithm_benchmarks\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 44 | `step_44_algorithm_benchmarks.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 43 | `step_43_row_level_security.sql`'));
-    expect(runbook).toContain('→ 43 → 44.');
+    // The tail of the order line moves every time a step is added; what 44
+    // pins is its own place in it, immediately after 43.
+    expect(runbook).toMatch(/→ 43 → 44(?: →|\.)/);
   });
 
   it('says in the runbook what the desk loses by not running it, like every step before it', () => {
