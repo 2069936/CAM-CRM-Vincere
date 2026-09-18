@@ -8539,3 +8539,113 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
   font-size: 12px; color: var(--text-muted); margin: 8px 0 0;
   padding: 8px 10px; border-left: 3px solid var(--danger, #c0392b); line-height: 1.5;
 }
+
+/* ── Desk period report ──────────────────────────────────────────────
+   The sheet reuses `.report-sheet`, `.report-actions`, `.ops-table` and
+   `.desk-refusal`; only the period controls, the charts and the definition
+   list are new. Colour comes from the same tokens the rest of the app uses so
+   the charts print and theme like every other chart in this build. */
+/*
+   The toolbar sits OUTSIDE the sheet on this page, which is what keeps the
+   period controls out of the `outerHTML` the PDF route posts. That also puts it
+   outside `.report-sheet`'s own light palette — and `.ghost-button` is
+   `color: var(--text)`, which under the app's dark theme is near-white. Print
+   and Month rendered as blank boxes on a near-white bar until this block
+   restated the palette the bar actually sits on.
+*/
+.desk-period-report .report-actions {
+  position: static;
+  margin: 0 0 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  color: #12202b;
+}
+.desk-period-report .report-actions .ghost-button,
+.desk-period-report .report-actions .secondary-button,
+.desk-period-report .report-actions button { color: #12202b; }
+.desk-period-report .report-actions .secondary-button { color: #fff; }
+.desk-period-report .period-field select,
+.desk-period-report .period-field input {
+  background: #ffffff; color: #12202b; border: 1px solid #cbd5e1;
+  border-radius: 6px; min-height: 34px; padding: 0 8px; font: inherit;
+}
+.desk-period-report .period-field > span { color: #536477; }
+/* A full-page destination, not the modal overlay `.report-sheet` was written
+   for: the page scrolls, not a 92vh box inside it. */
+.desk-period-report .report-sheet {
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+}
+.period-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.period-kind { display: flex; gap: 4px; }
+.period-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.period-field > span { color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+.desk-period-report .report-section { margin-top: 26px; }
+.desk-period-report .report-section h3 { margin: 18px 0 6px; font-size: 13px; }
+.report-period-label { margin: 6px 0 2px; font-size: 16px; }
+.report-separation { margin: 10px 0 0; }
+
+.period-chart { margin: 8px 0 4px; }
+.period-chart-axis {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 11px; color: var(--text-muted); margin-top: 4px;
+}
+/* The numbers beside every mark. Colour is never the only cue on these charts:
+   the key repeats each row's value and the counts behind it, which is also
+   what makes the chart legible on paper and to a screen reader. */
+.period-chart-key { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+.period-chart-key li {
+  display: flex; flex-wrap: wrap; gap: 10px; padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.period-chart-key li span:last-child, .period-chart-key .muted { color: var(--text-muted); }
+
+.period-strips { display: flex; flex-direction: column; gap: 8px; }
+.period-strip { display: grid; grid-template-columns: 90px 1fr 110px; gap: 8px; align-items: center; }
+.period-strip-label { font-size: 12px; font-weight: 600; }
+.period-strip-peak { font-size: 11px; text-align: right; }
+
+.period-grid { display: flex; flex-direction: column; gap: 3px; }
+.period-grid-row { display: grid; grid-template-columns: 130px 1fr 110px; gap: 8px; align-items: center; }
+.period-grid-label { font-size: 12px; }
+.period-grid-cells { display: flex; gap: 2px; }
+.period-grid-cell { flex: 1 1 0; height: 14px; border-radius: 2px; min-width: 6px; }
+.period-grid-count { font-size: 11px; text-align: right; }
+.period-grid-legend { margin-top: 8px; font-size: 11px; }
+
+.period-benchmark-curves { display: flex; flex-direction: column; gap: 14px; }
+.period-benchmark-curve { margin: 0; }
+.period-benchmark-curve figcaption { font-size: 12px; margin-bottom: 4px; }
+
+.period-definitions { margin: 8px 0 0; font-size: 12px; }
+.period-definitions > div { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.period-definitions dt { font-weight: 600; }
+.period-definitions dd { margin: 2px 0 0; color: var(--text-muted); }
+
+@media print {
+  /* The same division the client report already draws: a table may break, a
+     chart and its caption may not — half a chart is not a smaller chart. */
+  .desk-period-report .period-chart,
+  .desk-period-report .period-strips,
+  .desk-period-report .period-grid,
+  .desk-period-report .period-benchmark-curve,
+  .desk-period-report .report-header {
+    break-inside: avoid;
+  }
+  .desk-period-report .report-section {
+    break-inside: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .period-strip, .period-grid-row { grid-template-columns: 80px 1fr; }
+  .period-strip-peak, .period-grid-count { grid-column: 2; text-align: left; }
+}
+
+.period-benchmark-import { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
+.period-benchmark-import input[type="file"] { font: inherit; font-size: 12px; }

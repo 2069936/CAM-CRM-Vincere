@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   BarChart3,
   CalendarDays,
+  CalendarRange,
   CheckCircle2,
   CheckSquare,
   ChevronDown,
@@ -185,6 +186,7 @@ import SimulationReportSection from "./components/SimulationReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
 import ReportSheetActions from "./components/ReportSheetActions";
+import DeskPeriodReportView from "./components/DeskPeriodReportView";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
 import QuietAccountsPanel from "./components/QuietAccountsPanel";
@@ -4060,6 +4062,10 @@ function ManagerOverview({
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
   const [showAutoCollection, setShowAutoCollection] = useState(false);
+  // The desk period report's sidebar destination. A desk-level artefact, so it
+  // lives where the other desk-level destinations do rather than inside a
+  // client workspace nobody would open it from.
+  const [showPeriodReport, setShowPeriodReport] = useState(false);
   const [autoCollectionTarget, setAutoCollectionTarget] = useState(null);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
@@ -4559,12 +4565,13 @@ function ManagerOverview({
         </div>
         <div className="manager-sidebar-main">
           <button
-            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel ? "client-link active" : "client-link"}
+            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel && !showPeriodReport ? "client-link active" : "client-link"}
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
               setShowAutoCollection(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4644,11 +4651,26 @@ function ManagerOverview({
               setShowAuditPanel(false);
               setShowAutoCollection(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
             <Shield size={16} />
             <span>Users & Access</span>
+          </button>
+          <button
+            className={showPeriodReport ? "client-link active" : "client-link"}
+            onClick={() => {
+              setShowPeriodReport(true);
+              setShowAutoCollection(false);
+              setShowAuditPanel(false);
+              setShowUserPanel(false);
+              setShowProfilePanel(false);
+              closeMobileSidebar();
+            }}
+          >
+            <CalendarRange size={16} />
+            <span>Period Report</span>
           </button>
           <button
             className={showAutoCollection ? "client-link active" : "client-link"}
@@ -4658,6 +4680,7 @@ function ManagerOverview({
               setShowAuditPanel(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4671,6 +4694,7 @@ function ManagerOverview({
               setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4684,6 +4708,7 @@ function ManagerOverview({
               setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowAuditPanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4707,6 +4732,12 @@ function ManagerOverview({
             camProfiles={camProfiles}
             clients={clients}
             onRefreshState={onRefreshState}
+          />
+        ) : showPeriodReport ? (
+          <DeskPeriodReportView
+            clients={clients}
+            scope="desk"
+            builtBy={session?.displayName || session?.username || ""}
           />
         ) : showAutoCollection ? (
           <AutoCollectionManager visible={showAutoCollection} initialSelectedClient={autoCollectionTarget} />
@@ -4888,7 +4919,7 @@ function ManagerOverview({
             className="ghost-button"
             onClick={() => {
               const txt = formatDeskReport(deskMoney, {
-                title: "Desk weekly report",
+                title: "Desk summary",
                 cams: camDesks,
                 openFlags: totals.flags,
               });
@@ -4897,10 +4928,23 @@ function ManagerOverview({
                 setTimeout(() => setWeeklyCopyDone(false), 2000);
               });
             }}
-            title="Copy weekly team summary for Slack / email"
+            title="Copy the desk summary for the close on screen, latest close per client, for Slack or email"
           >
             <ClipboardList size={14} />
-            {weeklyCopyDone ? "Copied!" : "Weekly Report"}
+            {weeklyCopyDone ? "Copied!" : "Copy desk summary"}
+          </button>
+          {/* This button was labelled "Weekly Report" and copied ONE close —
+              `buildDeskMoney(clients, { asOfDate })`, the latest close per
+              client. The desk had a button called Weekly that copied a day,
+              which is the exact defect class this branch exists to remove. It
+              now says what it copies, and the weekly is beside it. */}
+          <button
+            className="ghost-button"
+            onClick={() => setShowPeriodReport(true)}
+            title="Open the desk period report: a week, a month or a range, with its coverage, its roster and its gates"
+          >
+            <CalendarRange size={14} />
+            Period report
           </button>
           <button
             className="ghost-button"
@@ -12897,6 +12941,10 @@ export default function App() {
   const [showOverview, setShowOverview] = useState(false);
   const [showSOP, setShowSOP] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  // The CAM's own door to the desk period report. Their coverage, money and
+  // account changes are their book; the roster, results, movement and stack are
+  // the desk's, pooled and labelled as pooled. See DeskPeriodReportView.
+  const [showCamPeriodReport, setShowCamPeriodReport] = useState(false);
   const [showQuickLog, setShowQuickLog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [quickLogType, setQuickLogType] = useState("Note");
@@ -15100,6 +15148,7 @@ export default function App() {
                       setShowProfile(false);
                       setShowSOP(true);
                       setShowOverview(false);
+                      setShowCamPeriodReport(false);
                       closeMobileSidebar();
                     }}
                   >
@@ -15108,11 +15157,26 @@ export default function App() {
                     <em>Checklist</em>
                   </button>
                   <button
+                    className={showCamPeriodReport ? "client-link active" : "client-link"}
+                    onClick={() => {
+                      setShowCamPeriodReport(true);
+                      setShowProfile(false);
+                      setShowSOP(false);
+                      setShowOverview(false);
+                      closeMobileSidebar();
+                    }}
+                  >
+                    <CalendarRange size={16} />
+                    <span>Period Report</span>
+                    <em>Week</em>
+                  </button>
+                  <button
                     className={showProfile ? "client-link active" : "client-link"}
                     onClick={() => {
                       setShowProfile(true);
                       setShowOverview(false);
                       setShowSOP(false);
+                      setShowCamPeriodReport(false);
                       closeMobileSidebar();
                     }}
                   >
@@ -15266,7 +15330,18 @@ export default function App() {
             </nav>
           </aside>
 
-          {showProfile ? (
+          {showCamPeriodReport ? (
+            <main className="content">
+              <DeskPeriodReportView
+                clients={state.clients || []}
+                scopedClients={currentCamClients}
+                scope="cam"
+                camName={currentCamProfile?.name || ""}
+                camProfileId={currentCamProfile?.id || null}
+                builtBy={session?.displayName || session?.username || ""}
+              />
+            </main>
+          ) : showProfile ? (
             <main className="content">
               <div className="page-header">
                 <div>

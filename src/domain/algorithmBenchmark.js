@@ -651,3 +651,151 @@ export function summarizeBenchmarkImport(parsedFiles = []) {
     monthlyRows,
   };
 }
+
+/**
+ * What a benchmark series covers of one period, and whether it may be compared
+ * with anything this desk's accounts did in that period.
+ *
+ * IT IS A COVERAGE TABLE, NOT A COMPARISON. Every row answers "is there a
+ * published track record for this thing, of this version, on this contract, and
+ * how many days do the two series even hold in common" — and then refuses the
+ * comparison, by name, with the count that refused it. The refusal is the
+ * point: a direction agreement over n common closes is a coin toss under the
+ * null, and at the 11 common closes the best-covered algorithm on this book has
+ * it would take 10 of 11 to clear a one-sided binomial at 5%.
+ *
+ * WHY A `_PF` FAMILY GETS `No series` RATHER THAN ITS BASE FAMILY'S FILE.
+ * IFSP_PF is what the Strategies grid stores and it is not what the vendor
+ * publishes. Handing IFSP's file to IFSP_PF's row would put a figure produced
+ * from one catalogue entry under the name of another, which is the same defect
+ * as a mislabelled column with an extra step in it. The row says the base
+ * family has one, so a reader looking for the file finds where it is.
+ *
+ * Takes plain arguments — roster rows in, series in — so this module still
+ * knows nothing about clients, snapshots or the CRM's population rules.
+ */
+export function buildBenchmarkCoverage(rosterRows = [], series = [], {
+  from = '', to = '', riskLevel = 'Low',
+} = {}) {
+  const list = Array.isArray(series) ? series : [];
+  const risk = BENCHMARK_RISK_LEVELS.includes(riskLevel) ? riskLevel : BENCHMARK_RISK_LEVELS[0];
+  const inWindow = (date) => (!from || date >= from) && (!to || date <= to);
+
+  const byAlgorithm = new Map();
+  for (const entry of list) {
+    const held = byAlgorithm.get(entry.algorithm) || [];
+    held.push(entry);
+    byAlgorithm.set(entry.algorithm, held);
+  }
+
+  const seenAlgorithms = new Set();
+  const rows = (rosterRows || []).map((member) => {
+    const family = member.algorithm || member.name || '';
+    seenAlgorithms.add(family);
+    const found = byAlgorithm.get(family) || [];
+    const atRisk = found.find((entry) => entry.riskLevel === risk) || found[0] || null;
+    const base = family.endsWith('_PF') ? family.slice(0, -3) : '';
+    const baseHasSeries = Boolean(base && byAlgorithm.has(base));
+
+    const closesHere = (member.closesPresent || []).filter(inWindow);
+    const benchmarkDays = atRisk
+      ? (atRisk.days || []).filter((entry) => inWindow(entry.date)).map((entry) => entry.date)
+      : [];
+    const benchmarkDaySet = new Set(benchmarkDays);
+    const commonCloses = closesHere.filter((date) => benchmarkDaySet.has(date));
+
+    const instrumentsHere = member.instruments || [];
+    const instrumentsThere = [...new Set(found.map((entry) => entry.instrument))];
+    let instrumentMatch = null;
+    if (atRisk && instrumentsHere.length) {
+      const overlap = instrumentsHere.filter((name) => instrumentsThere.includes(name));
+      instrumentMatch = overlap.length === 0
+        ? 'no'
+        : (overlap.length === instrumentsHere.length ? 'yes' : 'partial');
+    }
+
+    return {
+      algorithm: family,
+      version: member.version || '',
+      accountDays: member.accountDays || 0,
+      accounts: member.accounts || 0,
+      hasSeries: Boolean(atRisk),
+      seriesNote: atRisk
+        ? null
+        : (baseHasSeries
+          ? `No series for ${family}. ${base} has one; a prop-firm variant is not the same `
+            + 'catalogue entry, and the vendor publishes no track record under this name.'
+          : `No series. ${BENCHMARK_VENDOR} publishes no file for ${family || 'this algorithm'}.`),
+      benchmarkVersion: atRisk ? atRisk.version : null,
+      versionMatch: atRisk && member.version
+        ? (atRisk.version === member.version ? 'yes' : 'no')
+        : null,
+      instrumentsHere,
+      instrumentsThere,
+      instrumentMatch,
+      instrumentNote: instrumentMatch === 'no'
+        ? `Runs on ${instrumentsHere.join(', ')} here and is benchmarked on `
+          + `${instrumentsThere.join(', ')}. A different contract is a different measurement.`
+        : (instrumentMatch === 'partial'
+          ? `${instrumentsHere.filter((name) => !instrumentsThere.includes(name)).join(', ')} `
+            + 'is not benchmarked.'
+          : null),
+      riskLevelsAvailable: BENCHMARK_RISK_LEVELS.filter((level) =>
+        found.some((entry) => entry.riskLevel === level),
+      ),
+      riskLevel: atRisk ? atRisk.riskLevel : null,
+      benchmarkDays: benchmarkDays.length,
+      closesHere: closesHere.length,
+      commonCloses: commonCloses.length,
+      commonCloseDates: commonCloses,
+      // One value, always false on this book, and computed rather than
+      // asserted so the day it becomes true it becomes true by itself.
+      comparable: commonCloses.length >= BENCHMARK_MIN_COMMON_CLOSES,
+      comparisonRefusal: commonCloses.length >= BENCHMARK_MIN_COMMON_CLOSES
+        ? null
+        : `${commonCloses.length} close${commonCloses.length === 1 ? '' : 's'} in common, fewer `
+          + `than the ${BENCHMARK_MIN_COMMON_CLOSES} any agreement figure needs.`,
+    };
+  });
+
+  // Series the vendor publishes for algorithms this desk is not running. Worth
+  // a row of its own: it is the only place the CRM can say "we pay for a track
+  // record we do not use".
+  const neverDeployed = [...byAlgorithm.entries()]
+    .filter(([algorithm]) => !seenAlgorithms.has(algorithm))
+    .map(([algorithm, found]) => {
+      const atRisk = found.find((entry) => entry.riskLevel === risk) || found[0];
+      return {
+        algorithm,
+        version: atRisk.version,
+        instrument: atRisk.instrument,
+        riskLevelsAvailable: BENCHMARK_RISK_LEVELS.filter((level) =>
+          found.some((entry) => entry.riskLevel === level),
+        ),
+        firstDate: atRisk.firstDate,
+        lastDate: atRisk.lastDate,
+      };
+    })
+    .sort((a, b) => a.algorithm.localeCompare(b.algorithm));
+
+  const bestCommon = rows.reduce((most, row) => Math.max(most, row.commonCloses), 0);
+  return {
+    riskLevel: risk,
+    from,
+    to,
+    rows,
+    neverDeployed,
+    minCommonCloses: BENCHMARK_MIN_COMMON_CLOSES,
+    bestCommonCloses: bestCommon,
+    comparableCount: rows.filter((row) => row.comparable).length,
+    seriesCount: list.length,
+    // The sentence the page prints under the table, with this book's own
+    // counts in it, so the refusal cannot drift from what refused it.
+    refusal: `No agreement figure is stated. A comparison of direction needs at least `
+      + `${BENCHMARK_MIN_COMMON_CLOSES} closes held by both series, and the best covered `
+      + `algorithm in this window has ${bestCommon}. At ${bestCommon || 1} day`
+      + `${bestCommon === 1 ? '' : 's'}, almost every one of them would have to agree before the `
+      + 'result beat a coin toss, which is a standard that nothing passes by skill either. The '
+      + 'count will grow with the book.',
+  };
+}
