@@ -7,7 +7,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const STATUSES = new Set(['received', 'processing', 'processed', 'incomplete', 'late_closed_day', 'failed', 'replaced']);
 const SAFE_ERROR_CODES = new Set([
   'storage_failed', 'normalization_failed', 'registry_load_failed',
-  'reconciliation_failed', 'persistence_failed', 'ingest_failed',
+  'reconciliation_failed', 'persistence_failed', 'persistence_unavailable', 'ingest_failed',
   'immutable_object_conflict', 'unsupported_schema_version',
   'invalid_auto_import_snapshot',
 ]);
