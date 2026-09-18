@@ -209,6 +209,29 @@ export function createAutoCollectionApi({
       });
     },
 
+    /* THE QUARANTINE THE DESK CAN CLEAR FROM ITS OWN SCREEN.
+     *
+     * Every capture a VPS quarantined on a 422 is also a failed batch here,
+     * raw snapshot included. Listing them fleet wide and replaying them in one
+     * go is how a fix on this side reaches the days it refused. */
+    async loadFailedBatches({ from, to, pageSize = 50, signal } = {}) {
+      const query = new URLSearchParams({ status: 'failed', pageSize: String(boundedInteger(pageSize, 50, 100)) });
+      const normalizedFrom = boundedDate(from);
+      const normalizedTo = boundedDate(to);
+      if (normalizedFrom) query.set('from', normalizedFrom);
+      if (normalizedTo) query.set('to', normalizedTo);
+      return request(`/api/admin/ingest-batches?${query}`, { signal });
+    },
+
+    async reprocessFailedBatches({ batchIds, reason, signal } = {}) {
+      const normalizedReason = String(reason || '').trim();
+      const ids = Array.isArray(batchIds) ? batchIds.map((id) => validateUuid(id)) : [];
+      if (!ids.length || ids.length > 50 || normalizedReason.length < 10 || normalizedReason.length > 500) {
+        throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      }
+      return request('/api/admin/ingest-reprocess-failed', { method: 'POST', signal, payload: { batchIds: ids, reason: normalizedReason } });
+    },
+
     async loadStatus(clientUuid, { signal } = {}) {
       const clientId = validateUuid(clientUuid);
       const path = `/api/admin/ingest-status?clientUuid=${encodeURIComponent(clientId)}`;

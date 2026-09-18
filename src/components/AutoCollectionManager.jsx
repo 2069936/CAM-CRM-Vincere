@@ -20,7 +20,7 @@ function isClosedReplay(batch) {
   return batch?.status === 'late_closed_day' || batch?.reprocessMode === 'closed_day';
 }
 
-export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, disableAutoLoad = false }) {
+export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false }) {
   const [fleet, setFleet] = useState(initialFleet);
   const [page, setPage] = useState(initialFleet?.page || 1);
   const [search, setSearch] = useState('');
@@ -34,6 +34,18 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
   const [replayConfirmation, setReplayConfirmation] = useState('');
   const [replayBusy, setReplayBusy] = useState(false);
   const abortRef = useRef(null);
+  const [failedBatches, setFailedBatches] = useState(initialFailedBatches);
+  const [bulkReason, setBulkReason] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResults, setBulkResults] = useState(null);
+
+  async function loadFailed(signal) {
+    try {
+      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const result = await api.loadFailedBatches({ from: since, pageSize: 50, signal });
+      setFailedBatches(result.batches || []);
+    } catch (caught) { if (caught?.name !== 'AbortError') setError(caught.message); }
+  }
 
   async function loadFleet(nextPage = page, nextSearch = query) {
     abortRef.current?.abort();
@@ -51,6 +63,29 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     const poll = window.setInterval(() => loadFleet(), 60_000);
     return () => { window.clearTimeout(start); window.clearInterval(poll); abortRef.current?.abort(); };
   }, [visible, disableAutoLoad, page, query]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!visible || disableAutoLoad) return undefined;
+    const controller = new AbortController();
+    loadFailed(controller.signal);
+    return () => controller.abort();
+  }, [visible, disableAutoLoad]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function runBulkReplay(event) {
+    event.preventDefault();
+    if (bulkBusy || !failedBatches?.length) return;
+    setBulkBusy(true); setError(''); setBulkResults(null);
+    try {
+      const result = await api.reprocessFailedBatches({ batchIds: failedBatches.map((batch) => batch.id), reason: bulkReason });
+      setBulkResults(result);
+      setBulkReason('');
+      await loadFailed();
+      await loadFleet();
+    } catch (caught) { setError(caught.message); }
+    finally { setBulkBusy(false); }
+  }
+
+  const clientNames = new Map((fleet?.rows || []).map((row) => [row.client.uuid, row.client.name]));
 
   useEffect(() => {
     if (!visible || disableAutoLoad || !selectedClient?.uuid) return undefined;
@@ -93,6 +128,12 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
   return <div className="page-stack auto-collection-manager">
     <div className="page-header manager-subpage-header"><div><span className="eyebrow">Manager Operations</span><h1>Auto Collection</h1><div className="occ-status-row"><Server size={14} /><span>Expected versus received NinjaTrader snapshots across every VPS.</span></div></div><button className="ghost-button" type="button" disabled={loading} onClick={() => loadFleet()}><RefreshCw size={14} /> Refresh</button></div>
     {error ? <div className="notice error" role="alert"><AlertTriangle size={15} /> {error}</div> : null}
+    {failedBatches?.length ? <section className="panel collector-failed" aria-label="Failed closes">
+      <div className="collector-toolbar"><div><span className="eyebrow">Failed closes, last 30 days</span><h2>{failedBatches.length} close{failedBatches.length === 1 ? '' : 's'} the CRM refused</h2><p className="muted">Each one is a capture a VPS quarantined after this CRM answered 422. The raw snapshot is stored here. When the refusal was fixed on this side, replay them from here; the VPS needs nothing.</p></div></div>
+      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client</th><th>Trading date</th><th>Received</th><th>Rows</th><th>Refused as</th></tr></thead><tbody>{failedBatches.map((batch) => <tr key={batch.id}><td><strong>{clientNames.get(batch.clientUuid) || batch.clientUuid}</strong></td><td>{batch.tradingDate}</td><td>{fmt(batch.receivedAt)}</td><td><small>{counts(batch.rowCounts)}</small></td><td><span className="negative">{batch.errorCode || 'unknown'}</span></td></tr>)}</tbody></table></div>
+      <form className="collector-replay-confirm" onSubmit={runBulkReplay}><label>Operational reason (applies to all)<textarea value={bulkReason} maxLength={500} onChange={(event) => setBulkReason(event.target.value)} /></label><div><button type="submit" className="primary-button" disabled={bulkBusy || bulkReason.trim().length < 10}><RotateCcw size={13} /> {bulkBusy ? 'Replaying…' : `Reprocess all ${failedBatches.length}`}</button></div><p className="muted">Closed days are skipped here and keep their typed confirmation in the client drawer.</p></form>
+    </section> : null}
+    {bulkResults ? <div className={`notice ${bulkResults.replayed === bulkResults.requested ? 'success' : 'warning'}`} role="status">Replayed {bulkResults.replayed} of {bulkResults.requested}.{bulkResults.results.filter((r) => r.outcome !== 'replayed').map((r) => ` ${clientNames.get(r.clientUuid) || r.batchId} ${r.tradingDate || ''}: ${r.outcome}${r.reason ? ` (${r.reason})` : ''}${r.error ? ` (${r.error})` : ''}.`).join('')}</div> : null}
     <section className="collector-summary" aria-label="Fleet summary"><div><strong>{fleet?.summary?.total || 0}</strong><span>Clients</span></div><div><strong>{fleet?.summary?.received || 0}</strong><span>Received</span></div><div><strong>{fleet?.summary?.expected || 0}</strong><span>Expected</span></div><div className="attention"><strong>{fleet?.summary?.attention || 0}</strong><span>Need attention</span></div></section>
     <section className="panel"><div className="collector-toolbar"><form onSubmit={(event) => { event.preventDefault(); setPage(1); setQuery(search.trim()); }}><Search size={15} /><input aria-label="Search clients or VPS" placeholder="Search clients or VPS" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="secondary-button" type="submit">Search</button></form><span>{fleet?.total || 0} clients</span></div>
       <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client / VPS</th><th>Schedule</th><th>Last seen</th><th>Today&apos;s batch</th><th>Rows</th><th>Version</th><th>Status</th></tr></thead><tbody>{(fleet?.rows || []).map((row) => <tr key={row.client.uuid}><td><button type="button" className="collector-client-button" onClick={() => openHistory(row.client)}><strong>{row.client.name}</strong><small>{row.device?.id || 'Not paired'}</small></button></td><td>{schedule(row.device?.schedule)}</td><td>{fmt(row.device?.lastSeenAt)}</td><td>{row.todayBatch?.status || '—'}</td><td><small>{counts(row.todayBatch?.rowCounts)}</small></td><td>{row.device?.agentVersion || '—'}</td><td><span className={`collector-status state-${row.operationalStatus.state}`} aria-label={`Collector status: ${row.operationalStatus.label}`}>{row.operationalStatus.label}</span></td></tr>)}</tbody></table></div>

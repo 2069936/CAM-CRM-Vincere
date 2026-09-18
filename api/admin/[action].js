@@ -4,6 +4,7 @@ import download from '../../server/autoCollection/admin/ingest-download.js';
 import enrollment from '../../server/autoCollection/admin/ingest-enrollment.js';
 import fleet from '../../server/autoCollection/admin/ingest-fleet.js';
 import reprocess from '../../server/autoCollection/admin/ingest-reprocess.js';
+import reprocessFailed from '../../server/autoCollection/admin/ingest-reprocess-failed.js';
 import status from '../../server/autoCollection/admin/ingest-status.js';
 import verify from '../../server/autoCollection/admin/ingest-verify.js';
 
@@ -22,6 +23,7 @@ const handlers = Object.freeze({
   'ingest-enrollment': enrollment,
   'ingest-fleet': fleet,
   'ingest-reprocess': reprocess,
+  'ingest-reprocess-failed': reprocessFailed,
   'ingest-status': status,
   'ingest-verify': verify,
 });
