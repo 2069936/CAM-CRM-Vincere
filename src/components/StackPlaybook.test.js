@@ -184,4 +184,27 @@ describe('the rendered team panel', () => {
     expect(select.value).toBe('7');
     expect(accountDaysOf('URGO 4.5')).toBe('7');
   });
+
+  it('28. prefills the custom range from the book and measures the range it is given', () => {
+    renderPlaybook();
+    const select = screen.getByLabelText('Window');
+    expect(screen.queryByLabelText('From')).toBeNull();
+
+    fireEvent.change(select, { target: { value: 'custom' } });
+    const from = screen.getByLabelText('From');
+    const to = screen.getByLabelText('To');
+    // Prefilled with the range the closes cover, not with the 30 day preset's
+    // 2026-05-12, and neither input can be pushed outside the book.
+    expect(from.value).toBe('2026-06-01');
+    expect(to.value).toBe('2026-06-10');
+    expect(from.getAttribute('min')).toBe('2026-06-01');
+    expect(from.getAttribute('max')).toBe('2026-06-10');
+    expect(to.getAttribute('max')).toBe('2026-06-10');
+    expect(accountDaysOf('URGO 4.5')).toBe('10');
+
+    fireEvent.change(from, { target: { value: '2026-06-05' } });
+    expect(accountDaysOf('URGO 4.5')).toBe('6');
+    fireEvent.change(to, { target: { value: '2026-06-07' } });
+    expect(accountDaysOf('URGO 4.5')).toBe('3');
+  });
 });

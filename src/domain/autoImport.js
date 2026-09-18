@@ -191,7 +191,11 @@ function mapStrategy(row, connectionByAccount, accountNamesByLower) {
     unrealized: row.unrealizedPnl,
     realized: row.realizedPnl,
     connection: trimText(row.connectionName) || connectionByAccount.get(accountName) || '',
-    enabled: row.enabled,
+    // Coerced like every other mapper (csvImport's parseBool, supabaseStore's
+    // Boolean): the collector can hand this over as 1 or "true", and the combo
+    // key tests `enabled === true`, so an uncoerced payload would attribute a
+    // live auto import differently from the same close after a save and reload.
+    enabled: Boolean(row.enabled),
     sync: row.sync,
     state: row.state,
     position: row.position,

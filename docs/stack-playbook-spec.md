@@ -1,6 +1,6 @@
 # Stack Playbook: what it says, what it measures, what to change
 
-Repo `/Users/pedro/Developer/CAM-CRM-Vincere`. Book `public/local-snapshot.json` (export dated 2026-08-20; last close inside it 2026-07-30). Every number below was produced by `scratchpad/playbook/spec_numbers.py` (raw tables, app rules replicated line by line; output `spec_numbers.json`) or `spec_contracts.py`, and cross-checked against `audit.md` / `recompute.md` (the real `buildAlgoComboPerformance` run through `buildCrmStateFromTables`, `app_vs_recompute_all_match: true`). Amounts to the cent. Code anchors are `src/components/StackPlaybook.jsx` unless another file is named.
+Repo `/Users/pedro/Developer/CAM-CRM-Vincere`. Book `public/local-snapshot.json` (export dated 2026-08-20; last close inside it 2026-07-30). Every number below was produced by replicating the app's rules line by line over the raw tables and cross-checked against the real `buildAlgoComboPerformance` run through `buildCrmStateFromTables` (`app_vs_recompute_all_match: true`). Those replications were scratch work and are not in the repository: the reproducible record of the figures is `src/domain/comboPerformance.book.test.js`, which asserts them against the book on every run that has it. Amounts to the cent. Code anchors are `src/components/StackPlaybook.jsx` unless another file is named.
 
 Population the whole tab stands on (spec_numbers.py `population`): 96 visible clients (40 hidden by `supabaseStore.js:384-386`), 2,934 account-days, of which **865 are Funded and not Failed/Inactive by the account's current row** (`StackPlaybook.jsx:101-102`), total P&L **-$127,292.95**, **-$147.16 per account-day**, 14 closes 2026-07-13..2026-07-30, one calendar month (2026-07).
 
@@ -62,7 +62,7 @@ Re-keyed on "enabled at export OR named in that account-day's fills" (family via
 | B2X | -$63.40 / 33 / 9% | -$176.49 / 57 / 12% |
 | G4M | -$144.41 / 41 / 7% | -$184.78 / 48 / 6% |
 | IFSP + URGO | -$151.79 / 33 / 18% | -$226.78 / 40 / 12% |
-| IFSP | -$119.68 / 16 / 0% | -$209.63 / 31 / 0% |
+| IFSP | -$119.68 / 16 / 0% | -$209.63 / 31 / 0% [^ifsp] |
 | RBO | -$240.75 / 4 / 25% | -$247.22 / 29 / 41% |
 | ARPD + URGO | **+$55.88** / 10 / 70% | **-$90.62** / 23 / 43% |
 | OGX | absent | -$84.74 / 26 / 38% |
@@ -70,6 +70,8 @@ Re-keyed on "enabled at export OR named in that account-day's fills" (family via
 | B2X + URGO | -$61.18 / 5 / 0% | -$331.16 / 17 / 12% |
 
 Per family, account-days credited by the app vs days it actually traded: URGO 136 → 219, IFSP 116 → 171, B2X 64 → 104, RBO 41 → 96, **OGX 22 → 85**, G4M 60 → 72, ARPD 15 → 43.
+
+[^ifsp]: This row keeps the app's `includes('IFSP')` fold so the two columns compare like with like. Section 4.1 removes the fold, so the shipped table splits those 31 days: IFSP -$222.91 / 27 days (-$6,018.60) and IFSP_PF -$120.00 / 4 days (-$480.00). 27 + 4 = 31 and -$6,498.60 / 31 = -$209.63. Every other row of this table is unaffected by the fold and reproduces exactly.
 
 ### 2.2 Blocker: "Best" and 100% of suggestions rest on one account-day
 
@@ -199,7 +201,7 @@ export const DEFAULT_OPTIONS = { basis: 'traded', level: 'version', window: { pr
 - Anchor = latest `di.date` across clients (keep `:76-84`). Window: `preset` 7 | 30 | 90 | 'all', or explicit `from`/`to` (YYYY-MM-DD inclusive); a day is in scope when `from <= di.date <= to`; preset N means `from = anchor − (N−1) days`, `to = anchor`. **Every accumulator (totalPnl, days, winDays, flatDays, accountSet, clientSet, firstDate, lastDate) runs only over in-scope days.**
 - Population: snapshot's registry row `accountType === 'Funded'`; `status` is NOT consulted when `includeFailed` is true (default). A day is counted when it falls inside the account's alive range: `[first snapshot date, max(last snapshot date, dateFailed || '')]`. No day is excluded because of what the account's status is today. `includeFailed: false` reproduces today's `:102` rule for the comparison label only.
 - Per row: `{ key, level, elements[], totalPnl, days, tradedDays (pnl !== 0), winDays (pnl > 0), lossDays (pnl < 0), flatDays (pnl === 0), avgPnl = totalPnl/days, avgTradedPnl = totalPnl/tradedDays ‖ null, winRate = winDays/tradedDays ‖ null, accounts, clients, firstDate, lastDate, failedAccounts (accounts in the row whose current status is Failed), lowSample = days < minDays || accounts < minAccounts, trend, recentAvg, priorAvg, recentDays, priorDays }`.
-- Trend inside the window: split the window in halves at `to − floor(span/2)`; `trend = 'n/a'` if either half has < 5 days; else `up` when `recentAvg − priorAvg > 0.1 × |priorAvg|`, `down` when `< −0.1 × |priorAvg|`, else `stable` (fixes the negative-prior inversion at `:142-143`).
+- Trend inside the window: split at `to − floor(span/2)`, where `span` is measured from the FIRST CLOSE the window holds, not from `from`. The window is a calendar range and the closes inside it need not start at its opening: at the default preset the window is 2026-07-01..07-30 while the first close is 07-13, so splitting `from` to `to` put 3 of the 14 closes in the first half and called it a comparison of halves. `trend = 'n/a'` if either half has < 5 days; else `up` when `recentAvg − priorAvg > 0.1 × |priorAvg|`, `down` when `< −0.1 × |priorAvg|`, else `stable` (fixes the negative-prior inversion at `:142-143`).
 - Sort: rows with `lowSample === false` first by `avgPnl` desc, then low-sample rows by `avgPnl` desc. `best` = first row with `lowSample === false && avgPnl > 0`, else null.
 - Family roll-up: when `level === 'family'` rows are keyed by family; when `level === 'version'` each row also carries `familyKey` so the UI can group by it. Roll-up is computed by the same function, not by summing version rows in the component.
 - `population` = `{ fundedDays, includedDays, unknownDays, unknownPnl, failedAccountDays, hiddenClients }` for the caption.
@@ -215,7 +217,7 @@ export const DEFAULT_OPTIONS = { basis: 'traded', level: 'version', window: { pr
 - Nothing else; `strategyVersion`, `realized`, `executions` are already mapped.
 
 ### 4.3 `src/domain/stackAnalytics.js`
-- `buildComboByFirm(clients, comboFn, { populationFilter, normalizeFirm })`: apply the same Funded population and the same `comboKeyFromDay`; normalise `connection` with `trim().toLowerCase().replace(/[^a-z0-9]/g,'')` mapped through a small table (`blusky|bluesky|blsky` → `BluSky`, etc.). Caption becomes "Avg P&L per account day by combo and prop firm, same population as the table above".
+- `buildComboByFirm(clients, comboFn, { populationFilter, normalizeFirm, window })`: apply the same Funded population, the same `comboKeyFromDay` and the same resolved window as the table (`{ from, to }`, inclusive; omitted means all history, for callers with no window selector); normalise `connection` with `trim().toLowerCase().replace(/[^a-z0-9]/g,'')` mapped through a small table (`blusky|bluesky|blsky` → `BluSky`, etc.). Caption becomes "Avg P&L per account day by combo and prop firm, same population as the table above" — which is only true with the window: without it "Last 7 days" leaves the table on 302 account days and the heatmap on 599, the same two-panel mismatch section 2.10 raises.
 
 ### 4.4 `src/components/StackPlaybook.jsx`
 - Delete `comboFromStrategies` (`:28-41`), `daysBefore`/`latestImportDate` (`:68-84`), `buildAlgoComboPerformance` (`:86-159`), `buildClientComboInsights` (`:162-214`); import from `src/domain/comboPerformance.js`. Keep `buildAlgoComboPerformance` exported as a thin alias for `src/components/StackPlaybook.test.js` until that file is moved.
@@ -225,13 +227,13 @@ export const DEFAULT_OPTIONS = { basis: 'traded', level: 'version', window: { pr
 - Caption (`:646-649`) becomes, with live numbers: **"Client account results while the combo was running. {includedDays} of {fundedDays} funded account days in range; {unknownDays} days with no algo attributable ({fmt(unknownPnl)}); {failedAccountDays} days from accounts now marked Failed are included; {hiddenClientCount} inactive clients are not loaded. P&L is realized net of commission where the grid reported it, gross otherwise. One account day is one observation, unweighted. Not the algorithm's own track record. Not comparable to My Futures Book."**
 - Badge (`:632`) becomes "{rows.length} combos · {distinct accounts} accounts · {distinct clients} clients".
 - Bars (`:654`): only rows with `lowSample === false`; up to 8.
-- "Best" badge (`:686`): only on `perf.best`; when null show a muted line "No combo passes the sample gate ({minDays} account days and {minAccounts} accounts)".
+- "Best" badge (`:686`): only on `perf.best`; when null show a muted line, and the two reasons `best` can be null get one sentence each: "No combo passes the sample gate ({minDays} account days and {minAccounts} accounts)." when no row passes it, and "No combo with a positive average passes the sample gate ({minDays} account days and {minAccounts} accounts), so no row is marked Best." when rows pass it and every one of them loses money. On this book's default view 16 of 46 rows pass the gate, so the first sentence alone would be contradicted by the Sample column beside it.
 - Rows with `lowSample` get class `row-muted` and a badge "Low sample".
 - `comboChangesFor` (`:46-62`), `mult` at `:359`, `liveCombo` at `:791`: use `comboKeyFromDay` with the same `basis`/`level`.
-- Income Projection (`:222-256`): `avgPerAccount` initial value = `Math.round(perf.population.avgPnlPerAccountDay × 21)` from the same window (book: -$3,090); remove `min={100}`; label "Assumed monthly P&L per funded account (book: {fmt(bookMonthly)} per account over the selected window)"; "Current funded" counts only accounts with a snapshot in the window and is labelled "Funded accounts with data in range".
+- Income Projection (`:222-256`): `avgPerAccount` initial value = `Math.round(perf.population.avgPnlPerAccountDay × 21)` from the same window; remove `min={100}`; label "Assumed monthly P&L per funded account (book: {fmt(bookMonthly)} per account over the selected window)"; "Current funded" counts only accounts with a snapshot in the window and is labelled "Funded accounts with data in range". Clearing the field falls back to the book figure (`Number('')` is 0, and a 0 sticks the panel on "no number of accounts reaches the target"). On the book the panel's own defaults (traded, `includeFailed: true`, preset 30) give 896 funded account days at -$147.89, so it opens at **-$3,106**; the -$3,090.35 of section 2.9 is the same arithmetic over the old population, 865 days at -$147.16, and both are pinned in test 25.
 
 ### 4.5 Sample gate constants
-`MIN_DAYS = 10`, `MIN_ACCOUNTS = 3` in `comboPerformance.js`, exported, shown in the caption. On this book at "All history", traded basis, version level, the rows passing the gate are the ones with ≥ 10 account-days and ≥ 3 accounts; the 1-day rows never carry "Best".
+`MIN_DAYS = 10`, `MIN_ACCOUNTS = 3` in `comboPerformance.js`, exported, and on screen in words, not only in a tooltip: the caption mandated in 4.4 has no room for them, so they go in a line of their own under it, "A row is marked Low sample under {MIN_DAYS} account days or under {MIN_ACCOUNTS} accounts, and a Low sample row is never marked Best." On this book at "All history", traded basis, version level, the rows passing the gate are the ones with ≥ 10 account-days and ≥ 3 accounts; the 1-day rows never carry "Best".
 
 ### 4.6 `date_failed`
 `src/domain/accountOutcomeStamp.js` already stamps `dateFailed` when a status is set to Failed from now on. No backfill for the 6 existing Failed accounts (their alive range comes from their own snapshot dates, section 2.5).
@@ -267,7 +269,7 @@ Client Config vs Team Avg:
 | 3 | **This account on this combo, avg per account day** (sub text: "{accountDaysOnCombo} of {accountDaysTotal} days in range") |
 | 4 | **Team on this combo, avg per account day** (sub text: "{teamRow.days} account days, {teamRow.accounts} accounts") |
 | 5 | **Difference** |
-| 6 | **Suggestion** (text "Consider {best.key}: team avg {fmt(best.avgPnl)} per account day over {best.days} days on {best.accounts} accounts", or "No combo passes the sample gate", or "No algo recorded on this close") |
+| 6 | **Suggestion** (text "Consider {best.key}: team avg {fmt(best.avgPnl)} per account day over {best.days} days on {best.accounts} accounts", or "No combo passes the sample gate", or "No combo with a positive average passes the sample gate" when rows do pass it and none is positive, or "No algo recorded on this close") |
 
 Panel badge: "Suggestions available" / "No suggestion passes the gate". Footer sentence: "Team figures are client account results, not the algorithm's own track record."
 
@@ -306,9 +308,10 @@ Window selector labels: "Last 7 days", "Last 30 days", "Last 90 days", "All hist
 22. `population.fundedDays === 865` and `Σ rows.totalPnl + population.unknownPnl` equals -$127,292.95 within $0.01 at basis `traded`, `includeFailed: false`, window all.
 23. `hiddenClientCount === 40` from `buildCrmStateFromTables(snapshot.tables)`.
 24. No row key contains the substring `'IFSP'` without a version token at level `version`, and no row key is `'IFSP'` when the underlying rows are `IFSP_PF` (the 12 `IFSP_PF 1.1 + OGX_PF 2.4` days never appear under an `IFSP` key).
-25. Income projection default from the book at window all equals `Math.round(-147.16 × 21) = -3090`.
+25. Income projection default, built with the options the component actually passes (traded, `includeFailed: true`, preset 30): `population.fundedDays === 896`, `avgPnlPerAccountDay` within $0.01 of -$147.89, `Math.round(avg × 21) === -3106`. The same call with `includeFailed: false` over window all gives 865 days, -$147.16 and -3090, the figure section 2.9 quotes for the old population.
 
 `src/components/StackPlaybook.test.js` (existing, keep passing):
 
 26. The rendered panel contains the sentence "Not comparable to My Futures Book" and the column header "Avg P&L per account day".
 27. Changing the window select from "Last 30 days" to "Last 7 days" changes the "Account days" cell of the URGO row (book test, gated) or of a synthetic 10-close client (ungated).
+28. Selecting "Custom range" prefills From and To with the first and last close of the book (not with the preset's opening date), bounds both inputs by them, and moving From then To moves the "Account days" cell: 10 closes → 6 from the fifth close → 3 up to the seventh.

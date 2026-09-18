@@ -10,9 +10,14 @@
 // Split a combo label into its base algo + contract multiplier.
 // "URGO x2" -> { base: 'URGO', multiplier: 2 }; "URGO" -> { base: 'URGO', multiplier: 1 }.
 // A multi-algo combo ("URGO + IFSP") is its own base at multiplier 1.
+//
+// The suffix needs whitespace in front of its `x`, so a version token cannot be
+// mistaken for one: combo keys now carry the version ("OGX 2.4", and "OGX 2" the
+// day a whole-number version ships), and `\s*x` let the `X` of the family close
+// the base and the version become a contract multiplier that nobody typed.
 export function parseComboRisk(combo) {
   const text = String(combo || '').trim();
-  const match = text.match(/^(.*?)\s*x\s*(\d+)$/i);
+  const match = text.match(/^(.*?)\s+x\s*(\d+)$/i);
   if (match) {
     return { base: match[1].trim(), multiplier: Number(match[2]) };
   }

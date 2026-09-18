@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
@@ -76,10 +76,16 @@ function comboChangesFor(client, accountName, keying) {
   return changes;
 }
 
-// The aggregator this component used to own, kept under its old name and its
-// old semantics (enabled at export, family keys, current-status population, all
-// history, with the recent and prior N-day averages beside it) for
-// StackPlaybook.test.js until that suite moves. Nothing on screen reads it.
+// The shape the aggregator this component used to own returned, kept under its
+// old name for StackPlaybook.test.js until that suite moves. Nothing on screen
+// reads it, and it is NOT the old function: it is buildComboPerformance at
+// basis 'enabled', level 'family', includeFailed false, over all history, with
+// the recent and prior N-day averages beside it. So the keys are the stored
+// family verbatim (the old includes('URGO') / includes('IFSP') / includes(
+// 'BULLET') folds and the slice(0,8) are gone, and IFSP_PF no longer lands on
+// IFSP), and the trend compares a tenth of the prior's magnitude instead of
+// `recent > prior * 1.1`. Three aggregations per call, which is why it is worth
+// retiring rather than reusing.
 export function buildAlgoComboPerformance(allClients = [], { windowDays = 7 } = {}) {
   const legacy = { basis: 'enabled', level: 'family', includeFailed: false };
   const all = buildComboPerformance(allClients, { ...legacy, window: { preset: 'all' } });
@@ -142,7 +148,15 @@ function IncomeProjection({ currentFunded, bookMonthly }) {
       <div className="income-inputs">
         <div>
           <label>Assumed monthly P&amp;L per funded account (book: {fmt(bookMonthly)} per account over the selected window)</label>
-          <input type="number" value={avgPerAccount} step={100} onChange={(e) => setTyped(Number(e.target.value))} />
+          {/* An emptied field falls back to the book figure: Number('') is 0,
+              and a typed 0 left the panel stuck on "no number of accounts
+              reaches the target" with no way back to the window's own number. */}
+          <input
+            type="number"
+            value={avgPerAccount}
+            step={100}
+            onChange={(e) => setTyped(e.target.value === '' ? null : Number(e.target.value))}
+          />
         </div>
         <div>
           <label>Monthly income target</label>
@@ -223,17 +237,41 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     onUpdateAccount?.(accountName, { dailyLossLimit: value });
   }
 
-  // Build team intelligence using ALL clients
-  const teamClients = allClients.length ? allClients : (client ? [client] : []);
-  const perf = buildComboPerformance(teamClients, {
-    ...keying,
-    window: windowPreset === 'custom'
-      ? { preset: 'custom', from: windowFrom || null, to: windowTo || null }
-      : { preset: windowPreset },
-    hiddenClientCount,
-  });
+  // Build team intelligence using ALL clients.
+  //
+  // Memoized, and it has to be: this panel re-renders on every keystroke of a
+  // change note, every classification draft and every income figure, while the
+  // desk-wide aggregation walks 2,934 account days and 7,919 executions on the
+  // book. Unmemoized that was a visible pause per character typed. The deps are
+  // exactly what the builds read; nothing else in the body feeds them.
+  const teamClients = useMemo(
+    () => (allClients.length ? allClients : (client ? [client] : [])),
+    [allClients, client],
+  );
+  const perf = useMemo(
+    () => buildComboPerformance(teamClients, {
+      basis,
+      level,
+      window: windowPreset === 'custom'
+        ? { preset: 'custom', from: windowFrom || null, to: windowTo || null }
+        : { preset: windowPreset },
+      hiddenClientCount,
+    }),
+    [teamClients, basis, level, windowPreset, windowFrom, windowTo, hiddenClientCount],
+  );
   const comboPerf = perf.rows;
-  const clientInsights = buildClientComboInsights(client, dailyImport, perf, keying);
+  const clientInsights = useMemo(
+    () => buildClientComboInsights(client, dailyImport, perf, { basis, level }),
+    [client, dailyImport, perf, basis, level],
+  );
+  // The fills half of the traded attribution arrives after the dashboard shell:
+  // loadSupabaseCrmState skips the trade history tables and merges them later.
+  // Until that lands the panel is keying days off the strategy grid alone, and
+  // the numbers move when it does.
+  const fillsLoaded = useMemo(
+    () => teamClients.some((c) => (c.dailyImports || []).some((di) => (di.executions || []).length > 0)),
+    [teamClients],
+  );
   const riskCurves = buildRiskScalingCurve(comboPerf.map((row) => ({ combo: row.key, avgPnl: row.avgPnl, winRate: Math.round((row.winRate ?? 0) * 100), accounts: row.accounts })));
   // Desk-wide, despite living in one client's tab: this card has always been fed
   // teamClients. It used to run buildBulletBotStats, which answered the same
@@ -244,9 +282,16 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   // reason a manager stops trusting either. Same component, same numbers, both
   // places.
   const bbStats = buildBulletBotDeskStats(teamClients);
-  const comboFirm = buildComboByFirm(teamClients, (snap, execs) => comboKeyFromDay(snap, execs, keying).key, {
-    populationFilter: (meta) => isFundedPopulation(meta),
-  });
+  // Same population, same key AND same window as the table above, which is what
+  // the caption claims: on "Last 7 days" the windowless cross-tab was averaging
+  // 599 account days under a caption promising the table's 302.
+  const comboFirm = useMemo(
+    () => buildComboByFirm(teamClients, (snap, execs) => comboKeyFromDay(snap, execs, { basis, level }).key, {
+      populationFilter: (meta) => isFundedPopulation(meta),
+      window: { from: perf.window.from, to: perf.window.to },
+    }),
+    [teamClients, basis, level, perf.window.from, perf.window.to],
+  );
   const logAlgoAgg = aggregateLogFamilyHistory(logAlgoHistory);
   const sigGroups = groupStrategiesBySignature(teamClients);
   const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
@@ -633,6 +678,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
               Client account results while the combo was running. {population.includedDays} of {population.fundedDays} funded account days in range; {population.unknownDays} days with no algo attributable ({fmt(population.unknownPnl)}); {population.failedAccountDays} days from accounts now marked Failed are included; {population.hiddenClients} inactive clients are not loaded. P&amp;L is realized net of commission where the grid reported it, gross otherwise. One account day is one observation, unweighted. Not the algorithm's own track record. Not comparable to My Futures Book.
             </p>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              A row is marked Low sample under {MIN_DAYS} account days or under {MIN_ACCOUNTS} accounts, and a Low sample row is never marked Best.
+              {basis === 'traded' && !fillsLoaded
+                ? ' No fills are loaded for these closes, so traded attribution is reading the strategy grid alone; the figures move when trade history finishes loading.'
+                : ''}
+            </p>
             {(() => {
               const gated = comboPerf.filter((row) => !row.lowSample).slice(0, 8);
               if (!gated.length) return null;
@@ -653,9 +704,13 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               );
             })()}
             {perf.best ? null : (
+              // Two different facts, and one sentence for each: a table where 16
+              // rows carry "OK" in the Sample column must not be captioned "No
+              // combo passes the sample gate".
               <p className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                No combo passes the sample gate ({MIN_DAYS} account days and {MIN_ACCOUNTS} accounts)
-                {comboPerf.some((row) => !row.lowSample) ? ' with a positive average, so no row is marked Best.' : '.'}
+                {comboPerf.some((row) => !row.lowSample)
+                  ? `No combo with a positive average passes the sample gate (${MIN_DAYS} account days and ${MIN_ACCOUNTS} accounts), so no row is marked Best.`
+                  : `No combo passes the sample gate (${MIN_DAYS} account days and ${MIN_ACCOUNTS} accounts).`}
               </p>
             )}
             <div className="table-wrap">
