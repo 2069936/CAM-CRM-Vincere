@@ -441,6 +441,89 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
     }
 
+    public async Task<QuarantineReportOutcome> ReportQuarantineAsync(
+        QuarantineReport report,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        QuarantineReport normalized = NormalizeQuarantineReport(report);
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(normalized, Formatting.None));
+        try
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    using HttpResponseMessage response = await SendAsync(
+                        HttpMethod.Post,
+                        "api/ingest/quarantine",
+                        requestBytes,
+                        authenticated: true,
+                        contentEncoding: null,
+                        cancellationToken).ConfigureAwait(false);
+                    byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken)
+                        .ConfigureAwait(false);
+                    string errorCode = ReadErrorCode(responseBytes);
+                    if (response.IsSuccessStatusCode) return QuarantineReportOutcome.Accepted;
+
+                    // NOT DEPLOYED YET IS AN ANSWER, NOT A FAULT. The CRM of
+                    // today has no handler for this action and says 404, and a
+                    // CRM that mounts the route for GET only would say 405.
+                    // Neither is a reason to retry, to log an error, or to mark
+                    // the device; the caller waits a day and offers again.
+                    if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+                        return QuarantineReportOutcome.Unsupported;
+
+                    TimeSpan? retryAfter = ParseRetryAfter(response.Headers.RetryAfter);
+                    TimeSpan? delay = retryPolicy.GetRetryDelay(
+                        attempt,
+                        response.StatusCode,
+                        errorCode,
+                        retryAfter);
+                    if (delay.HasValue)
+                    {
+                        await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+                    throw QuarantineReportFailure(response.StatusCode, retryAfter, ReadFailureCause(responseBytes));
+                }
+                catch (HttpRequestException exception) when (IsTlsFailure(exception))
+                {
+                    throw new CrmClientException(
+                        "tls_failure",
+                        "The CRM certificate could not be validated.",
+                        false);
+                }
+                catch (HttpRequestException)
+                {
+                    TimeSpan? delay = retryPolicy.GetRetryDelay(attempt, transportFailure: true);
+                    if (!delay.HasValue)
+                        throw new CrmClientException(
+                            "quarantine_report_failed",
+                            "The quarantine report could not reach the CRM.",
+                            true,
+                            disposition: CrmFailureDisposition.Retry);
+                    await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
+                }
+                catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    TimeSpan? delay = retryPolicy.GetRetryDelay(attempt, transportFailure: true);
+                    if (!delay.HasValue)
+                        throw new CrmClientException(
+                            "quarantine_report_failed",
+                            "The quarantine report timed out.",
+                            true,
+                            disposition: CrmFailureDisposition.Retry);
+                    await retryDelay.DelayAsync(delay.Value, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
     public void Dispose()
     {
         httpClient.Dispose();
@@ -592,6 +675,31 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             LastErrorCode = string.IsNullOrEmpty(errorCode) ? null : errorCode,
             LastErrorMessage = string.IsNullOrEmpty(safeMessage) ? null : safeMessage,
         };
+    }
+
+    // Nothing in a report is free text: a trading date, a capture id, a code
+    // from a fixed vocabulary and three numbers. An item that does not fit that
+    // shape is dropped rather than a reason to refuse the whole report, and the
+    // list is capped newest first so a machine with a year of quarantine still
+    // sends a body the CRM will read.
+    private static readonly Regex QuarantineCodePattern = new(
+        "^[a-z0-9_]{1,64}$",
+        RegexOptions.CultureInvariant);
+
+    private static QuarantineReport NormalizeQuarantineReport(QuarantineReport report)
+    {
+        QuarantineReportItem[] items = (report.Items ?? Array.Empty<QuarantineReportItem>())
+            .Where(item => item != null
+                && Regex.IsMatch(item.TradingDate ?? string.Empty, @"^\d{4}-\d{2}-\d{2}$")
+                && Guid.TryParseExact(item.CaptureId, "D", out _)
+                && QuarantineCodePattern.IsMatch(item.Code ?? string.Empty)
+                && item.Attempts >= 0)
+            .Select(item => item with { CaptureId = item.CaptureId.ToLowerInvariant() })
+            .OrderByDescending(item => item.TradingDate, StringComparer.Ordinal)
+            .ThenByDescending(item => item.QuarantinedAt)
+            .Take(QuarantineReport.MaximumItems)
+            .ToArray();
+        return new QuarantineReport(QuarantineReport.CurrentSchemaVersion, report.ReportedAt, items);
     }
 
     private static bool IsTlsFailure(HttpRequestException exception)
@@ -827,6 +935,28 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         return new CrmClientException(
             "heartbeat_failed",
             WithCause("The CRM did not accept the heartbeat.", cause),
+            retryable,
+            retryAfter,
+            disposition: retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);
+    }
+
+    private static CrmClientException QuarantineReportFailure(
+        HttpStatusCode status,
+        TimeSpan? retryAfter,
+        string cause = null)
+    {
+        if (status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            return new CrmClientException(
+                "device_credential_revoked",
+                "The collector credential is invalid or revoked.",
+                false,
+                disposition: CrmFailureDisposition.RePair);
+        bool retryable = status == HttpStatusCode.RequestTimeout
+            || status == HttpStatusCode.TooManyRequests
+            || (int)status >= 500;
+        return new CrmClientException(
+            "quarantine_report_failed",
+            WithCause("The CRM did not accept the quarantine report.", cause),
             retryable,
             retryAfter,
             disposition: retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);

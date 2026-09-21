@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -89,6 +90,8 @@ public sealed class DiagnosticsCollectorTests : IDisposable
         public Task<QueueItem> QuarantineAsync(QueueItem item, string code, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<QueueStatus> GetStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult(new QueueStatus(1, 0, 2, 0, 256, false));
         public Task<QueueCleanupResult> CleanupAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<QueueQuarantineEntry>> ListQuarantineAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<QueueQuarantineReviewResult> ReviewQuarantineAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class FakeTokenStore : IDeviceTokenStore

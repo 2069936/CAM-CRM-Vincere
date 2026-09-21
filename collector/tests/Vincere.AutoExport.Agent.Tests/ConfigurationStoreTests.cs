@@ -30,7 +30,37 @@ public sealed class ConfigurationStoreTests : IDisposable
             result.Options.EnabledTradingDays.ToArray());
         Assert.Equal(1, result.Options.ConfigurationVersion);
         Assert.Null(result.Options.DeviceId);
+        Assert.Equal("12:00", result.Options.QuarantineReviewTime);
+        Assert.Null(result.Options.LastQuarantineReviewDate);
         Assert.Equal(1, securityApplications);
+    }
+
+    [Fact]
+    public async Task TheQuarantineReviewTimeIsValidatedLikeTheScheduleAndDefaultsWhenAbsent()
+    {
+        ConfigurationStore store = CreateStore();
+        AgentConfigurationException invalid = await Assert.ThrowsAsync<AgentConfigurationException>(() =>
+            store.SaveAsync(AgentOptions.CreateDefault() with { QuarantineReviewTime = "noon" }));
+        Assert.Equal("configuration_schedule_invalid", invalid.Code);
+
+        await store.SaveAsync(AgentOptions.CreateDefault() with
+        {
+            QuarantineReviewTime = "13:30",
+            LastQuarantineReviewDate = "2026-07-23",
+        });
+        ConfigurationLoadResult saved = await store.LoadAsync();
+        Assert.Equal("13:30", saved.Options.QuarantineReviewTime);
+        Assert.Equal("2026-07-23", saved.Options.LastQuarantineReviewDate);
+
+        // A configuration written by an agent that predates the review has no
+        // such key, and reads with the default rather than as invalid.
+        await File.WriteAllTextAsync(
+            store.ConfigurationPath,
+            """{"configurationVersion":1,"crmBaseUrl":"https://crm.example.test/","scheduleTime":"16:30","captureCutoffTime":"17:00","enabledTradingDays":["Monday"],"timeZone":"America/New_York"}""");
+        ConfigurationLoadResult older = await store.LoadAsync();
+        Assert.False(older.RecoveredFromBackup);
+        Assert.Equal("12:00", older.Options.QuarantineReviewTime);
+        Assert.Null(older.Options.LastQuarantineReviewDate);
     }
 
     [Fact]

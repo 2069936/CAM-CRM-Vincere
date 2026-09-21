@@ -39,6 +39,11 @@ public interface ICollectorQueue : ISnapshotQueueWriter
     Task<QueueCleanupResult> CleanupAsync(
         DateTimeOffset now,
         CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<QueueQuarantineEntry>> ListQuarantineAsync(
+        CancellationToken cancellationToken = default);
+    Task<QueueQuarantineReviewResult> ReviewQuarantineAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class SnapshotQueue : ICollectorQueue
@@ -253,6 +258,7 @@ public sealed class SnapshotQueue : ICollectorQueue
             string sentReceiptPath = sentPath + ".receipt";
             MoveDurably(item.PayloadPath, sentPath);
             MoveDurably(uploadingReceiptPath, sentReceiptPath);
+            ForgetQuarantineHistory(Path.GetFileName(sentPath));
             return current with { PayloadPath = sentPath, State = QueueState.Sent };
         }
         finally
@@ -321,14 +327,120 @@ public sealed class SnapshotQueue : ICollectorQueue
         {
             throw new SnapshotQueueException("quarantine_reason_invalid", "The quarantine reason is invalid.");
         }
+        // Schema 1 is every reason file written before the review existed. It
+        // carries no attempt fields, and they read as their defaults: zero
+        // attempts, never retried, no history. That is the truth about it.
         if (reason == null
-            || reason.SchemaVersion != 1
+            || reason.SchemaVersion is not (1 or QueueQuarantineReason.CurrentSchemaVersion)
             || string.IsNullOrWhiteSpace(reason.Code)
-            || string.IsNullOrWhiteSpace(reason.OriginalFileName))
+            || string.IsNullOrWhiteSpace(reason.OriginalFileName)
+            || reason.Attempts < 0)
         {
             throw new SnapshotQueueException("quarantine_reason_invalid", "The quarantine reason is incomplete.");
         }
-        return reason;
+        return reason with
+        {
+            History = (reason.History ?? Array.Empty<QueueQuarantineAttempt>())
+                .Where(attempt => attempt != null && !string.IsNullOrWhiteSpace(attempt.Code))
+                .ToArray(),
+        };
+    }
+
+    public async Task<IReadOnlyList<QueueQuarantineEntry>> ListQuarantineAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureDirectories();
+            return ReadQuarantineEntries();
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /* THE REVIEW. QUARANTINE STOPS BEING A PLACE THINGS ONLY ARRIVE.
+     *
+     * Every capture whose code the policy allows and whose attempts are under
+     * the cap goes back to pending, where the ordinary uploader sends it with
+     * nothing special about it. The reason file is rewritten first, with the
+     * attempt counted, and only then is the payload moved: if the process dies
+     * between the two the capture stays here with one attempt spent, which is
+     * the safe side of the cap. The rewritten reason file is deliberately left
+     * behind after the payload leaves. It is how a capture that bounces
+     * arrives with its count intact; see QuarantinePathAsync.
+     *
+     * A capture is left alone, and reported as remaining, when its code is
+     * final, when its attempts are spent, or when a file of the same name is
+     * already pending, uploading or sent. The last case means a copy of it is
+     * on its way or already accepted, and the review is not the place to
+     * decide which copy is right. */
+    public async Task<QueueQuarantineReviewResult> ReviewQuarantineAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureDirectories();
+            List<QueueQuarantineEntry> requeued = new();
+            List<QueueQuarantineEntry> remaining = new();
+            foreach (QueueQuarantineEntry entry in ReadQuarantineEntries())
+            {
+                if (!entry.WillRetry)
+                {
+                    remaining.Add(entry);
+                    continue;
+                }
+                string fileName = FileName(entry.TradingDate, entry.CaptureId);
+                string quarantinedPath = Path.Combine(QuarantineDirectory, fileName);
+                string pendingPath = Path.Combine(PendingDirectory, fileName);
+                if (File.Exists(pendingPath)
+                    || File.Exists(Path.Combine(UploadingDirectory, fileName))
+                    || File.Exists(Path.Combine(SentDirectory, fileName)))
+                {
+                    remaining.Add(entry);
+                    continue;
+                }
+                try
+                {
+                    QueueQuarantineReason reason = ReadQuarantineReason(quarantinedPath + ".reason");
+                    QueueQuarantineReason attempted = reason with
+                    {
+                        SchemaVersion = QueueQuarantineReason.CurrentSchemaVersion,
+                        Attempts = reason.Attempts + 1,
+                        LastAttemptAt = now,
+                        History = reason.History
+                            .Append(new QueueQuarantineAttempt(now, QueueQuarantineReason.RequeuedCode))
+                            .ToArray(),
+                    };
+                    await WriteQuarantineReasonAsync(quarantinedPath + ".reason", attempted, cancellationToken)
+                        .ConfigureAwait(false);
+                    MoveDurably(quarantinedPath, pendingPath);
+                    requeued.Add(entry with
+                    {
+                        Attempts = attempted.Attempts,
+                        LastAttemptAt = now,
+                        WillRetry = QuarantinePolicy.WillRetry(entry.Code, attempted.Attempts),
+                    });
+                }
+                catch (Exception exception) when (exception is IOException
+                    or UnauthorizedAccessException
+                    or SnapshotQueueException)
+                {
+                    // One capture that cannot be moved must not stop the others
+                    // from going. It stays, and the next review meets it again.
+                    remaining.Add(entry);
+                }
+            }
+            return new QueueQuarantineReviewResult(requeued, remaining);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task<QueueRecoveryResult> RecoverAsync(CancellationToken cancellationToken = default)
@@ -383,6 +495,7 @@ public sealed class SnapshotQueue : ICollectorQueue
                         string sentPath = Path.Combine(SentDirectory, Path.GetFileName(uploadingPath));
                         MoveDurably(uploadingPath, sentPath);
                         MoveDurably(receiptPath, sentPath + ".receipt");
+                        ForgetQuarantineHistory(Path.GetFileName(sentPath));
                         completedFromReceipt++;
                     }
                     else
@@ -492,24 +605,119 @@ public sealed class SnapshotQueue : ICollectorQueue
         Directory.CreateDirectory(QuarantineDirectory);
     }
 
+    /* THE COUNT SURVIVES A SECOND LANDING BECAUSE THE REASON FILE NEVER LEFT.
+     *
+     * When the review sends a capture back to pending it moves the payload and
+     * leaves the rewritten reason file here, attempts already counted. A
+     * capture that bounces arrives with the same filename, finds that file,
+     * and carries its attempts and history forward; a capture arriving for the
+     * first time finds nothing and starts at zero. No sidecar has to travel
+     * through pending and uploading, and nothing has to be cleaned up on the
+     * way, which is what makes this the robust way. The file is deleted when
+     * the capture is finally accepted, so it cannot describe a capture that
+     * is already in the CRM. */
     private async Task QuarantinePathAsync(string payloadPath, string code, CancellationToken cancellationToken)
     {
         string quarantinedPath = Path.Combine(QuarantineDirectory, Path.GetFileName(payloadPath));
         string reasonPath = quarantinedPath + ".reason";
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        QueueQuarantineReason previous = TryReadQuarantineReason(reasonPath);
+        QueueQuarantineReason reason = new(
+            QueueQuarantineReason.CurrentSchemaVersion,
+            code,
+            Path.GetFileName(payloadPath),
+            now,
+            previous?.Attempts ?? 0,
+            previous?.LastAttemptAt,
+            (previous?.History ?? Array.Empty<QueueQuarantineAttempt>())
+                .Append(new QueueQuarantineAttempt(now, code))
+                .ToArray());
+        await WriteQuarantineReasonAsync(reasonPath, reason, cancellationToken).ConfigureAwait(false);
+        MoveDurably(payloadPath, quarantinedPath);
+    }
+
+    private async Task WriteQuarantineReasonAsync(
+        string reasonPath,
+        QueueQuarantineReason reason,
+        CancellationToken cancellationToken)
+    {
         string temporaryReasonPath = reasonPath + ".tmp";
-        QueueQuarantineReason reason = new(1, code, Path.GetFileName(payloadPath), DateTimeOffset.UtcNow);
         byte[] bytes = Utf8WithoutBom.GetBytes(JsonConvert.SerializeObject(reason, Formatting.None));
         DeleteIfPresent(temporaryReasonPath);
         try
         {
             await WriteThroughAsync(temporaryReasonPath, bytes, cancellationToken).ConfigureAwait(false);
-            MoveDurably(temporaryReasonPath, reasonPath);
+            MoveDurably(temporaryReasonPath, reasonPath, overwrite: true);
         }
         finally
         {
             DeleteIfPresent(temporaryReasonPath);
         }
-        MoveDurably(payloadPath, quarantinedPath);
+    }
+
+    private QueueQuarantineReason TryReadQuarantineReason(string reasonPath)
+    {
+        if (!File.Exists(reasonPath)) return null;
+        try
+        {
+            return ReadQuarantineReason(reasonPath);
+        }
+        catch (Exception exception) when (exception is SnapshotQueueException
+            or IOException
+            or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private void ForgetQuarantineHistory(string fileName)
+    {
+        DeleteIfPresent(Path.Combine(QuarantineDirectory, fileName) + ".reason");
+    }
+
+    /* Read from the filename and the reason file, never from the payload. The
+     * payload may be exactly the corrupt thing that put the capture here, and
+     * a listing that throws on it would hide every other capture too. A
+     * payload whose reason file is missing or unreadable is still listed, as
+     * final: nothing can be said about it that the review could act on. */
+    private IReadOnlyList<QueueQuarantineEntry> ReadQuarantineEntries()
+    {
+        List<QueueQuarantineEntry> entries = new();
+        foreach (string payloadPath in Directory.EnumerateFiles(QuarantineDirectory, "*.json")
+            .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            if (!TryParseFileName(Path.GetFileName(payloadPath), out string tradingDate, out Guid captureId))
+                continue;
+            QueueQuarantineReason reason = TryReadQuarantineReason(payloadPath + ".reason");
+            string code = reason?.Code ?? "quarantine_reason_invalid";
+            int attempts = reason?.Attempts ?? 0;
+            entries.Add(new QueueQuarantineEntry(
+                captureId,
+                tradingDate,
+                code,
+                attempts,
+                reason?.QuarantinedAt ?? new DateTimeOffset(File.GetLastWriteTimeUtc(payloadPath), TimeSpan.Zero),
+                reason?.LastAttemptAt,
+                QuarantinePolicy.WillRetry(code, attempts)));
+        }
+        return entries;
+    }
+
+    private static bool TryParseFileName(string fileName, out string tradingDate, out Guid captureId)
+    {
+        tradingDate = null;
+        captureId = Guid.Empty;
+        string stem = Path.GetFileNameWithoutExtension(fileName);
+        if (stem.Length != 47 || stem[10] != '_') return false;
+        string date = stem[..10];
+        if (!DateTime.TryParseExact(date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+            || !Guid.TryParseExact(stem[11..], "D", out Guid parsed))
+        {
+            return false;
+        }
+        tradingDate = date;
+        captureId = parsed;
+        return true;
     }
 
     private static void ValidateSnapshot(AutoExportSnapshotV1 snapshot)
@@ -654,9 +862,9 @@ public sealed class SnapshotQueue : ICollectorQueue
         if (File.Exists(path)) File.Delete(path);
     }
 
-    private void MoveDurably(string sourcePath, string destinationPath)
+    private void MoveDurably(string sourcePath, string destinationPath, bool overwrite = false)
     {
-        File.Move(sourcePath, destinationPath);
+        File.Move(sourcePath, destinationPath, overwrite);
         string sourceDirectory = Path.GetDirectoryName(Path.GetFullPath(sourcePath));
         string destinationDirectory = Path.GetDirectoryName(Path.GetFullPath(destinationPath));
         durability.FlushDirectoryMetadata(sourceDirectory);

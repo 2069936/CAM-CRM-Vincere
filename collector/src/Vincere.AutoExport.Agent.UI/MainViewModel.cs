@@ -35,6 +35,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string collectionSummary = "No collection history yet";
     private string collectionAlert;
     private IReadOnlyList<CaptureDayView> days = Array.Empty<CaptureDayView>();
+    private QuarantineView quarantine = QuarantineView.Empty;
 
     private readonly ReleaseCheck releaseCheck;
 
@@ -78,6 +79,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CheckForUpdateCommand = new AsyncCommand(CheckForUpdateAsync, () => !IsBusy);
         CopyInstallCommandCommand = new AsyncCommand(CopyInstallCommandAsync, () => !string.IsNullOrEmpty(UpdateInstallCommand));
         InstallUpdateCommand = new AsyncCommand(InstallUpdateAsync, () => CanInstallUpdate && !IsBusy);
+        RetryQuarantineCommand = new AsyncCommand(RetryQuarantineAsync, () => !IsBusy && HasQuarantine);
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -152,6 +154,32 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public bool HasDays => Days.Count > 0;
+
+    /* QUARANTINE, ON THE SCREEN THAT CAN DO SOMETHING ABOUT IT.
+     *
+     * A capture the CRM refused with a 422 used to sit in a hidden folder
+     * until someone with the path went looking. The service now retries the
+     * ones a server side fix can rescue, once a day, and this card says what
+     * is there, which rows will be retried and when, and offers the same
+     * review now rather than at midday. The cap on attempts is the service's
+     * and the button does not get around it. */
+    public QuarantineView Quarantine
+    {
+        get => quarantine;
+        private set
+        {
+            if (!Set(ref quarantine, value)) return;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasQuarantine)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineItems)));
+            (RetryQuarantineCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    public bool HasQuarantine => Quarantine.HasItems;
+    public string QuarantineSummary => Quarantine.Summary;
+    public IReadOnlyList<QuarantineItemView> QuarantineItems => Quarantine.Items;
+    public ICommand RetryQuarantineCommand { get; }
     public ICommand PairCommand { get; }
     public ICommand TestCaptureCommand { get; }
     public ICommand SaveScheduleCommand { get; }
@@ -629,6 +657,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             int pending = queue?.Value<int?>("PendingCount") ?? queue?.Value<int?>("pendingCount") ?? 0;
             QueueSummary = pending == 0 ? "No uploads waiting" : $"{pending} upload{(pending == 1 ? string.Empty : "s")} waiting";
             ApplyTimeline(data);
+            ApplyQuarantine(data);
             CurrentStep = paired ? 3 : 2;
             StatusMessage = paired
                 ? $"Connected to {ClientName}. Restart NinjaTrader, then test the connection."
@@ -645,6 +674,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
         string alert = CaptureTimeline.Alert(parsed);
         CollectionAlert = alert;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasCollectionAlert)));
+    }
+
+    private void ApplyQuarantine(JObject data)
+    {
+        Quarantine = QuarantineView.Parse(data?["Quarantine"] ?? data?["quarantine"]);
+    }
+
+    // internal, not private, for the same reason as CheckForUpdateAsync: the
+    // test project awaits this directly, and ICommand.Execute cannot be awaited.
+    internal async Task RetryQuarantineAsync()
+    {
+        await RunAsync(async () =>
+        {
+            UiControlResponse response = await client.SendAsync("retryQuarantine");
+            StatusMessage = response.Message;
+            if (!response.Ok) return;
+            // What moved is now in the queue and what stayed is still here.
+            // Ask again rather than guess, so the list and the summary read as
+            // the folder actually is.
+            UiControlResponse status = await client.SendAsync("status");
+            if (status.Ok) ApplyQuarantine(status.Data ?? new JObject());
+        }, "The service could not review the quarantine.");
     }
 
     public async Task PairAsync()
@@ -768,7 +819,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void RaiseCommands()
     {
-        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand, DeepExportCommand }.OfType<AsyncCommand>())
+        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand, DeepExportCommand, RetryQuarantineCommand }.OfType<AsyncCommand>())
             command.RaiseCanExecuteChanged();
     }
 }

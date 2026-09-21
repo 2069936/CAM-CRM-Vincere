@@ -512,6 +512,8 @@ public sealed class CollectorLoopTests
         public Task<QueueItem> QuarantineAsync(QueueItem item, string code, CancellationToken cancellationToken = default) => Task.FromResult(item);
         public Task<QueueStatus> GetStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult(new QueueStatus(1, 0, 2, 0, 128, false));
         public Task<QueueCleanupResult> CleanupAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => Task.FromResult(new QueueCleanupResult(0, 0));
+        public Task<IReadOnlyList<QueueQuarantineEntry>> ListQuarantineAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<QueueQuarantineReviewResult> ReviewQuarantineAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     // FakeCrm's UploadError is init-only, which is right for the tests that set
@@ -529,6 +531,7 @@ public sealed class CollectorLoopTests
         }
         public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
             => Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class ThrowingHeartbeatCrm : ICollectorCrmClient
@@ -542,6 +545,7 @@ public sealed class CollectorLoopTests
             if (HeartbeatError != null) throw HeartbeatError;
             return Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
         }
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class RecordingReporter : IServiceReporter
@@ -576,6 +580,7 @@ public sealed class CollectorLoopTests
             Heartbeat = payload;
             return Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
         }
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class FakeTokenStore : IDeviceTokenStore
