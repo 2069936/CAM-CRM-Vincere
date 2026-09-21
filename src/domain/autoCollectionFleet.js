@@ -6,6 +6,7 @@ const STATUS_COPY = Object.freeze({
   pending: ['Pending', 'The scheduled capture time has not arrived.'],
   expected: ['Expected', 'Waiting within the normal upload grace period.'],
   received: ['Received', "Today's batch is available."],
+  deferred: ['Held at the door', 'The CRM was full and asked this VPS to come back. Nothing is stored yet; the agent retries on its own.'],
   late: ['Late', "Today's batch has not arrived."],
   incomplete: ['Incomplete', 'The latest batch is missing required sections or rows.'],
   offline: ['Offline', 'The VPS has stopped reporting heartbeats.'],
@@ -86,7 +87,14 @@ export function classifyFleetRow({
     || (releaseVersion && device.agentVersion && compareVersions(device.agentVersion, releaseVersion) < 0)) {
     return result('update_required');
   }
+  // A capture the door turned away is not a collector failure and not a
+  // received day. The agent reports ingest_at_capacity while it waits, and
+  // the batch row sits in 'received' with a deferral count and no storage
+  // object behind it. Both read as their own state, before the generic
+  // failure and received checks below can claim them.
+  if (device.lastErrorCode === 'ingest_at_capacity') return result('deferred');
   if (device.healthStatus === 'error' || device.lastErrorCode) return result('failed');
+  if (todayBatch?.status === 'received' && Number(todayBatch.admissionDeferrals) > 0) return result('deferred');
   if (todayBatch?.status === 'incomplete' || todayBatch?.status === 'failed') return result('incomplete');
 
   const lastSeen = validDate(device.lastSeenAt);
@@ -120,6 +128,10 @@ export function classifyFleetRow({
  * MEDIAN AND SLOWEST come from the batches that carry a measurement. Before the
  * migration runs there are none, and every field but the two counts is null
  * rather than zero: nothing measured is not the same as measured as fast.
+ *
+ * SLOWEST STAGE is where the slowest upload spent its time, so the line can say
+ * "mostly persist" instead of leaving the reader to open the SQL editor, which
+ * is the exact activity this line exists to end.
  */
 const ACCEPTED_BATCH_STATES = new Set(['processed', 'incomplete', 'late_closed_day', 'replaced']);
 
@@ -127,6 +139,7 @@ export function summarizeIngestDay(batches = []) {
   let accepted = 0;
   let shed = 0;
   const durations = [];
+  let slowest = null;
   for (const batch of batches) {
     if (ACCEPTED_BATCH_STATES.has(batch?.status)) accepted += 1;
     // Tested directly rather than through Number(), which turns a null into a
@@ -135,10 +148,18 @@ export function summarizeIngestDay(batches = []) {
     const deferrals = batch?.admissionDeferrals;
     if (Number.isInteger(deferrals) && deferrals > 0) shed += deferrals;
     const duration = batch?.ingestDurationMs;
-    if (Number.isInteger(duration) && duration >= 0) durations.push(duration);
+    if (Number.isInteger(duration) && duration >= 0) {
+      durations.push(duration);
+      if (!slowest || duration > slowest.ms) slowest = { ms: duration, stages: batch.stageDurationsMs || null };
+    }
   }
   durations.sort((left, right) => left - right);
   const middle = Math.floor(durations.length / 2);
+  let slowestStage = null;
+  if (slowest?.stages) {
+    const [name, ms] = Object.entries(slowest.stages).sort((a, b) => b[1] - a[1])[0] || [];
+    if (name && Number.isInteger(ms)) slowestStage = { name, ms };
+  }
   return {
     accepted,
     shed,
@@ -148,6 +169,7 @@ export function summarizeIngestDay(batches = []) {
     // and look at.
     medianMs: durations.length ? durations[durations.length % 2 ? middle : middle - 1] : null,
     slowestMs: durations.length ? durations[durations.length - 1] : null,
+    slowestStage,
   };
 }
 

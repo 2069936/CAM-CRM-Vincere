@@ -74,13 +74,33 @@ describe('step 45 puts a door on the ingest endpoint', () => {
     );
   });
 
+  it('serialises the count with the grant it guards, so a burst cannot walk through the door', () => {
+    // Measured before this line existed: sixty simultaneous claims against a
+    // cap of four admitted fifteen, then four, then seven, and with a slow
+    // claim transaction ten of ten. With the lock, four of sixty three runs
+    // out of three, and four of ten under the slow transaction. The lock
+    // must come before the count and be the transaction level kind, so it
+    // is held to commit and released on rollback without anyone remembering.
+    const decision = sql.slice(sql.indexOf('function public.ingest_admission_decision'));
+    const lock = decision.indexOf("pg_advisory_xact_lock(hashtextextended('ingest_admission_door', 0))");
+    const count = decision.indexOf("select count(*) into v_in_flight");
+    expect(lock).toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(lock);
+    expect(decision).not.toMatch(/pg_advisory_lock\(/);
+  });
+
+  it('rotates the wait by day, so the same machines are not served last every day', () => {
+    expect(sql).toMatch(/hashtextextended\(p_device_id::text \|\| ':' \|\| \(p_now at time zone 'america\/new_york'\)::date::text, 0\)/);
+  });
+
   it('spreads the callers it turns away instead of sending them back together', () => {
     const decision = functionDefinition('ingest_admission_decision');
     expect(decision).toContain('security definer');
-    // Derived from the device id: two machines turned away in the same second
-    // come back at different seconds, and one machine comes back the same way
-    // every time so the behaviour can be reproduced while it is diagnosed.
-    expect(decision).toMatch(/hashtextextended\(p_device_id::text, 0\) % v_modulus/);
+    // Derived from the device id and the New York day: two machines turned
+    // away in the same second come back at different seconds, one machine
+    // comes back the same way all day so the behaviour can be reproduced
+    // while it is diagnosed, and no machine is last every day of the year.
+    expect(decision).toMatch(/hashtextextended\(p_device_id::text \|\| ':' \|\| \(p_now at time zone 'america\/new_york'\)::date::text, 0\) % v_modulus/);
     expect(decision).toMatch(/v_settings\.retry_after_floor_seconds \+/);
     expect(decision).toMatch(/where batch\.status = 'processing' and batch\.processing_lease_expires_at is not null and batch\.processing_lease_expires_at > p_now/);
     // A missing settings row leaves the door open. A tuning table that was

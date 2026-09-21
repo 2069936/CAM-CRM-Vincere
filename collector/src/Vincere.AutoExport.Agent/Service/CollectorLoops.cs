@@ -111,9 +111,25 @@ public sealed class CollectorState
         }
     }
 
+    /* A SUCCESSFUL UPLOAD IS THE END OF AN UPLOAD ERROR.
+     *
+     * This used to set LastSuccessAt and leave LastErrorCode where it was, so
+     * a machine that had been turned away or had met a 500 stayed red on the
+     * fleet view until the next day's capture cleared it, hours after the
+     * snapshot had landed. The heartbeat carries the code and the fleet view
+     * reads it before it reads the batch, so the desk saw a failure that was
+     * already over. Only upload errors are cleared here: a capture error is
+     * the capture's to clear. */
     public void RecordUploadSuccess(DateTimeOffset acknowledgedAt)
     {
-        lock (gate) value = value with { LastSuccessAt = acknowledgedAt };
+        lock (gate)
+        {
+            bool uploadError = value.LastErrorCode is "upload_failed" or "ingest_at_capacity"
+                or "capture_requires_replay" or "capture_conflict";
+            value = uploadError
+                ? value with { LastSuccessAt = acknowledgedAt, LastErrorCode = null, LastErrorMessage = null }
+                : value with { LastSuccessAt = acknowledgedAt };
+        }
     }
 
     public void RecordError(string code, string safeMessage)
@@ -324,7 +340,14 @@ public sealed class UploadLoop : ICollectorLoop
                         exception.Code,
                         cancellationToken)).ConfigureAwait(false);
             }
-            state.RecordError(exception.Code, exception.Message);
+            // Being held at the door is flow control, not a fault: the CRM
+            // said come back, the item is queued, and the next pass goes. It
+            // reaches the log through ReportChange but never the heartbeat,
+            // because a red row for a machine doing exactly what it was asked
+            // is the wrong picture, and the heartbeat's own vocabulary would
+            // refuse the code anyway.
+            if (exception.Code != "ingest_at_capacity")
+                state.RecordError(exception.Code, exception.Message);
             ReportChange(exception.Code, exception);
         }
     }

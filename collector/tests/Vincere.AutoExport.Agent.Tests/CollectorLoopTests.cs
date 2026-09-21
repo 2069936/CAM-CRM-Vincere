@@ -103,6 +103,56 @@ public sealed class CollectorLoopTests
         Assert.Contains("did not accept", Assert.Single(reporter.Messages));
     }
 
+    /* HELD AT THE DOOR IS NOT A FAULT THE DESK SHOULD SEE AS RED.
+     *
+     * The CRM answering ingest_at_capacity is flow control: the item stays
+     * queued and the next pass goes. It reaches the log so the day can be
+     * reconstructed, and never the heartbeat, where a red row for a machine
+     * doing what it was asked would be the wrong picture. */
+    [Fact]
+    public async Task BeingHeldAtTheDoorIsLoggedButNeverBecomesTheDeviceError()
+    {
+        FakeQueue queue = new() { Next = Item };
+        MutableCrm crm = new()
+        {
+            UploadError = new CrmClientException(
+                "ingest_at_capacity",
+                "The CRM is busy and asked this VPS to retry the upload shortly.",
+                true,
+                disposition: CrmFailureDisposition.Retry),
+        };
+        RecordingReporter reporter = new();
+        CollectorState state = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), state, new FakeCaptureHistory(), reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "ingest_at_capacity" }, reporter.Codes);
+        Assert.Null(state.Snapshot().LastErrorCode);
+        Assert.Same(Item, queue.Retried);
+        Assert.Null(queue.Completed);
+    }
+
+    /* A SUCCESSFUL UPLOAD IS THE END OF AN UPLOAD ERROR.
+     *
+     * LastErrorCode used to survive a later successful upload until the next
+     * day's capture, so the fleet view showed a failure that was already
+     * over for the rest of the afternoon. A capture error is not touched: it
+     * is the capture's to clear. */
+    [Fact]
+    public void ASuccessfulUploadClearsAnUploadErrorAndLeavesACaptureErrorAlone()
+    {
+        CollectorState state = new();
+        state.RecordError("upload_failed", "refused");
+        state.RecordUploadSuccess(DateTimeOffset.UtcNow);
+        Assert.Null(state.Snapshot().LastErrorCode);
+        Assert.NotNull(state.Snapshot().LastSuccessAt);
+
+        state.RecordError("capture_failed", "no data");
+        state.RecordUploadSuccess(DateTimeOffset.UtcNow);
+        Assert.Equal("capture_failed", state.Snapshot().LastErrorCode);
+    }
+
     [Fact]
     public async Task AFaultThatChangesShapeIsWrittenAgain()
     {

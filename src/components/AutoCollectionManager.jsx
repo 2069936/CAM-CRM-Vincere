@@ -35,7 +35,8 @@ function duration(value) {
 function ingestLine(day) {
   if (!day) return null;
   const shed = `${day.shed} shed at the door`;
-  return `${day.accepted} accepted · ${shed} · median ${duration(day.medianMs)} · slowest ${duration(day.slowestMs)}`;
+  const stage = day.slowestStage ? `, mostly ${day.slowestStage.name}` : '';
+  return `${day.accepted} accepted · ${shed} · median ${duration(day.medianMs)} · slowest ${duration(day.slowestMs)}${stage}`;
 }
 
 export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false }) {

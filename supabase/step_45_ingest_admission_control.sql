@@ -154,6 +154,21 @@ declare
   v_modulus integer;
   v_retry_after integer;
 begin
+  -- THE COUNT AND THE GRANT IT GUARDS MUST NOT RACE.
+  --
+  -- Under read committed a caller cannot see the uncommitted 'processing' rows
+  -- of the other claims in flight, and every other lock in the claim path is
+  -- keyed per device or per capture, so it serialises nothing across
+  -- machines. Measured with pgbench against every migration in this repo:
+  -- sixty simultaneous claims against a cap of four admitted fifteen, then
+  -- four, then seven; with a slow claim transaction, which is the starved
+  -- instance this door exists for, ten of ten walked through and the door
+  -- never fired. One transaction level advisory lock on a constant key,
+  -- taken before the count and held to commit, gave exactly four of sixty
+  -- three runs out of three. The claim transaction is short, so the queue
+  -- behind this lock is cheap; it is the door.
+  perform pg_advisory_xact_lock(hashtextextended('ingest_admission_door', 0));
+
   select settings.* into v_settings
   from public.ingest_admission_settings as settings
   where settings.id
@@ -174,9 +189,12 @@ begin
     return jsonb_build_object('full', false, 'retry_after_seconds', 0, 'in_flight', v_in_flight);
   end if;
 
+  -- The wait is derived from the device AND the day, so two machines turned
+  -- away in the same second come back apart, and the same machines are not
+  -- served last every day of the year.
   v_modulus := v_settings.retry_after_spread_seconds + 1;
   v_retry_after := v_settings.retry_after_floor_seconds
-    + ((hashtextextended(p_device_id::text, 0) % v_modulus) + v_modulus) % v_modulus;
+    + ((hashtextextended(p_device_id::text || ':' || (p_now at time zone 'America/New_York')::date::text, 0) % v_modulus) + v_modulus) % v_modulus;
   return jsonb_build_object(
     'full', true,
     'retry_after_seconds', v_retry_after,

@@ -787,6 +787,18 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                 retryAfter,
                 disposition: CrmFailureDisposition.OperatorAction);
         }
+        if (status == HttpStatusCode.TooManyRequests && errorCode == "ingest_at_capacity")
+        {
+            // Not a refusal: the CRM is full and asked this machine to come
+            // back after Retry-After. Named so the log, the window and the
+            // fleet view can tell "we were asked to wait" from "the CRM broke".
+            return new CrmClientException(
+                "ingest_at_capacity",
+                "The CRM is busy and asked this VPS to retry the upload shortly.",
+                true,
+                retryAfter,
+                disposition: CrmFailureDisposition.Retry);
+        }
         bool retryable = status == HttpStatusCode.RequestTimeout
             || status == HttpStatusCode.TooManyRequests
             || (int)status >= 500;

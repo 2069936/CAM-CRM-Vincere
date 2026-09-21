@@ -11,14 +11,14 @@ const BATCH_COLUMNS = 'id,capture_id,client_id,device_id,trading_date,captured_a
  * not exist with an error, not with nulls, so asking for them unconditionally
  * would turn "the migration has not run yet" into a fleet view that shows the
  * manager nothing at all. The day line disappears instead. */
-const BATCH_TIMING_COLUMNS = `${BATCH_COLUMNS},ingest_duration_ms,admission_deferrals`;
+const BATCH_TIMING_COLUMNS = `${BATCH_COLUMNS},ingest_duration_ms,admission_deferrals,stage_durations_ms`;
 
 function isMissingColumn(error) {
   if (String(error?.code || '') === '42703') return true;
   const message = String(error?.message || '').toLowerCase();
   return message.includes('column') && message.includes('does not exist');
 }
-const SAFE_DEVICE_ERRORS = new Set(['ninjatrader_not_running', 'addon_unavailable', 'capture_timeout', 'capture_failed', 'contract_mismatch', 'queue_capacity_warning', 'upload_failed', 'configuration_error']);
+const SAFE_DEVICE_ERRORS = new Set(['ninjatrader_not_running', 'addon_unavailable', 'capture_timeout', 'capture_failed', 'contract_mismatch', 'queue_capacity_warning', 'upload_failed', 'configuration_error', 'ingest_at_capacity']);
 const SAFE_BATCH_ERRORS = new Set(['storage_failed', 'normalization_failed', 'registry_load_failed', 'reconciliation_failed', 'persistence_failed', 'ingest_failed', 'immutable_object_conflict', 'unsupported_schema_version', 'invalid_auto_import_snapshot']);
 
 export function parseFleetQuery(query = {}) {
@@ -75,6 +75,9 @@ function publicBatch(row) {
     replacesBatchId: row.replaces_batch_id || null,
     errorCode: SAFE_BATCH_ERRORS.has(row.error_code) ? row.error_code : row.error_code ? 'ingest_failed' : null,
     ingestDurationMs: Number.isInteger(row.ingest_duration_ms) ? row.ingest_duration_ms : null,
+    stageDurationsMs: row.stage_durations_ms && typeof row.stage_durations_ms === 'object' && !Array.isArray(row.stage_durations_ms)
+      ? Object.fromEntries(Object.entries(row.stage_durations_ms).filter(([, v]) => Number.isInteger(v) && v >= 0))
+      : null,
     admissionDeferrals: Number.isInteger(row.admission_deferrals) ? row.admission_deferrals : 0,
   };
 }
