@@ -7,9 +7,11 @@ namespace Vincere.AutoExport.Agent.UI.Tests;
 
 /* THE CARD SAYS WHETHER PRESSING THE BUTTON WILL HELP.
  *
- * A 422 is retried by the service once a fix lands on the CRM side; a 400, a
- * 413 or a 409 never is. The row says which, in a sentence, so the button is
- * pressed when it can do something and left alone when it cannot. */
+ * A 422 is retried by the service once a fix lands on the CRM side; a close
+ * the CRM already holds is sent again until the desk has replayed it there;
+ * a 400, a 413 or a conflict never is. The row says which, in a sentence, so
+ * the button is pressed when it can do something and left alone when it
+ * cannot. */
 public sealed class QuarantineViewTests
 {
     private static JObject Status(params object[] items) => JObject.FromObject(new
@@ -53,7 +55,29 @@ public sealed class QuarantineViewTests
         Assert.Equal("1 of 3 retries used", row.Attempts);
         Assert.Equal("Will be retried at 12:00 PM New York", row.Disposition);
         Assert.Equal("pending", row.Tone);
-        Assert.Equal("1 capture in quarantine · 1 will be retried at 12:00 PM New York", view.Summary);
+        Assert.Equal("1 capture in quarantine · 1 will be sent again at 12:00 PM New York", view.Summary);
+    }
+
+    [Fact]
+    public void ARowTheCrmAlreadyHoldsSaysItIsSentAgainUntilTheDeskReplaysIt()
+    {
+        // The CRM of today answers a resend of a 422 with 409 and keeps the
+        // failed close for the desk to replay. The service sends it again at
+        // every review, and the row says so rather than promising a retry that
+        // could succeed on its own.
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-22", "capture_requires_replay", 2, true),
+            Item("2026-07-21", "capture_requires_replay", 1, true),
+            Item("2026-07-20", "capture_requires_replay", 0, true)));
+
+        QuarantineItemView row = view.Items[0];
+        Assert.Contains("desk has to replay it", row.Reason);
+        Assert.Equal("Sent again 2 times", row.Attempts);
+        Assert.Equal("Sent again at 12:00 PM New York until the desk replays it", row.Disposition);
+        Assert.Equal("pending", row.Tone);
+        Assert.Equal("Sent again once", view.Items[1].Attempts);
+        Assert.Equal(string.Empty, view.Items[2].Attempts);
+        Assert.Equal("3 captures in quarantine · 3 will be sent again at 12:00 PM New York", view.Summary);
     }
 
     [Fact]
@@ -78,7 +102,7 @@ public sealed class QuarantineViewTests
             Item("2026-07-22", "snapshot_processing_failed", 0, true),
             Item("2026-07-21", "capture_conflict", 0, false)));
 
-        Assert.Equal("2 captures in quarantine · 1 will be retried at 12:00 PM New York, 1 waiting for the desk", view.Summary);
+        Assert.Equal("2 captures in quarantine · 1 will be sent again at 12:00 PM New York, 1 waiting for the desk", view.Summary);
     }
 
     [Fact]

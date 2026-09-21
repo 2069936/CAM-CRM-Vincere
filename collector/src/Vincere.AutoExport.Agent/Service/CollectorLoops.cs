@@ -470,11 +470,15 @@ public interface IQuarantineReviewer
  * the refused bytes acceptable and the four captures sat on the VPS anyway,
  * because the only thing that could resend them was a person with the path.
  *
- * This loop walks the folder once a day, at a configured New York time, and
- * again whenever the Setup window asks. What it may send back is decided by
+ * This loop walks the folder once a trading day, at a configured New York
+ * time, and again whenever the Setup window asks. Trading days are the days
+ * the capture schedule is enabled for, because the cap is three attempts and a
+ * fix on the CRM side lands on a working day: a capture refused on a Friday
+ * close must not have spent its budget on Saturday and Sunday before the desk
+ * has had one working day to look. What the review may send back is decided by
  * QuarantinePolicy in the queue, and the cap on attempts holds for the manual
- * press too: pressing the button is a way to not wait until midday, not a way
- * to retry forever.
+ * press too: pressing the button is a way to not wait until midday, or until
+ * Monday, not a way to retry forever.
  *
  * It also tells the CRM what is in the folder, through its own endpoint and
  * never through the heartbeat. Nothing here writes to CollectorState's error
@@ -544,7 +548,8 @@ public sealed class QuarantineReviewLoop : ICollectorLoop, IQuarantineReviewer
             AgentOptions options = (await optionsStore.LoadAsync(cancellationToken).ConfigureAwait(false)).Options;
             LocalDateTime local = now.InZone(NewYork).LocalDateTime;
             string today = FormatDate(local.Date);
-            bool due = local.TimeOfDay >= ParseReviewTime(options.QuarantineReviewTime)
+            bool due = EnabledDays(options).Contains(local.Date.DayOfWeek)
+                && local.TimeOfDay >= ParseReviewTime(options.QuarantineReviewTime)
                 && !string.Equals(options.LastQuarantineReviewDate, today, StringComparison.Ordinal);
             if (due)
             {
@@ -576,12 +581,15 @@ public sealed class QuarantineReviewLoop : ICollectorLoop, IQuarantineReviewer
             Instant now = clock.GetCurrentInstant();
             QueueQuarantineReviewResult result = await queue.ReviewQuarantineAsync(now.ToDateTimeOffset(), cancellationToken)
                 .ConfigureAwait(false);
-            // A person is watching. A report held back by an earlier 5xx goes
-            // now; the day of silence after a 404 is kept, because the answer
-            // has not changed.
+            // A person is watching, and the report is not what they pressed
+            // for. It is raised here and sent on the minute pass that follows,
+            // never awaited under this gate: the client retries a 5xx for
+            // minutes before it gives up, and the window would sit on the
+            // button for all of it. A report held back by an earlier 5xx goes
+            // on that pass; the day of silence after a 404 is kept, because the
+            // answer has not changed.
             reportDue = true;
             reportRetryAt = null;
-            await MaybeReportAsync(now, cancellationToken).ConfigureAwait(false);
             return result;
         }
         finally
@@ -664,6 +672,21 @@ public sealed class QuarantineReviewLoop : ICollectorLoop, IQuarantineReviewer
     {
         ParseResult<LocalTime> parsed = LocalTimePattern.CreateWithInvariantCulture("HH:mm").Parse(value ?? string.Empty);
         return parsed.Success ? parsed.Value : DefaultReviewTime;
+    }
+
+    // The same days the scheduler captures on. A schedule the scheduler cannot
+    // read is already its failure to report every minute; the review falls
+    // back to the default week rather than adding a second voice to it.
+    private static IReadOnlyCollection<IsoDayOfWeek> EnabledDays(AgentOptions options)
+    {
+        try
+        {
+            return CaptureSchedule.FromOptions(options).EnabledDays;
+        }
+        catch (ArgumentException)
+        {
+            return CaptureSchedule.Default.EnabledDays;
+        }
     }
 
     private static string FormatDate(LocalDate date)

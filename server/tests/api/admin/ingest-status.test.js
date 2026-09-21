@@ -413,6 +413,7 @@ describe('the quarantine summary on the card', () => {
     expect(await read({ device, quarantine: rows })).toEqual({
       count: 2,
       final: 1,
+      attention: 1,
       items: [
         { captureId: 'b', tradingDate: '2026-09-17', code: 'snapshot_rejected', attempts: 0, final: true, quarantinedAt: '2026-09-17T20:30:09Z', lastAttemptAt: null, reportedAt: '2026-09-21T17:00:00Z' },
         { captureId: 'a', tradingDate: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false, quarantinedAt: '2026-09-14T20:30:09Z', lastAttemptAt: '2026-09-15T17:00:00Z', reportedAt: '2026-09-21T17:00:00Z' },
@@ -421,7 +422,7 @@ describe('the quarantine summary on the card', () => {
   });
 
   it('is empty for a device with a clear folder and null before step 46 or without a device', async () => {
-    expect(await read({ device, quarantine: [] })).toEqual({ count: 0, final: 0, items: [] });
+    expect(await read({ device, quarantine: [] })).toEqual({ count: 0, final: 0, attention: 0, items: [] });
     expect(await read({ device, quarantine: null })).toBeNull();
     expect(await read({ device: null, quarantine: rows })).toBeNull();
   });

@@ -387,7 +387,9 @@ public sealed class SnapshotQueueTests : IDisposable
      * side makes the same bytes acceptable, which is what happened this month
      * with four captures nobody could resend without the path. The review
      * sends such captures back to pending, counts the attempt, and stops at
-     * three. Everything else in the folder stays where it is. */
+     * three; a capture the CRM answers it already holds is sent again until
+     * the desk has replayed it there. Everything else in the folder stays
+     * where it is. */
 
     private static readonly DateTimeOffset ReviewNow = new(2026, 7, 24, 16, 0, 0, TimeSpan.Zero);
 
@@ -524,6 +526,48 @@ public sealed class SnapshotQueueTests : IDisposable
         Assert.Equal(QuarantinePolicy.MaximumAttempts, entry.Attempts);
         Assert.False(entry.WillRetry);
         Assert.Null(await queue.ClaimNextAsync());
+    }
+
+    [Fact]
+    public async Task ACaptureTheCrmAlreadyHoldsIsSentAgainUntilTheDeskHasReplayedIt()
+    {
+        // The CRM of today answers the resend of a 422 with 409
+        // capture_requires_replay: it kept the refused snapshot as a failed
+        // close and the desk replays it there. The resend costs the CRM one
+        // claim and is the only thing that clears this folder once the desk
+        // has acted, so it goes at every review, past the cap that holds for
+        // a 422, and the count keeps saying how long it has waited.
+        SnapshotQueue queue = CreateQueue();
+        QueueItem first = await QuarantinedAsync(queue, Guid.NewGuid(), "snapshot_processing_failed");
+
+        for (int day = 1; day <= QuarantinePolicy.MaximumAttempts + 1; day++)
+        {
+            QueueQuarantineReviewResult review = await queue.ReviewQuarantineAsync(ReviewNow.AddDays(day));
+            QueueQuarantineEntry requeued = Assert.Single(review.Requeued);
+            Assert.Equal(day, requeued.Attempts);
+            Assert.True(requeued.WillRetry);
+            QueueItem claimed = await queue.ClaimNextAsync();
+            await queue.QuarantineAsync(claimed, QuarantinePolicy.AwaitingReplayCode);
+        }
+
+        QueueQuarantineEntry waiting = Assert.Single(await queue.ListQuarantineAsync());
+        Assert.Equal(QuarantinePolicy.AwaitingReplayCode, waiting.Code);
+        Assert.Equal(QuarantinePolicy.MaximumAttempts + 1, waiting.Attempts);
+        Assert.True(waiting.WillRetry);
+        QueueQuarantineReason reason = queue.ReadQuarantineReason(first.PayloadPath + ".reason");
+        Assert.Equal("snapshot_processing_failed", reason.History[0].Code);
+        Assert.Equal(QuarantinePolicy.AwaitingReplayCode, reason.History[reason.History.Count - 1].Code);
+
+        // The desk replayed it there. The next resend is answered as a
+        // duplicate, the uploader completes it, and nothing of it is left here.
+        DateTimeOffset replayed = ReviewNow.AddDays(QuarantinePolicy.MaximumAttempts + 2);
+        Assert.Single((await queue.ReviewQuarantineAsync(replayed)).Requeued);
+        QueueItem accepted = await queue.ClaimNextAsync();
+        await queue.CompleteAsync(accepted, "batch-replayed", accepted.ContentSha256, replayed.AddMinutes(1));
+
+        Assert.False(File.Exists(first.PayloadPath + ".reason"));
+        Assert.Empty(Directory.EnumerateFiles(queue.QuarantineDirectory));
+        Assert.Empty(await queue.ListQuarantineAsync());
     }
 
     [Fact]

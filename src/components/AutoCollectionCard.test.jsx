@@ -561,4 +561,15 @@ describe('captures in quarantine on the card', () => {
     expect(html).toContain('1 will be retried by the agent at its next daily review.');
     expect(html).not.toContain('is final');
   });
+
+  it('says when a capture is waiting for a replay here, which the agent resends until then', () => {
+    // This CRM answers the resend of a failed close it holds with 409 until
+    // the close is replayed from Auto Collection; the agent keeps sending it,
+    // and the resend after the replay is what clears the VPS.
+    const waiting = { captureId: 'q3', tradingDate: '2026-09-15', code: 'capture_requires_replay', attempts: 4, final: false };
+    const html = render({ ...paired, quarantine: { count: 3, final: 1, items: [paired.quarantine.items[0], waiting, paired.quarantine.items[1]] } });
+    expect(html).toContain('3 captures in quarantine: ');
+    expect(html).toContain('title="capture_requires_replay, sent again until replayed here"');
+    expect(html).toContain('1 is final and will not be sent again by the agent; 1 waits for a replay here and is sent again by the agent until then; 1 will be retried by the agent at its next daily review.');
+  });
 });

@@ -73,8 +73,8 @@ function result(state, detail = STATUS_COPY[state][1]) {
  * Every capture in queue\quarantine on a VPS is one the desk cannot see from
  * here unless the agent says so, and since 1.0.7 it does, after every daily
  * review. The rows arrive through step 46 and this is the one place their
- * shape for a screen is decided: how many, how many the agent will never send
- * again on its own, and for each one whether this CRM holds it as a batch.
+ * shape for a screen is decided: how many, which of them a person here has
+ * to act on, and for each one whether this CRM holds it as a batch.
  *
  * FINAL comes from the row, where step 46 derives it from the agent's own
  * rule. It is never recomputed here: a second copy of the policy would be a
@@ -85,10 +85,33 @@ function result(state, detail = STATUS_COPY[state][1]) {
  * replay from the failed closes panel is the whole fix. A 400, a 413 and every
  * queue level code never reached storage, and saying so is what keeps the
  * desk from looking for a batch that does not exist.
+ *
+ * WHAT A RESEND GETS. This CRM answers a resend of a close it holds as failed
+ * with 409 capture_requires_replay, at the door, and keeps answering that
+ * until the close is replayed here. The agent sends such a capture again at
+ * every review, without a cap, because the resend after the replay is what
+ * clears the VPS (the CRM then answers duplicate). So a capture carrying that
+ * code is not final and still needs a person here, which is why attention is
+ * counted from the captures and not from `final` alone.
  */
-const RETRYABLE_QUARANTINE_CODES = new Set(['snapshot_processing_failed', 'unsupported_schema_version']);
+const CAPPED_QUARANTINE_CODES = new Set(['snapshot_processing_failed', 'unsupported_schema_version']);
+const AWAITING_REPLAY_CODE = 'capture_requires_replay';
 const QUARANTINE_MAX_ATTEMPTS = 3;
 const STORED_TERMINAL_STATES = new Set(['processed', 'incomplete', 'late_closed_day', 'replaced']);
+
+function processedHere(item) {
+  return STORED_TERMINAL_STATES.has(item?.stored?.status);
+}
+
+/* Whether a person on this side has to act for the capture to leave the VPS.
+ * A capture this CRM has already processed needs nothing here: the agent's
+ * next resend clears it, or the VPS keeps a file of a day this side is not
+ * missing. A final capture needs a look. A close the CRM holds as failed
+ * needs the replay, and the agent's resend only clears the VPS afterwards. */
+export function quarantineNeedsDesk(item = {}) {
+  if (processedHere(item)) return false;
+  return item.final === true || item.code === AWAITING_REPLAY_CODE;
+}
 
 export function summarizeQuarantine(items = []) {
   const sorted = [...items]
@@ -98,8 +121,24 @@ export function summarizeQuarantine(items = []) {
   return {
     count: sorted.length,
     final: sorted.filter((item) => item.final === true).length,
+    attention: sorted.filter(quarantineNeedsDesk).length,
     items: sorted,
   };
+}
+
+/* The four kinds a capture can be, counted once each, for the sentences the
+ * chip, the drawer and the client card build. `stored` is known on the fleet
+ * view and absent on the client card, where nothing is processed here. */
+export function quarantineCounts(quarantine) {
+  const items = Array.isArray(quarantine?.items) ? quarantine.items : [];
+  const counts = { count: Number(quarantine?.count) || items.length, processed: 0, final: 0, awaitingReplay: 0, retrying: 0 };
+  for (const item of items) {
+    if (processedHere(item)) counts.processed += 1;
+    else if (item.final === true) counts.final += 1;
+    else if (item.code === AWAITING_REPLAY_CODE) counts.awaitingReplay += 1;
+    else counts.retrying += 1;
+  }
+  return counts;
 }
 
 function plural(count, noun) {
@@ -107,33 +146,53 @@ function plural(count, noun) {
 }
 
 export function quarantineHeadline(quarantine) {
-  const count = Number(quarantine?.count) || 0;
-  if (!count) return '';
-  const final = Number(quarantine?.final) || 0;
-  const retrying = count - final;
-  const head = `${plural(count, 'capture')} in quarantine on the VPS.`;
+  const counts = quarantineCounts(quarantine);
+  if (!counts.count) return '';
+  const head = `${plural(counts.count, 'capture')} in quarantine on the VPS.`;
   const parts = [];
+  const { final, awaitingReplay, retrying, processed } = counts;
   if (final) parts.push(`${final} ${final === 1 ? 'is' : 'are'} final and ${final === 1 ? 'needs' : 'need'} action here`);
+  if (awaitingReplay) parts.push(`${awaitingReplay} ${awaitingReplay === 1 ? 'waits' : 'wait'} for a replay here and ${awaitingReplay === 1 ? 'is' : 'are'} sent again by the agent until then`);
   if (retrying) parts.push(`${retrying} will be retried by the agent at its next daily review`);
-  return `${head} ${parts.join('; ')}.`;
+  if (processed) parts.push(`${processed} already processed here`);
+  return parts.length ? `${head} ${parts.join('; ')}.` : head;
 }
 
 /* One sentence per capture, for the client drawer: what this CRM holds of
  * it and what the agent will do. The code stays beside it verbatim so the
- * desk can name it on the VPS. */
+ * desk can name it on the VPS. `label` is the short form for the row and
+ * `note` the one for a tooltip. */
 export function describeQuarantineItem(item = {}) {
   const attempts = Number.isInteger(item.attempts) ? item.attempts : 0;
-  const retryable = RETRYABLE_QUARANTINE_CODES.has(item.code);
+  const capped = CAPPED_QUARANTINE_CODES.has(item.code);
+  let label;
+  let note;
   let agent;
-  if (!item.final) agent = `The agent retries it at its next daily review, attempt ${attempts + 1} of ${QUARANTINE_MAX_ATTEMPTS}.`;
-  else if (retryable) agent = `The agent retried it ${QUARANTINE_MAX_ATTEMPTS} times and will not again.`;
-  else agent = 'The agent will not retry it.';
+  if (processedHere(item)) {
+    label = 'Processed here';
+    note = 'processed here';
+    agent = item.final
+      ? 'The agent will not send it again; the VPS keeps a file of a day this side is not missing.'
+      : 'The agent sends it again at its next daily review, and the answer clears it from the VPS.';
+  } else if (item.final) {
+    label = 'Final on the VPS';
+    note = 'final';
+    agent = capped ? `The agent retried it ${QUARANTINE_MAX_ATTEMPTS} times and will not again.` : 'The agent will not retry it.';
+  } else if (item.code === AWAITING_REPLAY_CODE) {
+    label = 'Waiting for a replay here';
+    note = 'sent again until replayed here';
+    agent = `The agent sends it again at its next daily review${attempts ? `, ${attempts} ${attempts === 1 ? 'time' : 'times'} so far` : ''}; the answer will not change until the close is replayed here, and the resend after that clears it from the VPS.`;
+  } else {
+    label = 'Agent will retry';
+    note = `attempt ${attempts + 1} of ${QUARANTINE_MAX_ATTEMPTS} next`;
+    agent = `The agent retries it at its next daily review, attempt ${attempts + 1} of ${QUARANTINE_MAX_ATTEMPTS}.`;
+  }
   let storage;
   if (!item.stored) storage = 'Never stored here. Only the VPS has this capture.';
   else if (item.stored.status === 'failed') storage = 'Stored here as a failed close. Reprocess it from the failed closes panel.';
   else if (STORED_TERMINAL_STATES.has(item.stored.status)) storage = 'Already processed here. Nothing is missing from this side.';
   else storage = 'Stored here and still being processed.';
-  return { storage, agent };
+  return { label, note, storage, agent };
 }
 
 export function classifyFleetRow({
@@ -249,15 +308,20 @@ export function summarizeIngestDay(batches = []) {
   };
 }
 
+const ATTENTION_STATES = new Set(['late', 'incomplete', 'offline', 'failed', 'update_required']);
+
 export function summarizeFleet(rows = []) {
   return rows.reduce((summary, row) => {
     const state = row.operationalStatus?.state || row.state || 'failed';
     summary.total += 1;
     summary[state] = (summary[state] || 0) + 1;
-    if (['late', 'incomplete', 'offline', 'failed', 'update_required'].includes(state)) summary.attention += 1;
     // A quarantine the agent will clear on its own is not the desk's problem
-    // yet. One holding a capture it will never send again is.
-    if (state === 'quarantine' && Number(row.quarantine?.final) > 0) summary.attention += 1;
+    // yet; one holding a capture only a person here can move is, whatever
+    // the row says about today. Counted from the quarantine itself rather
+    // than from the state, so a row held at the door this afternoon does not
+    // drop out of the count for as long as the deferral lasts, and a row
+    // already counted for being late is counted once.
+    if (ATTENTION_STATES.has(state) || Number(row.quarantine?.attention) > 0) summary.attention += 1;
     return summary;
   }, { total: 0, attention: 0 });
 }

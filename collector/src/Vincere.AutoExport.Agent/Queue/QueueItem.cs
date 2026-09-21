@@ -66,25 +66,46 @@ public sealed record QueueQuarantineReason(
 
 /* WHICH CODES THE REVIEW MAY SEND BACK, AND HOW MANY TIMES.
  *
- * Only a 422 is worth a second try: the CRM read the capture and could not
- * process it, and the fix for that lives on the server. A 400 and a 413 are
- * deterministic and the same bytes will be refused the same way tomorrow; a
- * 409 means the CRM already holds the batch and wants an operator, so a
- * resend is noise; a corrupt or mismatched queue file cannot be sent at all.
- * Three attempts is one a day for three days, which is longer than any fix
- * has taken, and after that the capture waits for the desk. */
+ * A 422 is the CRM reading the capture and failing to process it, and the
+ * fix for that lives on the server. Every resend of it the CRM takes in is a
+ * full processing pass there, so three is the budget: one a trading day for
+ * three trading days, longer than any fix has taken, and after that the
+ * capture waits for the desk.
+ *
+ * capture_requires_replay is what the CRM answers when a capture it already
+ * holds as a failed close is sent again: refused at the door, before storage
+ * or processing, because the desk replays the stored copy from the Auto
+ * Collection screen. That is the answer every 422 gets on its first resend
+ * today. It is sent again at every review and never capped, because the
+ * resend costs the CRM one claim, the answer changes only when the desk acts,
+ * and once it has the resend is what clears the folder: the CRM then answers
+ * duplicate and the queue completes the capture. Attempts keeps counting so
+ * the window and the fleet view can say how long it has waited.
+ *
+ * A 400 and a 413 are deterministic and the same bytes will be refused the
+ * same way tomorrow; capture_conflict means the CRM holds a different close
+ * for the day; a corrupt or mismatched queue file cannot be sent at all. */
 public static class QuarantinePolicy
 {
     public const int MaximumAttempts = 3;
 
-    public static bool IsRetryable(string code)
+    /// <summary>The 409 the CRM answers a resend of a failed close with, until the desk replays it there.</summary>
+    public const string AwaitingReplayCode = "capture_requires_replay";
+
+    /// <summary>The two 422 codes: a resend is a processing pass on the CRM, and the cap counts it.</summary>
+    public static bool IsCapped(string code)
     {
         return code is "snapshot_processing_failed" or "unsupported_schema_version";
     }
 
+    public static bool IsRetryable(string code)
+    {
+        return IsCapped(code) || code == AwaitingReplayCode;
+    }
+
     public static bool WillRetry(string code, int attempts)
     {
-        return IsRetryable(code) && attempts < MaximumAttempts;
+        return IsCapped(code) ? attempts < MaximumAttempts : code == AwaitingReplayCode;
     }
 }
 

@@ -168,8 +168,14 @@ const DEVICE_2 = 'd2d2d2d2-2222-4222-8222-222222222222';
 const CAPTURE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CAPTURE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CAPTURE_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+// What Supabase actually answers for a table missing from PostgREST's schema
+// cache (the same shape server/tests/export/fakeSupabase.js simulates), and
+// what a bare Postgres says. The window between the deploy and the migration
+// has to read as "no quarantine" under both.
+const PGRST_MISSING_TABLE = { code: 'PGRST205', message: "Could not find the table 'public.ingest_quarantine_reports' in the schema cache" };
+const POSTGRES_MISSING_TABLE = { code: '42P01', message: 'relation "public.ingest_quarantine_reports" does not exist' };
 
-function quarantineAdmin({ quarantineRows = [], batchRows = [], quarantineTableMissing = false } = {}) {
+function quarantineAdmin({ quarantineRows = [], batchRows = [], quarantineTableMissing = false, missingTableError = PGRST_MISSING_TABLE } = {}) {
   const asked = [];
   const now = '2026-07-23T20:59:00.000Z';
   const device = (id, clientId) => ({ id, client_id: clientId, status: 'active', health_status: 'online', schedule_time: '16:45:00', schedule_timezone: 'America/New_York', agent_version: '1.0.7', last_seen_at: now, created_at: now });
@@ -189,7 +195,7 @@ function quarantineAdmin({ quarantineRows = [], batchRows = [], quarantineTableM
         order: () => builder,
         range: async () => {
           if (table === 'ingest_quarantine_reports' && quarantineTableMissing) {
-            return { data: null, error: { code: '42P01', message: 'relation "public.ingest_quarantine_reports" does not exist' } };
+            return { data: null, error: missingTableError };
           }
           if (table === 'ingest_batches') {
             const captureFilter = filters.find((filter) => filter.column === 'capture_id');
@@ -222,6 +228,20 @@ async function listFleet(admin) {
     page: 1, pageSize: 25, search: '', tradingDate: '2026-07-23',
     now: new Date('2026-07-23T20:59:00.000Z'), releaseVersion: '1.0.7',
   });
+}
+
+// The whole handler over the real store, so what the Manager's screen gets
+// back is what is asserted, not only what the store would have returned.
+async function invokeFleet(admin) {
+  const handler = createHandler({
+    createClients: () => ({ admin, auth: {} }),
+    authorize: async () => ({ role: 'Manager' }),
+    now: () => new Date('2026-07-23T20:59:00.000Z'),
+    resolveRelease: async () => ({ version: '1.0.7' }),
+  });
+  const res = response();
+  await handler({ method: 'GET', query: {} }, res);
+  return res;
 }
 
 it('carries each device\'s quarantine on its row, loaded in one query for the devices listed', async () => {
@@ -259,11 +279,14 @@ it('counts a row as needing attention only when the agent will never send one of
   expect(withFinal.summary).toMatchObject({ quarantine: 2, attention: 2 });
 });
 
-it('still renders the fleet when migration step 46 has not run, with no quarantine anywhere', async () => {
+it.each([
+  ['Supabase', PGRST_MISSING_TABLE],
+  ['a bare Postgres', POSTGRES_MISSING_TABLE],
+])('still renders the fleet when migration step 46 has not run on %s, with no quarantine anywhere', async (_, missingTableError) => {
   // A relation that does not exist is an error from PostgREST, not an empty
   // list, and it must not blank the screen. Null rather than an empty
   // folder: nothing reported is not the same as reported empty.
-  const admin = quarantineAdmin({ quarantineTableMissing: true });
+  const admin = quarantineAdmin({ quarantineTableMissing: true, missingTableError });
   const result = await listFleet(admin);
   expect(result.total).toBe(2);
   expect(result.rows.map((row) => row.quarantine)).toEqual([null, null]);
@@ -272,10 +295,23 @@ it('still renders the fleet when migration step 46 has not run, with no quaranti
   expect(admin.asked.filter((call) => call.table === 'ingest_batches')).toHaveLength(1);
 });
 
+it('answers 200 with the fleet, not 500, in the window between the deploy and the migration', async () => {
+  const admin = quarantineAdmin({ quarantineTableMissing: true });
+  const res = await invokeFleet(admin);
+  expect(res.statusCode).toBe(200);
+  expect(res.body.total).toBe(2);
+  expect(res.body.rows.map((row) => row.quarantine)).toEqual([null, null]);
+});
+
+it('does not swallow any other failure of the quarantine read', async () => {
+  const admin = quarantineAdmin({ quarantineTableMissing: true, missingTableError: { code: '57014', message: 'canceling statement due to statement timeout' } });
+  await expect(listFleet(admin)).rejects.toMatchObject({ code: '57014' });
+});
+
 it('reports an empty folder as empty, and asks for no batches', async () => {
   const admin = quarantineAdmin({ quarantineRows: [] });
   const result = await listFleet(admin);
-  expect(result.rows[0].quarantine).toEqual({ count: 0, final: 0, items: [] });
+  expect(result.rows[0].quarantine).toEqual({ count: 0, final: 0, attention: 0, items: [] });
   expect(admin.asked.filter((call) => call.table === 'ingest_batches')).toHaveLength(1);
 });
 

@@ -25,10 +25,16 @@ function isMissingColumn(error) {
 const QUARANTINE_COLUMNS = 'id,device_id,client_id,capture_id,trading_date,code,attempts,quarantined_at,last_attempt_at,reported_at,final';
 const QUARANTINE_BATCH_COLUMNS = 'id,capture_id,device_id,status,error_code';
 
+// Supabase does not say 42P01 for a table it has never met: PostgREST answers
+// PGRST205 with "Could not find the table 'public.x' in the schema cache",
+// which is what clientExport.js and supabaseStore.js already recognise. A bare
+// Postgres says 42P01. Both are the migration not having run.
 function isMissingRelation(error) {
-  if (String(error?.code || '') === '42P01') return true;
+  const code = String(error?.code || '');
+  if (code === 'PGRST205' || code === '42P01') return true;
   const message = String(error?.message || '').toLowerCase();
-  return message.includes('relation') && message.includes('does not exist');
+  return /could not find the table/.test(message)
+    || (message.includes('relation') && message.includes('does not exist'));
 }
 const SAFE_DEVICE_ERRORS = new Set(['ninjatrader_not_running', 'addon_unavailable', 'capture_timeout', 'capture_failed', 'contract_mismatch', 'queue_capacity_warning', 'upload_failed', 'configuration_error', 'ingest_at_capacity']);
 const SAFE_BATCH_ERRORS = new Set(['storage_failed', 'normalization_failed', 'registry_load_failed', 'reconciliation_failed', 'persistence_failed', 'ingest_failed', 'immutable_object_conflict', 'unsupported_schema_version', 'invalid_auto_import_snapshot']);

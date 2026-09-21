@@ -363,9 +363,12 @@ public sealed class SnapshotQueue : ICollectorQueue
 
     /* THE REVIEW. QUARANTINE STOPS BEING A PLACE THINGS ONLY ARRIVE.
      *
-     * Every capture whose code the policy allows and whose attempts are under
-     * the cap goes back to pending, where the ordinary uploader sends it with
-     * nothing special about it. The reason file is rewritten first, with the
+     * Every capture whose code the policy allows, and whose attempts are under
+     * the cap where the code has one, goes back to pending, where the ordinary
+     * uploader sends it with nothing special about it. A capture the CRM holds
+     * as a failed close bounces straight back with capture_requires_replay
+     * until the desk replays it there; the resend after that is what clears
+     * it, so it goes every time. The reason file is rewritten first, with the
      * attempt counted, and only then is the payload moved: if the process dies
      * between the two the capture stays here with one attempt spent, which is
      * the safe side of the cap. The rewritten reason file is deliberately left

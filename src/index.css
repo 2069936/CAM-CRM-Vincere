@@ -4567,12 +4567,12 @@ tr:nth-child(2) .rank-badge {
 .collector-status.state-late, .collector-status.state-incomplete, .collector-status.state-offline, .collector-status.state-failed, .collector-status.state-update_required, .collector-status.state-quarantine { color: var(--warning); }
 .collector-status.state-revoked { color: var(--negative); }
 .collector-quarantine-chip { display: inline-flex; margin-left: 6px; padding: 3px 7px; border: 1px solid var(--warning-border); border-radius: 999px; color: var(--warning); font-size: 10.5px; font-weight: 700; white-space: nowrap; }
-.collector-quarantine-chip.final { color: var(--negative); border-color: var(--error-border); }
+.collector-quarantine-chip.attention { color: var(--negative); border-color: var(--error-border); }
 .collector-quarantine { margin-top: 18px; }
 .collector-quarantine h3 { margin-bottom: 4px; }
 .collector-quarantine > p { margin: 0; }
 .collector-quarantine-item { border-color: var(--warning-border); }
-.collector-quarantine-item.final { border-color: var(--error-border); }
+.collector-quarantine-item.attention { border-color: var(--error-border); }
 .collector-quarantine-item code { font-size: 11px; }
 .collector-quarantine-item > div > span { white-space: nowrap; }
 .collector-pagination { justify-content: flex-end; margin-top: 14px; }

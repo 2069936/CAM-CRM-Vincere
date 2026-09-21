@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
+import { describeQuarantineItem, quarantineCounts } from '../domain/autoCollectionFleet';
 import { describePairRefusal } from '../domain/pairRefusal';
 import {
   buildAutoCollectionViewModel,
@@ -69,15 +70,16 @@ function formatTradingDate(value) {
  * agent 1.0.7 the only person who knew was one with the path. The agent now
  * reports the folder after every daily review and this is where a CAM sees
  * it: how many, which trading days, and whether the agent will send them
- * again on its own or somebody has to. The code rides in the tooltip on each
- * date, so the desk can name it without the card turning into a table. */
+ * again on its own, is waiting for a replay here, or has given up. The code
+ * rides in the tooltip on each date, so the desk can name it without the
+ * card turning into a table. */
 function QuarantineLine({ quarantine, canReplay }) {
-  const count = Number(quarantine?.count) || 0;
-  if (!count) return null;
-  const final = Number(quarantine?.final) || 0;
-  const retrying = count - final;
+  const counts = quarantineCounts(quarantine);
+  if (!counts.count) return null;
+  const { count, final, awaitingReplay, retrying } = counts;
   const parts = [];
   if (final) parts.push(`${final} ${final === 1 ? 'is' : 'are'} final and will not be sent again by the agent`);
+  if (awaitingReplay) parts.push(`${awaitingReplay} ${awaitingReplay === 1 ? 'waits' : 'wait'} for a replay here and ${awaitingReplay === 1 ? 'is' : 'are'} sent again by the agent until then`);
   if (retrying) parts.push(`${retrying} will be retried by the agent at its next daily review`);
   return (
     <div className="auto-collection-quarantine" role="status" aria-label="Captures in quarantine on the VPS">
@@ -88,7 +90,7 @@ function QuarantineLine({ quarantine, canReplay }) {
           {(quarantine.items || []).map((item, index) => (
             <span key={item.captureId || `${item.tradingDate}-${index}`}>
               {index ? ', ' : ''}
-              <abbr title={`${item.code}${item.final ? ', final' : `, attempt ${(Number(item.attempts) || 0) + 1} of 3 next`}`}>{formatTradingDate(item.tradingDate)}</abbr>
+              <abbr title={`${item.code}, ${describeQuarantineItem(item).note}`}>{formatTradingDate(item.tradingDate)}</abbr>
             </span>
           ))}
         </strong>

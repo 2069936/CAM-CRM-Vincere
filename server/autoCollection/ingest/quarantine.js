@@ -92,8 +92,12 @@ function quarantineCode(value) {
   return QUARANTINE_CODES.has(value) ? value : 'other';
 }
 
+/* No upper bound. The two 422 codes stop at three, but a close the CRM already
+ * holds is sent again at every review until the desk replays it, and a month
+ * of that is thirty: the number is what the desk reads to see how long a
+ * replay has waited. */
 function attempts(value) {
-  if (!Number.isSafeInteger(value) || value < 0 || value > 10) throw invalidReport();
+  if (!Number.isSafeInteger(value) || value < 0) throw invalidReport();
   return value;
 }
 

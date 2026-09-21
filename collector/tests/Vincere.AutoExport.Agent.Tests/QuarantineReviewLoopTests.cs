@@ -17,9 +17,9 @@ namespace Vincere.AutoExport.Agent.Tests;
 
 /* THE LOOP THAT MAKES QUARANTINE A PLACE THINGS CAN LEAVE.
  *
- * Once a day at the configured New York time, and whenever the Setup window
- * asks, it has the queue review the folder; then it tells the CRM what is
- * there through the endpoint built for it. The CRM of today answers that
+ * Once a trading day at the configured New York time, and whenever the Setup
+ * window asks, it has the queue review the folder; then it tells the CRM what
+ * is there through the endpoint built for it. The CRM of today answers that
  * endpoint with 404, and the agent will be on the fleet for weeks before that
  * changes, so 404 has to be the quietest thing this loop ever meets. */
 public sealed class QuarantineReviewLoopTests
@@ -27,6 +27,9 @@ public sealed class QuarantineReviewLoopTests
     // 2026-07-23 is a Thursday. 16:05 UTC is 12:05 in New York in July.
     private static readonly Instant AfterMidday = Instant.FromUtc(2026, 7, 23, 16, 5);
     private static readonly Instant BeforeMidday = Instant.FromUtc(2026, 7, 23, 15, 55);
+    // The Saturday and the Monday after it, same hour.
+    private static readonly Instant SaturdayAfterMidday = Instant.FromUtc(2026, 7, 25, 16, 5);
+    private static readonly Instant MondayAfterMidday = Instant.FromUtc(2026, 7, 27, 16, 5);
 
     private static readonly QueueQuarantineEntry Retryable = new(
         Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
@@ -68,6 +71,61 @@ public sealed class QuarantineReviewLoopTests
         await harness.Loop.RunOnceAsync(CancellationToken.None);
         Assert.Equal(2, harness.Queue.Reviews);
         Assert.Equal("2026-07-24", harness.Options.Options.LastQuarantineReviewDate);
+    }
+
+    /* A CAPTURE REFUSED ON A FRIDAY CLOSE MUST NOT BE FINAL BY MONDAY NOON.
+     *
+     * The cap is three attempts and a fix on the CRM side lands on a working
+     * day. Reviewing on Saturday and Sunday would spend two of the three
+     * before the desk has had one working day to look, so the review keeps
+     * to the days the capture schedule is enabled for. */
+    [Fact]
+    public async Task TheReviewKeepsToTheScheduledTradingDays()
+    {
+        Harness harness = Harness.Create(SaturdayAfterMidday);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        harness.Clock.Now = SaturdayAfterMidday + Duration.FromDays(1);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(0, harness.Queue.Reviews);
+        Assert.Equal(0, harness.Options.SaveCount);
+        Assert.Null(harness.Options.Options.LastQuarantineReviewDate);
+
+        harness.Clock.Now = MondayAfterMidday;
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(1, harness.Queue.Reviews);
+        Assert.Equal("2026-07-27", harness.Options.Options.LastQuarantineReviewDate);
+    }
+
+    [Fact]
+    public async Task AScheduleThatTradesOnSaturdayReviewsOnSaturday()
+    {
+        Harness harness = Harness.Create(
+            SaturdayAfterMidday,
+            AgentOptions.CreateDefault() with { EnabledTradingDays = new[] { "Monday", "Saturday" } });
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, harness.Queue.Reviews);
+        Assert.Equal("2026-07-25", harness.Options.Options.LastQuarantineReviewDate);
+    }
+
+    [Fact]
+    public async Task AScheduleTheSchedulerCannotReadFallsBackToTheDefaultWeek()
+    {
+        // The scheduler already reports that schedule every minute; the
+        // review keeps its Monday to Friday rather than stopping too.
+        Harness harness = Harness.Create(
+            AfterMidday,
+            AgentOptions.CreateDefault() with { EnabledTradingDays = new[] { "Someday" } });
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(1, harness.Queue.Reviews);
+
+        harness.Clock.Now = SaturdayAfterMidday;
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(1, harness.Queue.Reviews);
     }
 
     [Fact]
@@ -143,6 +201,53 @@ public sealed class QuarantineReviewLoopTests
     }
 
     [Fact]
+    public async Task ManualRetryRunsOnASaturdayToo()
+    {
+        // Pressing the button is a way to not wait until Monday.
+        Harness harness = Harness.Create(SaturdayAfterMidday);
+
+        await harness.Loop.ReviewNowAsync();
+
+        Assert.Equal(1, harness.Queue.Reviews);
+        Assert.Equal(0, harness.Options.SaveCount);
+    }
+
+    /* THE BUTTON NEVER WAITS FOR THE CRM.
+     *
+     * The client retries a 5xx on the report for minutes before it gives up,
+     * and the window sits on the button for as long as the reply takes. So
+     * the manual review raises the report and answers; the minute pass that
+     * follows sends it. */
+    [Fact]
+    public async Task ManualRetryAnswersBeforeTheReportGoesAndTheNextPassSendsIt()
+    {
+        Harness harness = Harness.Create(
+            BeforeMidday,
+            AgentOptions.CreateDefault() with { LastQuarantineReviewDate = "2026-07-23" });
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Single(harness.Crm.Reports);
+        harness.Crm.Hold = new TaskCompletionSource<QuarantineReportOutcome>();
+
+        Task<QueueQuarantineReviewResult> pressed = harness.Loop.ReviewNowAsync();
+
+        // Everything under the button is synchronous in this harness except
+        // the CRM, so a button that awaited the report could not be done yet.
+        Assert.True(pressed.IsCompletedSuccessfully);
+        Assert.Equal(1, harness.Queue.Reviews);
+        Assert.Single(harness.Crm.Reports);
+
+        Task pass = harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.False(pass.IsCompleted);
+        Assert.Equal(2, harness.Crm.Reports.Count);
+        harness.Crm.Hold.SetResult(QuarantineReportOutcome.Accepted);
+        await pass;
+
+        // Sent once; the next pass has nothing due.
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(2, harness.Crm.Reports.Count);
+    }
+
+    [Fact]
     public async Task TheInventoryIsReportedOnceOnStartAndAgainAfterEachReview()
     {
         Harness harness = Harness.Create(BeforeMidday);
@@ -158,7 +263,10 @@ public sealed class QuarantineReviewLoopTests
         await harness.Loop.RunOnceAsync(CancellationToken.None);
         Assert.Equal(2, harness.Crm.Reports.Count);
 
+        // The button raises the report; the pass after it sends it.
         await harness.Loop.ReviewNowAsync();
+        Assert.Equal(2, harness.Crm.Reports.Count);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
         Assert.Equal(3, harness.Crm.Reports.Count);
 
         QuarantineReport report = harness.Crm.Reports[0];
@@ -233,6 +341,7 @@ public sealed class QuarantineReviewLoopTests
         await harness.Loop.RunOnceAsync(CancellationToken.None);
         harness.Clock.Now = BeforeMidday + Duration.FromHours(25) + Duration.FromMinutes(1);
         await harness.Loop.ReviewNowAsync();
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
 
         Assert.Equal(3, harness.Crm.Reports.Count);
     }
@@ -339,11 +448,14 @@ public sealed class QuarantineReviewLoopTests
         public List<QuarantineReport> Reports { get; } = new();
         public QuarantineReportOutcome Outcome { get; set; } = QuarantineReportOutcome.Accepted;
         public CrmClientException Error { get; set; }
+        /// <summary>When set, a report waits on it: a CRM that is slow to answer.</summary>
+        public TaskCompletionSource<QuarantineReportOutcome> Hold { get; set; }
 
         public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default)
         {
             Reports.Add(report);
             if (Error != null) throw Error;
+            if (Hold != null) return Hold.Task;
             return Task.FromResult(Outcome);
         }
 

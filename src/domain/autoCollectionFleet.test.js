@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFleetRow, describeQuarantineItem, newYorkTradingClock, quarantineHeadline, summarizeFleet, summarizeIngestDay, summarizeQuarantine } from './autoCollectionFleet';
+import { classifyFleetRow, describeQuarantineItem, newYorkTradingClock, quarantineCounts, quarantineHeadline, quarantineNeedsDesk, summarizeFleet, summarizeIngestDay, summarizeQuarantine } from './autoCollectionFleet';
 
 const onlineDevice = {
   status: 'active',
@@ -106,11 +106,16 @@ describe("the day's ingest line", () => {
  * Every 422 quarantine also exists here as a failed batch, raw snapshot
  * included, and a 400, a 413 and every queue level code never reached
  * storage. The split is what tells the desk whether the fix is one click in
- * the failed closes panel or a capture only the VPS has. */
+ * the failed closes panel or a capture only the VPS has. And this CRM answers
+ * a resend of a failed close it holds with 409 until the close is replayed
+ * here, so a capture carrying that code is not final and still needs a
+ * person: attention is counted from the captures, not from `final` alone. */
 describe('a quarantine on the VPS', () => {
   const retrying = { captureId: 'a', tradingDate: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false, stored: { batchId: 'b1', status: 'failed', errorCode: 'normalization_failed' } };
   const finalStored = { captureId: 'b', tradingDate: '2026-09-17', code: 'snapshot_processing_failed', attempts: 3, final: true, stored: { batchId: 'b2', status: 'failed', errorCode: 'persistence_failed' } };
   const neverStored = { captureId: 'c', tradingDate: '2026-09-18', code: 'snapshot_rejected', attempts: 0, final: true, stored: null };
+  const awaitingReplay = { captureId: 'd', tradingDate: '2026-09-15', code: 'capture_requires_replay', attempts: 4, final: false, stored: { batchId: 'b4', status: 'failed', errorCode: 'normalization_failed' } };
+  const replayed = { ...awaitingReplay, captureId: 'e', tradingDate: '2026-09-16', stored: { batchId: 'b5', status: 'processed', errorCode: null } };
 
   it('is its own state, ahead of a day that arrived and a day still to come', () => {
     const quarantine = summarizeQuarantine([retrying]);
@@ -140,16 +145,44 @@ describe('a quarantine on the VPS', () => {
     expect(classify('2026-07-23T21:01:00.000Z', { todayBatch: { status: 'processed' }, quarantine: summarizeQuarantine([]) }).state).toBe('received');
   });
 
-  it('needs attention only when the agent will never send one of them again', () => {
+  it('needs attention when a person here has to act: a final capture, or a close waiting for its replay', () => {
     const rows = (quarantine) => [{ quarantine, operationalStatus: classify('2026-07-23T21:01:00.000Z', { todayBatch: { status: 'processed' }, quarantine }) }];
     expect(summarizeFleet(rows(summarizeQuarantine([retrying])))).toMatchObject({ quarantine: 1, attention: 0 });
     expect(summarizeFleet(rows(summarizeQuarantine([retrying, finalStored])))).toMatchObject({ quarantine: 1, attention: 1 });
+    expect(summarizeFleet(rows(summarizeQuarantine([awaitingReplay])))).toMatchObject({ quarantine: 1, attention: 1 });
+    // Replayed here already: the agent's next resend clears the VPS and
+    // nothing on this side is missing.
+    expect(summarizeFleet(rows(summarizeQuarantine([replayed])))).toMatchObject({ quarantine: 1, attention: 0 });
+    expect(quarantineNeedsDesk({ ...finalStored, stored: { batchId: 'b2', status: 'processed' } })).toBe(false);
+    expect(quarantineNeedsDesk(neverStored)).toBe(true);
   });
 
-  it('counts final from the rows and lists newest trading date first', () => {
+  it('counts attention from the quarantine itself, so a row held at the door or already late is counted once', () => {
+    const quarantine = summarizeQuarantine([finalStored]);
+    const deferred = classify('2026-07-23T21:01:00.000Z', { quarantine, device: { ...onlineDevice, lastErrorCode: 'ingest_at_capacity' } });
+    expect(deferred.state).toBe('deferred');
+    expect(summarizeFleet([{ quarantine, operationalStatus: deferred }])).toMatchObject({ deferred: 1, attention: 1 });
+    const late = classify('2026-07-23T21:01:00.000Z', { quarantine });
+    expect(late.state).toBe('late');
+    expect(summarizeFleet([{ quarantine, operationalStatus: late }])).toMatchObject({ late: 1, attention: 1 });
+    expect(summarizeFleet([{ quarantine: summarizeQuarantine([retrying]), operationalStatus: classify('2026-07-23T21:01:00.000Z', { quarantine, device: { ...onlineDevice, lastErrorCode: 'ingest_at_capacity' } }) }])).toMatchObject({ attention: 0 });
+  });
+
+  it('counts final and attention from the rows and lists newest trading date first', () => {
     const summary = summarizeQuarantine([retrying, neverStored, finalStored]);
-    expect(summary).toMatchObject({ count: 3, final: 2 });
+    expect(summary).toMatchObject({ count: 3, final: 2, attention: 2 });
     expect(summary.items.map((item) => item.tradingDate)).toEqual(['2026-09-18', '2026-09-17', '2026-09-14']);
+    expect(summarizeQuarantine([])).toEqual({ count: 0, final: 0, attention: 0, items: [] });
+  });
+
+  it('says a close waiting for its replay is sent again by the agent until then', () => {
+    expect(quarantineHeadline(summarizeQuarantine([awaitingReplay, retrying, neverStored, replayed])))
+      .toBe('4 captures in quarantine on the VPS. 1 is final and needs action here; 1 waits for a replay here and is sent again by the agent until then; 1 will be retried by the agent at its next daily review; 1 already processed here.');
+    expect(quarantineCounts(summarizeQuarantine([awaitingReplay, replayed, { ...awaitingReplay, captureId: 'f' }])))
+      .toEqual({ count: 3, processed: 1, final: 0, awaitingReplay: 2, retrying: 0 });
+    // The client card has no `stored`: nothing reads as processed here.
+    expect(quarantineCounts({ count: 2, items: [{ code: 'capture_requires_replay', final: false }, { code: 'snapshot_rejected', final: true }] }))
+      .toEqual({ count: 2, processed: 0, final: 1, awaitingReplay: 1, retrying: 0 });
   });
 
   it('tells the desk where the capture is: stored here as a failed close, or only on the VPS', () => {
@@ -161,8 +194,24 @@ describe('a quarantine on the VPS', () => {
   });
 
   it('tells the desk what the agent will do, counting the attempt it is about to make', () => {
-    expect(describeQuarantineItem(retrying).agent).toBe('The agent retries it at its next daily review, attempt 2 of 3.');
-    expect(describeQuarantineItem(finalStored).agent).toBe('The agent retried it 3 times and will not again.');
+    expect(describeQuarantineItem(retrying)).toMatchObject({ label: 'Agent will retry', note: 'attempt 2 of 3 next', agent: 'The agent retries it at its next daily review, attempt 2 of 3.' });
+    expect(describeQuarantineItem(finalStored)).toMatchObject({ label: 'Final on the VPS', note: 'final', agent: 'The agent retried it 3 times and will not again.' });
     expect(describeQuarantineItem(neverStored).agent).toBe('The agent will not retry it.');
+    expect(describeQuarantineItem(awaitingReplay)).toMatchObject({
+      label: 'Waiting for a replay here',
+      note: 'sent again until replayed here',
+      storage: 'Stored here as a failed close. Reprocess it from the failed closes panel.',
+      agent: 'The agent sends it again at its next daily review, 4 times so far; the answer will not change until the close is replayed here, and the resend after that clears it from the VPS.',
+    });
+    expect(describeQuarantineItem({ ...awaitingReplay, attempts: 1 }).agent).toContain(', 1 time so far;');
+    expect(describeQuarantineItem({ ...awaitingReplay, attempts: 0 }).agent).toBe('The agent sends it again at its next daily review; the answer will not change until the close is replayed here, and the resend after that clears it from the VPS.');
+    // Replayed here already: the next resend is answered as a duplicate and the VPS lets go of it.
+    expect(describeQuarantineItem(replayed)).toMatchObject({
+      label: 'Processed here',
+      storage: 'Already processed here. Nothing is missing from this side.',
+      agent: 'The agent sends it again at its next daily review, and the answer clears it from the VPS.',
+    });
+    expect(describeQuarantineItem({ ...finalStored, stored: { batchId: 'b2', status: 'processed' } }).agent)
+      .toBe('The agent will not send it again; the VPS keeps a file of a day this side is not missing.');
   });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, RefreshCw, RotateCcw, Search, Server, X } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
-import { describeQuarantineItem, quarantineHeadline } from '../domain/autoCollectionFleet';
+import { describeQuarantineItem, quarantineHeadline, quarantineNeedsDesk } from '../domain/autoCollectionFleet';
 
 function fmt(value) {
   if (!value) return 'Not yet';
@@ -43,16 +43,17 @@ function ingestLine(day) {
 /* THE FOLDER ON THE VPS, ON THE SCREEN THAT CAN ACT ON IT.
  *
  * A chip on the row says how many captures the VPS is holding back, whatever
- * the row's own status says about today; the drawer lists them, each with
- * whether this CRM holds the capture as a failed close (replay it from the
- * panel above) or never stored it (only the VPS has it), and whether the
- * agent will send it again on its own. Absent, not zero, before migration
- * step 46 has run: a folder nobody has reported is not a folder known empty. */
+ * the row's own status says about today, and turns red when one of them needs
+ * a person here; the drawer lists them, each with whether this CRM holds the
+ * capture as a failed close (replay it from the panel above) or never stored
+ * it (only the VPS has it), and what the agent will do next. Absent, not
+ * zero, before migration step 46 has run: a folder nobody has reported is not
+ * a folder known empty. */
 function QuarantineChip({ quarantine }) {
   const count = Number(quarantine?.count) || 0;
   if (!count) return null;
-  const final = Number(quarantine?.final) || 0;
-  return <span className={`collector-quarantine-chip${final ? ' final' : ''}`} title={quarantineHeadline(quarantine)} aria-label={`Quarantine on the VPS: ${quarantineHeadline(quarantine)}`}>{count} in quarantine</span>;
+  const attention = Number(quarantine?.attention) || 0;
+  return <span className={`collector-quarantine-chip${attention ? ' attention' : ''}`} title={quarantineHeadline(quarantine)} aria-label={`Quarantine on the VPS: ${quarantineHeadline(quarantine)}`}>{count} in quarantine</span>;
 }
 
 function QuarantineList({ quarantine }) {
@@ -63,8 +64,8 @@ function QuarantineList({ quarantine }) {
     <p className="muted">{quarantineHeadline(quarantine)}</p>
     {(quarantine.items || []).map((item) => {
       const said = describeQuarantineItem(item);
-      return <article key={item.captureId} className={`collector-batch collector-quarantine-item${item.final ? ' final' : ''}`}>
-        <div><strong>{item.tradingDate} · <code>{item.code}</code></strong><span>{item.final ? 'Final on the VPS' : 'Agent will retry'}</span></div>
+      return <article key={item.captureId} className={`collector-batch collector-quarantine-item${quarantineNeedsDesk(item) ? ' attention' : ''}`}>
+        <div><strong>{item.tradingDate} · <code>{item.code}</code></strong><span>{said.label}</span></div>
         <small>{said.storage}</small>
         <small>{said.agent}</small>
       </article>;

@@ -71,9 +71,12 @@ describe('step 46 records what each VPS holds in quarantine', () => {
   });
 
   it('derives final from the agent\'s own retry rule and never takes it from the wire', () => {
-    // QuarantinePolicy in the agent: only the two 422 codes go back, and only
-    // under three attempts. Stored, so the fleet view reads it as a column.
-    expect(sql).toMatch(/final boolean generated always as \( attempts >= 3 or code not in \('snapshot_processing_failed', 'unsupported_schema_version'\) \) stored/);
+    // QuarantinePolicy in the agent: the two 422 codes go back under three
+    // attempts, capture_requires_replay goes back at every review (the CRM
+    // answers it at the door until the desk replays the failed close, and the
+    // resend after that is what clears the VPS), nothing else ever does.
+    // Stored, so the fleet view reads it as a column.
+    expect(sql).toMatch(/final boolean generated always as \( case when code in \('snapshot_processing_failed', 'unsupported_schema_version'\) then attempts >= 3 else code <> 'capture_requires_replay' end \) stored/);
     const record = functionDefinition('record_ingest_quarantine_report');
     expect(record).not.toMatch(/'final'/);
     expect(record).not.toMatch(/\bfinal =/);
@@ -94,11 +97,15 @@ describe('step 46 records what each VPS holds in quarantine', () => {
     expect(functionDefinition('record_ingest_quarantine_report')).toMatch(/or v_code not in \( 'snapshot_processing_failed'/);
   });
 
-  it('bounds attempts and the report size to what the agent can send', () => {
-    expect(sql).toMatch(/constraint ingest_quarantine_reports_attempts_check check \(attempts between 0 and 10\)/);
+  it('bounds the report size to what the agent can send, and attempts only below', () => {
+    // A close the desk has not replayed for a month has been sent again
+    // thirty times, and that number is what the row is for: no upper bound.
+    expect(sql).toMatch(/constraint ingest_quarantine_reports_attempts_check check \(attempts >= 0\)/);
+    expect(sql).not.toMatch(/attempts between/);
     const record = functionDefinition('record_ingest_quarantine_report');
     expect(record).toMatch(/or jsonb_array_length\(p_items\) > 200 then raise exception 'invalid_quarantine_report' using errcode = '22023'/);
-    expect(record).toMatch(/or v_attempts not between 0 and 10/);
+    expect(record).toMatch(/or v_attempts < 0/);
+    expect(record).not.toMatch(/v_attempts not between/);
   });
 
   it('validates every item and answers a malformed report with one public code', () => {

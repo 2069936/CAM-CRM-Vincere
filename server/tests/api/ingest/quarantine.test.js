@@ -146,7 +146,6 @@ describe('quarantine report body validation', () => {
     ['captureId', 'not-a-uuid'],
     ['captureId', null],
     ['attempts', -1],
-    ['attempts', 11],
     ['attempts', 1.5],
     ['attempts', '1'],
     ['quarantinedAt', '2026-09-14'],
@@ -158,6 +157,14 @@ describe('quarantine report body validation', () => {
     ['code', 42],
   ])('rejects an invalid %s value %j', (field, value) => {
     expect(() => normalizeQuarantineBody(body({ items: [item({ [field]: value })] }))).toThrow('invalid_quarantine_report');
+  });
+
+  it('puts no ceiling on attempts: a close the desk has not replayed is sent again every trading day', () => {
+    // capture_requires_replay is resent at every review until the desk replays
+    // the failed close here, and a month of that is thirty. The number is what
+    // the desk reads to see how long a replay has waited.
+    const waited = normalizeQuarantineBody(body({ items: [item({ code: 'capture_requires_replay', attempts: 31 })] }));
+    expect(waited.items[0]).toMatchObject({ code: 'capture_requires_replay', attempts: 31 });
   });
 
   it('rejects a timestamp beyond the five minute future skew, on the report and on an item', () => {

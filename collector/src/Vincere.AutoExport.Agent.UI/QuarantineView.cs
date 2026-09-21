@@ -20,10 +20,10 @@ public sealed class QuarantineItemView
     /// <summary>Why it is here, in a sentence a CAM can act on.</summary>
     public string Reason { get; init; }
 
-    /// <summary>"1 of 3 retries used", or empty when the code is never retried.</summary>
+    /// <summary>"1 of 3 retries used", "Sent again 4 times", or empty when the code is never retried.</summary>
     public string Attempts { get; init; }
 
-    /// <summary>What happens next: retried at the review time, or waiting for the desk.</summary>
+    /// <summary>What happens next: retried at the review time, sent again until the desk replays it, or waiting for the desk.</summary>
     public string Disposition { get; init; }
 
     /// <summary>Drives the row colour: pending when it will be retried, bad when it is final.</summary>
@@ -37,6 +37,7 @@ public sealed class QuarantineItemView
 public sealed class QuarantineView
 {
     private const int MaximumAttempts = 3;
+    private const string AwaitingReplayCode = "capture_requires_replay";
 
     public static QuarantineView Empty { get; } = new(0, Array.Empty<QuarantineItemView>(), null);
 
@@ -67,7 +68,7 @@ public sealed class QuarantineView
             int final = Items.Count - retrying;
             string head = Count == 1 ? "1 capture in quarantine" : $"{Count} captures in quarantine";
             List<string> parts = new();
-            if (retrying > 0) parts.Add($"{retrying} will be retried at {DisplayReviewTime()} New York");
+            if (retrying > 0) parts.Add($"{retrying} will be sent again at {DisplayReviewTime()} New York");
             if (final > 0) parts.Add($"{final} waiting for the desk");
             return parts.Count == 0 ? head : head + " · " + string.Join(", ", parts);
         }
@@ -93,11 +94,7 @@ public sealed class QuarantineView
                     Code = code,
                     Reason = Describe(code),
                     Attempts = DescribeAttempts(code, attempts),
-                    Disposition = willRetry
-                        ? "Will be retried at " + DisplayTime(reviewTime) + " New York"
-                        : attempts >= MaximumAttempts
-                            ? "Retried " + MaximumAttempts + " times, waiting for the desk"
-                            : "Waiting for the desk",
+                    Disposition = DescribeDisposition(code, attempts, willRetry, reviewTime),
                     Tone = willRetry ? "pending" : "bad",
                 });
             }
@@ -110,15 +107,17 @@ public sealed class QuarantineView
     //
     // The code is on the row too, for the desk. The sentence is for the person
     // at the VPS, who needs to know whether pressing the button will help. For
-    // a 422 it will, once the CRM side is fixed; for the rest it will not, and
-    // saying so is what stops the button being pressed every hour.
+    // a 422 it will, once the CRM side is fixed; for a capture the CRM already
+    // holds it will only after the desk has replayed it there; for the rest it
+    // will not, and saying so is what stops the button being pressed every
+    // hour.
     private static string Describe(string code) => code switch
     {
         "snapshot_processing_failed" => "The CRM could not process this capture",
         "unsupported_schema_version" => "The CRM did not recognise this capture's format",
         "snapshot_rejected" => "The CRM refused this capture",
         "payload_too_large" => "This capture is too large to upload",
-        "capture_requires_replay" => "The CRM already has this day and wants the desk to replay it",
+        AwaitingReplayCode => "The CRM already holds this day as a failed close and the desk has to replay it there",
         "capture_conflict" => "The CRM already has a different close for this day",
         "queue_payload_corrupt" or "queue_payload_mismatch" or "capture_id_conflict" => "The queued file is damaged",
         "receipt_invalid" or "receipt_hash_mismatch" => "The upload receipt is damaged",
@@ -126,13 +125,34 @@ public sealed class QuarantineView
         _ => code,
     };
 
+    // The same three kinds QuarantinePolicy in the service knows: the two 422
+    // codes, retried under a cap; the 409 for a close the CRM already holds,
+    // sent again at every review until the desk has replayed it; and the rest,
+    // never. The service says per row whether it will retry; this only words it.
+    private static bool IsCapped(string code) => code is "snapshot_processing_failed" or "unsupported_schema_version";
+
     private static string DescribeAttempts(string code, int attempts)
     {
-        bool retryable = code is "snapshot_processing_failed" or "unsupported_schema_version";
-        if (!retryable) return string.Empty;
-        return attempts == 1
-            ? $"1 of {MaximumAttempts} retries used"
-            : $"{attempts} of {MaximumAttempts} retries used";
+        if (IsCapped(code))
+        {
+            return attempts == 1
+                ? $"1 of {MaximumAttempts} retries used"
+                : $"{attempts} of {MaximumAttempts} retries used";
+        }
+        if (code == AwaitingReplayCode && attempts > 0)
+            return attempts == 1 ? "Sent again once" : $"Sent again {attempts} times";
+        return string.Empty;
+    }
+
+    private static string DescribeDisposition(string code, int attempts, bool willRetry, string reviewTime)
+    {
+        if (willRetry && code == AwaitingReplayCode)
+            return "Sent again at " + DisplayTime(reviewTime) + " New York until the desk replays it";
+        if (willRetry)
+            return "Will be retried at " + DisplayTime(reviewTime) + " New York";
+        if (IsCapped(code) && attempts >= MaximumAttempts)
+            return "Retried " + MaximumAttempts + " times, waiting for the desk";
+        return "Waiting for the desk";
     }
 
     private string DisplayReviewTime() => DisplayTime(ReviewTime);

@@ -165,13 +165,20 @@ so an un-migrated CRM sees every heartbeat it sees today.
 Without it the client card and the fleet view read as they do today: no
 quarantine line, no Quarantine state, no chip. With it, the client card says
 "N captures in quarantine" with the trading dates beside the version line, the
-fleet view ranks a row whose quarantine holds a capture the agent will not retry
-as needing attention, and the client drawer lists each capture with whether the
+fleet view ranks a row as needing attention when a capture in its quarantine
+needs a person here, and the client drawer lists each capture with whether the
 CRM holds it as a failed close (replay it from the failed closes panel) or never
-stored it. Every row is the VPS's own word: the agent reports after each review
-and the function replaces the device's inventory whole, so a capture that was
-accepted after a retry, or replayed from here, leaves the table on the next
-report and never before.
+stored it. What a resend gets from this CRM is the part to know: a failed close
+it already holds is answered 409 `capture_requires_replay` at the door, before
+storage or processing, and keeps being answered that way until the close is
+replayed here. The agent sends such a capture again at every review, without a
+cap, because the resend after the replay is what clears the VPS (the CRM then
+answers duplicate and the queue completes it); until then the capture counts as
+needing attention, and `attempts` on its row says how many trading days the
+replay has waited. Every row is the VPS's own word: the agent reports after each
+review and the function replaces the device's inventory whole, so a capture
+that was accepted after a retry, or replayed here and then resent, leaves the
+table on the next report and never before.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either

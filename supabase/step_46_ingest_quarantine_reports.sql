@@ -24,11 +24,16 @@
 -- key on (device_id, capture_id) is what makes a re report an upsert rather
 -- than a second row.
 --
--- `final` IS DERIVED, NOT SENT. The agent retries only the two 422 codes and
--- only under three attempts; everything else stays and waits for the desk.
--- The column repeats that rule here so the fleet view can rank a row as
--- needing attention without re deriving the agent's policy in JavaScript, and
--- so the rule lives in exactly one place on this side.
+-- `final` IS DERIVED, NOT SENT. The agent retries the two 422 codes under
+-- three attempts, and sends capture_requires_replay again at every review
+-- without a cap: that is the 409 this CRM answers when a failed close it
+-- already holds is sent again, and the resend after the desk's replay is what
+-- clears the folder on the VPS. Everything else stays and waits for the desk.
+-- The column repeats that rule here so the fleet view can say a row will not
+-- move on its own without re deriving the agent's policy in JavaScript, and so
+-- the rule lives in exactly one place on this side. Attempts has no upper
+-- bound for the same reason: a close the desk has not replayed for a month
+-- has been sent again thirty times, and the number is the point.
 
 begin;
 
@@ -46,12 +51,15 @@ create table if not exists public.ingest_quarantine_reports (
   quarantined_at timestamptz not null,
   last_attempt_at timestamptz,
   reported_at timestamptz not null default now(),
-  -- QuarantinePolicy in the agent: only snapshot_processing_failed and
-  -- unsupported_schema_version are ever sent back, and only while attempts is
-  -- under three. A row that is final will not move on its own.
+  -- QuarantinePolicy in the agent: snapshot_processing_failed and
+  -- unsupported_schema_version are sent back while attempts is under three,
+  -- capture_requires_replay is sent back at every review, nothing else ever
+  -- is. A row that is final will not move on its own.
   final boolean generated always as (
-    attempts >= 3
-    or code not in ('snapshot_processing_failed', 'unsupported_schema_version')
+    case
+      when code in ('snapshot_processing_failed', 'unsupported_schema_version') then attempts >= 3
+      else code <> 'capture_requires_replay'
+    end
   ) stored,
   constraint ingest_quarantine_reports_device_capture_unique unique (device_id, capture_id),
   -- THE VOCABULARY. The six the CRM itself answers with (two 422s, a 400, a
@@ -82,7 +90,7 @@ create table if not exists public.ingest_quarantine_reports (
     'tls_failure',
     'other'
   )),
-  constraint ingest_quarantine_reports_attempts_check check (attempts between 0 and 10)
+  constraint ingest_quarantine_reports_attempts_check check (attempts >= 0)
 );
 
 -- The client card asks by client, newest trading date first; the fleet view
@@ -189,7 +197,7 @@ begin
           'tls_failure',
           'other'
         )
-        or v_attempts not between 0 and 10
+        or v_attempts < 0
         or v_quarantined_at > v_now + interval '5 minutes'
         or (v_last_attempt_at is not null and v_last_attempt_at > v_now + interval '5 minutes')
         -- The same capture twice in one report is not a report of a folder,

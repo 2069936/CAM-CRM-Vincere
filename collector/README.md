@@ -58,17 +58,23 @@ runner before release.
 ## Quarantine review
 
 A capture the CRM refuses leaves the queue for `queue\quarantine` with a
-`.reason` file beside it. Since 1.0.7 that folder is reviewed once a day, at
-`quarantineReviewTime` in `config.json` (New York, default `12:00`), and on
-demand from the Setup window's Retry quarantine now button. A capture refused
-with a 422 (`snapshot_processing_failed`, `unsupported_schema_version`) is
-sent back to pending, up to three times, because a fix on the CRM side makes
-the same bytes acceptable; every other code is final and waits for the desk.
-The reason file carries the attempt count and history and stays behind when
-the payload leaves, so a capture that bounces keeps its count. After each
-review the service offers the inventory to `POST /api/ingest/quarantine`; a
-CRM without that endpoint answers 404, which is logged once at INFO and tried
-again the next day. Nothing about the quarantine ever rides on the heartbeat.
+`.reason` file beside it. Since 1.0.7 that folder is reviewed once a trading
+day (the days in `enabledTradingDays`), at `quarantineReviewTime` in
+`config.json` (New York, default `12:00`), and on demand from the Setup
+window's Retry quarantine now button. A capture refused with a 422
+(`snapshot_processing_failed`, `unsupported_schema_version`) is sent back to
+pending, up to three times, because a fix on the CRM side makes the same bytes
+acceptable. The CRM of today keeps the refused snapshot as a failed close and
+answers the resend 409 `capture_requires_replay` until the desk replays that
+close from Auto Collection; a capture holding that code is sent again at every
+review, without a cap, because the resend after the replay is what clears it
+from the folder (the CRM answers duplicate and the queue completes it). Every
+other code is final and waits for the desk. The reason file carries the
+attempt count and history and stays behind when the payload leaves, so a
+capture that bounces keeps its count. After each review the service offers
+the inventory to `POST /api/ingest/quarantine`; a CRM without that endpoint
+answers 404, which is logged once at INFO and tried again the next day.
+Nothing about the quarantine ever rides on the heartbeat.
 
 ## Windows packaging boundary
 
