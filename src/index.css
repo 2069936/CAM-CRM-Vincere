@@ -4421,6 +4421,22 @@ tr:nth-child(2) .rank-badge {
 .auto-collection-detail span { margin-bottom: 3px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; }
 .auto-collection-detail strong,
 .auto-collection-detail time { color: var(--text); font-size: 10.5px; font-style: normal; font-weight: 600; }
+.auto-collection-quarantine {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 6px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--warning);
+}
+.auto-collection-quarantine svg { flex-shrink: 0; margin-top: 1px; }
+.auto-collection-quarantine > div { display: grid; gap: 3px; min-width: 0; }
+.auto-collection-quarantine strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.auto-collection-quarantine abbr { text-decoration: underline dotted; cursor: help; }
+.auto-collection-quarantine span { color: var(--muted); font-size: 10.5px; }
 .auto-collection-footer {
   display: flex;
   align-items: center;
@@ -4548,8 +4564,17 @@ tr:nth-child(2) .rank-badge {
 .collector-status { display: inline-flex; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .collector-status.state-received { color: var(--success); }
 .collector-status.state-expected, .collector-status.state-pending, .collector-status.state-not_expected { color: var(--info); }
-.collector-status.state-late, .collector-status.state-incomplete, .collector-status.state-offline, .collector-status.state-failed, .collector-status.state-update_required { color: var(--warning); }
+.collector-status.state-late, .collector-status.state-incomplete, .collector-status.state-offline, .collector-status.state-failed, .collector-status.state-update_required, .collector-status.state-quarantine { color: var(--warning); }
 .collector-status.state-revoked { color: var(--negative); }
+.collector-quarantine-chip { display: inline-flex; margin-left: 6px; padding: 3px 7px; border: 1px solid var(--warning-border); border-radius: 999px; color: var(--warning); font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.collector-quarantine-chip.final { color: var(--negative); border-color: var(--error-border); }
+.collector-quarantine { margin-top: 18px; }
+.collector-quarantine h3 { margin-bottom: 4px; }
+.collector-quarantine > p { margin: 0; }
+.collector-quarantine-item { border-color: var(--warning-border); }
+.collector-quarantine-item.final { border-color: var(--error-border); }
+.collector-quarantine-item code { font-size: 11px; }
+.collector-quarantine-item > div > span { white-space: nowrap; }
 .collector-pagination { justify-content: flex-end; margin-top: 14px; }
 .collector-drawer {
   position: fixed;

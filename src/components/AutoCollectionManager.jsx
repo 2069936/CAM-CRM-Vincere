@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, RefreshCw, RotateCcw, Search, Server, X } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
+import { describeQuarantineItem, quarantineHeadline } from '../domain/autoCollectionFleet';
 
 function fmt(value) {
   if (!value) return 'Not yet';
@@ -37,6 +38,38 @@ function ingestLine(day) {
   const shed = `${day.shed} shed at the door`;
   const stage = day.slowestStage ? `, mostly ${day.slowestStage.name}` : '';
   return `${day.accepted} accepted · ${shed} · median ${duration(day.medianMs)} · slowest ${duration(day.slowestMs)}${stage}`;
+}
+
+/* THE FOLDER ON THE VPS, ON THE SCREEN THAT CAN ACT ON IT.
+ *
+ * A chip on the row says how many captures the VPS is holding back, whatever
+ * the row's own status says about today; the drawer lists them, each with
+ * whether this CRM holds the capture as a failed close (replay it from the
+ * panel above) or never stored it (only the VPS has it), and whether the
+ * agent will send it again on its own. Absent, not zero, before migration
+ * step 46 has run: a folder nobody has reported is not a folder known empty. */
+function QuarantineChip({ quarantine }) {
+  const count = Number(quarantine?.count) || 0;
+  if (!count) return null;
+  const final = Number(quarantine?.final) || 0;
+  return <span className={`collector-quarantine-chip${final ? ' final' : ''}`} title={quarantineHeadline(quarantine)} aria-label={`Quarantine on the VPS: ${quarantineHeadline(quarantine)}`}>{count} in quarantine</span>;
+}
+
+function QuarantineList({ quarantine }) {
+  const count = Number(quarantine?.count) || 0;
+  if (!count) return null;
+  return <section className="collector-quarantine" aria-label="Captures in quarantine on the VPS">
+    <h3>Quarantine on the VPS</h3>
+    <p className="muted">{quarantineHeadline(quarantine)}</p>
+    {(quarantine.items || []).map((item) => {
+      const said = describeQuarantineItem(item);
+      return <article key={item.captureId} className={`collector-batch collector-quarantine-item${item.final ? ' final' : ''}`}>
+        <div><strong>{item.tradingDate} · <code>{item.code}</code></strong><span>{item.final ? 'Final on the VPS' : 'Agent will retry'}</span></div>
+        <small>{said.storage}</small>
+        <small>{said.agent}</small>
+      </article>;
+    })}
+  </section>;
 }
 
 export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false }) {
@@ -158,6 +191,10 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
   }
 
   const totalPages = Math.max(1, Math.ceil((fleet?.total || 0) / 25));
+  // The drawer's client is one of the rows on this page in the ordinary case,
+  // a click on it; opened from the audit log it may not be, and then the
+  // folder is simply not listed here.
+  const drawerQuarantine = selectedClient ? (fleet?.rows || []).find((row) => row.client.uuid === selectedClient.uuid)?.quarantine : null;
   return <div className="page-stack auto-collection-manager">
     <div className="page-header manager-subpage-header"><div><span className="eyebrow">Manager Operations</span><h1>Auto Collection</h1><div className="occ-status-row"><Server size={14} /><span>Expected versus received NinjaTrader snapshots across every VPS.</span></div></div><button className="ghost-button" type="button" disabled={loading} onClick={() => loadFleet()}><RefreshCw size={14} /> Refresh</button></div>
     {error ? <div className="notice error" role="alert"><AlertTriangle size={15} /> {error}</div> : null}
@@ -170,9 +207,9 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     <section className="collector-summary" aria-label="Fleet summary"><div><strong>{fleet?.summary?.total || 0}</strong><span>Clients</span></div><div><strong>{fleet?.summary?.received || 0}</strong><span>Received</span></div><div><strong>{fleet?.summary?.expected || 0}</strong><span>Expected</span></div><div className="attention"><strong>{fleet?.summary?.attention || 0}</strong><span>Need attention</span></div></section>
     {fleet?.ingestDay ? <p className="muted collector-ingest-line" aria-label="Ingest timing for the selected day">Ingest on {fleet.tradingDate || 'the selected day'}: {ingestLine(fleet.ingestDay)}</p> : null}
     <section className="panel"><div className="collector-toolbar"><form onSubmit={(event) => { event.preventDefault(); setPage(1); setQuery(search.trim()); }}><Search size={15} /><input aria-label="Search clients or VPS" placeholder="Search clients or VPS" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="secondary-button" type="submit">Search</button></form><span>{fleet?.total || 0} clients</span></div>
-      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client / VPS</th><th>Schedule</th><th>Last seen</th><th>Today&apos;s batch</th><th>Rows</th><th>Version</th><th>Status</th></tr></thead><tbody>{(fleet?.rows || []).map((row) => <tr key={row.client.uuid}><td><button type="button" className="collector-client-button" onClick={() => openHistory(row.client)}><strong>{row.client.name}</strong><small>{row.device?.id || 'Not paired'}</small></button></td><td>{schedule(row.device?.schedule)}</td><td>{fmt(row.device?.lastSeenAt)}</td><td>{row.todayBatch?.status || '—'}</td><td><small>{counts(row.todayBatch?.rowCounts)}</small></td><td>{row.device?.agentVersion || '—'}</td><td><span className={`collector-status state-${row.operationalStatus.state}`} aria-label={`Collector status: ${row.operationalStatus.label}`}>{row.operationalStatus.label}</span></td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client / VPS</th><th>Schedule</th><th>Last seen</th><th>Today&apos;s batch</th><th>Rows</th><th>Version</th><th>Status</th></tr></thead><tbody>{(fleet?.rows || []).map((row) => <tr key={row.client.uuid}><td><button type="button" className="collector-client-button" onClick={() => openHistory(row.client)}><strong>{row.client.name}</strong><small>{row.device?.id || 'Not paired'}</small></button></td><td>{schedule(row.device?.schedule)}</td><td>{fmt(row.device?.lastSeenAt)}</td><td>{row.todayBatch?.status || '—'}</td><td><small>{counts(row.todayBatch?.rowCounts)}</small></td><td>{row.device?.agentVersion || '—'}</td><td><span className={`collector-status state-${row.operationalStatus.state}`} aria-label={`Collector status: ${row.operationalStatus.label}`}>{row.operationalStatus.label}</span><QuarantineChip quarantine={row.quarantine} /></td></tr>)}</tbody></table></div>
       <div className="collector-pagination"><button className="ghost-button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {totalPages}</span><button className="ghost-button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>Next</button></div>
     </section>
-    {selectedClient ? <aside className="collector-drawer" aria-label={`Batch history for ${selectedClient.name}`}><header><div><span className="eyebrow">Client detail</span><h2>{selectedClient.name}</h2></div><button className="ghost-button icon-only" aria-label="Close batch history" onClick={() => setSelectedClient(null)}><X size={16} /></button></header><h3>Immutable batch history</h3>{batches.map((batch) => <article key={batch.id} className="collector-batch"><div><strong>{batch.tradingDate} · {batch.status}</strong><span>{fmt(batch.receivedAt)}</span></div><small>{counts(batch.rowCounts)}</small>{batch.errorCode ? <span className="negative">{batch.errorCode}</span> : null}{batch.replacesBatchId ? <small>Replaces {batch.replacesBatchId}</small> : null}<div><button className="ghost-button" onClick={() => download(batch, 'json')}><Download size={13} /> Download JSON</button><button className="ghost-button" onClick={() => download(batch, 'zip')}><Download size={13} /> Download four-CSV ZIP</button>{['failed', 'incomplete', 'late_closed_day'].includes(batch.status) && replayBatch?.id !== batch.id ? <button className={isClosedReplay(batch) ? 'danger-button' : 'secondary-button'} onClick={() => { setReplayBatch(batch); setReplayReason(''); setReplayConfirmation(''); }}><RotateCcw size={13} /> {isClosedReplay(batch) ? 'Replace closed day' : 'Reprocess batch'}</button> : null}</div></article>)}{!batches.length ? <p className="muted">No batches found for this client.</p> : null}{replayBatch ? <form className="collector-replay-confirm" onSubmit={runReplay}><span className="eyebrow">Controlled replay</span><h3>{isClosedReplay(replayBatch) ? 'Replace this closed day?' : 'Reprocess immutable snapshot?'}</h3><p>This creates a new processing attempt. The original stored snapshot is never modified.</p><label>Operational reason<textarea value={replayReason} maxLength={500} onChange={(event) => setReplayReason(event.target.value)} /></label><label>Type <code>{`${isClosedReplay(replayBatch) ? 'REPLACE' : 'REPROCESS'} ${selectedClient.name} ${replayBatch.tradingDate}`}</code> to confirm<input value={replayConfirmation} onChange={(event) => setReplayConfirmation(event.target.value)} autoComplete="off" /></label><div><button type="button" className="ghost-button" disabled={replayBusy} onClick={() => setReplayBatch(null)}>Cancel</button><button type="submit" className={isClosedReplay(replayBatch) ? 'danger-button' : 'primary-button'} disabled={replayBusy || replayReason.trim().length < 10 || replayConfirmation !== `${isClosedReplay(replayBatch) ? 'REPLACE' : 'REPROCESS'} ${selectedClient.name} ${replayBatch.tradingDate}`}>{replayBusy ? 'Processing…' : isClosedReplay(replayBatch) ? 'Replace closed day' : 'Reprocess batch'}</button></div></form> : null}</aside> : null}
+    {selectedClient ? <aside className="collector-drawer" aria-label={`Batch history for ${selectedClient.name}`}><header><div><span className="eyebrow">Client detail</span><h2>{selectedClient.name}</h2></div><button className="ghost-button icon-only" aria-label="Close batch history" onClick={() => setSelectedClient(null)}><X size={16} /></button></header><QuarantineList quarantine={drawerQuarantine} /><h3>Immutable batch history</h3>{batches.map((batch) => <article key={batch.id} className="collector-batch"><div><strong>{batch.tradingDate} · {batch.status}</strong><span>{fmt(batch.receivedAt)}</span></div><small>{counts(batch.rowCounts)}</small>{batch.errorCode ? <span className="negative">{batch.errorCode}</span> : null}{batch.replacesBatchId ? <small>Replaces {batch.replacesBatchId}</small> : null}<div><button className="ghost-button" onClick={() => download(batch, 'json')}><Download size={13} /> Download JSON</button><button className="ghost-button" onClick={() => download(batch, 'zip')}><Download size={13} /> Download four-CSV ZIP</button>{['failed', 'incomplete', 'late_closed_day'].includes(batch.status) && replayBatch?.id !== batch.id ? <button className={isClosedReplay(batch) ? 'danger-button' : 'secondary-button'} onClick={() => { setReplayBatch(batch); setReplayReason(''); setReplayConfirmation(''); }}><RotateCcw size={13} /> {isClosedReplay(batch) ? 'Replace closed day' : 'Reprocess batch'}</button> : null}</div></article>)}{!batches.length ? <p className="muted">No batches found for this client.</p> : null}{replayBatch ? <form className="collector-replay-confirm" onSubmit={runReplay}><span className="eyebrow">Controlled replay</span><h3>{isClosedReplay(replayBatch) ? 'Replace this closed day?' : 'Reprocess immutable snapshot?'}</h3><p>This creates a new processing attempt. The original stored snapshot is never modified.</p><label>Operational reason<textarea value={replayReason} maxLength={500} onChange={(event) => setReplayReason(event.target.value)} /></label><label>Type <code>{`${isClosedReplay(replayBatch) ? 'REPLACE' : 'REPROCESS'} ${selectedClient.name} ${replayBatch.tradingDate}`}</code> to confirm<input value={replayConfirmation} onChange={(event) => setReplayConfirmation(event.target.value)} autoComplete="off" /></label><div><button type="button" className="ghost-button" disabled={replayBusy} onClick={() => setReplayBatch(null)}>Cancel</button><button type="submit" className={isClosedReplay(replayBatch) ? 'danger-button' : 'primary-button'} disabled={replayBusy || replayReason.trim().length < 10 || replayConfirmation !== `${isClosedReplay(replayBatch) ? 'REPLACE' : 'REPROCESS'} ${selectedClient.name} ${replayBatch.tradingDate}`}>{replayBusy ? 'Processing…' : isClosedReplay(replayBatch) ? 'Replace closed day' : 'Reprocess batch'}</button></div></form> : null}</aside> : null}
   </div>;
 }

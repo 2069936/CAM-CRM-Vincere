@@ -1,12 +1,13 @@
 import daily from '../../server/autoCollection/ingest/daily.js';
 import heartbeat from '../../server/autoCollection/ingest/heartbeat.js';
 import pair from '../../server/autoCollection/ingest/pair.js';
+import quarantine from '../../server/autoCollection/ingest/quarantine.js';
 
-// Preserve the existing public routes (/api/ingest/daily, /heartbeat and /pair)
-// while deploying one Vercel function instead of three.
+// Preserve the existing public routes (/api/ingest/daily, /heartbeat, /pair and
+// /quarantine) while deploying one Vercel function instead of four.
 export const config = { api: { bodyParser: false } };
 
-const handlers = Object.freeze({ daily, heartbeat, pair });
+const handlers = Object.freeze({ daily, heartbeat, pair, quarantine });
 
 export function resolveIngestHandler(action) {
   return handlers[action] || null;

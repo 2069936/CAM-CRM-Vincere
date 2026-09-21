@@ -22,6 +22,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 43 | `step_43_row_level_security.sql` | Row Level Security on every table that lacked it, plus `login_email_for_username` | Closes the database to the publishable key that ships in the browser bundle |
 | 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates with each month's own days, keyed by vendor first, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report, which reads the saved import instead of asking for the 36 files again |
 | 45 | `step_45_ingest_admission_control.sql` | `ingest_admission_settings` with the tunable cap, `claim_ingest_batch_v4` with the `at_capacity` outcome and its per device retry spread, `finalize_ingest_batch_v3`, and `admission_deferrals` / `stage_durations_ms` / `ingest_duration_ms` on `ingest_batches` | The door that answers 429 with Retry-After when too many uploads are in flight at once, and the ingest timing line on the Auto Collection fleet view |
+| 46 | `step_46_ingest_quarantine_reports.sql` | `ingest_quarantine_reports`: what each VPS holds in `queue\quarantine`, one row per capture with the code, the attempt count and whether the agent will retry it, plus `record_ingest_quarantine_report`, which replaces a device's inventory whole | The quarantine count and dates on the client card, the Quarantine state and chip on the Auto Collection fleet view, and the `POST /api/ingest/quarantine` report agent 1.0.7 sends after its daily review |
 
 ## These three groups behave differently
 
@@ -95,7 +96,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -151,6 +152,26 @@ Retry-After, the capture stays queued on the VPS and arrives a minute later, and
 the fleet view gains one line for the selected day: accepted, shed at the door,
 median and slowest ingest time. No VPS needs updating for any of that; the agents
 already deployed honour 429 and Retry-After.
+
+**46 degrades gracefully, in both directions, and the agent that fills it is
+already written to expect its absence.** Agent 1.0.7 reviews its
+quarantine folder once a day and then posts the inventory to
+`POST /api/ingest/quarantine`. Against a CRM without this step's table the
+endpoint answers 404 `not_found`, which is exactly what a CRM without the
+endpoint at all answers, and the agent treats both the same way: one INFO line,
+one attempt a day, nothing marked on the device. Nothing rides on the heartbeat,
+so an un-migrated CRM sees every heartbeat it sees today.
+
+Without it the client card and the fleet view read as they do today: no
+quarantine line, no Quarantine state, no chip. With it, the client card says
+"N captures in quarantine" with the trading dates beside the version line, the
+fleet view ranks a row whose quarantine holds a capture the agent will not retry
+as needing attention, and the client drawer lists each capture with whether the
+CRM holds it as a failed close (replay it from the failed closes panel) or never
+stored it. Every row is the VPS's own word: the agent reports after each review
+and the function replaces the device's inventory whole, so a capture that was
+accepted after a retry, or replayed from here, leaves the table on the next
+report and never before.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either

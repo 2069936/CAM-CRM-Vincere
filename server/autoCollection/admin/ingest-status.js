@@ -2,6 +2,7 @@ import process from 'node:process';
 import { createApiClients, requireAppUser, requireClientAssignment } from '../../apiLib/apiAuth.js';
 import { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
+import { summarizeQuarantine } from '../../../src/domain/autoCollectionFleet.js';
 
 export { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 
@@ -22,6 +23,7 @@ const DEVICE_SELECT = [
   'last_capture_at', 'last_success_at', 'last_error_code', 'revoked_at', 'created_at',
 ].join(',');
 const ENROLLMENT_SELECT = 'id,expires_at,consumed_at,revoked_at,created_at';
+const QUARANTINE_SELECT = 'device_id,capture_id,trading_date,code,attempts,quarantined_at,last_attempt_at,reported_at,final';
 
 /* The refusals a CAM is allowed to read back, by the name the agent already
  * shows on the VPS. Anything unrecognised collapses, so a reason added to the
@@ -84,21 +86,49 @@ export function createIngestStatusStore(admin) {
     }
   }
 
+  /* WHAT THE VPS SAYS IT IS HOLDING BACK.
+   *
+   * Agent 1.0.7 reports its quarantine folder after every daily review and
+   * step 46 keeps the rows. Read by client, newest trading date first, and
+   * narrowed to the device on the card afterwards. Null, not empty, when the
+   * table is not there yet: an un-migrated database has nothing to say about
+   * a quarantine and the card says nothing, the same way the fleet view does.
+   *
+   * Swallows its own failure for the same reason the pairing audit does: the
+   * device and enrollment rows are the card, and a courtesy line is not worth
+   * a 500 on the client page. */
+  async function quarantineRows(clientId) {
+    try {
+      const { data, error } = await admin
+        .from('ingest_quarantine_reports')
+        .select(QUARANTINE_SELECT)
+        .eq('client_id', clientId)
+        .order('trading_date', { ascending: false })
+        .limit(200);
+      if (error) return null;
+      return data || [];
+    } catch {
+      return null;
+    }
+  }
+
   return {
     async load(clientId) {
       const clientPromise = admin.from('clients').select('id,name').eq('id', clientId).maybeSingle();
       const devicePromise = maybeLatest('ingest_devices', DEVICE_SELECT, clientId);
       const enrollmentPromise = maybeLatest('ingest_enrollments', ENROLLMENT_SELECT, clientId);
       const attemptPromise = lastPairAttempt(clientId);
-      const [{ data: client, error }, device, enrollment, attempt] = await Promise.all([
+      const quarantinePromise = quarantineRows(clientId);
+      const [{ data: client, error }, device, enrollment, attempt, quarantine] = await Promise.all([
         clientPromise,
         devicePromise,
         enrollmentPromise,
         attemptPromise,
+        quarantinePromise,
       ]);
       if (error) throw error;
       if (!client?.id) throw new ApiError(404, 'client_not_found');
-      return { client, device, enrollment, attempt };
+      return { client, device, enrollment, attempt, quarantine };
     },
   };
 }
@@ -124,6 +154,25 @@ function publicDevice(row) {
       timezone: row.schedule_timezone,
     },
   };
+}
+
+/* The count, the dates and the codes, which are a fixed vocabulary and carry
+ * no free text. Only the device on the card: a row left by a machine this
+ * client no longer uses is not this client's problem. */
+function publicQuarantine(rows, device) {
+  if (!Array.isArray(rows) || !device) return null;
+  return summarizeQuarantine(rows
+    .filter((row) => row.device_id === device.id)
+    .map((row) => ({
+      captureId: row.capture_id,
+      tradingDate: row.trading_date,
+      code: row.code,
+      attempts: Number.isInteger(row.attempts) ? row.attempts : 0,
+      final: row.final === true,
+      quarantinedAt: row.quarantined_at,
+      lastAttemptAt: row.last_attempt_at || null,
+      reportedAt: row.reported_at,
+    })));
 }
 
 function publicEnrollment(row) {
@@ -193,11 +242,15 @@ export function createHandler({
           generate: ['Manager', 'CAM'].includes(actor.role),
           rebind: ['Manager', 'CAM'].includes(actor.role),
           revoke: ['Manager', 'CAM'].includes(actor.role),
+          // Replaying a refused close happens in Auto Collection, which only a
+          // Manager can open, so only a Manager is pointed there.
+          replay: actor.role === 'Manager',
         },
         release,
         device: publicDevice(status.device),
         enrollment: publicEnrollment(status.enrollment),
         lastPairAttempt: publicPairAttempt(status.attempt),
+        quarantine: publicQuarantine(status.quarantine, status.device),
       });
     } catch (error) {
       return handleApiError(res, publicError(error), { fallbackMessage: 'collector_status_failed' });

@@ -16,6 +16,7 @@ const STATUS_COPY = Object.freeze({
   update_required: ['Update required', 'The Windows collector must be updated.'],
   not_installed: ['Not installed', 'No VPS is paired with this client.'],
   not_expected: ['Weekend', 'No regular weekday capture is expected.'],
+  quarantine: ['Quarantine', 'The VPS holds captures the CRM refused.'],
 });
 
 function validDate(value) {
@@ -62,9 +63,77 @@ export function compareVersions(left, right) {
   return 0;
 }
 
-function result(state) {
-  const [label, detail] = STATUS_COPY[state];
+function result(state, detail = STATUS_COPY[state][1]) {
+  const [label] = STATUS_COPY[state];
   return { state, label, detail };
+}
+
+/* WHAT THE VPS HOLDS THAT THE CRM REFUSED.
+ *
+ * Every capture in queue\quarantine on a VPS is one the desk cannot see from
+ * here unless the agent says so, and since 1.0.7 it does, after every daily
+ * review. The rows arrive through step 46 and this is the one place their
+ * shape for a screen is decided: how many, how many the agent will never send
+ * again on its own, and for each one whether this CRM holds it as a batch.
+ *
+ * FINAL comes from the row, where step 46 derives it from the agent's own
+ * rule. It is never recomputed here: a second copy of the policy would be a
+ * second thing to keep in step with the machine.
+ *
+ * STORED is matched by capture id against the batches the CRM holds. A 422
+ * was refused after the storage stage ran, so the raw snapshot is here and a
+ * replay from the failed closes panel is the whole fix. A 400, a 413 and every
+ * queue level code never reached storage, and saying so is what keeps the
+ * desk from looking for a batch that does not exist.
+ */
+const RETRYABLE_QUARANTINE_CODES = new Set(['snapshot_processing_failed', 'unsupported_schema_version']);
+const QUARANTINE_MAX_ATTEMPTS = 3;
+const STORED_TERMINAL_STATES = new Set(['processed', 'incomplete', 'late_closed_day', 'replaced']);
+
+export function summarizeQuarantine(items = []) {
+  const sorted = [...items]
+    .filter((item) => item && typeof item === 'object')
+    .sort((left, right) => String(right.tradingDate || '').localeCompare(String(left.tradingDate || ''))
+      || String(right.quarantinedAt || '').localeCompare(String(left.quarantinedAt || '')));
+  return {
+    count: sorted.length,
+    final: sorted.filter((item) => item.final === true).length,
+    items: sorted,
+  };
+}
+
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+export function quarantineHeadline(quarantine) {
+  const count = Number(quarantine?.count) || 0;
+  if (!count) return '';
+  const final = Number(quarantine?.final) || 0;
+  const retrying = count - final;
+  const head = `${plural(count, 'capture')} in quarantine on the VPS.`;
+  const parts = [];
+  if (final) parts.push(`${final} ${final === 1 ? 'is' : 'are'} final and ${final === 1 ? 'needs' : 'need'} action here`);
+  if (retrying) parts.push(`${retrying} will be retried by the agent at its next daily review`);
+  return `${head} ${parts.join('; ')}.`;
+}
+
+/* One sentence per capture, for the client drawer: what this CRM holds of
+ * it and what the agent will do. The code stays beside it verbatim so the
+ * desk can name it on the VPS. */
+export function describeQuarantineItem(item = {}) {
+  const attempts = Number.isInteger(item.attempts) ? item.attempts : 0;
+  const retryable = RETRYABLE_QUARANTINE_CODES.has(item.code);
+  let agent;
+  if (!item.final) agent = `The agent retries it at its next daily review, attempt ${attempts + 1} of ${QUARANTINE_MAX_ATTEMPTS}.`;
+  else if (retryable) agent = `The agent retried it ${QUARANTINE_MAX_ATTEMPTS} times and will not again.`;
+  else agent = 'The agent will not retry it.';
+  let storage;
+  if (!item.stored) storage = 'Never stored here. Only the VPS has this capture.';
+  else if (item.stored.status === 'failed') storage = 'Stored here as a failed close. Reprocess it from the failed closes panel.';
+  else if (STORED_TERMINAL_STATES.has(item.stored.status)) storage = 'Already processed here. Nothing is missing from this side.';
+  else storage = 'Stored here and still being processed.';
+  return { storage, agent };
 }
 
 export function classifyFleetRow({
@@ -72,6 +141,7 @@ export function classifyFleetRow({
   device,
   todayBatch,
   releaseVersion,
+  quarantine = null,
   schedule = device?.schedule,
   graceMinutes = 15,
   offlineMinutes = 10,
@@ -99,13 +169,19 @@ export function classifyFleetRow({
 
   const lastSeen = validDate(device.lastSeenAt);
   if (!lastSeen || current.getTime() - lastSeen.getTime() > offlineMinutes * 60_000) return result('offline');
-  if (clock.weekday === 0 || clock.weekday === 6) return result('not_expected');
-  if (todayBatch && RECEIVED_BATCH_STATES.has(todayBatch.status)) return result('received');
-
+  const weekend = clock.weekday === 0 || clock.weekday === 6;
+  const todayReceived = Boolean(todayBatch) && RECEIVED_BATCH_STATES.has(todayBatch.status);
   const scheduledAt = scheduleMinute(schedule?.time);
+  // Today's batch missing past the grace period is the newer fact and keeps
+  // its word; the row's chip still says what the folder holds.
+  if (!weekend && !todayReceived && clock.minuteOfDay > scheduledAt + graceMinutes) return result('late');
+  // Older than today and the one thing on this row a person may have to act
+  // on, so it outranks a day that arrived and a day that is still to come.
+  if (Number(quarantine?.count) > 0) return result('quarantine', quarantineHeadline(quarantine));
+  if (weekend) return result('not_expected');
+  if (todayReceived) return result('received');
   if (clock.minuteOfDay < scheduledAt) return result('pending');
-  if (clock.minuteOfDay <= scheduledAt + graceMinutes) return result('expected');
-  return result('late');
+  return result('expected');
 }
 
 /* WHAT THE INGEST COST TODAY, IN ONE LINE.
@@ -179,6 +255,9 @@ export function summarizeFleet(rows = []) {
     summary.total += 1;
     summary[state] = (summary[state] || 0) + 1;
     if (['late', 'incomplete', 'offline', 'failed', 'update_required'].includes(state)) summary.attention += 1;
+    // A quarantine the agent will clear on its own is not the desk's problem
+    // yet. One holding a capture it will never send again is.
+    if (state === 'quarantine' && Number(row.quarantine?.final) > 0) summary.attention += 1;
     return summary;
   }, { total: 0, attention: 0 });
 }

@@ -13,7 +13,7 @@ describe('ingest route dispatcher', () => {
     ])).not.toThrow();
   });
 
-  it.each(['daily', 'heartbeat', 'pair'])('preserves /api/ingest/%s', (action) => {
+  it.each(['daily', 'heartbeat', 'pair', 'quarantine'])('preserves /api/ingest/%s', (action) => {
     expect(resolveIngestHandler(action)).toEqual(expect.any(Function));
   });
 

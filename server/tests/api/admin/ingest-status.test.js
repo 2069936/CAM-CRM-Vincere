@@ -117,6 +117,17 @@ describe('collector profile status endpoint', () => {
     expect(serialized).not.toContain('private_database_detail');
   });
 
+  it('tells a Manager, and only a Manager, where the replay lives', async () => {
+    const { handler } = setup();
+    const res = response();
+    await handler({ method: 'GET', query: { clientUuid: CLIENT_ID }, headers: { authorization: 'Bearer session' } }, res);
+    expect(res.body.permissions).toMatchObject({ replay: true });
+    const cam = setup({ authorize: vi.fn(async () => ({ id: 'actor-2', role: 'CAM' })) });
+    const camRes = response();
+    await cam.handler({ method: 'GET', query: { clientUuid: CLIENT_ID }, headers: { authorization: 'Bearer session' } }, camRes);
+    expect(camRes.body.permissions).toMatchObject({ generate: true, replay: false });
+  });
+
   it('preserves a controlled permission denial and hides storage detail', async () => {
     const { handler } = setup({ authorize: vi.fn(async () => { throw Object.assign(new Error('Client assignment required.'), { status: 403 }); }) });
     const res = response();
@@ -261,6 +272,7 @@ describe('collector profile status store', () => {
       ingest_devices: { id: DEVICE_ID, health_status: 'online' },
       ingest_enrollments: { id: ENROLLMENT_ID, expires_at: '2026-07-23T17:00:00Z' },
       audit_logs: { created_at: '2026-09-01T21:03:00Z', after_data: { reasonCode: 'machine_conflict' } },
+      ingest_quarantine_reports: [{ device_id: DEVICE_ID, capture_id: 'c1', trading_date: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false }],
     };
     function builder(table) {
       const query = {
@@ -279,10 +291,11 @@ describe('collector profile status store', () => {
       device: rows.ingest_devices,
       enrollment: rows.ingest_enrollments,
       attempt: rows.audit_logs,
+      quarantine: rows.ingest_quarantine_reports,
     });
     const columns = selected.map(([, value]) => value).join(',');
     expect(columns).not.toMatch(/product.?key|machine|credential|code_hash|metadata/i);
-    expect(admin.from).toHaveBeenCalledTimes(4);
+    expect(admin.from).toHaveBeenCalledTimes(5);
   });
 
   it('renders the page even when the audit read fails, because a card is worth more than a 500', async () => {
@@ -375,5 +388,72 @@ describe('the last refused pairing attempt', () => {
     const res = response();
     await handler({ method: 'GET', query: { clientUuid: CLIENT_ID }, headers: { authorization: 'Bearer session' } }, res);
     expect(res.body.lastPairAttempt).toBeNull();
+  });
+});
+
+/* WHAT THE VPS SAYS IT IS HOLDING BACK, ON THE CARD. */
+describe('the quarantine summary on the card', () => {
+  const OTHER_DEVICE = '66666666-6666-4666-8666-666666666666';
+  const device = { id: DEVICE_ID, status: 'active', health_status: 'online', schedule_time: '16:30:00', schedule_timezone: 'America/New_York' };
+  const rows = [
+    { device_id: DEVICE_ID, capture_id: 'a', trading_date: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, quarantined_at: '2026-09-14T20:30:09Z', last_attempt_at: '2026-09-15T17:00:00Z', reported_at: '2026-09-21T17:00:00Z', final: false },
+    { device_id: DEVICE_ID, capture_id: 'b', trading_date: '2026-09-17', code: 'snapshot_rejected', attempts: 0, quarantined_at: '2026-09-17T20:30:09Z', last_attempt_at: null, reported_at: '2026-09-21T17:00:00Z', final: true },
+    // Left behind by a VPS this client no longer uses. Not this card's problem.
+    { device_id: OTHER_DEVICE, capture_id: 'c', trading_date: '2026-09-18', code: 'snapshot_rejected', attempts: 0, quarantined_at: '2026-09-18T20:30:09Z', last_attempt_at: null, reported_at: '2026-09-21T17:00:00Z', final: true },
+  ];
+
+  const read = async (status) => {
+    const { handler } = setup({ status: { client: { id: CLIENT_ID, name: 'Acme Trading' }, enrollment: null, attempt: null, ...status } });
+    const res = response();
+    await handler({ method: 'GET', query: { clientUuid: CLIENT_ID }, headers: { authorization: 'Bearer session' } }, res);
+    return res.body.quarantine;
+  };
+
+  it('carries the count, the final count and each capture with its date and code, newest first', async () => {
+    expect(await read({ device, quarantine: rows })).toEqual({
+      count: 2,
+      final: 1,
+      items: [
+        { captureId: 'b', tradingDate: '2026-09-17', code: 'snapshot_rejected', attempts: 0, final: true, quarantinedAt: '2026-09-17T20:30:09Z', lastAttemptAt: null, reportedAt: '2026-09-21T17:00:00Z' },
+        { captureId: 'a', tradingDate: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false, quarantinedAt: '2026-09-14T20:30:09Z', lastAttemptAt: '2026-09-15T17:00:00Z', reportedAt: '2026-09-21T17:00:00Z' },
+      ],
+    });
+  });
+
+  it('is empty for a device with a clear folder and null before step 46 or without a device', async () => {
+    expect(await read({ device, quarantine: [] })).toEqual({ count: 0, final: 0, items: [] });
+    expect(await read({ device, quarantine: null })).toBeNull();
+    expect(await read({ device: null, quarantine: rows })).toBeNull();
+  });
+});
+
+describe('the quarantine read in the status store', () => {
+  function adminWhere(quarantineResult) {
+    return {
+      from: vi.fn((table) => {
+        const query = {
+          select() { return query; },
+          eq() { return query; },
+          order() { return query; },
+          limit() { return query; },
+          maybeSingle() { return query; },
+          then(resolve, reject) {
+            if (table === 'ingest_quarantine_reports') return Promise.resolve(quarantineResult).then(resolve, reject);
+            return Promise.resolve({ data: { id: CLIENT_ID, name: 'Acme Trading' }, error: null }).then(resolve, reject);
+          },
+        };
+        return query;
+      }),
+    };
+  }
+
+  it('renders the page when the table is not there yet, with the quarantine unknown rather than empty', async () => {
+    const admin = adminWhere({ data: null, error: { code: '42P01', message: 'relation "public.ingest_quarantine_reports" does not exist' } });
+    await expect(createIngestStatusStore(admin).load(CLIENT_ID)).resolves.toMatchObject({ quarantine: null, client: { id: CLIENT_ID } });
+  });
+
+  it('reads the rows when the table is there', async () => {
+    const admin = adminWhere({ data: [{ device_id: DEVICE_ID, capture_id: 'a' }], error: null });
+    await expect(createIngestStatusStore(admin).load(CLIENT_ID)).resolves.toMatchObject({ quarantine: [{ device_id: DEVICE_ID, capture_id: 'a' }] });
   });
 });

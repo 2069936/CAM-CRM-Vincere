@@ -37,7 +37,7 @@ describe('step 45 puts a door on the ingest endpoint', () => {
     expect(runbook).toMatch(/^\| 45 \| `step_45_ingest_admission_control\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 45 | `step_45_ingest_admission_control.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 44 | `step_44_algorithm_benchmarks.sql`'));
-    expect(runbook).toContain('→ 44 → 45.');
+    expect(runbook).toMatch(/→ 44 → 45(?: →|\.)/);
   });
 
   it('says in the runbook what the desk loses by not running it', () => {

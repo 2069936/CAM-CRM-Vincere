@@ -104,3 +104,48 @@ it('says a measurement is missing rather than calling it zero', () => {
   expect(html).toContain('2 shed at the door');
   expect(html).toContain('median not measured');
 });
+
+/* THE FOLDER ON THE VPS, ON THE SCREEN THAT CAN ACT ON IT. */
+const quarantined = {
+  ...fleet,
+  rows: [{
+    ...fleet.rows[0],
+    quarantine: {
+      count: 2,
+      final: 1,
+      items: [
+        { captureId: 'q2', tradingDate: '2026-09-17', code: 'snapshot_rejected', attempts: 0, final: true, stored: null },
+        { captureId: 'q1', tradingDate: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false, stored: { batchId: 'b1', status: 'failed', errorCode: 'normalization_failed' } },
+      ],
+    },
+    operationalStatus: { state: 'quarantine', label: 'Quarantine', detail: '2 captures in quarantine on the VPS. 1 is final and needs action here; 1 will be retried by the agent at its next daily review.' },
+  }],
+};
+
+it('shows a chip on the row with how many captures the VPS is holding back', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={quarantined} disableAutoLoad />);
+  expect(html).toContain('2 in quarantine');
+  expect(html).toContain('aria-label="Collector status: Quarantine"');
+  expect(html).toContain('1 is final and needs action here');
+});
+
+it('lists each quarantined capture in the drawer, with where it is and what the agent will do', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={quarantined} initialSelectedClient={quarantined.rows[0].client} initialBatches={[]} disableAutoLoad />);
+  expect(html).toContain('Quarantine on the VPS');
+  expect(html).toContain('2026-09-14');
+  expect(html).toContain('2026-09-17');
+  expect(html).toContain('snapshot_processing_failed');
+  expect(html).toContain('snapshot_rejected');
+  // The 422 is stored here and one click away; the 400 never reached storage.
+  expect(html).toContain('Stored here as a failed close. Reprocess it from the failed closes panel.');
+  expect(html).toContain('Never stored here. Only the VPS has this capture.');
+  expect(html).toContain('attempt 2 of 3');
+  expect(html).toContain('The agent will not retry it.');
+});
+
+it('shows no chip and no list when the folder is empty or has not been reported', () => {
+  const empty = { ...fleet, rows: [{ ...fleet.rows[0], quarantine: { count: 0, final: 0, items: [] } }] };
+  expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={empty} initialSelectedClient={empty.rows[0].client} initialBatches={[]} disableAutoLoad />)).not.toContain('in quarantine');
+  const unreported = { ...fleet, rows: [{ ...fleet.rows[0], quarantine: null }] };
+  expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={unreported} initialSelectedClient={unreported.rows[0].client} initialBatches={[]} disableAutoLoad />)).not.toContain('Quarantine on the VPS');
+});

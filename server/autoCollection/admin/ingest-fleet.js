@@ -2,7 +2,7 @@ import process from 'node:process';
 import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
-import { classifyFleetRow, newYorkTradingClock, summarizeFleet, summarizeIngestDay } from '../../../src/domain/autoCollectionFleet.js';
+import { classifyFleetRow, newYorkTradingClock, summarizeFleet, summarizeIngestDay, summarizeQuarantine } from '../../../src/domain/autoCollectionFleet.js';
 
 const DEVICE_COLUMNS = 'id,client_id,status,health_status,schedule_time,schedule_timezone,agent_version,addon_version,ninjatrader_version,last_seen_at,last_capture_at,last_success_at,last_error_code,revoked_at,created_at';
 const BATCH_COLUMNS = 'id,capture_id,client_id,device_id,trading_date,captured_at,received_at,processed_at,status,row_counts,completeness,daily_import_id,replaces_batch_id,error_code';
@@ -17,6 +17,18 @@ function isMissingColumn(error) {
   if (String(error?.code || '') === '42703') return true;
   const message = String(error?.message || '').toLowerCase();
   return message.includes('column') && message.includes('does not exist');
+}
+/* THE TABLE STEP 46 ADDS, ASKED FOR ON ITS OWN SO ITS ABSENCE IS NOT THIS
+ * SCREEN'S PROBLEM EITHER. Same shape as the timing columns above: a fleet
+ * view on a database that has not run the migration shows every row it showed
+ * before and no quarantine anywhere, rather than nothing at all. */
+const QUARANTINE_COLUMNS = 'id,device_id,client_id,capture_id,trading_date,code,attempts,quarantined_at,last_attempt_at,reported_at,final';
+const QUARANTINE_BATCH_COLUMNS = 'id,capture_id,device_id,status,error_code';
+
+function isMissingRelation(error) {
+  if (String(error?.code || '') === '42P01') return true;
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('relation') && message.includes('does not exist');
 }
 const SAFE_DEVICE_ERRORS = new Set(['ninjatrader_not_running', 'addon_unavailable', 'capture_timeout', 'capture_failed', 'contract_mismatch', 'queue_capacity_warning', 'upload_failed', 'configuration_error', 'ingest_at_capacity']);
 const SAFE_BATCH_ERRORS = new Set(['storage_failed', 'normalization_failed', 'registry_load_failed', 'reconciliation_failed', 'persistence_failed', 'ingest_failed', 'immutable_object_conflict', 'unsupported_schema_version', 'invalid_auto_import_snapshot']);
@@ -82,6 +94,66 @@ function publicBatch(row) {
   };
 }
 
+/* One quarantined capture as the VPS reported it, with what this CRM holds of
+ * it. `stored` is the batch matched by capture id on the same device, or null
+ * when the capture never reached storage, which is the fact the drawer needs
+ * to say "replay it from here" versus "only the VPS has it". */
+function publicQuarantineItem(row, batch) {
+  return {
+    captureId: row.capture_id,
+    tradingDate: row.trading_date,
+    code: row.code,
+    attempts: Number.isInteger(row.attempts) ? row.attempts : 0,
+    final: row.final === true,
+    quarantinedAt: row.quarantined_at,
+    lastAttemptAt: row.last_attempt_at || null,
+    reportedAt: row.reported_at,
+    stored: batch ? {
+      batchId: batch.id,
+      status: batch.status,
+      errorCode: SAFE_BATCH_ERRORS.has(batch.error_code) ? batch.error_code : batch.error_code ? 'ingest_failed' : null,
+    } : null,
+  };
+}
+
+/* An `in` list rides in the URL, and a fleet of 139 machines with a bad week
+ * behind it could name thousands of captures. Asked for in slices so no one
+ * request outgrows what the platform will route. */
+async function loadWhereIn(admin, table, columns, column, values, decorate = (query) => query) {
+  const rows = [];
+  const sliceSize = 100;
+  for (let from = 0; from < values.length; from += sliceSize) {
+    const slice = values.slice(from, from + sliceSize);
+    rows.push(...await loadAll(admin, table, columns, (query) => decorate(query.in(column, slice))));
+  }
+  return rows;
+}
+
+/* The quarantine rows for the devices on the screen, and the batches they
+ * name, only when there is something to name. Both grouped by device so the
+ * row build below is a map lookup. */
+async function loadQuarantine(admin, deviceIds) {
+  if (!deviceIds.length) return { byDevice: new Map(), supported: true };
+  let rows;
+  try {
+    rows = await loadWhereIn(admin, 'ingest_quarantine_reports', QUARANTINE_COLUMNS, 'device_id', deviceIds,
+      (query) => query.order('trading_date', { ascending: false }));
+  } catch (error) {
+    if (!isMissingRelation(error)) throw error;
+    return { byDevice: new Map(), supported: false };
+  }
+  const captureIds = [...new Set(rows.map((row) => row.capture_id))];
+  const batches = await loadWhereIn(admin, 'ingest_batches', QUARANTINE_BATCH_COLUMNS, 'capture_id', captureIds);
+  const batchByCapture = new Map(batches.map((batch) => [`${batch.device_id}:${batch.capture_id}`, batch]));
+  const byDevice = new Map();
+  for (const row of rows) {
+    const item = publicQuarantineItem(row, batchByCapture.get(`${row.device_id}:${row.capture_id}`));
+    if (!byDevice.has(row.device_id)) byDevice.set(row.device_id, []);
+    byDevice.get(row.device_id).push(item);
+  }
+  return { byDevice, supported: true };
+}
+
 export function createFleetStore(admin) {
   return {
     async list({ page, pageSize, search, tradingDate, now, releaseVersion }) {
@@ -98,13 +170,19 @@ export function createFleetStore(admin) {
       ]);
       const deviceByClient = firstByClient(devices);
       const batchByClient = firstByClient(batches);
+      const quarantine = await loadQuarantine(admin, [...deviceByClient.values()].map((device) => device.id));
       const normalizedSearch = search.toLocaleLowerCase('en-US');
       const allRows = clients.map((client) => {
           const device = publicDevice(deviceByClient.get(client.id));
           const todayBatch = publicBatch(batchByClient.get(client.id));
+          // null before step 46 has run, so the screen says nothing about a
+          // quarantine rather than reporting every folder empty.
+          const rowQuarantine = quarantine.supported && device
+            ? summarizeQuarantine(quarantine.byDevice.get(device.id) || [])
+            : null;
           return {
-            client: { uuid: client.id, name: client.name }, device, todayBatch,
-            operationalStatus: classifyFleetRow({ now, device, todayBatch, releaseVersion }),
+            client: { uuid: client.id, name: client.name }, device, todayBatch, quarantine: rowQuarantine,
+            operationalStatus: classifyFleetRow({ now, device, todayBatch, releaseVersion, quarantine: rowQuarantine }),
           };
         });
       const matchingRows = allRows.filter((row) => !normalizedSearch

@@ -54,6 +54,51 @@ function formatTime(value) {
   }).format(date);
 }
 
+// A trading date as the card says it: "Sep 14". Built in UTC from the three
+// numbers so a browser west of Greenwich does not read the 14th as the 13th.
+function formatTradingDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!match) return String(value || '');
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+    .format(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))));
+}
+
+/* WHAT THE VPS IS HOLDING BACK, ON THE CARD THE CAM ALREADY READS.
+ *
+ * A capture the CRM refused sits in queue\quarantine on the VPS, and until
+ * agent 1.0.7 the only person who knew was one with the path. The agent now
+ * reports the folder after every daily review and this is where a CAM sees
+ * it: how many, which trading days, and whether the agent will send them
+ * again on its own or somebody has to. The code rides in the tooltip on each
+ * date, so the desk can name it without the card turning into a table. */
+function QuarantineLine({ quarantine, canReplay }) {
+  const count = Number(quarantine?.count) || 0;
+  if (!count) return null;
+  const final = Number(quarantine?.final) || 0;
+  const retrying = count - final;
+  const parts = [];
+  if (final) parts.push(`${final} ${final === 1 ? 'is' : 'are'} final and will not be sent again by the agent`);
+  if (retrying) parts.push(`${retrying} will be retried by the agent at its next daily review`);
+  return (
+    <div className="auto-collection-quarantine" role="status" aria-label="Captures in quarantine on the VPS">
+      <AlertTriangle size={14} aria-hidden="true" />
+      <div>
+        <strong>
+          {count} capture{count === 1 ? '' : 's'} in quarantine:{' '}
+          {(quarantine.items || []).map((item, index) => (
+            <span key={item.captureId || `${item.tradingDate}-${index}`}>
+              {index ? ', ' : ''}
+              <abbr title={`${item.code}${item.final ? ', final' : `, attempt ${(Number(item.attempts) || 0) + 1} of 3 next`}`}>{formatTradingDate(item.tradingDate)}</abbr>
+            </span>
+          ))}
+        </strong>
+        <span>{parts.join('; ')}.</span>
+        {canReplay ? <span>Replay them from Auto Collection, in the failed closes panel, once the refusal is fixed on this side.</span> : null}
+      </div>
+    </div>
+  );
+}
+
 // The default lives in step_28 and in the agent's own AgentOptions. Repeating it
 // here as a literal meant the card kept advertising 16:45 after the default moved
 // to 16:30 — and it shows on unpaired clients, where the fallback is all there is.
@@ -671,6 +716,7 @@ export default function AutoCollectionCard({
           <StatusDetail label="Installed versions" value={`Agent ${device.agentVersion || '—'} · Add-on ${device.addonVersion || '—'} · NinjaTrader ${device.ninjaTraderVersion || '—'}`} />
         </div>
       ) : null}
+      {device ? <QuarantineLine quarantine={status?.quarantine} canReplay={Boolean(status?.permissions?.replay)} /> : null}
 
       {device || status?.enrollment ? (
         <footer className="auto-collection-footer">
