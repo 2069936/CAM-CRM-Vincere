@@ -1,5 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- THE NUMBER THE ADDON REPORTS ABOUT ITSELF.
+         Every snapshot's source.addonVersion is this assembly's own version,
+         read at capture time (VincereAutoExportAddOn.cs), and the status window
+         and the CRM's client card show it. Undeclared until now, it was the SDK
+         default, which is why the whole fleet reports addon 1.0.0 whatever it is
+         running: an AddOn built last quarter and one built today are
+         indistinguishable on the screen a CAM looks at, and a capture that
+         arrives without strategy attribution cannot be told from one whose
+         machine simply has no strategies.
+         This release is the one that attributes orders and fills to the strategy
+         that placed them, so the version has to say so. Keep it in step with the
+         agent and with the release tag; the installer ships both from the same
+         collector-v tag. -->
+    <Version>1.0.8</Version>
     <TargetFramework>net48</TargetFramework>
     <NinjaTraderHome Condition="'$(NinjaTraderHome)' == '' and '$(NINJATRADER_HOME)' != ''">$(NINJATRADER_HOME)</NinjaTraderHome>
   </PropertyGroup>

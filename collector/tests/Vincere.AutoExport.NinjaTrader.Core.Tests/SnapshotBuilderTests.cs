@@ -146,6 +146,50 @@ public sealed class SnapshotBuilderTests
     }
 
     [Fact]
+    public void Build_carries_the_attributed_strategy_into_the_contract_rows()
+    {
+        // The whole path in one place: what an account's strategies own, through
+        // the lookup, onto the two rows the CRM attributes an account day from.
+        StrategyAttributionMap attribution = StrategyAttributionMap.Build(new[]
+        {
+            new StrategyOrderOwnership(
+                "strategy-1", "Opening Range", new[] { "order-1" }, Array.Empty<string>()),
+        });
+        StrategyAttribution placed = attribution.ResolveOrder("order-1");
+        StrategyAttribution filled = attribution.ResolveExecution("execution-1", "order-1");
+
+        var facade = FakeFacade.Empty();
+        facade.Orders = new[]
+        {
+            new OrderCaptureSource
+            {
+                OrderId = "order-1",
+                AccountName = "Sim101",
+                StrategyId = placed.StrategyId,
+                StrategyName = placed.StrategyName,
+            },
+        };
+        facade.Executions = new[]
+        {
+            new ExecutionCaptureSource
+            {
+                ExecutionId = "execution-1",
+                OrderId = "order-1",
+                AccountName = "Sim101",
+                StrategyId = filled.StrategyId,
+                StrategyName = filled.StrategyName,
+            },
+        };
+
+        var snapshot = new SnapshotBuilder(facade).Build(ValidContext());
+
+        Assert.Equal("strategy-1", snapshot.Orders[0].StrategyId);
+        Assert.Equal("Opening Range", snapshot.Orders[0].StrategyName);
+        Assert.Equal("strategy-1", snapshot.Executions[0].StrategyId);
+        Assert.Equal("Opening Range", snapshot.Executions[0].StrategyName);
+    }
+
+    [Fact]
     public void Build_snapshots_each_source_sequence_exactly_once()
     {
         var facade = FakeFacade.Empty();

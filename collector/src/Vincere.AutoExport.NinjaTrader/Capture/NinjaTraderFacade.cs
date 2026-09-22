@@ -39,10 +39,11 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
             var rows = new List<OrderCaptureSource>();
             foreach (Account account in SnapshotAccounts())
             {
+                StrategyAttributionMap attribution = Attribution(account);
                 List<Order> orders;
                 lock (account.Orders)
                     orders = account.Orders.ToList();
-                rows.AddRange(orders.Select(order => MapOrder(account, order)));
+                rows.AddRange(orders.Select(order => MapOrder(account, order, attribution)));
             }
             return rows;
         }
@@ -52,10 +53,11 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
             var rows = new List<ExecutionCaptureSource>();
             foreach (Account account in SnapshotAccounts())
             {
+                StrategyAttributionMap attribution = Attribution(account);
                 List<Execution> executions;
                 lock (account.Executions)
                     executions = account.Executions.ToList();
-                rows.AddRange(executions.Select(execution => MapExecution(account, execution)));
+                rows.AddRange(executions.Select(execution => MapExecution(account, execution, attribution)));
             }
             return rows;
         }
@@ -110,6 +112,111 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 }
             }
             return relevant;
+        }
+
+        // WHO PLACED THE ORDER, ASKED ONCE PER CAPTURE.
+        //
+        // An Order and an Execution do not name their strategy, but a strategy
+        // names its orders and its fills, so the link is read in that direction
+        // and inverted here. See StrategyAttributionMap for what the automatic
+        // path was shipping without it.
+        //
+        // Memoised on the instance for the same reason snapshotAccounts is: the
+        // orders section and the executions section must see ONE answer. Built
+        // twice, a strategy that stops between the two sections would attribute
+        // an order and then leave its own fill unattributed, and the CRM would
+        // hold a close whose parts disagree about who traded.
+        private Dictionary<Account, StrategyAttributionMap> attributionByAccount;
+
+        private StrategyAttributionMap Attribution(Account account)
+        {
+            if (attributionByAccount == null)
+            {
+                attributionByAccount = new Dictionary<Account, StrategyAttributionMap>();
+                foreach (Account relevant in SnapshotAccounts())
+                    attributionByAccount[relevant] = StrategyAttributionMap.Build(ReadOwnership(relevant));
+            }
+            StrategyAttributionMap attribution;
+            return attributionByAccount.TryGetValue(account, out attribution)
+                ? attribution
+                : StrategyAttributionMap.Empty;
+        }
+
+        /// <summary>
+        /// What each of the account's strategies says it owns.
+        ///
+        /// The two collections are reached through the reflection helpers rather
+        /// than against StrategyBase.Orders and StrategyBase.Executions directly:
+        /// the AddOn is compiled once and loaded by whatever NinjaTrader the
+        /// client runs, 8.1.6 through 8.1.8 across the fleet, and a member one of
+        /// them does not expose has to degrade to no attribution rather than to a
+        /// type the assembly cannot bind.
+        ///
+        /// All of it happens under the lock ReadStrategies already takes, and
+        /// every collection is copied before it is read, because the platform can
+        /// add an order to a strategy while we walk it.
+        /// </summary>
+        private static List<StrategyOrderOwnership> ReadOwnership(Account account)
+        {
+            var owned = new List<StrategyOrderOwnership>();
+            lock (account.Strategies)
+            {
+                foreach (StrategyBase strategy in account.Strategies.ToList())
+                {
+                    List<object> orders = PublicCollection(strategy, "Orders");
+                    List<object> executions = PublicCollection(strategy, "Executions");
+
+                    var orderIds = new List<string>(orders.Count + executions.Count);
+                    foreach (object order in orders)
+                        orderIds.Add(PublicString(order, "OrderId"));
+                    // A fill carries the id of the order it filled, and a strategy
+                    // can still list a fill whose order has already left its Orders
+                    // collection, so that order id is claimed here too.
+                    foreach (object execution in executions)
+                        orderIds.Add(PublicString(execution, "OrderId"));
+
+                    var executionIds = new List<string>(executions.Count);
+                    foreach (object execution in executions)
+                        executionIds.Add(PublicString(execution, "ExecutionId"));
+
+                    // The same two members MapStrategy reports the strategy under,
+                    // so an order's strategyId and strategyName are the strings the
+                    // strategies section of this very snapshot carries.
+                    owned.Add(new StrategyOrderOwnership(
+                        PublicString(strategy, "StrategyId", "Id"),
+                        strategy.Name,
+                        orderIds,
+                        executionIds));
+                }
+            }
+            return owned;
+        }
+
+        /// <summary>
+        /// A named collection property, copied out before anything reads it. Same
+        /// contract as PublicValue, which it asks first: a member this NinjaTrader
+        /// version does not have yields an empty list, and a collection that
+        /// changes mid copy yields what was copied before it changed, rather than
+        /// throwing and costing the capture its whole orders section.
+        /// </summary>
+        private static List<object> PublicCollection(object source, string name)
+        {
+            var items = new List<object>();
+            object value = PublicValue(source, name) ?? ReflectedValue(source, name);
+            if (!(value is System.Collections.IEnumerable collection))
+                return items;
+            try
+            {
+                foreach (object item in collection)
+                    items.Add(item);
+            }
+            catch
+            {
+                // Mutated underneath the copy. Keep the part that was copied: it
+                // attributes the rows it names and says nothing about the rest.
+                return items;
+            }
+            return items;
         }
 
         private static AccountCaptureSource MapAccount(Account account)
@@ -198,17 +305,23 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
             };
         }
 
-        private static OrderCaptureSource MapOrder(Account account, Order order)
+        private static OrderCaptureSource MapOrder(
+            Account account, Order order, StrategyAttributionMap attribution)
         {
             string type = order.OrderType.ToString();
             bool hasLimit = type == "Limit" || type == "StopLimit";
             bool hasStop = type == "StopMarket" || type == "StopLimit";
+            // Null when no strategy on this account claims the order, which is
+            // what every order carried before the lookup existed: a manual trade,
+            // and an order whose strategy the platform will not name, both say
+            // nothing here rather than something invented.
+            StrategyAttribution strategy = attribution.ResolveOrder(order.OrderId);
             return new OrderCaptureSource
             {
                 OrderId = order.OrderId ?? String.Empty,
                 AccountName = account.Name,
-                StrategyId = null,
-                StrategyName = null,
+                StrategyId = strategy?.StrategyId,
+                StrategyName = strategy?.StrategyName,
                 Instrument = order.Instrument == null ? String.Empty : order.Instrument.FullName,
                 Action = order.OrderAction.ToString(),
                 OrderType = type,
@@ -228,16 +341,23 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
             };
         }
 
-        private static ExecutionCaptureSource MapExecution(Account account, Execution execution)
+        private static ExecutionCaptureSource MapExecution(
+            Account account, Execution execution, StrategyAttributionMap attribution)
         {
             Order order = execution.Order;
+            // A fill the strategy lists answers for itself; one it does not list
+            // falls back to the order it filled. This is the field the CRM reads
+            // to attribute an account day, and the one that was empty on 98% of
+            // the automatic path's fills.
+            StrategyAttribution strategy = attribution.ResolveExecution(
+                execution.ExecutionId, execution.OrderId);
             return new ExecutionCaptureSource
             {
                 ExecutionId = execution.ExecutionId ?? String.Empty,
                 OrderId = execution.OrderId,
                 AccountName = account.Name,
-                StrategyId = null,
-                StrategyName = null,
+                StrategyId = strategy?.StrategyId,
+                StrategyName = strategy?.StrategyName,
                 Instrument = execution.Instrument == null ? String.Empty : execution.Instrument.FullName,
                 Action = order == null ? String.Empty : order.OrderAction.ToString(),
                 Quantity = NullableDecimal(execution.Quantity),
@@ -367,6 +487,32 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// The same read as PublicValue, through plain reflection, for a member
+        /// TypeDescriptor does not list. A NinjaScript object can carry a custom
+        /// type descriptor, which is how the platform shows a strategy's
+        /// parameters and nothing else in its own grids, and a collection kept out
+        /// of that view is still an ordinary public property on the type. Absent,
+        /// ambiguous or unreadable, it is null here, exactly as PublicValue leaves
+        /// a member that does not exist.
+        /// </summary>
+        private static object ReflectedValue(object source, string name)
+        {
+            if (source == null)
+                return null;
+            try
+            {
+                System.Reflection.PropertyInfo property = source.GetType().GetProperty(name);
+                return property == null || !property.CanRead
+                    ? null
+                    : property.GetValue(source, null);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static string PublicString(object source, params string[] names)

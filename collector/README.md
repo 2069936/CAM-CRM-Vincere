@@ -76,6 +76,30 @@ the inventory to `POST /api/ingest/quarantine`; a CRM without that endpoint
 answers 404, which is logged once at INFO and tried again the next day.
 Nothing about the quarantine ever rides on the heartbeat.
 
+## Strategy attribution
+
+NinjaTrader names no strategy on an order or an execution, so until 1.0.8 every
+order and every fill the automatic path sent carried an empty `strategyId` and
+`strategyName`. Measured from 2026-09-01 that was 5,824 of 5,943 executions
+(98%), against 18% on the manual CSV path, which reads the grid export where
+the column is populated. An account day that arrives with neither a strategy
+grid nor a name on its fills cannot be attributed by anything the CRM does
+later, which is why 45.9% of the funded account days in the Stack Playbook's
+window were unattributable.
+
+The link is read in the direction the platform exposes it. Each account's
+strategies are walked once per capture, under the lock the strategies section
+already takes, and the orders and fills each one lists become a lookup from
+order id and execution id to that strategy (`StrategyAttributionMap` in
+`Vincere.AutoExport.NinjaTrader.Core`, covered by the Core tests). The orders
+and executions sections then consult it, and a fill the strategy does not list
+resolves through the order it filled.
+
+It adds attribution and never invents it. An id nobody claims, an id two
+strategies disagree about, and a blank id all stay null, exactly as they were
+before, because a wrong strategy name moves a day's losses onto an algorithm
+that never traded them and nothing downstream could tell that it had happened.
+
 ## Windows packaging boundary
 
 The operator receives one setup executable, but it chains two ownership
