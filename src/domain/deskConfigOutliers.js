@@ -26,6 +26,7 @@
 import { instrumentRoot } from './instrumentSpecs';
 import {
   PER_CLIENT_FIELDS,
+  SIZING,
   normaliseSetFileValue,
   parseLiveParameters,
 } from './setFileNormalise';
@@ -42,6 +43,25 @@ import {
  * "cannot be determined is null, never 0" rule broken one level up.
  */
 export const MIN_CONSENSUS_ACCOUNTS = 3;
+
+/**
+ * THE FLOOR IS ON ACCOUNTS, AND ONE CLIENT CAN CLEAR IT ON HIS OWN.
+ *
+ * Three machines is enough for a two-one split to mean something only when the
+ * three are not all the same person's. Two real cases on the book: DJDR 1.1 on
+ * MNQ on 2026-07-13 is three accounts of one client, reported as "all on the
+ * desk setting" — one client's three machines agreeing with themselves; and
+ * RBO_PF 1.8 on M2K on 2026-07-30 is four accounts of two clients, two each,
+ * whose seventeen flat 2-2 fields are reported as a divided desk.
+ *
+ * A client floor would hide both groups, and this file's own argument is that a
+ * group nobody could measure must stay VISIBLE and say so. So the group says
+ * its shape instead: the panel prints "one client's own settings, not a desk
+ * reference" beside a group whose accounts all belong to one client, and the
+ * reader discounts it themselves. Groups of exactly two accounts were already
+ * handled honestly by the floor above.
+ */
+export const MIN_CONSENSUS_CLIENTS = 2;
 
 /**
  * How much of a group one reading has to hold before it is the desk's answer.
@@ -306,6 +326,15 @@ export function buildDeskConfigOutliers(clients = [], {
     tooSmall: 0,
     accountsCompared: 0,
     accountsDiffering: 0,
+    // THE SAME TWO NUMBERS AS MACHINES RATHER THAN AS PAIRS, because the
+    // sentence the panel prints is read as machines. On 2026-07-30
+    // `accountsCompared` is 411 and `accountsDiffering` 81, and the desk that
+    // day is 252 accounts of which 63 differ: Kai Moss's 1121557 is in five
+    // groups and a CAM working the list top to bottom meets it five times. Both
+    // pairs are on the object so the sentence and the table cannot drift apart,
+    // and each says in its name which unit it is.
+    accountsComparedDistinct: 0,
+    accountsDifferingDistinct: 0,
   };
   if (!day) return { ...emptyResult(basis), reason: 'no-date' };
 
@@ -353,13 +382,13 @@ export function buildDeskConfigOutliers(clients = [], {
   // Pass two: place the rows that stated no data series, and build the groups.
   //
   // A blank data series is absent information, not a data series of its own. Of
-  // the book's last close 24 of 417 rows state none, and holding them out would
+  // the book's last close 36 of 417 rows state none, and holding them out would
   // have invented six groups that nobody runs. They join the busiest stated
   // series of their own (family, version, contract) and the group SAYS how many
   // of its accounts arrived that way, so a reader can discount them. The one
   // account genuinely on a second series — Bullet Bot 1.1 on NQ at 1 Minute
-  // while 92 run it at 20 Second, on 2026-07-13 — still stands alone, because it
-  // stated its series and was never a blank to place.
+  // while 106 run it at 20 Second, on 2026-07-13 — still stands alone, because
+  // it stated its series and was never a blank to place.
   const groups = new Map();
   for (const [base, entries] of buckets) {
     const stated = seriesByBase.get(base) || new Map();
@@ -383,13 +412,13 @@ export function buildDeskConfigOutliers(clients = [], {
           unnamed: 0,
           accounts: new Map(),
           clientIds: new Set(),
+          clientIdsDropped: new Set(),
         });
       }
       const group = groups.get(key);
       group.rows += 1;
       if (entry.spelling) group.spellings.add(entry.spelling);
       if (!entry.series) group.unstatedSeries += 1;
-      group.clientIds.add(entry.client.id);
 
       const accountName = String(entry.strategy?.accountName || '').trim();
       if (!accountName) {
@@ -398,13 +427,25 @@ export function buildDeskConfigOutliers(clients = [], {
         // can be told about is not a finding. buildConfigCohorts counts these
         // the same way and for the same reason.
         group.unnamed += 1;
+        group.clientIdsDropped.add(entry.client.id);
         continue;
       }
       const parameters = parametersOf(entry.strategy);
       if (!parameters) {
         group.unreadable += 1;
+        group.clientIdsDropped.add(entry.client.id);
         continue;
       }
+      // COUNTED AFTER THE TWO GUARDS, NOT BEFORE THEM. It was counted first, so
+      // a client whose only row in a group carried no trading account counted
+      // as a client of the group while its account counted as nothing — and the
+      // closed summary line, which is what a manager scans, then printed more
+      // clients than accounts. On 2026-07-13 SYFY 1.4 MES read "9 accounts, 10
+      // clients" and DJDR 1.1 YM read "7 accounts, 10 clients". Every account
+      // belongs to exactly one client, so that is impossible on its face, and a
+      // panel a desk cannot check is a panel it stops trusting. The clients
+      // whose rows were dropped are kept separately rather than lost.
+      group.clientIds.add(entry.client.id);
 
       const accountKey = `${entry.client.id}${accountName}`;
       if (!group.accounts.has(accountKey)) {
@@ -458,6 +499,8 @@ export function buildDeskConfigOutliers(clients = [], {
     }
   }
 
+  const comparedAccounts = new Set();
+  const differingAccounts = new Set();
   for (const group of built) {
     basis.groups += 1;
     basis.readable += group.rows - group.unreadable - group.unnamed;
@@ -468,10 +511,14 @@ export function buildDeskConfigOutliers(clients = [], {
       basis.compared += 1;
       basis.accountsCompared += group.accounts;
       basis.accountsDiffering += group.outliers.length;
+      for (const account of group.accountList) comparedAccounts.add(`${account.clientId}\u0000${account.accountName}`);
+      for (const outlier of group.outliers) differingAccounts.add(`${outlier.clientId}\u0000${outlier.accountName}`);
     } else {
       basis.tooSmall += 1;
     }
   }
+  basis.accountsComparedDistinct = comparedAccounts.size;
+  basis.accountsDifferingDistinct = differingAccounts.size;
 
   built.sort((a, b) => b.accounts - a.accounts
     || a.family.localeCompare(b.family)
@@ -541,6 +588,15 @@ function measureGroup(group, {
     rows: group.rows,
     accounts: accounts.length,
     clients: group.clientIds.size,
+    // Clients whose every row in this group was dropped (no trading account on
+    // the import, or settings nobody could read). They are not clients of the
+    // comparison, and counting them as such is what let a group print more
+    // clients than accounts.
+    clientsDropped: [...group.clientIdsDropped].filter((id) => !group.clientIds.has(id)).length,
+    // The account floor can be cleared by one client running three machines.
+    // Said on the group rather than silently measured or silently dropped: see
+    // MIN_CONSENSUS_CLIENTS.
+    singleClient: group.clientIds.size < MIN_CONSENSUS_CLIENTS,
     unreadable: group.unreadable,
     unnamed: group.unnamed,
     contractPeers: [],
@@ -598,8 +654,16 @@ function measureGroup(group, {
     differences.get(key).list.push(difference);
   };
 
-  const secondReading = (count) => count >= minAccounts
-    && count > accounts.length * secondReadingShare;
+  // ONE DENOMINATOR PER GROUP. This tested against `accounts.length` while the
+  // consensus test and every share the panel prints use `population`, which is
+  // `accounts.length` minus the accounts whose two rows in the group disagree
+  // about that field. On the current book that is at most one account and no
+  // printed figure moves, but two answers to "how big is this group" inside one
+  // function is exactly what this file argues a reader must never have to tell
+  // apart by eye, and the next export with a handful of duplicated rows makes
+  // the 15% floor quietly stricter than the share printed beside it.
+  const secondReading = (count, population) => count >= minAccounts
+    && count > population * secondReadingShare;
 
   for (const name of [...seen].sort((a, b) => a.localeCompare(b))) {
     if (ignoredNames.has(name)) continue;
@@ -662,7 +726,7 @@ function measureGroup(group, {
     const alsoInUse = [];
     const deviations = [];
     for (const reading of readings.slice(1)) {
-      if (secondReading(reading.accounts.length)) {
+      if (secondReading(reading.accounts.length, population)) {
         alsoInUse.push({
           value: reading.value,
           accounts: reading.accounts.length,
@@ -735,15 +799,39 @@ function measureGroup(group, {
   shape.splitFields.sort((a, b) => b.readings.length - a.readings.length
     || a.name.localeCompare(b.name));
 
+  /* SIZING IS COMPARED AND IS NOT RANKED WITH THE REST.
+   *
+   * PosSize1/2/3 and PositionSize followed account size and prop-firm plan
+   * long before anything here looked at them; buildConfigDrift takes an `omit`
+   * regex for exactly this and says why (setFileNormalise.js: of 127
+   * config-and-risk combinations on the book, 17 differ by sizing alone). This
+   * module had no such split and ranked them beside BarsPeriod, so on
+   * 2026-07-30 six of the 81 listed accounts differ ONLY on sizing and on
+   * 2026-07-13 ten of 88 — the rows most likely to be correct by design,
+   * sitting above real findings because the sort counts fields.
+   *
+   * They are still compared and still listed: this is a ranking decision, not a
+   * wording one, and a position size nobody else runs is worth a look. It is
+   * simply not what decides whether an account is at the top of the list.
+   */
+  const isSizing = (difference) => SIZING.test(difference.name);
   shape.outliers = [...differences.values()]
-    .map(({ account, list }) => ({
-      clientId: account.clientId,
-      clientName: account.clientName,
-      accountName: account.accountName,
-      rows: account.rows,
-      differences: list.sort((a, b) => a.name.localeCompare(b.name)),
-    }))
-    .sort((a, b) => b.differences.length - a.differences.length
+    .map(({ account, list }) => {
+      const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
+      const sizing = sorted.filter(isSizing);
+      return {
+        clientId: account.clientId,
+        clientName: account.clientName,
+        accountName: account.accountName,
+        rows: account.rows,
+        differences: sorted,
+        // The two counts, because the sentence on the account row names both.
+        configurationDifferences: sorted.length - sizing.length,
+        sizingDifferences: sizing.length,
+      };
+    })
+    .sort((a, b) => b.configurationDifferences - a.configurationDifferences
+      || b.sizingDifferences - a.sizingDifferences
       || a.clientName.localeCompare(b.clientName)
       || a.accountName.localeCompare(b.accountName));
 

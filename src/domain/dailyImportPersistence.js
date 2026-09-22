@@ -305,7 +305,9 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
       importResult: { ...importResult, ...mergeSimulationRows(importResult) },
       sourceBatchId,
     });
-    await writeCloseSummaries(db, { clientUuid, importResult, dailyImport });
+    await writeCloseSummaries(db, {
+      clientUuid, importResult, dailyImport, closeAlreadyCommitted: true,
+    });
     return dailyImport;
   }
 
@@ -391,11 +393,27 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
  *
  * Optional on the adapter, and silent when it is absent or when step 48 has
  * not run: a login without the table falls back to the closes it holds, which
- * is what the product did before the table existed. A summary that could not
- * be written must never fail an upload — the close itself is saved, and the
- * desk figure it feeds is recoverable by rebuilding.
+ * is what the product did before the table existed.
+ *
+ * ANY OTHER FAILURE IS RAISED, AND IT SAYS WHICH HALF FAILED. The browser
+ * adapter swallows only the missing-table and missing-function cases and
+ * rethrows the rest (replaceSupabaseCloseSummaries), on purpose: a close whose
+ * summary silently did not write is a day the manager's first screen will
+ * quietly under-report, and this is the one moment at which anybody can be
+ * told. The comment that used to sit here said the opposite ("a summary that
+ * could not be written must never fail an upload"), and the two halves of one
+ * change disagreeing about a failure path is how a CAM ends up re-uploading a
+ * close that is already stored.
+ *
+ * WHERE IT RUNS DECIDES WHAT IT MEANS. On the transactional path this is inside
+ * the transaction, so a failure rolls the close back and it really is a failed
+ * save. On the atomic path the close has already committed, so the error is
+ * re-raised as "The close saved. Its desk summary did not", carrying
+ * `closeSaved: true`, and no caller can report it as a lost upload. The
+ * collector path (server/apiLib/autoImportStore.js) swallows the same class of
+ * error because there is nobody in front of it to tell.
  */
-async function writeCloseSummaries(db, { clientUuid, importResult, dailyImport }) {
+async function writeCloseSummaries(db, { clientUuid, importResult, dailyImport, closeAlreadyCommitted = false }) {
   if (typeof db?.replaceCloseSummaries !== 'function' || !dailyImport?.id) return;
   const rows = buildCloseSummaryRows({
     accountRegistry: importResult.accounts || {},
@@ -405,5 +423,25 @@ async function writeCloseSummaries(db, { clientUuid, importResult, dailyImport }
     clientId: clientUuid,
     tradingDate: importResult.date,
   }));
-  await db.replaceCloseSummaries({ dailyImportId: dailyImport.id, rows });
+  if (!closeAlreadyCommitted) {
+    // Inside the transaction that is writing the close: a failure here rolls
+    // the close back with it, so it IS a failed save and reads as one.
+    await db.replaceCloseSummaries({ dailyImportId: dailyImport.id, rows });
+    return;
+  }
+  try {
+    await db.replaceCloseSummaries({ dailyImportId: dailyImport.id, rows });
+  } catch (error) {
+    // The atomic path has already committed the close by the time this runs, so
+    // an "upload failed" alert here would be a lie about a close that is in the
+    // database. The failure is still raised — an unwritten summary is a day the
+    // manager's first screen under-reports, and this is the only moment anybody
+    // can be told — but it says which half failed.
+    const failure = new Error(
+      `The close saved. Its desk summary did not: ${error?.message || 'the database did not answer.'}`,
+    );
+    failure.closeSaved = true;
+    failure.cause = error;
+    throw failure;
+  }
 }

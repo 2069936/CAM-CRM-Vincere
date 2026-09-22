@@ -217,8 +217,22 @@ export function buildSegmentTotals(imports = [], {
     // A close with no summary and no snapshots is NOT a close that made
     // nothing. It is a close this session has not loaded, and it is counted
     // separately so deskMoney can say so instead of printing a zero.
+    //
+    // COUNTED WHETHER OR NOT A SUMMARY LOOKUP WAS SUPPLIED, and the guard that
+    // used to be here was the defect. `summaryLookup` in deskMoney.js returns
+    // NULL when not one close in view has a usable summary — which is exactly
+    // the state step 48 ships in until `scripts/backfill_close_summaries.mjs`
+    // has run, the state of a database where the migration has not run at all
+    // (loadCloseSummaryRows swallows PGRST205 and returns []), and the state
+    // where every stored row was refused as stale. So in the one window this
+    // counter exists for, nothing incremented it: `basis.sources.unreadable`
+    // stayed 0, `basis.complete` stayed true, and a desk month missing most of
+    // its closes printed as a figure. Measured on the book with a
+    // production-shaped login, month-to-date 2026-07 read -$42,200.94 of other
+    // prop against a true -$166,205.23, and the 2026-07-24 history row read
+    // +$119.20 where the desk had lost $25,555.63.
     if (!snapshotRows.length) {
-      if (summaryRowsFor) closesWithoutData += 1;
+      closesWithoutData += 1;
       continue;
     }
     closesWalked += 1;

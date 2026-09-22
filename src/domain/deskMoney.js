@@ -256,6 +256,55 @@ function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted,
   };
 }
 
+/**
+ * WHAT THE FIGURE IS MISSING, IN A SENTENCE, FOR THE SCREEN.
+ *
+ * `basis.sources` and `basis.complete` were computed and then read by nothing:
+ * the manager's money tiles, the history strip and the desk period report each
+ * printed `basis.label` and stopped. So a month short of 92% of its closes
+ * rendered exactly like a month that held all of them, and the promise in
+ * supabase/step_48_close_summaries.sql — "the basis line under each figure says
+ * how many closes it could not read" — was not kept by any line of UI.
+ *
+ * Built here rather than in the two components so both say the same thing, and
+ * so it can be pinned without rendering. Returns `sentence: ''` for a view with
+ * no close in it at all, where the label already says so.
+ */
+export function describeMoneyCompleteness(basis) {
+  const sources = basis?.sources || {};
+  const summary = Number(sources.summary || 0);
+  const loaded = Number(sources.loaded || 0);
+  const unreadable = Number(sources.unreadable || 0);
+  const stale = Number(sources.staleSummaries || 0);
+  const total = summary + loaded + unreadable;
+  const complete = !unreadable;
+  const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+  const staleNote = stale
+    ? ` ${plural(stale, 'stored summary was', 'stored summaries were')} refused because an account`
+      + ` has been reclassified since ${stale === 1 ? 'it was' : 'they were'} written, and`
+      + ` ${stale === 1 ? 'that close was' : 'those closes were'} read from their own rows instead.`
+    : '';
+
+  if (!total) return { complete, unreadable, sentence: '' };
+  if (!complete) {
+    return {
+      complete,
+      unreadable,
+      sentence: `Incomplete: ${unreadable} of the ${plural(total, 'client close', 'client closes')}`
+        + ' in view could not be read, because this session holds neither a stored summary nor'
+        + ' their account rows. Every figure above is short by whatever those closes hold.'
+        + staleNote,
+    };
+  }
+  return {
+    complete,
+    unreadable,
+    sentence: `Every one of the ${plural(total, 'client close', 'client closes')} in view was read:`
+      + ` ${summary} from a stored close summary, ${loaded} from their own account rows.`
+      + staleNote,
+  };
+}
+
 function buildRow(key, rolled, { weeklyAdditive, balanceComparable }) {
   const definition = ROW_DEFINITIONS[key];
   const isCash = definition.kind === 'cash';

@@ -61,7 +61,50 @@ describe('the desk on the book’s last close', () => {
       tooSmall: 4,
       accountsCompared: 411,
       accountsDiffering: 81,
+      // THE SAME DAY AS MACHINES RATHER THAN AS PAIRS, and the gap is why the
+      // panel's headline had to change. 411 and 81 count an account once PER
+      // GROUP; the desk that day is 252 accounts of which 63 run at least one
+      // setting the rest of their group does not. Kai Moss's 1121557 alone is
+      // in five groups, so a CAM working the list top to bottom meets one
+      // machine five times, and a manager sizing the desk off the old sentence
+      // read 411 for a desk of 252.
+      accountsComparedDistinct: 252,
+      accountsDifferingDistinct: 63,
     });
+  });
+
+  it('never prints more clients than accounts in a group', () => {
+    // `clientIds` was added before the unnamed and unreadable guards, so a
+    // client whose only row in a group carried no trading account counted as a
+    // client of that group while its account counted as nothing. The closed
+    // summary line prints both side by side, and on this book it produced
+    // "9 accounts, 10 clients" on 2026-07-13 SYFY and "7 accounts, 10 clients"
+    // on 2026-07-13 DJDR. Every account belongs to exactly one client, so more
+    // clients than accounts is impossible on its face.
+    for (const date of ['2026-07-13', '2026-07-22', '2026-07-23', DAY]) {
+      const day = buildDeskConfigOutliers(clients, { date });
+      for (const group of day.groups) {
+        expect(group.clients).toBeLessThanOrEqual(group.accounts);
+      }
+    }
+  });
+
+  it('does not rank an account above another for a position size', () => {
+    // Sizing follows account size and prop-firm plan, so the accounts listed
+    // only for PosSize are the likeliest rows in the list to be right by
+    // design. Six of the 81 pairs on this day differ on nothing else, and the
+    // sort used to put them above accounts running a stop nobody else runs.
+    const measured = result.groups.filter((group) => group.measured);
+    const sizingOnly = measured
+      .flatMap((group) => group.outliers)
+      .filter((outlier) => outlier.configurationDifferences === 0);
+    expect(sizingOnly.length).toBe(6);
+    for (const outlier of sizingOnly) expect(outlier.sizingDifferences).toBeGreaterThan(0);
+    // Every group lists its configuration findings before its sizing-only ones.
+    for (const group of measured) {
+      const counts = group.outliers.map((outlier) => outlier.configurationDifferences);
+      expect([...counts].sort((a, b) => b - a)).toEqual(counts);
+    }
   });
 
   it('fetches 58 closes for the day and not one more', () => {

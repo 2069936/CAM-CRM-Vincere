@@ -8,7 +8,8 @@ import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './d
 import { deriveStrategyPnlByAccount } from './deriveStrategyPnl.js';
 import { carryForwardLots } from './carryForwardLots.js';
 import { joinDerivedStrategies } from './joinDerivedStrategies.js';
-import { strategyRan, withStrategyRan } from './strategyRan.js';
+import { ranAnswerIsKnown, strategyRan, withStrategyRan } from './strategyRan.js';
+import { fillsLoadedFor } from './closeLoadState.js';
 import {
   ACCOUNT_NATURES,
   SIMULATION_ACCOUNT_TYPE,
@@ -442,7 +443,26 @@ function snapshotToAccount(snapshot) {
 // it — see carryForwardLots.js. Pass nothing and the derivation refuses every
 // carried-in book rather than guessing at a cost basis; that is a safe default,
 // not a correct one, so any path that CAN supply the history should.
-export function reconcileDailyImport({ clientId, date, registry = {}, parsed, history = [], priorImports = [] }) {
+export function reconcileDailyImport({
+  clientId, date, registry = {}, parsed, history = [], priorImports = [],
+  /* WHETHER THE CLOSE'S FILLS ARE IN HAND, WHICH IS NOT THE SAME AS WHETHER
+   * THERE WERE ANY.
+   *
+   * True on every ingest path: the upload and the collector both parse the
+   * fills, and a day on which nothing traded is an empty array this function is
+   * entitled to believe. It is FALSE for a Recalculate on a close whose orders
+   * and executions a login did not carry, which is every close but the latest.
+   *
+   * The four flags below that rest on "nothing ran" then have to stay quiet,
+   * because the only evidence for that answer is the evidence this call does
+   * not hold. Without it, one press on an older close regenerated `Expected
+   * strategy missing` Critical on every real-money account that had traded all
+   * day and `Strategy disabled` Warning once per row on each of them, and wrote
+   * them to the database — and because the wording of those flags changed in
+   * this same branch, the previously resolved ones did not match and came back
+   * Open. */
+  fillsLoaded = true,
+}) {
   const accountsByName = {};
   const snapshots = [];
   const flags = [];
@@ -554,8 +574,16 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   // never loads a fill still gets it. Executions are the day-scoped ones with
   // their strategy name resolved from the orders, which is exactly what is
   // stored, so a row's answer does not change when the close is read back.
-  const ranStrategies = withStrategyRan(strategies, executions);
+  const ranStrategies = withStrategyRan(strategies, executions, { evidenceComplete: fillsLoaded });
   const strategiesByAccount = groupStrategiesByAccount(ranStrategies);
+  // A row whose own answer is `none` only because nobody could consult the
+  // fills. See ranAnswerIsKnown, and `fillsLoaded` above.
+  const ranIsKnown = (strategy) => ranAnswerIsKnown(strategy, { closeHasFills: fillsLoaded });
+  // An account's "nothing ran today" is supportable when the fills are in hand,
+  // or when every row it does have answers for itself. An account with NO rows
+  // at all and no fills is the shape this cannot support: 98 funded days on the
+  // book carry no strategy row and traded anyway.
+  const nothingRanIsKnown = (list) => fillsLoaded || (list.length > 0 && list.every(ranIsKnown));
   const seen = new Set();
 
   for (const account of sourceAccounts) {
@@ -648,7 +676,8 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }));
     }
 
-    if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies)) {
+    if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies)
+      && nothingRanIsKnown(strategies)) {
       flags.push(makeFlag({
         type: 'Expected strategy missing',
         severity: 'Critical',
@@ -797,7 +826,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       // algorithm somebody forgot to turn on: it is the day's work, exported
       // after the desk shut it down. 1,011 of the 2,288 switched-off rows on
       // the stored book traded, and each of them raised this warning.
-      if (!strategyRan(strategy)) {
+      if (!strategyRan(strategy) && ranIsKnown(strategy)) {
         flags.push(makeFlag({
           type: 'Strategy disabled',
           severity: 'Warning',
@@ -859,6 +888,13 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
 }
 
 export function recalculateDailyImport({ dailyImport, registry = {}, priorFlags = null }) {
+  // WHAT THIS CLOSE ACTUALLY HOLDS. A login carries the orders and executions
+  // of each client's LATEST close and of no other, so on any older close this
+  // is false and the four flags that rest on "nothing ran" stay quiet rather
+  // than firing off evidence nobody has. App.jsx also disables the button while
+  // this is false and says why; this is the second half of that, so a caller
+  // that does not disable anything still cannot produce the flags.
+  const fillsLoaded = fillsLoadedFor(dailyImport);
   // Feed the WHOLE close back in, simulated rows included. Passing only
   // `dailyImport.snapshots` would hand reconcile a close its simulation accounts
   // had vanished from, and the registry sweep would then report each of them as
@@ -869,6 +905,7 @@ export function recalculateDailyImport({ dailyImport, registry = {}, priorFlags 
     clientId: dailyImport.clientId,
     date: dailyImport.date,
     registry,
+    fillsLoaded,
     parsed: {
       accounts: whole.snapshots.map(snapshotToAccount),
       strategies: whole.strategies,

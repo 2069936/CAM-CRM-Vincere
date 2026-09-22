@@ -390,9 +390,17 @@ function buildCoverage(clients, period) {
     },
     // The sentence under the table, with this period's own numbers in it, so
     // the caveat cannot drift from the coverage that produced it.
+    // A ZERO-ROW CLOSE HAS NO FACTOR, AND THE SENTENCE MUST NOT PRINT ONE.
+    // `ratio` is null when the thinnest close in the period carries no account
+    // row at all, which is ordinary under a per-close login: the close is in
+    // the book, this session simply did not fetch it. The sentence interpolated
+    // that null and read "a factor of null" on screen. It says the shape it can
+    // actually support instead.
     sentence: fullest && thinnest
       ? `Coverage inside this period runs from ${thinnest.accountRows} to ${fullest.accountRows} `
-        + `account rows per close, a factor of ${ratio}. ${PERIOD_DOLLAR_REFUSAL}`
+        + `account rows per close${ratio === null
+          ? `, and ${thinnest.date} carries none at all, so there is no factor between them`
+          : `, a factor of ${ratio}`}. ${PERIOD_DOLLAR_REFUSAL}`
       : PERIOD_DOLLAR_REFUSAL,
   };
 }
@@ -400,11 +408,23 @@ function buildCoverage(clients, period) {
 /* ------------------------------------------------------------------ */
 /* 2. Money, per business, never added.                                */
 
-function buildMoney(clients, period) {
-  const desk = buildDeskMoneyForRange(clients, { from: period.from, to: period.to });
+/**
+ * `summaries` IS NOT OPTIONAL FURNITURE ON THIS FUNCTION.
+ *
+ * deskMoney is the one desk answer, and it reads stored close summaries for the
+ * closes a session did not load row by row. These three calls omitted them, so
+ * the same book produced two answers on one screen: over 2026-07 the manager's
+ * month tile read other prop -$166,205.23 over 1,156 account closes while this
+ * report read -$42,200.94 over 161, both labelled "Every close from 2026-07-01
+ * to 2026-07-31". Worse than the headline, the per-account-close RATE the
+ * `change` column subtracts moved with it, so the column compared a rate from
+ * one population against a rate from another.
+ */
+function buildMoney(clients, period, summaries) {
+  const desk = buildDeskMoneyForRange(clients, { from: period.from, to: period.to, summaries });
   const prior = period.priorEmpty
     ? null
-    : buildDeskMoneyForRange(clients, { from: period.priorFrom, to: period.priorTo });
+    : buildDeskMoneyForRange(clients, { from: period.priorFrom, to: period.priorTo, summaries });
 
   const priorByKey = new Map((prior?.rows || []).map((row) => [row.key, row]));
   const rows = desk.rows.map((row) => {
@@ -440,7 +460,7 @@ function buildMoney(clients, period) {
   // shared axis invites reading one against the other.
   const columns = deskBusinessColumns();
   const byClose = period.closes.map((date) => {
-    const one = buildDeskMoneyForRange(clients, { from: date, to: date });
+    const one = buildDeskMoneyForRange(clients, { from: date, to: date, summaries });
     return {
       date,
       businesses: DESK_BUSINESS_ORDER.map((key) => {
@@ -1248,10 +1268,15 @@ function buildSummary({ period, scope, coverage, money, roster, results, stack, 
       + `${totals.accountCloses === 1 ? '' : 's'} over ${totals.accountsReporting} account`
       + `${totals.accountsReporting === 1 ? '' : 's'} and ${totals.clientsReporting} client`
       + `${totals.clientsReporting === 1 ? '' : 's'}`,
+    // Same refusal as `coverage.sentence`: with a zero-row close in the period
+    // there is no factor, and printing "a factor of null" is worse than saying
+    // there is none.
     coverageRange: totals.fullestClose && totals.thinnestClose
       ? `Fullest close ${totals.fullestClose.date} (${totals.fullestClose.accounts} account rows), `
-        + `thinnest ${totals.thinnestClose.date} (${totals.thinnestClose.accounts}), a factor of `
-        + `${totals.coverageRatio}`
+        + `thinnest ${totals.thinnestClose.date} (${totals.thinnestClose.accounts})`
+        + (totals.coverageRatio === null
+          ? ', which carries none, so there is no factor between them'
+          : `, a factor of ${totals.coverageRatio}`)
       : null,
     // Per business, per account close, with the count it divides by. Never
     // added: see `money.rowsDoNotSum`.
@@ -1463,6 +1488,10 @@ export function buildDeskPeriodReport(clients = [], {
   scope = null,
   benchmarkSeries = [],
   benchmarkRisk = 'Low',
+  // The stored per-close money, as indexCloseSummaries returns it. Handed
+  // straight to deskMoney so this report and the manager's tiles read the same
+  // closes; see buildMoney for what the two answers looked like without it.
+  summaries = null,
   builtAt = '',
   builtBy = '',
 } = {}) {
@@ -1523,7 +1552,7 @@ export function buildDeskPeriodReport(clients = [], {
   };
 
   const coverage = buildCoverage(list, resolved);
-  const money = buildMoney(list, resolved);
+  const money = buildMoney(list, resolved, summaries);
   // The roster's own coverage, over the pooled book, so the close its states are
   // decided on is chosen against the desk's fullest close and not against this
   // CAM's. On the desk shell the two calls have the same argument.

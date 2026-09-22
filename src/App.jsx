@@ -174,6 +174,7 @@ import {
   buildDeskMoneyForMonth,
   buildDeskMoneyHistory,
   closeAsOf,
+  describeMoneyCompleteness,
   deskBusinessColumns,
   formatDeskReport,
   monthFor,
@@ -256,6 +257,7 @@ import {
   loadSupabaseCloseDetail,
   loadSupabaseCloseFlags,
   loadSupabaseStrategyParameters,
+  loadSupabaseRankingRows,
   closeFlagsFromRows,
   mergeSupabaseClientDetail,
   mergeSupabaseCloseDetail,
@@ -4144,7 +4146,10 @@ const RANKING_WINDOW_DAYS = 60;
 function ManagerOverview({
   clients,
   closeSummaries = null,
-  parameterLoad = { status: "idle", error: "" },
+  // One load state per panel, looked up by the panel's own key. It was a single
+  // shared tri-state and the four panels that read it crossed every way they
+  // could: see the comment on `panelLoads` in App().
+  panelLoadFor = null,
   onNeedParameters = null,
   camProfiles = [],
   coverage = [],
@@ -4405,9 +4410,18 @@ function ManagerOverview({
     () => configPanelImportIds(clients, asOfDate),
     [clients, asOfDate],
   );
+  /* KEYED ON THE ID SET, NOT ON THE ARRAY.
+   *
+   * CollapsiblePanel re-fires `onOpen` whenever its identity changes while the
+   * panel is open, which is how moving the as-of date re-asks for the new day's
+   * rows. `clients` changes identity on every state update, so a callback keyed
+   * on the array itself would re-fire on every render; keyed on the joined ids
+   * it changes when, and only when, the panel needs different closes. */
+  const configPanelKey = configPanelIds.join(",");
   const loadConfigParameters = useCallback(
-    () => (onNeedParameters ? onNeedParameters(configPanelIds) : undefined),
-    [onNeedParameters, configPanelIds],
+    () => (onNeedParameters ? onNeedParameters("config", configPanelIds) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onNeedParameters, configPanelKey],
   );
 
   /* THE SAME-DAY DESK COMPARISON.
@@ -4427,9 +4441,11 @@ function ManagerOverview({
     () => deskDayImportIds(clients, deskConfigDay),
     [clients, deskConfigDay],
   );
+  const deskConfigKey = deskConfigIds.join(",");
   const loadDeskConfigParameters = useCallback(
-    () => (onNeedParameters ? onNeedParameters(deskConfigIds) : undefined),
-    [onNeedParameters, deskConfigIds],
+    () => (onNeedParameters ? onNeedParameters("desk-config", deskConfigIds) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onNeedParameters, deskConfigKey],
   );
 
   const strategies = useMemo(() => buildStrategyAnalyzer(clients), [clients]);
@@ -4453,10 +4469,21 @@ function ManagerOverview({
     () => windowImportIds(clients, asOfDate, RANKING_WINDOW_DAYS),
     [clients, asOfDate],
   );
+  const rankingKey = rankingImportIds.join(",");
+  /* THE BOARD ASKS FOR THE ACCOUNT ROWS AS WELL, AND IT IS THE ONLY ONE THAT
+   * DOES. buildStrategyRanking walks dailyImport.snapshots and then each
+   * snapshot's strategies; a login holds the account rows of each client's
+   * LATEST close only, so the strategy rows this fetch pays for had nowhere to
+   * nest on every older close in the window and were dropped. On the book that
+   * was 594 of 3,805 rows landing, and a board of 15 algorithms with none
+   * ranked under a badge reading "One rank per algorithm". */
   const loadRankingRows = useCallback(() => {
     setRankingOpen(true);
-    return onNeedParameters ? onNeedParameters(rankingImportIds) : undefined;
-  }, [onNeedParameters, rankingImportIds]);
+    return onNeedParameters
+      ? onNeedParameters("ranking", rankingImportIds, { withAccountRows: true })
+      : undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onNeedParameters, rankingKey]);
   // One rank per algorithm, keyed off the same asOfDate the tiles are pinned to.
   // The board it replaced took no date at all and compared its seven-day windows
   // against `new Date()`, so on 2026-08-20 over a book ending 2026-07-30 every
@@ -4914,6 +4941,7 @@ function ManagerOverview({
           <DeskPeriodReportView
             clients={clients}
             scope="desk"
+            summaries={closeSummaries}
             builtBy={session?.displayName || session?.username || ""}
           />
         ) : showAutoCollection ? (
@@ -5875,7 +5903,7 @@ function ManagerOverview({
           <ConfigDriftPanel
             clients={clients}
             asOfDate={asOfDate}
-            load={parameterLoad}
+            load={panelLoadFor ? panelLoadFor("config") : null}
             onRetry={loadConfigParameters}
           />
 
@@ -5916,7 +5944,7 @@ function ManagerOverview({
           <DeskConfigOutlierPanel
             clients={clients}
             date={deskConfigDay}
-            load={parameterLoad}
+            load={panelLoadFor ? panelLoadFor("desk-config") : null}
             onRetry={loadDeskConfigParameters}
           />
         </CollapsiblePanel>
@@ -5993,7 +6021,7 @@ function ManagerOverview({
           <SetFileMatchPanel
             clients={clients}
             asOfDate={asOfDate}
-            load={parameterLoad}
+            load={panelLoadFor ? panelLoadFor("config") : null}
             onRetry={loadConfigParameters}
           />
         </CollapsiblePanel>
@@ -6521,7 +6549,25 @@ function ManagerOverview({
               <tbody>
                 {deskHistory.map(({ date, desk }) => (
                   <tr key={date}>
-                    <th scope="row">{date}</th>
+                    <th scope="row">
+                      {date}
+                      {/* A row this session could not read whole says so on the
+                          row. Without it a close whose summaries are not yet
+                          backfilled and whose account rows a login never
+                          carried renders as a line of dashes and small
+                          numbers, indistinguishable from a quiet day, which is
+                          how 2026-07-24 printed +$119.20 on prop against a
+                          true -$25,555.63. */}
+                      {desk.basis.sources.unreadable ? (
+                        <small
+                          className="desk-basis-incomplete"
+                          title={describeMoneyCompleteness(desk.basis).sentence}
+                        >
+                          {desk.basis.sources.unreadable} close
+                          {desk.basis.sources.unreadable === 1 ? "" : "s"} not read
+                        </small>
+                      ) : null}
+                    </th>
                     {DESK_HISTORY_COLUMNS.map((column) => {
                       const row = desk.rows.find((item) => item.key === column.key);
                       return (
@@ -6583,7 +6629,7 @@ function ManagerOverview({
             />
           ) : (
             <PanelLoadState
-              load={parameterLoad}
+              load={panelLoadFor ? panelLoadFor("ranking") : null}
               onRetry={loadRankingRows}
               waiting={`Reading the strategy rows of the last ${RANKING_WINDOW_DAYS} days. Nothing is ranked until they arrive.`}
             />
@@ -13090,7 +13136,33 @@ export default function App() {
       }));
     }
   }
+  /* THE SESSION THE LOADERS READ, AND WHY IT IS A REF.
+   *
+   * `camScopeFor(session)` decides whether a load asks for one CAM's book or
+   * the whole desk, and every loader below used to read the `session` of the
+   * render it was DEFINED in. On a fresh tab that is the render before anybody
+   * signed in, where `session` is null and `camScopeFor` answers "manager,
+   * whole book":
+   *
+   *   - LoginScreen.onLogin calls persistSession(user) and then
+   *     openCamWorkspace(...) on the same line, so reloadSupabaseState ran
+   *     against the closure in which the session was still null;
+   *   - backgroundRefresh.current is built once, behind a `if (!...current)`,
+   *     and captured that same first render for the life of the tab.
+   *
+   * So a CAM signing in paid the manager's 59 round trips and 8.34 MB twice and
+   * held all 206 clients, and the scoped path only fired after a page refresh,
+   * when sessionStorage already held the session. The ref is written the moment
+   * the session changes, so the loader that runs on the next line reads the
+   * user who just signed in.
+   */
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  function currentScope() {
+    return camScopeFor(sessionRef.current);
+  }
   function persistSession(user) {
+    sessionRef.current = user;
     setSession(user);
     try {
       if (user) sessionStorage.setItem("cam_crm_session", JSON.stringify(user));
@@ -13122,6 +13194,19 @@ export default function App() {
     }
     persistSession(null);
     setPlatformView("manager");
+    // SIGNING OUT LEAVES NOTHING OF THE PREVIOUS USER BEHIND.
+    //
+    // The `if (!session)` return that shows the login form is an early return
+    // INSIDE App(), so this component never unmounts: `state` survived a sign
+    // out, and so did the three id caches. The next user's first load then ran
+    // carryTradeHistoryForward against the previous user's state and copied
+    // their snapshots, strategies, orders and executions onto every close whose
+    // id matched, while the caches went on reporting those closes and clients
+    // as fetched so nothing refetched what had been carried. That is masked
+    // today only because both users load the whole book; it becomes a
+    // cross-book leak the moment the scoping above works.
+    forgetLoadedData();
+    setState(createInitialState());
   }
   function runWorkspaceConfirmAction() {
     const action = workspaceConfirmAction;
@@ -13148,10 +13233,12 @@ export default function App() {
           return;
         }
         persistSession(fresh);
+        // Same as the login form: the keyed load effect reads the session that
+        // was just written and does the fetching.
         if (fresh.role === USER_ROLES.CAM && fresh.camProfileId) {
-          openCamWorkspace(fresh.camProfileId);
+          openCamWorkspace(fresh.camProfileId, null, { reload: false });
         } else {
-          openManagerWorkspace();
+          openManagerWorkspace({ reload: false });
         }
       })
       .catch((err) => {
@@ -13270,11 +13357,71 @@ export default function App() {
   // error. `idle` and `loading` are NOT `empty`: a panel holding either prints
   // what it is waiting for, never a zero and never a claim.
   const [closeDetailLoad, setCloseDetailLoad] = useState({ status: "idle", error: "" });
-  const [parameterLoad, setParameterLoad] = useState({ status: "idle", error: "" });
+  /* ONE LOAD STATE PER PANEL, NOT ONE PER FETCH.
+   *
+   * There was a single `parameterLoad` behind four panels that ask for four
+   * different id sets, and the states crossed every way they could: expanding
+   * the ranking board put an already-open configuration panel back into
+   * "Reading the settings... Nothing is compared until they arrive" over rows
+   * it already held; one panel's failure printed a retry button on all four,
+   * wired to the wrong loader; and one panel's success cleared another's error.
+   * The caches are keyed by close id already, so this is the one thing that was
+   * not.
+   *
+   * Keyed by panel rather than by id set, because the panel is what renders it
+   * and what the retry button belongs to. The id set decides whether a fetch
+   * happens at all, which is the cache's job.
+   */
+  const [panelLoads, setPanelLoads] = useState({});
+  function setPanelLoad(panelKey, next) {
+    setPanelLoads((current) => {
+      const before = current[panelKey];
+      if (before && before.status === next.status && before.error === next.error) return current;
+      return { ...current, [panelKey]: next };
+    });
+  }
+  function panelLoadFor(panelKey) {
+    return panelLoads[panelKey] || { status: "idle", error: "" };
+  }
 
   /** The close ids of `ids` this session has not already fetched or asked for. */
   function unfetched(cache, ids) {
     return [...new Set((ids || []).filter(Boolean))].filter((id) => !cache.current.has(id));
+  }
+
+  /**
+   * The requests already out for `ids`, so a second caller waits on them.
+   *
+   * `unfetched` treats an id marked "loading" as fetched, which is right for
+   * deciding whether to ASK again and wrong for deciding whether the rows are
+   * in hand. Without this, a panel whose ids are all in flight for somebody
+   * else declared itself loaded and rendered a finding over rows that had not
+   * arrived. Each cache entry holds its own promise for exactly this.
+   */
+  function inFlight(cache, ids) {
+    const out = [];
+    for (const id of new Set((ids || []).filter(Boolean))) {
+      const entry = cache.current.get(id);
+      if (entry && entry.status === "loading" && entry.promise) out.push(entry.promise);
+    }
+    return out;
+  }
+
+  /**
+   * Everything this session has fetched since somebody signed in.
+   *
+   * Called on sign out. The caches say what has been fetched and `state` holds
+   * it; leaving either in place hands it to whoever signs in next.
+   */
+  function forgetLoadedData() {
+    closeDetailCache.current = new Map();
+    clientDetailCache.current = new Map();
+    parameterCache.current = new Map();
+    setCloseDetailLoad({ status: "idle", error: "" });
+    setPanelLoads({});
+    // Built once behind a null check and it captured the first render's
+    // session, so it has to be dropped rather than left to rebuild itself.
+    backgroundRefresh.current = null;
   }
 
   /**
@@ -13287,11 +13434,10 @@ export default function App() {
   function ensureCloseDetail(importIds, { label = "the close" } = {}) {
     const wanted = unfetched(closeDetailCache, importIds);
     if (!wanted.length) return Promise.resolve(null);
-    for (const id of wanted) closeDetailCache.current.set(id, "loading");
     setCloseDetailLoad({ status: "loading", error: "" });
-    return loadSupabaseCloseDetail(wanted)
+    const request = loadSupabaseCloseDetail(wanted)
       .then((detail) => {
-        for (const id of wanted) closeDetailCache.current.set(id, "loaded");
+        for (const id of wanted) closeDetailCache.current.set(id, { status: "loaded" });
         setState((current) => mergeSupabaseCloseDetail(current, detail));
         setCloseDetailLoad({ status: "loaded", error: "" });
         return detail;
@@ -13308,43 +13454,107 @@ export default function App() {
         });
         return null;
       });
+    for (const id of wanted) closeDetailCache.current.set(id, { status: "loading", promise: request });
+    return request;
   }
 
   /**
-   * The strategy parameters of named closes, for the two panels that read them.
+   * The rows a configuration panel or the ranking board needs, for its own day.
    *
    * `parameters_raw` and `params_parsed` are 82% of a strategy row and 30.9 MB
-   * of a production login. They are read by ConfigDriftPanel and
-   * SetFileMatchPanel and by nothing else, both behind a collapsed panel, so
-   * they arrive when one of those is expanded, scoped to the day it is showing.
-   * params_parsed also carries the machine LicenseKey, which is the other
-   * reason it is not in every CAM's tab all day.
+   * of a production login. They are read by ConfigDriftPanel, SetFileMatchPanel
+   * and DeskConfigOutlierPanel and by nothing else, all three behind a
+   * collapsed panel, so they arrive when one is expanded, scoped to the day it
+   * is showing. params_parsed also carries the machine LicenseKey, which is the
+   * other reason it is not in every CAM's tab all day.
+   *
+   * `withAccountRows` IS WHAT THE RANKING BOARD NEEDS AND THE THREE PANELS DO
+   * NOT. The board reads dailyImport.snapshots and then each snapshot's
+   * strategies; a login holds the account rows of each client's LATEST close
+   * only, so a window of sixty days fetched strategy rows that had nowhere to
+   * nest and were dropped — 594 of 3,805 on the book, a board of 15 algorithms
+   * with none ranked under a badge promising one rank per algorithm. The three
+   * configuration panels read the flat dailyImport.strategies and are unchanged
+   * by it, so they do not pay for the account rows.
+   *
+   * Wrapped in useCallback with no dependencies because the panels fetch from
+   * an effect keyed on this function's identity: a new identity every render
+   * would be a fetch every render.
    */
-  function ensureStrategyParameters(importIds) {
-    const wanted = unfetched(parameterCache, importIds);
+  const ensureStrategyParameters = useCallback(function ensureStrategyParameters(
+    panelKey,
+    importIds,
+    { withAccountRows = false } = {},
+  ) {
+    const ids = [...new Set((importIds || []).filter(Boolean))];
+    /* THE CACHE KEY IS THE CLOSE AND WHAT WAS FETCHED FOR IT, NOT THE CLOSE.
+     *
+     * Two fetches land here and they bring different things. A close the
+     * configuration panels already asked for holds its parameters and NOT its
+     * account rows, so the ranking board asking for the same day must fetch it
+     * again or it inherits the very hole this change removes; a close the board
+     * fetched holds both, so a panel asking for it afterwards needs nothing.
+     * A cache keyed on the id alone answers "already fetched" to both, which is
+     * right once and wrong once. */
+    const holds = (id) => {
+      const entry = parameterCache.current.get(id);
+      if (!entry) return false;
+      return withAccountRows ? Boolean(entry.withAccountRows) : true;
+    };
+    const wanted = ids.filter((id) => !holds(id));
+    const waiting = inFlight(parameterCache, ids.filter(holds));
     if (!wanted.length) {
-      setParameterLoad((current) => (current.status === "loaded" ? current : { status: "loaded", error: "" }));
-      return Promise.resolve(null);
+      // Nothing to ask for, but somebody else's request may still be out for
+      // these closes. Waiting on it is the difference between a panel that
+      // renders when the rows land and one that states a finding over rows
+      // that have not arrived.
+      if (!waiting.length) {
+        setPanelLoad(panelKey, { status: "loaded", error: "" });
+        return Promise.resolve(null);
+      }
+      setPanelLoad(panelKey, { status: "loading", error: "" });
+      return Promise.all(waiting)
+        .then(() => {
+          setPanelLoad(panelKey, { status: "loaded", error: "" });
+          return null;
+        })
+        .catch(() => {
+          setPanelLoad(panelKey, {
+            status: "error",
+            error: "Could not load the settings for this day: the request that was already out failed.",
+          });
+          return null;
+        });
     }
-    for (const id of wanted) parameterCache.current.set(id, "loading");
-    setParameterLoad({ status: "loading", error: "" });
-    return loadSupabaseStrategyParameters(wanted)
+    setPanelLoad(panelKey, { status: "loading", error: "" });
+    const fetcher = withAccountRows ? loadSupabaseRankingRows : loadSupabaseStrategyParameters;
+    const request = fetcher(wanted)
       .then((parameters) => {
-        for (const id of wanted) parameterCache.current.set(id, "loaded");
+        for (const id of wanted) parameterCache.current.set(id, { status: "loaded", withAccountRows });
         setState((current) => mergeSupabaseStrategyParameters(current, parameters));
-        setParameterLoad({ status: "loaded", error: "" });
         return parameters;
       })
       .catch((error) => {
         for (const id of wanted) parameterCache.current.delete(id);
         console.error("[CRM] Loading strategy parameters failed:", error);
-        setParameterLoad({
+        throw error;
+      });
+    for (const id of wanted) {
+      parameterCache.current.set(id, { status: "loading", promise: request, withAccountRows });
+    }
+    return Promise.all([request, ...waiting])
+      .then(([parameters]) => {
+        setPanelLoad(panelKey, { status: "loaded", error: "" });
+        return parameters;
+      })
+      .catch((error) => {
+        setPanelLoad(panelKey, {
           status: "error",
           error: `Could not load the settings for this day: ${error.message || "the database did not answer."}`,
         });
         return null;
       });
-  }
+  }, []);
 
   /**
    * One client's credentials, prop firm logins and export summaries.
@@ -13355,10 +13565,10 @@ export default function App() {
    */
   function ensureClientDetail(clientId) {
     if (!clientId || clientDetailCache.current.has(clientId)) return Promise.resolve(null);
-    clientDetailCache.current.set(clientId, "loading");
+    clientDetailCache.current.set(clientId, { status: "loading" });
     return loadSupabaseClientDetail(clientId)
       .then((detail) => {
-        clientDetailCache.current.set(clientId, "loaded");
+        clientDetailCache.current.set(clientId, { status: "loaded" });
         setState((current) => mergeSupabaseClientDetail(current, detail));
         return detail;
       })
@@ -13400,9 +13610,23 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session?.camProfileId]);
 
+  /* THE LOGIN LOAD, AND WHY IT IS KEYED ON THE SESSION.
+   *
+   * This effect had `[]` for its dependency array and is declared above the
+   * `if (!session)` return that renders the login form, so on a fresh tab it
+   * ran AT MOUNT, with `session` null — and `camScopeFor(null)` means "manager,
+   * whole book". It never ran again, so a CAM signing in loaded all 206
+   * clients, every contact detail among them, and the scoped path only fired
+   * on a later page refresh when sessionStorage already held the session.
+   *
+   * Keyed on who is signed in, and skipped while nobody is: the load that
+   * matters is the one after the session exists. `onLogin` and the session
+   * restore below no longer ask for a load of their own, because this is it.
+   */
   useEffect(() => {
     if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) return;
+    if (!session) return;
     let cancelled = false;
     beginDashboardLoad();
     loadSupabaseCrmState({
@@ -13413,7 +13637,7 @@ export default function App() {
       // login to the clients they own plus the ones they are covering takes it
       // from 9.3 MB to 1.3 MB on the production desk. A manager passes null and
       // gets the whole thing.
-      scopeToCamProfileId: camScopeFor(session),
+      scopeToCamProfileId: currentScope(),
     })
       .then((remoteState) => {
         if (cancelled) return;
@@ -13439,7 +13663,15 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [session?.id, session?.role, session?.camProfileId]);
+
+  // NOTHING ONE SESSION FETCHED IS READ BY THE NEXT ONE. performLogout clears
+  // this explicitly, and so does this, for the paths that change the session
+  // without going through it: a revalidation that finds the Supabase session
+  // gone, and a restore that comes back as a different user.
+  useEffect(() => {
+    forgetLoadedData();
+  }, [session?.id, session?.role, session?.camProfileId]);
 
   // Manual strategy classifications (family+signature -> version + risk).
   const [strategyClassifications, setStrategyClassifications] = useState([]);
@@ -13494,7 +13726,7 @@ export default function App() {
         state.accountManager?.id ||
         state.camProfiles?.[0]?.id ||
         null,
-      scopeToCamProfileId: camScopeFor(session),
+      scopeToCamProfileId: currentScope(),
     });
     const nextState = selectedClientId
       ? selectClient(remoteState, selectedClientId)
@@ -13538,24 +13770,41 @@ export default function App() {
    * and backgroundRefresh.js for why N of these are one load and not N.
    */
   const backgroundRefresh = useRef(null);
-  if (!backgroundRefresh.current) {
-    backgroundRefresh.current = createCoalescingRefresh({
-      run: async (targets) => {
-        const remoteState = await loadSupabaseCrmState({
-          preferredCamProfileId:
-            targets.map((target) => target.preferredCamProfileId).find(Boolean) || null,
-          scopeToCamProfileId: camScopeFor(session),
-        });
-        setState((current) => mergeRefreshedDays(current, remoteState, targets));
-        markConnected();
-        return remoteState;
-      },
-    });
+  /**
+   * The gate, built on first use and rebuilt after it has been dropped.
+   *
+   * It used to be built in the render body behind a null check, which made it
+   * a thing that existed only because a render had happened — and, worse, a
+   * closure over the `session` of the FIRST render, which on a fresh tab is the
+   * one before anybody signed in. It reads the session through a ref now, and
+   * forgetLoadedData drops it on a sign out so nothing of one user's load is
+   * held by the next; built here so that dropping it can never leave a caller
+   * holding null.
+   */
+  function backgroundRefresher() {
+    if (!backgroundRefresh.current) {
+      backgroundRefresh.current = createCoalescingRefresh({
+        run: async (targets) => {
+          const remoteState = await loadSupabaseCrmState({
+            preferredCamProfileId:
+              targets.map((target) => target.preferredCamProfileId).find(Boolean) || null,
+            // Through the ref, not through this closure: the gate outlives the
+            // render that built it, so a `session` read here would be whichever
+            // one was on screen at the time.
+            scopeToCamProfileId: currentScope(),
+          });
+          setState((current) => mergeRefreshedDays(current, remoteState, targets));
+          markConnected();
+          return remoteState;
+        },
+      });
+    }
+    return backgroundRefresh.current;
   }
 
   async function refreshInBackground(preferredCamProfileId = null, selectedClientId = null, date = null) {
     if (!isSupabaseConfigured) return null;
-    return backgroundRefresh.current.request({
+    return backgroundRefresher().request({
       preferredCamProfileId:
         preferredCamProfileId ||
         session?.camProfileId ||
@@ -14102,7 +14351,16 @@ export default function App() {
     });
   }
 
-  function openCamWorkspace(camId = currentCamProfile?.id, clientId = null) {
+  /* `reload` IS FALSE ON THE FIRST OPEN AFTER A SIGN IN, AND ONLY THERE.
+   *
+   * Signing in used to call persistSession and then this, and this called
+   * reloadSupabaseState — a second whole load, from the render in which the
+   * session was still null. The login effect is now keyed on the session and
+   * runs the moment it changes, so the sign-in path hands the load to it and
+   * this only switches the view. Every other caller (the manager's global
+   * search, the CAM list, the sidebar) is a real workspace change and still
+   * asks for its own read. */
+  function openCamWorkspace(camId = currentCamProfile?.id, clientId = null, { reload = true } = {}) {
     if (!camId) return;
     setState((current) => {
       const next = selectCam(current, camId);
@@ -14113,19 +14371,19 @@ export default function App() {
     setShowOverview(false);
     setShowSOP(false);
     setRegistryOpen(false);
-    if (isSupabaseConfigured) {
+    if (reload && isSupabaseConfigured) {
       reloadSupabaseState(camId, clientId).catch((error) => {
         console.error("[CRM] Failed to refresh CAM workspace:", error);
       });
     }
   }
 
-  function openManagerWorkspace() {
+  function openManagerWorkspace({ reload = true } = {}) {
     setPlatformView("manager");
     setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
-    if (isSupabaseConfigured) {
+    if (reload && isSupabaseConfigured) {
       reloadSupabaseState(null).catch((error) => {
         console.error("[CRM] Failed to refresh manager workspace:", error);
       });
@@ -15182,11 +15440,15 @@ export default function App() {
     return (
       <LoginScreen
         onLogin={(user) => {
+          // persistSession writes sessionRef and sets the session, which is
+          // what the keyed login effect above waits for. The workspace openers
+          // are told not to load: the effect is the load, and it is the first
+          // one that knows who signed in.
           persistSession(user);
           if (user.role === USER_ROLES.CAM && user.camProfileId) {
-            openCamWorkspace(user.camProfileId);
+            openCamWorkspace(user.camProfileId, null, { reload: false });
           } else {
-            openManagerWorkspace();
+            openManagerWorkspace({ reload: false });
           }
         }}
       />
@@ -15204,7 +15466,7 @@ export default function App() {
           <ManagerOverview
             clients={state.clients}
             closeSummaries={closeSummaries}
-            parameterLoad={parameterLoad}
+            panelLoadFor={panelLoadFor}
             onNeedParameters={ensureStrategyParameters}
             camProfiles={state.camProfiles}
             coverage={state.coverage || []}
@@ -15213,7 +15475,7 @@ export default function App() {
             onDenyTimeOff={handleDenyTimeOff}
             onEndCoverage={handleEndCoverage}
             onEditCoverage={handleEditCoverage}
-            onOpenCam={openCamWorkspace}
+            onOpenCam={(camId, clientId) => openCamWorkspace(camId, clientId)}
             onCreateCam={(name) => {
               saveEdit({
                 what: "the CAM profile",
@@ -15769,6 +16031,7 @@ export default function App() {
                 scope="cam"
                 camName={currentCamProfile?.name || ""}
                 camProfileId={currentCamProfile?.id || null}
+                summaries={closeSummaries}
                 builtBy={session?.displayName || session?.username || ""}
               />
             </main>

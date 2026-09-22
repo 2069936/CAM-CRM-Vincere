@@ -3,6 +3,7 @@ import {
   RAN_BASES,
   familiesOnFills,
   familyFromStrategyName,
+  ranAnswerIsKnown,
   ranBasisFromEvidence,
   ranBasisOf,
   strategyRan,
@@ -157,5 +158,41 @@ describe('answering a whole close', () => {
     expect(withStrategyRan([row({ enabled: true })], [])[0].ranBasis).toBe('enabled');
     expect(withStrategyRan([row({ realized: 12 })], [])[0].ranBasis).toBe('realized');
     expect(withStrategyRan([row()], [])[0].ranBasis).toBe('none');
+  });
+});
+
+
+describe('a caller that does not hold the fills does not get a "no" it cannot support', () => {
+  const switchedOff = {
+    accountName: 'ACC1', strategyName: '0 - RBO-1.8', strategyFamily: 'RBO', enabled: false, realized: 0,
+  };
+
+  it('leaves a row with no stored answer unanswered rather than calling it none', () => {
+    // The state between step 47 and its backfill: every row reads back
+    // `ran: null, ranBasis: ''`, so the stored-answer guard has nothing to
+    // protect and the rule would answer `none` off evidence nobody consulted.
+    const [row] = withStrategyRan([switchedOff], [], { evidenceComplete: false });
+
+    expect(row.ran).toBeNull();
+    expect(row.ranBasis).toBe('');
+    // It still READS as not having run, which is what the product said before
+    // any of this existed. What it does not do is claim to have measured it.
+    expect(strategyRan(row)).toBe(false);
+    expect(ranAnswerIsKnown(row, { closeHasFills: false })).toBe(false);
+  });
+
+  it('answers a row that answers itself, fills or no fills', () => {
+    const [enabled] = withStrategyRan([{ ...switchedOff, enabled: true }], [], { evidenceComplete: false });
+    expect(enabled.ranBasis).toBe('enabled');
+    const [stored] = withStrategyRan([{ ...switchedOff, ran: true, ranBasis: 'fills' }], [], { evidenceComplete: false });
+    expect(stored.ranBasis).toBe('fills');
+  });
+
+  it('answers normally when the caller does hold them', () => {
+    // The ingest path. An empty execution list there is a real answer: the
+    // upload parsed the fills and there were none.
+    const [row] = withStrategyRan([switchedOff], []);
+    expect(row.ran).toBe(false);
+    expect(row.ranBasis).toBe('none');
   });
 });

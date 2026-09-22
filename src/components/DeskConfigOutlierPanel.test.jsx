@@ -68,8 +68,15 @@ describe('a group with something to verify', () => {
   const text = strip(html);
 
   it('counts the desk before it names anybody', () => {
+    // THE HEADLINE COUNTS MACHINES AND SAYS SO. It used to print the
+    // account-and-algorithm PAIR count under the word "accounts", with an "of
+    // them" tying the second number to the first: on the book's last close that
+    // read "411 accounts ... 81 of them" over a desk of 252 accounts of which
+    // 63 differ. Here the two happen to be equal (one group, one row each),
+    // which is exactly why the pair count is still printed beside them.
     expect(text).toContain('On 2026-09-21 , 10 closes put 10 accounts into 1 group');
-    expect(text).toContain('1 of them run at least one setting the rest of their group does not');
+    expect(text).toContain('10 account-and-algorithm pairs in all');
+    expect(text).toContain('1 account run at least one setting the rest of their group does not');
   });
 
   it('says different is not wrong, in the panel and not in a comment', () => {
@@ -279,5 +286,28 @@ describe('a panel waiting for its own parameters', () => {
 
   it('renders as loaded when nobody passes a load state', () => {
     expect(render(clients)).toContain('ODD');
+  });
+});
+
+
+describe('a day whose rows carry no settings', () => {
+  // A STATED LOAD OF "loaded" IS NOT A STATEMENT THAT THE ROWS CARRY ANYTHING.
+  // The parameter columns are fetched per day; a close whose strategy rows are
+  // in hand without them reads as `unreadable` here, and `basis.unreadable` was
+  // computed and printed only inside the too-small-group list. So a day the
+  // panel could not compare at all rendered with no caveat above the fold.
+  const stripped = desk(9).map((entry) => ({
+    ...entry,
+    dailyImports: entry.dailyImports.map((close) => ({
+      ...close,
+      strategies: close.strategies.map(({ parametersRaw, ...rest }) => rest),
+    })),
+  }));
+
+  it('says how many rows it could not read, rather than reporting a clean day', () => {
+    const text = strip(render(stripped, { load: { status: 'loaded', error: '' } }));
+
+    expect(text).toContain('9 rows on this day exported settings nobody could read');
+    expect(text).not.toContain('Nothing on 2026-09-21 sits off the desk');
   });
 });

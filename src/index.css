@@ -7985,6 +7985,20 @@ tr:nth-child(2) .rank-badge {
   margin: 6px 0 2px; color: var(--text); font-size: 12px; font-weight: 600;
 }
 .desk-basis-note { margin: 0 0 10px; font-size: 11px; line-height: 1.5; }
+/* The line that says a money figure is short, and it is not muted.
+   deskMoney computes how many closes it could not read and, until this, nothing
+   printed it: a desk month missing most of its closes rendered exactly like one
+   read whole. It reads as a caveat rather than an alarm — the figure is
+   incomplete, not wrong — so it takes the warning colour and not the danger
+   one. */
+.desk-basis-incomplete {
+  display: block;
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warning);
+}
+.desk-history-table th[scope="row"] .desk-basis-incomplete { margin: 2px 0 0; font-size: 10px; }
 .desk-reconciliation { margin: 10px 0 0; font-size: 11px; line-height: 1.5; }
 .desk-money-table td, .desk-history-table td { font-variant-numeric: tabular-nums; }
 .desk-money-table th[scope="row"] strong { display: block; }
@@ -8335,6 +8349,14 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
   border-bottom: 1px solid var(--border);
 }
 .desk-config-account strong { font-weight: 600; font-size: 12px; margin-right: 6px; }
+/* Position sizing, in its own block inside the account's rows. It is compared
+   and listed, and it is out of the count that decides which account comes
+   first: sizing follows account size and prop-firm plan, so those rows are the
+   likeliest in the list to be correct by design. */
+.desk-config-sizing-head > th {
+  font-weight: 600; font-size: 10px; color: var(--muted);
+  padding-top: 6px; white-space: normal; border-bottom: 1px dotted var(--border);
+}
 .desk-config-account .muted { font-size: 10px; margin-left: 6px; }
 /* The denominator, beside the desk's value rather than in a legend. A reader
    comparing "300 on 67" against "300 on 34" is reading two different strengths

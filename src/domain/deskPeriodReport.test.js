@@ -240,6 +240,63 @@ describe('money over a range', () => {
     expect(Object.keys(report.money)).not.toContain('total');
     expect(report.money.rowsDoNotSum).toContain('never summed');
   });
+
+  it('reads the same closes as the manager’s own tile, because it is handed the same summaries', () => {
+    // deskMoney IS THE ONE DESK ANSWER, and this report is one of its readers.
+    // All three buildDeskMoneyForRange calls in here omitted `summaries`, so on
+    // a login that holds each client's latest close and stored summaries for
+    // the rest, the manager's month tile and this report printed different
+    // figures under identical labels over the same month — and the
+    // per-account-close RATE the `change` column subtracts moved with them, so
+    // the column compared a rate from one population against a rate from
+    // another.
+    const loaded = bulkClient({ id: 'loaded', accountCount: 4, dates: WEEK_TWO, pnl: -50 });
+    // A close in the book whose account rows this session does not hold.
+    const notLoaded = {
+      ...bulkClient({ id: 'stored', accountCount: 4, dates: WEEK_TWO, pnl: -50 }),
+      dailyImports: WEEK_TWO.map((date) => ({
+        id: `stored-${date}`, date, importedAt: `${date}T22:00:00Z`, snapshots: [], executions: [], flags: [],
+      })),
+    };
+    const book = [loaded, notLoaded];
+    const summaries = {
+      usable: new Map(WEEK_TWO.map((date) => [`stored-${date}`, [{
+        segment: 'Funded', accounts: 4, dailyPnl: -200, weeklyPnl: 0, balance: 200000, accountNames: [],
+      }]])),
+      stale: new Set(),
+    };
+
+    const tile = buildDeskMoneyForRange(book, { from: '2026-07-27', to: '2026-07-30', summaries });
+    const report = build(book, { kind: 'week', key: '2026-07-27' }, { summaries });
+
+    expect(deskRow(report.money.desk, 'propOther').dailyPnl)
+      .toBe(deskRow(tile, 'propOther').dailyPnl);
+    expect(report.money.desk.basis.sources.summary).toBe(WEEK_TWO.length);
+    expect(report.money.desk.basis.complete).toBe(true);
+    // And without them, the same report is short by exactly the stored closes
+    // and says so rather than reporting complete.
+    const blind = build(book, { kind: 'week', key: '2026-07-27' });
+    expect(deskRow(blind.money.desk, 'propOther').dailyPnl)
+      .not.toBe(deskRow(tile, 'propOther').dailyPnl);
+    expect(blind.money.desk.basis.complete).toBe(false);
+    expect(blind.money.desk.basis.sources.unreadable).toBe(WEEK_TWO.length);
+  });
+
+  it('refuses a coverage factor rather than printing "a factor of null"', () => {
+    // A close whose account rows a session did not fetch is a zero-row close,
+    // which is ordinary under a per-close login. `coverageRatio` is null there
+    // and both sentences interpolated it.
+    const book = [
+      bulkClient({ id: 'loaded', accountCount: 4, dates: ['2026-07-27', '2026-07-30'], pnl: -50 }),
+    ];
+    book[0].dailyImports[0].snapshots = [];
+    const report = build(book, { kind: 'week', key: '2026-07-27' });
+
+    expect(report.coverage.totals.coverageRatio).toBeNull();
+    expect(report.coverage.sentence).not.toContain('factor of null');
+    expect(report.coverage.sentence).toContain('no factor between them');
+    expect(report.summary.coverageRange).not.toContain('factor of null');
+  });
 });
 
 describe('the ranking, scoped to the period', () => {

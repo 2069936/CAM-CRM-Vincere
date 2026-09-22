@@ -550,3 +550,137 @@ describe('rowParameters', () => {
     expect(rowParameters(null)).toBeNull();
   });
 });
+
+
+describe('a group cannot have more clients than accounts', () => {
+  it('counts a client only for the rows it could actually compare', () => {
+    // `clientIds` was added before the unnamed and unreadable guards, so a
+    // client whose only row in a group carried no trading account counted as a
+    // client of it while its account counted as nothing. The closed summary
+    // line prints both side by side — "9 accounts, 10 clients" on the real book
+    // — and every account belongs to exactly one client, so that is impossible
+    // on its face. A panel a desk cannot check is a panel it stops trusting.
+    const clients = [
+      ...desk(3),
+      // One more client whose single row names no account.
+      client('ghost', [strategy('', {})]),
+    ];
+    const group = groupOf(buildDeskConfigOutliers(clients, { date: DAY }));
+
+    expect(group.accounts).toBe(3);
+    expect(group.clients).toBe(3);
+    expect(group.unnamed).toBe(1);
+    expect(group.clientsDropped).toBe(1);
+    expect(group.clients).toBeLessThanOrEqual(group.accounts);
+  });
+
+  it('does the same for a client whose only row carries no readable settings', () => {
+    const clients = [
+      ...desk(3),
+      client('unreadable', [{ ...strategy('GHOST'), parametersRaw: '' }]),
+    ];
+    const group = groupOf(buildDeskConfigOutliers(clients, { date: DAY }));
+
+    expect(group.unreadable).toBe(1);
+    expect(group.clients).toBe(3);
+    expect(group.clients).toBeLessThanOrEqual(group.accounts);
+  });
+});
+
+describe('one denominator per group', () => {
+  it('measures the second-reading floor against the same population the share prints', () => {
+    // The consensus test used `population` and the second-reading test used the
+    // raw group size. `population` is the group minus the accounts whose two
+    // rows disagree with each other about that field, and EVERY share the panel
+    // prints is against `population` — so the 15% floor was quietly stricter
+    // than the number printed beside it, and the gap grows with the number of
+    // duplicated rows in the export.
+    //
+    // Twenty-one accounts, two of which carry two rows disagreeing about the
+    // stop, so nineteen can be read as one value. Three of those nineteen run a
+    // second stop: 3 > 19 × 0.15 (2.85) and NOT 3 > 21 × 0.15 (3.15). Against
+    // the old denominator those three accounts were listed as deviations; the
+    // group is running two settings and nobody should be listed for it.
+    const clients = [
+      ...desk(16),
+      ...Array.from({ length: 3 }, (_, index) => client(`second${index}`, [
+        strategy(`S${index}`, { StopLossTicks: '310' }),
+      ])),
+      ...Array.from({ length: 2 }, (_, index) => client(`split${index}`, [
+        strategy(`X${index}`, { StopLossTicks: '300' }),
+        strategy(`X${index}`, { StopLossTicks: '999' }),
+      ])),
+    ];
+    const group = groupOf(buildDeskConfigOutliers(clients, { date: DAY }));
+    const stop = group.consensus.find((entry) => entry.name === 'StopLossTicks');
+
+    expect(group.accounts).toBe(21);
+    expect(stop.population).toBe(19);
+    expect(stop.alsoInUse).toEqual([{ value: '310', accounts: 3, share: 16 }]);
+    // The three accounts on the second stop are not a review list.
+    expect(differenceFor(group, 'S0', 'StopLossTicks')).toBeNull();
+    expect(differenceFor(group, 'S1', 'StopLossTicks')).toBeNull();
+    expect(differenceFor(group, 'S2', 'StopLossTicks')).toBeNull();
+    // The two accounts that cannot be read as one value still are, as that.
+    expect(differenceFor(group, 'X0', 'StopLossTicks').state).toBe('inconsistent');
+  });
+});
+
+describe('sizing is compared and is not what ranks an account', () => {
+  it('puts an account that differs only on position size below one that does not', () => {
+    // Position size follows account size and prop-firm plan, so these are the
+    // rows likeliest to be right by design. buildConfigDrift splits them out
+    // for exactly that reason and this module ranked them beside BarsPeriod: on
+    // the book's last close six of the 81 listed accounts differ on nothing
+    // else and sat above real findings, because the sort counts fields.
+    const clients = [
+      ...desk(4, { PosSize1: '2' }),
+      client('sized', [strategy('SIZED', { PosSize1: '4' })]),
+      client('configured', [strategy('CONFIGURED', { PosSize1: '2', StopLossTicks: '315' })]),
+    ];
+    const group = groupOf(buildDeskConfigOutliers(clients, { date: DAY }));
+
+    expect(group.outliers.map((outlier) => outlier.accountName)).toEqual(['CONFIGURED', 'SIZED']);
+    const sized = outlierFor(group, 'SIZED');
+    expect(sized.configurationDifferences).toBe(0);
+    expect(sized.sizingDifferences).toBe(1);
+    // Still listed, and still carrying the difference: this is a ranking
+    // decision, not a decision to stop looking.
+    expect(differenceFor(group, 'SIZED', 'PosSize1').value).toBe('4');
+    const configured = outlierFor(group, 'CONFIGURED');
+    expect(configured.configurationDifferences).toBe(1);
+    expect(configured.sizingDifferences).toBe(0);
+  });
+});
+
+describe('a group of one client is not a desk reference', () => {
+  it('says so rather than reporting one person agreeing with himself', () => {
+    // MIN_CONSENSUS_ACCOUNTS is on ACCOUNTS, and one client routinely runs
+    // three machines on the same algorithm. On the book, DJDR 1.1 on MNQ on
+    // 2026-07-13 is three accounts of one client reported as "all on the desk
+    // setting". A client floor would hide the group, and this file's argument
+    // is that an unmeasurable group must stay visible and say what it is.
+    const one = {
+      id: 'solo',
+      name: 'solo',
+      dailyImports: [{
+        id: 'solo-close',
+        uuid: 'solo-uuid',
+        date: DAY,
+        strategies: [strategy('M1'), strategy('M2'), strategy('M3')],
+      }],
+    };
+    const group = groupOf(buildDeskConfigOutliers([one], { date: DAY }));
+
+    expect(group.measured).toBe(true);
+    expect(group.accounts).toBe(3);
+    expect(group.clients).toBe(1);
+    expect(group.singleClient).toBe(true);
+  });
+
+  it('does not say it of a group spread across clients', () => {
+    const group = groupOf(buildDeskConfigOutliers(desk(3), { date: DAY }));
+
+    expect(group.singleClient).toBe(false);
+  });
+});

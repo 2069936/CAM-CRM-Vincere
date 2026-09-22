@@ -106,6 +106,12 @@ already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
 
+**47 runs before the deploy, not after it.** Its reads degrade and its writes do
+not: the strategy insert names `ran` and `ran_basis` unconditionally, so a
+deployed build against an un-migrated database fails every upload at the insert.
+39 is in the same position for one client save; 47 is in it for the whole
+ingest. 48 is the opposite and may run either side of the deploy.
+
 **43 closes everything that existed before it, and it is the one that cannot
 wait.** It enables Row Level
 Security on every table that did not have it, which on 2026-09-18 was all of
@@ -183,8 +189,22 @@ review and the function replaces the device's inventory whole, so a capture
 that was accepted after a retry, or replayed here and then resent, leaves the
 table on the next report and never before.
 
-**47 degrades gracefully, and it is the only one with a second statement to
-run.** The two columns answer "did this algorithm run that day", which the
+**47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
+Everything below about falling back to the rule is true of *reads* and false of
+*writes*, which is the same split step 39 carries and for the same reason.
+
+`mapStrategy` in `src/domain/dailyImportPersistence.js` puts `ran` and
+`ran_basis` on every strategy row unconditionally, and the insert path has no
+missing-column recovery: the fallback in `supabaseStore.selectRows` is on reads
+only. So between a deploy of this branch and this file being run, every manual
+upload, every batch import and every auto-collector close fails with PGRST204 on
+`strategy_snapshots.ran`. That is the whole ingest, not a dormant feature.
+
+Run 47 before the deploy. If it has already gone out the other way round, run
+the file and the ingest recovers on the next attempt; nothing is lost, because a
+close that failed at the door was never stored.
+
+**47 also has a second statement to run.** The two columns answer "did this algorithm run that day", which the
 product used to decide from `strategy_snapshots.enabled`: the state of a
 checkbox at the moment the export was taken, on exports taken after the desk
 switches the algos off. On the stored book 1,517 strategy rows are enabled and
@@ -200,10 +220,11 @@ Run the file, then run the backfill, which is deliberately not part of it:
 
     call public.backfill_strategy_ran_all();
 
-It answers one close per transaction and commits between them, because one
-UPDATE across 14,514 rows would hold locks on all of them for as long as a
-starved instance takes, and a procedure cannot commit inside the transaction
-that runs a migration file. It is safe to run twice, safe to interrupt and safe
+It answers a batch of at most 2,000 rows per transaction, taking closes whole so
+none is left half answered, and commits between batches, because one UPDATE
+across 14,514 rows would hold locks on all of them for as long as a starved
+instance takes, and a procedure cannot commit inside the transaction that runs a
+migration file. It is safe to run twice, safe to interrupt and safe
 to resume: it looks only for rows where `ran is null`, and re-answering a close
 that is already answered writes nothing. Some clients (including `psql -c`) wrap
 every statement in a transaction, and the call then fails with `invalid

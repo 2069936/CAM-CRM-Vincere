@@ -116,7 +116,20 @@ vi.mock('../lib/supabaseClient', () => {
               done({ count: all.length, data: null, error: null });
               return;
             }
-            const slice = range ? all.slice(range[0], range[1] + 1) : all;
+            // THE FAKE PROJECTS, because half of what is asserted here is
+            // which COLUMNS a fetch names. A fake that answered whole rows
+            // whatever the select said would hand a login the parameter
+            // columns it had just been measured for NOT asking about, and the
+            // merge that has to put back what a narrower fetch did not carry
+            // would never see a row without them.
+            const project = (row) => {
+              if (!columns || columns === '*') return row;
+              const names = String(columns).split(',').map((name) => name.trim()).filter(Boolean);
+              const out = {};
+              for (const name of names) if (name in row) out[name] = row[name];
+              return out;
+            };
+            const slice = (range ? all.slice(range[0], range[1] + 1) : all).map(project);
             traffic.rows += slice.length;
             done(single ? { data: slice[0] || null, error: null } : { data: slice, error: null });
           }, 0);
@@ -153,7 +166,10 @@ const {
   loadSupabaseCloseDetail,
   loadSupabaseCloseFlags,
   loadSupabaseCrmState,
+  loadSupabaseRankingRows,
   loadSupabaseStrategyParameters,
+  mergeSupabaseStrategyParameters,
+  applyCloseRows,
 } = await import('./supabaseStore.js');
 
 /* ── A desk shaped like the production book, 2026-09-22 ────────────────────
@@ -220,6 +236,20 @@ function makeBook() {
             entry.resolved_at = entry.status === 'Open' ? null : '2026-01-05';
           }
           if (table === 'close_summaries') entry.segment = row ? 'Cash' : 'Funded';
+          if (table === 'strategy_snapshots') {
+            // Nested onto an account row by id, the way the real tables are, so
+            // a merge that fetches strategies without their snapshots has
+            // somewhere to put them and one that fetches both can be checked.
+            entry.account_snapshot_id = `account_snapshots-${importId}-${row % PER_CLOSE.account_snapshots}`;
+            entry.strategy_name = `ALGO-${row}`;
+            entry.strategy_family = `ALGO${row}`;
+            entry.enabled = row % 2 === 0;
+            // The two columns that are 82% of a strategy row and 30.9 MB of a
+            // login. Only the parameter fetch names them.
+            entry.parameters_raw = `BarsPeriod=${20 + row};StopLossTicks=${300 + row}`;
+            entry.params_parsed = { BarsPeriod: String(20 + row), LicenseKey: 'LIC-XXXX' };
+          }
+          if (table === 'account_snapshots') entry.derivation = { rows: row };
           tables[table].push(entry);
         }
       }
@@ -410,6 +440,34 @@ describe('one login', () => {
     }
   });
 
+  it('asks the database for a CAM\'s own client rows, rather than filtering 206 in the browser', async () => {
+    // WAVE ONE USED TO FETCH `clients` WHOLE and apply the scope afterwards in
+    // memory. clientScopeFor reads cam_profiles, client_assignments and
+    // client_coverage and nothing else, so the client table never had to be
+    // there — and LOGIN_COLUMNS.clients carries full_name, email, phone,
+    // additional_emails, messenger, notes, subscription_price, churn_reason
+    // and churn_note. That is the desk's whole contact list and its commercial
+    // terms on the wire of a CAM who will never open 180 of those books, which
+    // is the same class of exposure this change removes for credentials.
+    traffic.reset();
+    await loadSupabaseCrmState({ scopeToCamProfileId: 'cam-3' });
+    const mine = BOOK.client_assignments.filter((row) => row.cam_profile_id === 'cam-3');
+    expect(requestsTo('clients').every((request) => request.filtered)).toBe(true);
+    const fetched = traffic.requests
+      .filter((request) => request.table === 'clients' && !request.head)
+      .length;
+    expect(fetched).toBeGreaterThan(0);
+    const state = await loadSupabaseCrmState({ scopeToCamProfileId: 'cam-3' });
+    expect(state.clients).toHaveLength(mine.length);
+  });
+
+  it('still reads every client row for a manager', async () => {
+    traffic.reset();
+    const state = await loadSupabaseCrmState({});
+    expect(requestsTo('clients').every((request) => !request.filtered)).toBe(true);
+    expect(state.clients).toHaveLength(CLIENTS);
+  });
+
   it('reads the whole book for a CAM profile it cannot resolve', async () => {
     // A login that silently returns no clients is indistinguishable on screen
     // from a CAM with no book, and it is the failure this scoping must not
@@ -467,6 +525,116 @@ describe('what a click costs instead', () => {
     expect(STRATEGY_PARAMETER_COLUMNS).toContain('parameters_raw');
     expect(STRATEGY_PARAMETER_COLUMNS).toContain('params_parsed');
     expect(columnsAskedOf('strategy_snapshots')[0]).toBe(STRATEGY_PARAMETER_COLUMNS);
+  });
+
+  it('keeps the parameters a panel already paid for when the close is opened', async () => {
+    // THE PATH IS AUTOMATIC, NOT HYPOTHETICAL: selecting any client fires
+    // ensureCloseDetail for the open close. CLOSE_DETAIL_COLUMNS.strategy_snapshots
+    // deliberately omits parameters_raw and params_parsed, so the rebuilt rows
+    // carried `parametersRaw: ''` and `params: {}` over rows a panel had just
+    // fetched — while `parametersLoaded` was set true by the same merge and
+    // App.jsx's parameterCache still said "loaded", so nothing refetched. The
+    // three configuration panels then compared over stripped rows and reported
+    // a finding.
+    const state = await loadSupabaseCrmState({});
+    const client = state.clients[4];
+    const target = client.dailyImports.at(-1);
+    const withParameters = mergeSupabaseStrategyParameters(
+      state,
+      await loadSupabaseStrategyParameters([target.uuid]),
+    );
+    const before = withParameters.clients[4].dailyImports.at(-1);
+    expect(before.parametersLoaded).toBe(true);
+    expect(before.strategies[0].parametersRaw).toBeTruthy();
+
+    const { mergeSupabaseCloseDetail } = await import('./supabaseStore.js');
+    const after = mergeSupabaseCloseDetail(
+      withParameters,
+      await loadSupabaseCloseDetail([target.uuid]),
+    ).clients[4].dailyImports.at(-1);
+
+    expect(after.strategies[0].parametersRaw).toBe(before.strategies[0].parametersRaw);
+    expect(after.parametersLoaded).toBe(true);
+    expect(after.detailLoaded).toBe(true);
+  });
+
+  it('does not claim the parameters are loaded when the fetch did not ask for them', () => {
+    // `parametersLoaded` was `strategiesBy ? true : ...`, so ANY fetch that
+    // carried strategy rows marked the close as holding its parameters. Only a
+    // fetch that named the two columns may set it.
+    const base = {
+      clients: [{
+        id: 'c1',
+        accountRegistry: {},
+        dailyImports: [{ id: 'imp', uuid: 'imp', date: '2026-07-30', snapshots: [], strategies: [] }],
+      }],
+    };
+    const merged = applyCloseRows(base, {
+      importIds: ['imp'],
+      strategyRows: [{ id: 's1', daily_import_id: 'imp', strategy_name: 'URGO' }],
+    });
+
+    expect(merged.clients[0].dailyImports[0].parametersLoaded).toBe(false);
+  });
+
+  it('marks an opened close as holding its account rows', async () => {
+    // `applyCloseRows` set detailLoaded and parametersLoaded and never
+    // snapshotsLoaded, so an opened close stayed `snapshotsLoaded: false` for
+    // the session. refreshMerge's carry-forward is gated on exactly that field,
+    // so the next Refresh put the close's fills back and left its account table
+    // blank, which is worse than blank.
+    const state = await loadSupabaseCrmState({});
+    const target = state.clients[4].dailyImports[2];
+    expect(target.snapshotsLoaded).toBe(false);
+    const { mergeSupabaseCloseDetail } = await import('./supabaseStore.js');
+    const merged = mergeSupabaseCloseDetail(state, await loadSupabaseCloseDetail([target.uuid]));
+
+    expect(merged.clients[4].dailyImports[2].snapshotsLoaded).toBe(true);
+  });
+
+  it('fetches the ranking window\'s account rows beside its strategy rows', async () => {
+    // The board reads dailyImport.snapshots and then each snapshot's
+    // strategies. A login holds the account rows of each client's LATEST close
+    // only, so the strategy rows a 60-day window paid for had nowhere to nest
+    // on every older close and were dropped: 594 of 3,805 on the book, a board
+    // of 15 algorithms with none ranked.
+    const days = ['imp-1-2', 'imp-2-2'];
+    const cost = await measure(() => loadSupabaseRankingRows(days));
+    expect(cost.requests).toBe(2);
+    expect(cost.rows).toBe(
+      days.length * (PER_CLOSE.strategy_snapshots + PER_CLOSE.account_snapshots),
+    );
+    const state = await loadSupabaseCrmState({});
+    const older = state.clients[1].dailyImports[2];
+    expect(older.snapshots).toHaveLength(0);
+    const merged = mergeSupabaseStrategyParameters(
+      state,
+      await loadSupabaseRankingRows([older.uuid]),
+    ).clients[1].dailyImports[2];
+
+    expect(merged.snapshots).toHaveLength(PER_CLOSE.account_snapshots);
+    expect(merged.snapshots.some((snapshot) => snapshot.strategies.length > 0)).toBe(true);
+    expect(merged.snapshotsLoaded).toBe(true);
+    expect(merged.parametersLoaded).toBe(true);
+  });
+
+  it('keeps an opened close\'s derivation when a narrower fetch re-reads its account rows', async () => {
+    // `derivation` is a jsonb the close-detail fetch asks for and nothing else
+    // does. The ranking window re-reads the same account rows without it, and a
+    // straight rebuild would blank the per-algo split on a close somebody has
+    // open. Same rule as the parameter columns, one table over.
+    const state = await loadSupabaseCrmState({});
+    const target = state.clients[4].dailyImports.at(-1);
+    const { mergeSupabaseCloseDetail } = await import('./supabaseStore.js');
+    const opened = mergeSupabaseCloseDetail(state, await loadSupabaseCloseDetail([target.uuid]));
+    expect(opened.clients[4].dailyImports.at(-1).snapshots[0].derivation).toBeTruthy();
+
+    const after = mergeSupabaseStrategyParameters(
+      opened,
+      await loadSupabaseRankingRows([target.uuid]),
+    ).clients[4].dailyImports.at(-1);
+
+    expect(after.snapshots[0].derivation).toBeTruthy();
   });
 
   it('fetches one client\'s credentials when that client is opened', async () => {

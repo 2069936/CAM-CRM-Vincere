@@ -570,6 +570,75 @@ describe('whether a strategy ran, decided at ingest', () => {
     expect(recalculated.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(0);
     expect(recalculated.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(0);
   });
+
+  it('raises nothing on a Recalculate of a close whose rows carry no answer and whose fills are not loaded', () => {
+    // THE GAP THE STORED-ANSWER GUARD LEFT. withStrategyRan protects a row's
+    // answer only when the row already HAS one. On a database where step 47 has
+    // run and `call public.backfill_strategy_ran_all();` has not yet finished,
+    // supabaseStore reads `ran: null, ranBasis: ''`, so the guard does not
+    // fire — and the rule then runs with no fills, which on a close exported
+    // after shutdown answers `none` for nearly every row. One press regenerated
+    // a Critical on every real-money account that had traded all day and a
+    // Warning per row on each of them, and wrote them back Open, because the
+    // message wording changed in this same branch and the resolved ones no
+    // longer matched. 218 closes on the stored book are that shape.
+    const unanswered = { ...switchedOff, ran: null, ranBasis: '' };
+    const recalculated = recalculateDailyImport({
+      dailyImport: {
+        clientId: 'ran-3',
+        date: '2026-06-25',
+        // `detailLoaded: false` is what a login says about every close but each
+        // client's latest: the fills are not in hand.
+        detailLoaded: false,
+        orders: [],
+        executions: [],
+        accounts: registry,
+        snapshots: [{ ...account, strategies: [unanswered] }],
+        strategies: [unanswered],
+        flags: [],
+      },
+      registry,
+    });
+
+    expect(recalculated.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(0);
+    expect(recalculated.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(0);
+  });
+
+  it('still raises them on the ingest path, where an empty execution list is an answer', () => {
+    // The same empty array means something different at ingest: the upload
+    // parsed the fills and there were none. `fillsLoaded` defaults to true, so
+    // nothing about a real close's flags changes.
+    const result = run({
+      accounts: [{ ...account, grossRealizedPnl: 0, accountBalance: 50000, weeklyPnl: 0 }],
+      strategies: [{ ...switchedOff, ran: null, ranBasis: '' }],
+      orders: [], executions: [],
+    });
+
+    expect(result.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(1);
+    expect(result.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(1);
+  });
+
+  it('still catches an account that traded while it was held, with the fills not loaded', () => {
+    // A POSITIVE answer needs no fills. Only "nothing ran" does, so the two
+    // flags that fire when something DID run are unchanged.
+    const held = { ACC1: { ...registry.ACC1, status: 'Payout Hold', payoutState: 'Payout requested' } };
+    const recalculated = recalculateDailyImport({
+      dailyImport: {
+        clientId: 'ran-4',
+        date: '2026-06-25',
+        detailLoaded: false,
+        orders: [],
+        executions: [],
+        accounts: held,
+        snapshots: [{ ...account, strategies: [{ ...switchedOff, enabled: true }] }],
+        strategies: [{ ...switchedOff, enabled: true }],
+        flags: [],
+      },
+      registry: held,
+    });
+
+    expect(recalculated.flags.filter((f) => f.type === 'Payout hold violation')).toHaveLength(1);
+  });
 });
 
 // ── makeAccountAlias ──────────────────────────────────────────────────────────

@@ -152,6 +152,41 @@ describe('buildClientMessageReport', () => {
     expect(text).not.toContain('Funded Accounts');
     expect(text).not.toContain('Evaluations');
   });
+
+  it('names an algorithm the grid had switched off that the fills say ran', () => {
+    // THIS IS THE MESSAGE A CLIENT ACTUALLY RECEIVES. The exports are taken
+    // after the desk switches the algos off, so `enabled` is the state of a
+    // checkbox and not an answer about the day. The on-screen report sheet
+    // moved onto strategyRan and this did not, so over the stored book 38
+    // funded account lines told a client nothing had run on a day something
+    // had, while the manager's table beside it named the algorithms.
+    const ran = {
+      ...dailyImport,
+      snapshots: [{
+        accountName: 'APEX1',
+        grossRealizedPnl: 450,
+        weeklyPnl: 1200,
+        trailingMaxDrawdown: 3200,
+        strategies: [{ strategyFamily: 'RBO', enabled: false, ran: true, ranBasis: 'fills' }],
+      }],
+    };
+
+    expect(buildClientMessageReport(client, ran)).toContain('RBO');
+  });
+
+  it('still says nothing about an algorithm that really did not run', () => {
+    const quiet = {
+      ...dailyImport,
+      snapshots: [{
+        accountName: 'APEX1',
+        grossRealizedPnl: 0,
+        weeklyPnl: 0,
+        strategies: [{ strategyFamily: 'RBO', enabled: false, ran: false, ranBasis: 'none' }],
+      }],
+    };
+
+    expect(buildClientMessageReport(client, quiet)).not.toContain('RBO');
+  });
 });
 
 describe('buildWeeklyMessageReport', () => {
@@ -195,6 +230,27 @@ describe('buildWeeklyMessageReport', () => {
 
   it('returns empty string when client has no imports', () => {
     expect(buildWeeklyMessageReport({ name: 'X', dailyImports: [] })).toBe('');
+  });
+
+  it('names what ran in the week, not what the checkbox said at export time', () => {
+    // Same rule as the daily message, and the same reader: this is copied into
+    // WhatsApp and sent.
+    const withRan = {
+      ...client,
+      dailyImports: [{
+        date: '2026-06-25',
+        status: 'Closed',
+        snapshots: [{
+          accountName: 'APEX1',
+          grossRealizedPnl: 120,
+          weeklyPnl: 120,
+          strategies: [{ strategyFamily: 'OGX', enabled: false, ran: true, ranBasis: 'fills' }],
+        }],
+        flags: [],
+      }],
+    };
+
+    expect(buildWeeklyMessageReport(withRan)).toContain('OGX');
   });
 });
 

@@ -48,7 +48,17 @@ describe('step 47 stores whether a strategy ran', () => {
   });
 
   it('says in the runbook what the desk loses by not running it, and how to finish it', () => {
-    expect(runbook).toContain('47 degrades gracefully');
+    // WAS `expect(runbook).toContain('47 degrades gracefully')`, AND THAT WAS
+    // HALF TRUE. The reads degrade; the WRITE does not. `mapStrategy` puts
+    // `ran` and `ran_basis` on every strategy row unconditionally and the
+    // insert path has no missing-column recovery (the fallback in
+    // supabaseStore.selectRows is on reads), so between a deploy and this file
+    // every upload, every batch import and every collector close fails with
+    // PGRST204. An operator reading "degrades gracefully" would deploy first,
+    // which is the one order that breaks the ingest. The runbook now says the
+    // split the way step 39 says it, and this pins the half that was missing.
+    expect(runbook).toContain('47 reads gracefully and writes loudly');
+    expect(runbook).toContain('run it BEFORE the deploy');
     // The backfill is a second statement and the runbook is where an operator
     // finds that out. Both forms: the procedure, and the loop for a client that
     // wraps every statement in a transaction.

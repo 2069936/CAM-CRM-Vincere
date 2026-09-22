@@ -145,6 +145,29 @@ export function strategyRan(strategy, filledFamilies = null) {
 }
 
 /**
+ * CAN THIS ROW'S "NO" BE BELIEVED WITHOUT THE CLOSE'S FILLS?
+ *
+ * `none` is the only answer of the four that needs evidence the caller may not
+ * hold. A row that is enabled, or that carries a stored answer from step 47,
+ * answers itself; a row that is none of those answers `none` only because the
+ * fills were never consulted, and that is not the same statement as "the day
+ * was quiet".
+ *
+ * It exists for Recalculate. A login carries no executions, so pressing it on a
+ * close whose fills have not arrived, on a database where step 47's backfill
+ * has not run, re-derived every row as `none` and wrote back the flags this
+ * product just spent a commit removing: `Expected strategy missing` Critical on
+ * real-money accounts that had traded all day, and `Strategy disabled` Warning
+ * once per row on each of them. A positive answer never needs this; only a
+ * negative one does.
+ */
+export function ranAnswerIsKnown(strategy, { closeHasFills = true } = {}) {
+  if (closeHasFills) return true;
+  if (storedRanBasis(strategy) || typeof strategy?.ran === 'boolean') return true;
+  return strategy?.enabled === true;
+}
+
+/**
  * The ingest side: every row of a close answered against that close's own fills.
  *
  * Returns a new array, row for row, each carrying `ran` and `ranBasis`. Fills
@@ -157,8 +180,21 @@ export function strategyRan(strategy, filledFamilies = null) {
  * whatever it holds at the time. Without this, one Recalculate on a close whose
  * trade history had not arrived would rewrite every `fills` row to `none` and
  * flag the day as idle.
+ *
+ * `evidenceComplete` IS THE OTHER HALF OF THAT, FOR A ROW WITH NO STORED ANSWER.
+ *
+ * The guard above protects a row that already carries one. On a database where
+ * step 47 has run and `call public.backfill_strategy_ran_all();` has not yet
+ * finished, every row reads back `ran: null, ranBasis: ''`, so there is nothing
+ * to protect and the rule ran with no fills — which on a close exported after
+ * shutdown answers `none` for nearly every row. Pass `evidenceComplete: false`
+ * (which recalculateDailyImport does for a close whose fills a login did not
+ * carry) and such a row is left UNANSWERED rather than answered `none`. An
+ * unanswered row reads as `none` to anything that asks, which is the product's
+ * behaviour either way; what it does not do is let a caller mistake it for a
+ * measurement. See ranAnswerIsKnown, and reconcile.js's four flags.
  */
-export function withStrategyRan(strategies = [], executions = []) {
+export function withStrategyRan(strategies = [], executions = [], { evidenceComplete = true } = {}) {
   const byAccount = new Map();
   for (const execution of executions || []) {
     const name = lower(execution?.accountName);
@@ -175,6 +211,11 @@ export function withStrategyRan(strategies = [], executions = []) {
     if (!closeHasFills && (storedRanBasis(strategy) || typeof strategy?.ran === 'boolean')) {
       const basis = ranBasisOf(strategy);
       return { ...strategy, ran: basis !== 'none', ranBasis: basis };
+    }
+    if (!closeHasFills && !evidenceComplete && !ranAnswerIsKnown(strategy, { closeHasFills: false })) {
+      // No stored answer, not enabled, and the fills that could say otherwise
+      // are not in this caller's hands. Left as it arrived.
+      return { ...strategy, ran: strategy?.ran ?? null, ranBasis: strategy?.ranBasis || '' };
     }
     const basis = ranBasisFromEvidence(strategy, filledByAccount.get(lower(strategy?.accountName)));
     return { ...strategy, ran: basis !== 'none', ranBasis: basis };

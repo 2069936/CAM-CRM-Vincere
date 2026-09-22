@@ -63,6 +63,11 @@ export default function DeskPeriodReportView({
   camName = '',
   camProfileId = null,
   benchmarkSeries = NO_SERIES,
+  // The stored per-close money, as indexCloseSummaries returns it. deskMoney
+  // reads it for the closes a session did not load row by row, and this report
+  // is a deskMoney reader like the manager's tiles: without it the two printed
+  // different figures under identical labels over the same month.
+  summaries = null,
   builtBy = '',
 }) {
   const book = scopedClients || clients;
@@ -154,10 +159,11 @@ export default function DeskPeriodReportView({
       },
       benchmarkSeries: series,
       benchmarkRisk,
+      summaries,
       builtAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
       builtBy,
     }),
-    [book, clients, period, scope, camName, camProfileId, series, benchmarkRisk, builtBy],
+    [book, clients, period, scope, camName, camProfileId, series, benchmarkRisk, summaries, builtBy],
   );
 
   return (

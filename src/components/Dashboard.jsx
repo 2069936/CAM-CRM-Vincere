@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw, X } from 'lucide-react';
 import { formatCurrency, summarizeAccountRows } from '../domain/report';
 import { PAYOUT_STATES } from '../domain/reconcile';
+import { fillsLoadedFor } from '../domain/closeLoadState';
 
 function drawdownDisplay(row) {
   const ddLimit = Number(row.meta?.maxDrawdownLimit);
@@ -361,6 +362,9 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
 }
 
 export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, client }) {
+  // Whether this close's orders and executions are in hand. Everything the
+  // Recalculate button re-derives about "did it run" comes from them.
+  const fillsLoaded = fillsLoadedFor(dailyImport);
   if (!dailyImport) {
     return (
       <div className="empty-state">
@@ -405,7 +409,24 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
                 Resolve all
               </button>
             ) : null}
-            <button className="secondary-button" onClick={onRecalculate}>
+            {/* RECALCULATE IS DISABLED UNTIL THIS CLOSE'S FILLS ARE HERE, AND
+                IT SAYS SO. It re-derives every flag from what the close holds,
+                and "did this algorithm run" is answered from the day's fills. A
+                login carries the fills of each client's LATEST close and of no
+                other, so on an older close, or after the close-detail fetch
+                failed, pressing it raised `Expected strategy missing` Critical
+                on accounts that had traded all day and wrote them to the
+                database. reconcile.js refuses those flags without the fills as
+                well; this is so nobody has to press the button to find out. */}
+            <button
+              className="secondary-button"
+              onClick={onRecalculate}
+              disabled={!fillsLoaded}
+              title={fillsLoaded
+                ? 'Re-derive this close’s flags from its own rows'
+                : 'This close’s fills are not loaded yet, and the flags are derived from them. '
+                  + 'Recalculating now would read a day that traded as a quiet one.'}
+            >
               <RefreshCw size={16} /> Recalculate
             </button>
             <button className="secondary-button" onClick={onBuildReport}>

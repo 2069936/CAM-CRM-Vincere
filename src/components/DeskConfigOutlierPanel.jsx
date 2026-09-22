@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { buildDeskConfigOutliers, MIN_CONSENSUS_ACCOUNTS } from '../domain/deskConfigOutliers';
 import { describeParameter, formatParameterValue } from '../domain/configDriftPresentation';
+import { SIZING } from '../domain/setFileNormalise';
 import PanelLoadState from './PanelLoadState';
 import { panelIsLoaded } from '../domain/panelLoad';
 
@@ -73,21 +74,56 @@ export default function DeskConfigOutlierPanel({
 
   return (
     <div className="drift-panel">
+      {/* ACCOUNTS AND ACCOUNT-AND-ALGORITHM PAIRS ARE TWO UNITS AND THE
+          SENTENCE NAMES BOTH. It used to print the pair count under the word
+          "accounts", and the "of them" tied the second number to it, so on
+          2026-07-30 it read "411 accounts ... 81 of them" over a desk of 252
+          accounts of which 63 differ. One machine, Kai Moss's 1121557, is in
+          five groups that day: a CAM working the list top to bottom meets it
+          five times and would file five findings against one machine. */}
       <p className="drift-intro">
         On <strong>{date}</strong>, <strong>{basis.closes}</strong> close
-        {basis.closes === 1 ? '' : 's'} put <strong>{basis.accountsCompared}</strong> account
-        {basis.accountsCompared === 1 ? '' : 's'} into <strong>{basis.compared}</strong> group
-        {basis.compared === 1 ? '' : 's'} large enough to have a consensus.{' '}
-        <strong>{basis.accountsDiffering}</strong> of them run at least one setting the rest of
-        their group does not.
+        {basis.closes === 1 ? '' : 's'} put <strong>{basis.accountsComparedDistinct}</strong>{' '}
+        account{basis.accountsComparedDistinct === 1 ? '' : 's'} into{' '}
+        <strong>{basis.compared}</strong> group{basis.compared === 1 ? '' : 's'} large enough to
+        have a consensus, {basis.accountsCompared} account-and-algorithm pair
+        {basis.accountsCompared === 1 ? '' : 's'} in all.{' '}
+        <strong>{basis.accountsDifferingDistinct}</strong> account
+        {basis.accountsDifferingDistinct === 1 ? '' : 's'} run at least one setting the rest of
+        their group does not, over {basis.accountsDiffering} pair
+        {basis.accountsDiffering === 1 ? '' : 's'}.
       </p>
+      {/* WHAT THE DAY COULD NOT BE READ ON. `unreadable` was computed and shown
+          only in the too-small list, so a day whose rows carry no settings at
+          all rendered as a clean day. */}
+      {basis.unreadable || basis.unnamed ? (
+        <p className="muted drift-ask">
+          {basis.unreadable
+            ? `${basis.unreadable} row${basis.unreadable === 1 ? '' : 's'} on this day exported settings nobody could read and ${basis.unreadable === 1 ? 'was' : 'were'} left out of every comparison below. `
+            : ''}
+          {basis.unnamed
+            ? `${basis.unnamed} row${basis.unnamed === 1 ? '' : 's'} carry no trading account on the import and cannot be attributed to anybody.`
+            : ''}
+        </p>
+      ) : null}
       <p className="drift-ask">
         A group is one algorithm, one version, one contract and one data series, across every
         client that closed that day. Different is not wrong. Customisation is legitimate, and this
         is a list to verify rather than a fault list.
       </p>
 
-      {differing.length === 0 ? (
+      {/* THE ALL-CLEAR IS A CLAIM AND IT NEEDS A GROUP BEHIND IT. It used to
+          print whenever nothing differed, which includes a day where NOTHING
+          WAS COMPARED: every row unreadable, or every group under the floor.
+          "Nothing sits off the desk" over a day with 58 closes and 417 strategy
+          rows nobody could read is a flat false statement, and PanelLoadState's
+          own header calls that the worst outcome this change could produce. */}
+      {measured.length === 0 ? (
+        <p className="muted chart-empty">
+          No group on {date} is large enough to have a consensus, so nothing here has been
+          compared. This is not a clean day; it is a day with no reference.
+        </p>
+      ) : differing.length === 0 ? (
         <p className="muted chart-empty">
           Every group with a consensus is running it. Nothing on {date} sits off the desk.
         </p>
@@ -157,6 +193,12 @@ function GroupRow({ group, open = false }) {
           <span className="drift-findings muted">
             {group.accounts} account{group.accounts === 1 ? '' : 's'}, {group.clients} client
             {group.clients === 1 ? '' : 's'}
+            {/* The account floor can be cleared by one person's machines. Said
+                here rather than left for the reader to work out from a group
+                of three: on 2026-07-13 DJDR 1.1 on MNQ is three accounts of one
+                client, and "all on the desk setting" over that is one client
+                agreeing with himself. */}
+            {group.singleClient ? ' (one client’s own settings, not a desk reference)' : ''}
           </span>
         </span>
         <span className="drift-majority">
@@ -277,18 +319,44 @@ function GroupRow({ group, open = false }) {
                       <strong>{outlier.clientName}</strong>
                       <span className="drift-account-numbers">{outlier.accountName}</span>
                       <span className="muted">
-                        {outlier.differences.length} setting
-                        {outlier.differences.length === 1 ? '' : 's'} differ
-                        {outlier.differences.length === 1 ? 's' : ''}
+                        {outlier.configurationDifferences} setting
+                        {outlier.configurationDifferences === 1 ? '' : 's'} differ
+                        {outlier.configurationDifferences === 1 ? 's' : ''}
+                        {outlier.sizingDifferences
+                          ? `, plus ${outlier.sizingDifferences} position size${outlier.sizingDifferences === 1 ? '' : 's'}`
+                          : ''}
                         {outlier.rows > 1
                           ? `, over ${outlier.rows} rows on this close`
                           : ''}
                       </span>
                     </th>
                   </tr>
-                  {outlier.differences.map((difference) => (
-                    <DifferenceRow key={difference.name} difference={difference} />
-                  ))}
+                  {outlier.differences
+                    .filter((difference) => !SIZING.test(difference.name))
+                    .map((difference) => (
+                      <DifferenceRow key={difference.name} difference={difference} />
+                    ))}
+                  {/* Sizing in its own block, and out of the sort. Position
+                      size follows account size and prop-firm plan, so these are
+                      the rows most likely to be right by design; listing them
+                      beside a stop nobody else runs, and counting them towards
+                      which account comes first, put the safest rows at the top
+                      of the list. buildConfigDrift splits them for the same
+                      reason. */}
+                  {outlier.sizingDifferences ? (
+                    <>
+                      <tr className="desk-config-sizing-head">
+                        <th colSpan={4} scope="colgroup">
+                          Sized differently from the group
+                        </th>
+                      </tr>
+                      {outlier.differences
+                        .filter((difference) => SIZING.test(difference.name))
+                        .map((difference) => (
+                          <DifferenceRow key={difference.name} difference={difference} />
+                        ))}
+                    </>
+                  ) : null}
                 </tbody>
               ))}
             </table>

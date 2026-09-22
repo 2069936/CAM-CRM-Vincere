@@ -1,6 +1,26 @@
 import { buildClientSegments } from './clientSegments';
 import { ACCOUNT_TYPES, isCashType } from './reconcile';
 import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
+import { strategyRan } from './strategyRan';
+
+// THE TWO MESSAGES A CLIENT ACTUALLY RECEIVES ASK "DID IT RUN", NOT "WAS IT
+// ENABLED".
+//
+// `strategy_snapshots.enabled` is the state of a checkbox at export time, and
+// the exports are taken after the desk switches the algos off. The on-screen
+// report sheet moved onto `strategyRan` and these two did not, so the manager's
+// table and the WhatsApp message about the same close disagreed. Measured over
+// the stored book: on 38 funded account lines the message named no algorithm at
+// all while something had run on it — Avery Elm's CGD06581068071881 on
+// 2026-07-30 read nothing against RBO, Oakley Larch's read nothing against
+// OGX_PF the same day. This is the only reader of the rule that reaches a
+// person outside the desk, so it is the one that must not be left behind.
+//
+// buildSimulationSection's `enabledStrategies` below stays on the checkbox
+// DELIBERATELY: it reports what the grid was carrying on a simulated account,
+// beside that account's own order and execution counts, and "2 strategies
+// enabled, 40 orders, 15 executions" is the sentence a CAM checks a sim session
+// against.
 
 function ciLookup(registry, accountName) {
   if (!registry || !accountName) return {};
@@ -56,7 +76,7 @@ export function buildWeeklyMessageReport(client) {
     for (const s of fundedSnaps) {
       const meta = ciLookup(registry, s.accountName) || {};
       const alias = meta.alias || s.accountName;
-      const strats = (s.strategies || []).filter((st) => st.enabled).map((st) => st.strategyFamily || st.strategyName).join(', ');
+      const strats = (s.strategies || []).filter((st) => strategyRan(st)).map((st) => st.strategyFamily || st.strategyName).join(', ');
       const dd = Number(s.trailingMaxDrawdown || 0);
       lines.push(`  • ${alias}${strats ? ` [${strats}]` : ''}${dd > 0 ? ` - Buffer: ${fmt(dd)}` : ''}`);
     }
@@ -126,7 +146,7 @@ export function buildClientMessageReport(client, dailyImport) {
       const alias = meta.alias || s.accountName;
       const dd = Number(s.trailingMaxDrawdown || 0);
       const pnl = Number(s.grossRealizedPnl || 0);
-      const strats = (s.strategies || []).filter((st) => st.enabled).map((st) => st.strategyFamily || st.strategyName).join(', ');
+      const strats = (s.strategies || []).filter((st) => strategyRan(st)).map((st) => st.strategyFamily || st.strategyName).join(', ');
       lines.push(`  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily${dd > 0 ? ` | Buffer: ${fmt(dd)}` : ''}${strats ? ` | ${strats}` : ''}`);
     }
     lines.push('');

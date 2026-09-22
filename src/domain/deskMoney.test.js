@@ -13,6 +13,7 @@ import {
   buildDeskMoneyForMonth,
   buildDeskMoneyHistory,
   closeAsOf,
+  describeMoneyCompleteness,
   deskBusinessColumns,
   deskRow,
   formatDeskReport,
@@ -307,6 +308,58 @@ describe('buildDeskMoney — every figure states its date basis', () => {
     expect(desk.basis.label).toBe('No close in view.');
     expect(desk.basis.latestClose).toBeNull();
     expect(desk.rows.every((row) => row.dailyPnl === 0 && row.accounts === 0)).toBe(true);
+  });
+});
+
+describe('a figure that could not read every close says so', () => {
+  // THE WINDOW THIS EXISTS FOR IS GUARANTEED, not hypothetical: step 48 creates
+  // the table and `scripts/backfill_close_summaries.mjs` fills it, and they are
+  // two separate manual steps. Between them `close_summaries` is empty, so
+  // `summaryLookup` returns null, and before this every close a session had not
+  // loaded was skipped in silence with `complete` reporting true.
+  const partiallyLoaded = () => [
+    client({ id: 'loaded', registry: { C1: cash }, closes: [
+      ['2026-07-30', [snapshot('C1', 20, { balance: 1000 })]],
+    ] }),
+    // A close in the book that this session holds no rows for. Under a per-close
+    // login that is every close but each client's latest.
+    client({ id: 'not-loaded', registry: { C2: cash }, closes: [['2026-07-30', []]] }),
+  ];
+
+  it('counts the closes it could not read, with no summaries in hand at all', () => {
+    const desk = buildDeskMoney(partiallyLoaded(), { asOfDate: '2026-07-30' });
+
+    expect(desk.basis.sources.unreadable).toBe(1);
+    expect(desk.basis.sources.loaded).toBe(1);
+    expect(desk.basis.complete).toBe(false);
+  });
+
+  it('turns that into the sentence the panels print', () => {
+    const desk = buildDeskMoney(partiallyLoaded(), { asOfDate: '2026-07-30' });
+    const state = describeMoneyCompleteness(desk.basis);
+
+    expect(state.complete).toBe(false);
+    expect(state.sentence).toContain('1 of the 2 client closes in view could not be read');
+    expect(state.sentence).toContain('short by whatever those closes hold');
+  });
+
+  it('says so the other way round when every close was read', () => {
+    const desk = buildDeskMoney([
+      client({ id: 'loaded', registry: { C1: cash }, closes: [
+        ['2026-07-30', [snapshot('C1', 20, { balance: 1000 })]],
+      ] }),
+    ], { asOfDate: '2026-07-30' });
+    const state = describeMoneyCompleteness(desk.basis);
+
+    expect(state.complete).toBe(true);
+    expect(state.sentence).toContain('Every one of the 1 client close in view was read');
+    expect(state.sentence).toContain('1 from their own account rows');
+  });
+
+  it('says nothing at all about a view with no close in it', () => {
+    // The label already reads "No close in view." A second sentence counting
+    // zero closes underneath it would be noise.
+    expect(describeMoneyCompleteness(buildDeskMoney([]).basis).sentence).toBe('');
   });
 });
 

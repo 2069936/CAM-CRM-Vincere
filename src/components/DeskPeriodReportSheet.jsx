@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { formatCurrency } from '../domain/report';
+import { describeMoneyCompleteness } from '../domain/deskMoney';
 import ReportSheetActions from './ReportSheetActions';
 import {
   AccountsPerCloseChart,
@@ -156,6 +157,7 @@ export default function DeskPeriodReportSheet({
   const businesses = moneyBlock.desk.rows.map((row) => ({
     key: row.key, label: row.label, shortLabel: row.shortLabel,
   }));
+  const moneyCompleteness = describeMoneyCompleteness(moneyBlock.desk.basis);
   const shownChanges = changesOpen ? changes.rows : changes.rows.slice(0, 25);
   const hiddenChanges = changes.rows.slice(shownChanges.length);
   const changeRow = (row) => (
@@ -491,6 +493,16 @@ export default function DeskPeriodReportSheet({
         <section className="report-section">
           <h2>Desk money in this period</h2>
           <p className="muted">{moneyBlock.desk.basis.label}</p>
+          {/* WHAT THE FIGURES BELOW COULD NOT READ. deskMoney counts the closes
+              it holds neither a stored summary nor account rows for, and until
+              this nothing printed the count: a period missing most of its
+              closes rendered exactly like one read whole, under the same label.
+              See describeMoneyCompleteness. */}
+          {moneyCompleteness.sentence ? (
+            <p className={moneyCompleteness.complete ? "muted" : "desk-basis-incomplete"}>
+              {moneyCompleteness.sentence}
+            </p>
+          ) : null}
 
           <h3>Money by business</h3>
           <div className="table-wrap">

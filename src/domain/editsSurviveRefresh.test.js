@@ -577,6 +577,47 @@ describe('D3: trade history across a refresh', () => {
     expect(missingImportIds).toEqual(['new-day-uuid']);
   });
 
+  it('keeps an opened older close\'s account rows when the next refresh lands', async () => {
+    // THE SHAPE, END TO END. A login carries the per-account rows of each
+    // client's LATEST close and of no other, so an older close the user opens
+    // is fetched by ensureCloseDetail and merged by applyCloseRows. That merge
+    // set `detailLoaded` and `parametersLoaded` and never `snapshotsLoaded`, so
+    // the close still said its rows were not in hand — which is exactly the
+    // field `carriesRows` below reads. `carriesAnything` was still true through
+    // `hasFills`, so the next refresh copied the FILLS across and dropped the
+    // snapshots and strategies: the account table blanked while the fills
+    // stayed, which is worse than blank, and nothing refetched because the
+    // App's own cache still said "loaded".
+    const { applyCloseRows } = await import('./supabaseStore.js');
+    // The close is in the book and its per-account rows were not fetched, which
+    // is what a per-close login looks like for every close but the latest.
+    const loginTables = () => ({
+      ...tables({ withFills: false }),
+      account_snapshots: [],
+    });
+    const login = buildCrmStateFromTables(loginTables(), { loadedCloseIds: [] });
+    expect(onlyDay(login).snapshots).toEqual([]);
+    expect(onlyDay(login).snapshotsLoaded).toBe(false);
+
+    const opened = applyCloseRows(login, {
+      importIds: [IMPORT_UUID],
+      snapshotRows: tables().account_snapshots,
+      strategyRows: [],
+      orderRows: tables().orders,
+      executionRows: tables().executions,
+      markDetailLoaded: true,
+    });
+    expect(onlyDay(opened).snapshots).toHaveLength(1);
+    expect(onlyDay(opened).snapshotsLoaded).toBe(true);
+
+    const freshLogin = buildCrmStateFromTables(loginTables(), { loadedCloseIds: [] });
+    const { state } = carryTradeHistoryForward(opened, freshLogin);
+
+    expect(onlyDay(state).snapshots).toHaveLength(1);
+    expect(onlyDay(state).orders).toHaveLength(2);
+    expect(onlyDay(state).snapshotsLoaded).toBe(true);
+  });
+
   it('carries the simulated and undetermined halves too, not only the live one', async () => {
     // splitSimulationRows puts a simulated account's fills on simulation.orders
     // and simulation.executions. Restoring only the live arrays would leave a

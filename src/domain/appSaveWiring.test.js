@@ -152,9 +152,12 @@ describe('a refresh folds in what it learned, and never replaces the screen', ()
     // "Import all N closes" called onAppendDailyImport in a forEach and each
     // close asked for its own detached full reload.
     expect(APP).toContain('createCoalescingRefresh({');
-    expect(bodyOf('refreshInBackground')).toContain('backgroundRefresh.current.request({');
-    // The gate has to outlive a render or it coalesces nothing.
+    expect(bodyOf('refreshInBackground')).toContain('backgroundRefresher().request({');
+    // The gate has to outlive a render or it coalesces nothing. It is built on
+    // first use rather than in the render body, so that forgetLoadedData can
+    // drop it on a sign out without leaving a caller holding null.
     expect(APP).toContain('const backgroundRefresh = useRef(null);');
+    expect(bodyOf('backgroundRefresher')).toContain('if (!backgroundRefresh.current)');
     expect(APP.match(/createCoalescingRefresh\(/g)).toHaveLength(1);
   });
 
@@ -217,15 +220,90 @@ describe('a refresh does not cost the user their trade history', () => {
   });
 
   it('fetches the parameter columns from the panels that read them, and nowhere else', () => {
-    // 30.9 MB of a production login, for two collapsed panels and a ranking
+    // 30.9 MB of a production login, for three collapsed panels and a ranking
     // board. Each asks when it is expanded; nothing asks at login.
-    expect(bodyOf('ensureStrategyParameters')).toContain('loadSupabaseStrategyParameters(wanted)');
+    const body = bodyOf('ensureStrategyParameters');
+    expect(body).toContain('loadSupabaseRankingRows : loadSupabaseStrategyParameters');
     expect(APP).toContain('onOpen={loadConfigParameters}');
     expect(APP).toContain('onOpen={loadRankingRows}');
-    expect(APP).toContain('load={parameterLoad}');
     // The board is null until its panel is opened. An empty ranking is a
     // finding; a ranking nobody has asked for is not.
     expect(APP).toContain('() => (rankingOpen ? buildStrategyRanking(clients, { asOfDate }) : null)');
+  });
+
+  it('gives each panel its own load state and waits on a request already out', () => {
+    // WAS ONE SHARED `parameterLoad` BEHIND FOUR PANELS. Expanding the ranking
+    // board put an already-open configuration panel back into its waiting
+    // sentence over rows it held; one panel's failure printed a retry button on
+    // all four, wired to the wrong loader; one panel's success cleared
+    // another's error. The caches were keyed by close id already; this was the
+    // one thing that was not.
+    expect(APP).toContain('panelLoadFor("config")');
+    expect(APP).toContain('panelLoadFor("desk-config")');
+    expect(APP).toContain('panelLoadFor("ranking")');
+    expect(APP).not.toContain('load={parameterLoad}');
+    // `unfetched` treats an id already marked loading as fetched, which is
+    // right for deciding whether to ask again and wrong for deciding whether
+    // the rows are in hand. A panel whose ids are all in flight for somebody
+    // else used to declare itself loaded and state a finding over rows that had
+    // not arrived.
+    const body = bodyOf('ensureStrategyParameters');
+    expect(body).toContain('inFlight(parameterCache, ids.filter(holds))');
+    expect(body).toContain('Promise.all(waiting)');
+  });
+
+  it('remembers what each cached close was fetched WITH, not just that it was', () => {
+    // Two fetches land in this cache and bring different things: the three
+    // configuration panels take the parameter columns, the ranking board takes
+    // those AND the account rows its observations nest onto. A cache keyed on
+    // the close id alone tells the board "already fetched" about a day a panel
+    // fetched without rows, which is the same hole one level in.
+    const body = bodyOf('ensureStrategyParameters');
+    expect(body).toContain('withAccountRows ? Boolean(entry.withAccountRows) : true');
+    expect(body).toContain('{ status: "loaded", withAccountRows }');
+  });
+
+  it('re-asks when the panel\'s id set changes, rather than once per mount', () => {
+    // CollapsiblePanel fired `onOpen` once and never again, so moving the as-of
+    // date with a configuration panel open left it comparing rows that were
+    // never fetched while its load state still said loaded. The effect depends
+    // on the callback's identity and the callbacks are keyed on their ids.
+    const panel = readFileSync(
+      new URL('../components/CollapsiblePanel.jsx', import.meta.url), 'utf8',
+    );
+    expect(panel).toContain('}, [open, onOpen]);');
+    expect(panel).not.toContain('opened.current');
+    expect(APP).toContain('const configPanelKey = configPanelIds.join(",")');
+    expect(APP).toContain('const deskConfigKey = deskConfigIds.join(",")');
+    expect(APP).toContain('const rankingKey = rankingImportIds.join(",")');
+  });
+
+  it('scopes the login to the session that is actually signed in', () => {
+    // The login effect is declared above the `if (!session)` return that renders
+    // the login form and had `[]` for its deps, so on a fresh tab it ran at
+    // mount with `session` null — which camScopeFor reads as "manager, whole
+    // book" — and never ran again. A CAM signing in loaded all 206 clients and
+    // only got their own book after a page refresh.
+    expect(APP).toContain('}, [session?.id, session?.role, session?.camProfileId]);');
+    expect(APP).not.toContain('scopeToCamProfileId: camScopeFor(session)');
+    expect(APP).toContain('scopeToCamProfileId: currentScope()');
+    // backgroundRefresh.current is built once for the life of the tab, so it
+    // must not read the session out of the render that built it.
+    expect(bodyOf('currentScope')).toContain('camScopeFor(sessionRef.current)');
+  });
+
+  it('keeps nothing of the previous user after a sign out', () => {
+    // `if (!session)` is an early return INSIDE App(), so the component never
+    // unmounts: `state` and the three id caches survived a sign out and the
+    // next user's load carried the previous user's closes forward into it.
+    const body = bodyOf('performLogout');
+    expect(body).toContain('forgetLoadedData()');
+    expect(body).toContain('setState(createInitialState())');
+    const forget = bodyOf('forgetLoadedData');
+    expect(forget).toContain('closeDetailCache.current = new Map()');
+    expect(forget).toContain('clientDetailCache.current = new Map()');
+    expect(forget).toContain('parameterCache.current = new Map()');
+    expect(forget).toContain('backgroundRefresh.current = null');
   });
 
   it('re-reads a close\'s flags at every status before recalculating it', () => {

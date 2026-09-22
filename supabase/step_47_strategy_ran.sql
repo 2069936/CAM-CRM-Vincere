@@ -46,9 +46,13 @@
 -- There are 14,514 strategy rows on production and the instance they sit on has
 -- answered one-row reads in twenty seconds while eight people were signing in.
 -- One UPDATE over the table would hold row locks on all 14,514 for as long as
--- that takes. So the backfill is a loop over ONE CLOSE AT A TIME with a COMMIT
--- between closes, and a procedure cannot COMMIT inside the transaction that is
--- running this file. Run the file, then run:
+-- that takes. So the backfill answers ONE BATCH OF AT MOST p_max_rows ROWS PER
+-- TRANSACTION, walking closes one at a time until the batch is full and
+-- committing between batches, and a procedure cannot COMMIT inside the
+-- transaction that is running this file. At the default of 2,000 that is a
+-- transaction per ~2,000 rows rather than per close: the lock footprint the
+-- paragraph above is about is bounded by p_max_rows, not by the size of any one
+-- close. Run the file, then run:
 --
 --   call public.backfill_strategy_ran_all();
 --
@@ -217,8 +221,9 @@ begin
 end;
 $function$;
 
--- THE BACKFILL. One close per transaction, for as long as there are unanswered
--- rows. `call public.backfill_strategy_ran_all();` — not from inside a
+-- THE BACKFILL. One batch of at most p_max_rows rows per transaction, closes
+-- taken whole so a close is never left half answered, for as long as there are
+-- unanswered rows. `call public.backfill_strategy_ran_all();` — not from inside a
 -- transaction block, because it commits between batches, which is the whole
 -- point of it.
 -- NO `set search_path` ON THIS ONE, and it is not an oversight: Postgres

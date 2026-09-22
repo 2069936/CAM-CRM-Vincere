@@ -351,12 +351,20 @@ const readGate = createRequestGate(READ_CONCURRENCY);
  * `select *` forgave a database that was one migration behind; an explicit
  * column list does not — PostgREST answers 42703 and the whole login fails. So
  * a select that names a column the database does not have drops that column and
- * runs again, and remembers the answer for the rest of the session. It costs
- * one extra round trip per absent column, once, on a database that is behind,
- * and nothing at all on one that is not.
+ * runs again, and remembers the answer for the rest of the session. On a
+ * database that is behind it costs up to READ_CONCURRENCY extra round trips per
+ * absent column per table, and nothing at all on one that is not: `loadTable`
+ * fires a table's pages through Promise.all before any of them has written to
+ * `agreedColumns`, so the first pages each discover the missing column on their
+ * own. The agreement is then made once and every later read of that table is
+ * free. Said as a range rather than as "one, once" because the one-trip figure
+ * was the intent and not the behaviour, and a cost stated too low is the kind
+ * of comment that stops somebody measuring.
  *
  * This is the same promise MIGRATIONS_TO_RUN.md already makes for steps 31 to
- * 47: the code deploys before the migration runs and the feature stays dormant.
+ * 48 ON THE READ SIDE. It is not true of a write: an insert that names a column
+ * the database does not have fails, and the runbook says which steps must be
+ * run before the deploy for that reason.
  */
 const MISSING_COLUMN = /column\s+"?(?:[a-z0-9_]+\.)?([a-z0-9_]+)"?\s+does not exist/i;
 
@@ -623,10 +631,19 @@ export async function loadSupabaseCrmState({
     throw new Error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY.');
   }
 
-  // Wave one: who exists. Tiny tables, and the answer to "whose book is this".
-  const [camRows, clientRows, assignmentRows, coverageRows] = await Promise.all([
+  // Wave one: who exists, and whose book this is.
+  //
+  // `clients` IS NOT HERE, AND IT WAS. The scope is computed from three tables
+  // — see clientScopeFor, which reads camRows, assignmentRows and coverageRows
+  // and nothing else — so fetching the client table before it was known meant
+  // every CAM's browser downloaded all 206 clients whole and filtered them in
+  // memory afterwards. LOGIN_COLUMNS.clients carries full_name, email, phone,
+  // additional_emails, messenger, notes, subscription_price, churn_reason and
+  // churn_note, so that was the desk's whole contact list and its commercial
+  // terms on the wire, for 180 books the CAM will never open. The same class
+  // of exposure this change removes for credentials, one table over.
+  const [camRows, assignmentRows, coverageRows] = await Promise.all([
     loadTable('cam_profiles', { columns: LOGIN_COLUMNS.cam_profiles }),
-    loadTable('clients', { columns: LOGIN_COLUMNS.clients }),
     loadTable('client_assignments', { columns: LOGIN_COLUMNS.client_assignments }),
     loadTable('client_coverage', { columns: LOGIN_COLUMNS.client_coverage }),
   ]);
@@ -636,17 +653,18 @@ export async function loadSupabaseCrmState({
   });
   // A filter over a named set of clients, or no filter at all for a manager.
   // Written once: every per-client table below takes the same narrowing, so a
-  // CAM cannot end up with one table scoped and another not.
+  // CAM cannot end up with one table scoped and another not. The client table
+  // itself keys on `id` rather than `client_id` and takes the same scope
+  // through its own filter.
   const byClient = scope ? (query) => query.in('client_id', scope) : null;
-  const scopedClientRows = scope
-    ? clientRows.filter((row) => scope.includes(row.id))
-    : clientRows;
+  const byClientId = scope ? (query) => query.in('id', scope) : null;
 
-  // Wave two: everything that hangs off a client, at login grain.
+  // Wave two: the clients themselves, and everything that hangs off them.
   const [
-    accountRows, payoutRows, importRows, flagRows, taskRows,
+    clientRows, accountRows, payoutRows, importRows, flagRows, taskRows,
     activityRows, priceCheckRows, timeOffRows, summaryRows,
   ] = await Promise.all([
+    loadTable('clients', { columns: LOGIN_COLUMNS.clients, filter: byClientId }),
     loadTable('trading_accounts', { columns: LOGIN_COLUMNS.trading_accounts, filter: byClient }),
     loadPayoutEvents(scope),
     loadTable('daily_imports', { columns: LOGIN_COLUMNS.daily_imports, filter: byClient }),
@@ -674,7 +692,7 @@ export async function loadSupabaseCrmState({
 
   return buildCrmStateFromTables({
     cam_profiles: camRows,
-    clients: scopedClientRows,
+    clients: clientRows,
     client_assignments: assignmentRows,
     trading_accounts: accountRows,
     payout_events: payoutRows,
@@ -1180,6 +1198,30 @@ function accountRowsByUuid(state) {
   return rows;
 }
 
+/**
+ * A refetched strategy row, with the parameters it was not asked for kept.
+ *
+ * `parametersIncluded` is the fetch saying whether it named the two parameter
+ * columns. When it did, the fetched values win outright, including an empty one
+ * — a row whose parameters really are blank has to be able to say so. When it
+ * did not, the row already on screen is the only thing that knows them.
+ */
+function withHeldParameters(mapped, heldById, parametersIncluded) {
+  if (parametersIncluded) return mapped;
+  const held = heldById.get(mapped.id);
+  if (!held) return mapped;
+  const hasParams = held.params && Object.keys(held.params).length > 0;
+  if (!held.parametersRaw && !hasParams) return mapped;
+  return { ...mapped, parametersRaw: held.parametersRaw || '', params: held.params || {} };
+}
+
+/** The same rule for `derivation`, which only the close-detail fetch asks for. */
+function withHeldDerivation(mapped, heldById) {
+  if (mapped.derivation) return mapped;
+  const held = heldById.get(mapped.id);
+  return held?.derivation ? { ...mapped, derivation: held.derivation } : mapped;
+}
+
 function groupByImport(rows) {
   if (!rows) return null;
   const by = {};
@@ -1203,6 +1245,24 @@ function groupByImport(rows) {
  * simulated orders back into the live arrays the first time this merge was
  * written; the split is an application concern, recomputed from each account's
  * current record, and it has to be redone whenever the rows change.
+ *
+ * A NARROWER FETCH MUST NOT UNDO A WIDER ONE. Every fetch here names its own
+ * columns, so a row arriving from one of them carries nothing about the columns
+ * another asked for. Opening a close re-reads `strategy_snapshots` WITHOUT
+ * `parameters_raw` and `params_parsed` — selecting any client fires
+ * ensureCloseDetail, so this is automatic, not hypothetical — and the rebuilt
+ * rows carried `parametersRaw: ''` and `params: {}` over the ones a panel had
+ * already paid 1.23 MB for, while `parametersLoaded` and App.jsx's own cache
+ * both went on saying "loaded". The three configuration panels then compared
+ * over stripped rows and reported a finding. The same is true of `derivation`
+ * on the account rows, which only the close-detail fetch asks for and which the
+ * ranking window's fetch would otherwise blank.
+ *
+ * So each fetch says what it actually brought — `parametersIncluded` for the
+ * two parameter columns, `snapshotRows` carrying `derivation` or not — and what
+ * it did not bring is kept from the row already on screen. The markers follow
+ * the same rule: `parametersLoaded` is set by a fetch that carried parameters
+ * and by nothing else.
  */
 export function applyCloseRows(state, {
   importIds = [],
@@ -1211,6 +1271,7 @@ export function applyCloseRows(state, {
   orderRows = null,
   executionRows = null,
   markDetailLoaded = false,
+  parametersIncluded = false,
 } = {}) {
   const wanted = new Set((importIds || []).filter(Boolean));
   if (!wanted.size) return state;
@@ -1231,11 +1292,19 @@ export function applyCloseRows(state, {
           const importId = dailyImport.uuid || dailyImport.id;
           if (!wanted.has(importId)) return dailyImport;
           const whole = mergeSimulationRows(dailyImport);
+          // What this close already holds, by row id, so a fetch that did not
+          // ask for a column can put back what one that did already brought.
+          const heldStrategies = new Map(
+            (whole.strategies || []).filter((row) => row?.id).map((row) => [row.id, row]),
+          );
+          const heldSnapshots = new Map(
+            (whole.snapshots || []).filter((row) => row?.id).map((row) => [row.id, row]),
+          );
 
           const fetchedStrategies = strategiesBy
             ? (strategiesBy[importId] || []).map((row) => ({
               snapshotId: row.account_snapshot_id,
-              mapped: strategyFromRow(row, accountByUuid),
+              mapped: withHeldParameters(strategyFromRow(row, accountByUuid), heldStrategies, parametersIncluded),
             }))
             : null;
           const strategiesBySnapshot = {};
@@ -1248,7 +1317,10 @@ export function applyCloseRows(state, {
           let snapshots;
           if (snapshotsBy) {
             snapshots = (snapshotsBy[importId] || [])
-              .map((row) => snapshotFromRow(row, strategiesBySnapshot, accountByUuid));
+              .map((row) => withHeldDerivation(
+                snapshotFromRow(row, strategiesBySnapshot, accountByUuid),
+                heldSnapshots,
+              ));
           } else if (fetchedStrategies) {
             // Strategies arrived without their snapshots (the parameter fetch).
             // Re-nest them so Dashboard.jsx's per-account strategy rows and the
@@ -1284,7 +1356,14 @@ export function applyCloseRows(state, {
             // distinction accountLifecycle.js and StackPlaybook.jsx already draw
             // book-wide, now recorded per close.
             detailLoaded: markDetailLoaded ? true : Boolean(dailyImport.detailLoaded),
-            parametersLoaded: strategiesBy ? true : Boolean(dailyImport.parametersLoaded),
+            // Set by a fetch that brought the per-account rows, and by nothing
+            // else. Without it an opened close kept `snapshotsLoaded: false`
+            // for the rest of the session, so refreshMerge's `carriesRows`
+            // never fired for it and the next Refresh — or any edit on that
+            // close — put the fills back and left the account table blank,
+            // which is worse than blank. See refreshMerge.js.
+            snapshotsLoaded: snapshotsBy ? true : Boolean(dailyImport.snapshotsLoaded),
+            parametersLoaded: parametersIncluded ? true : Boolean(dailyImport.parametersLoaded),
           };
         }),
       };
@@ -1342,7 +1421,36 @@ export function mergeSupabaseStrategyParameters(state, parameters) {
   return applyCloseRows(state, {
     importIds: parameters.importIds,
     strategyRows: parameters.strategies,
+    snapshotRows: parameters.snapshots || null,
+    parametersIncluded: true,
   });
+}
+
+/**
+ * The ranking board, expanded: a window of closes, rows AND their accounts.
+ *
+ * WHY THE ACCOUNT ROWS ARE HERE AND THE PARAMETER FETCH ALONE WAS NOT ENOUGH.
+ * buildStrategyRanking reads `dailyImport.snapshots` and then each snapshot's
+ * `strategies`; a login holds the account rows of each client's LATEST close
+ * only, so for every older close in the window `applyCloseRows` had nowhere to
+ * nest the strategy rows it had just paid for and dropped them on the floor.
+ * Measured on the book: strategy rows came back for 485 closes, 79 of which had
+ * account rows, so 594 of 3,805 rows landed — 16 algorithms with 8 ranked
+ * became 15 with 0, under a badge reading "One rank per algorithm".
+ *
+ * So the window asks for both, in one pass, under the same bound. It is the
+ * most expensive thing a panel can ask for on this screen and it is behind a
+ * collapsed panel for exactly that reason.
+ */
+export async function loadSupabaseRankingRows(importIds = []) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  const ids = [...new Set((importIds || []).filter(Boolean))];
+  if (!ids.length) return { importIds: [], strategies: [], snapshots: [] };
+  const [snapshots, strategies] = await Promise.all([
+    loadRowsForImports('account_snapshots', LATEST_CLOSE_COLUMNS.account_snapshots, ids),
+    loadRowsForImports('strategy_snapshots', STRATEGY_PARAMETER_COLUMNS, ids),
+  ]);
+  return { importIds: ids, strategies, snapshots };
 }
 
 /**
