@@ -1,4 +1,5 @@
 import { getLatestClientImport } from './crmStateStore';
+import { withStrategyRan } from './strategyRan';
 
 function average(values) {
   if (!values.length) return 0;
@@ -47,7 +48,15 @@ export function buildCamOverview(clients = []) {
 
     for (const snapshot of latestImport.snapshots || []) {
       const meta = accountMeta(client, latestImport, snapshot.accountName);
-      for (const strategy of snapshot.strategies || []) {
+      for (const strategy of withStrategyRan(snapshot.strategies || [], latestImport.executions || [])) {
+        /* A PEER GROUP OF ROWS THAT DID NOTHING IS NOT A PEER GROUP.
+         *
+         * This loop took every strategy row the grid carried. Measured on the
+         * week of 2026-09-14: 17 groups over 610 items and 289 accounts, where
+         * an "it traded" rule gives 11 groups, 116 items and 86 accounts, so
+         * 255 of the 289 accounts sat in a peer set they did not belong to and
+         * 203 belonged in none. Whole groups read as a column of zeros. */
+        if (!strategy.ran) continue;
         const label = strategyLabel(strategy);
         const executionPoints = (latestImport.executions || [])
           .filter((execution) => execution.accountName === snapshot.accountName && execution.strategyName === strategy.strategyName)
@@ -68,7 +77,15 @@ export function buildCamOverview(clients = []) {
           algorithm: label.algorithm,
           version: label.version,
           instrument: strategy.instrument || '',
-          realized: Number(strategy.realized || 0),
+          /* THE MONEY THAT EXISTS, NOT THE FIELD THAT IS EMPTY.
+           *
+           * realized is 0 on every one of the 456 strategy rows of
+           * 2026-09-21; derived_realized (step 37) is what carries the figure
+           * the fills prove. Reading only realized meant this screen was not
+           * over alerting on idle rows, it was silently under alerting on real
+           * losses: three alerts it should raise it did not, including one at
+           * -$1,025.00 against a -$563.75 threshold. */
+          realized: Number(strategy.derivedRealized ?? strategy.realized ?? 0),
           unrealized: Number(strategy.unrealized || 0),
           accountWeeklyPnl: Number(snapshot.weeklyPnl || 0),
           enabled: Boolean(strategy.enabled),

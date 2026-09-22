@@ -56,7 +56,21 @@ describe('the real book (public/local-snapshot.json, closes 2026-07-13 → 2026-
     expect(peer).toHaveLength(36);
     expect(desk.deviationFlags.length - peer.length).toBe(38);
     expect(desk.totals.algorithms).toBe(16);
-    expect(desk.totals.accounts).toBe(336);
+    /* 218, WHERE THIS SAID 336, AND THE ALERTS DID NOT MOVE.
+     *
+     * A peer group used to be every strategy row the grid carried. It is now
+     * every row that ran, so 118 rows that traded nothing stopped being
+     * somebody's peers. The alert count, the split between the two rules and
+     * the algorithm count are all unchanged on this book, which is the answer
+     * to the obvious worry: the filter removed a population, not a finding.
+     *
+     * What this book cannot show is the other half of the same change. It
+     * predates step 37, so derivedRealized is absent here and reading it
+     * changes nothing. On production it does: realized is 0 on all 456
+     * strategy rows of 2026-09-21 while derivedRealized carries the figure,
+     * and reading it raises three alerts this screen was silently missing,
+     * one of them at -$1,025.00 against a -$563.75 threshold. */
+    expect(desk.totals.accounts).toBe(218);
   });
 
   it('is not the sum of the eight CAM lists, and the panel says so with these numbers', () => {
@@ -65,19 +79,23 @@ describe('the real book (public/local-snapshot.json, closes 2026-07-13 → 2026-
     // rewritten rather than left saying something that is no longer true.
     const camTotal = perCam.reduce((total, entry) => total + entry.overview.deviationFlags.length, 0);
     expect(perCam).toHaveLength(8);
-    expect(camTotal).toBe(30);
+    // 29 where this said 30, and 23 shared where it said 25: filtering the
+    // peer groups to rows that ran moves one CAM's own list by one and shifts
+    // two alerts from shared to desk only. The panel's sentence is about the
+    // gap, and the gap is still there and still both ways.
+    expect(camTotal).toBe(29);
 
     const deskIds = new Set(desk.deviationFlags.map((flag) => flag.id));
     const onBoth = perCam.reduce(
       (total, entry) => total + entry.overview.deviationFlags.filter((flag) => deskIds.has(flag.id)).length,
       0,
     );
-    expect(onBoth).toBe(25);
-    // 5 alerts a CAM sees that the desk does not, and 49 the desk sees that no
+    expect(onBoth).toBe(23);
+    // 6 alerts a CAM sees that the desk does not, and 51 the desk sees that no
     // CAM's own page shows. Both directions are real: a narrower book can put an
     // account outside its peers that the wider book absorbs, and vice versa.
-    expect(camTotal - onBoth).toBe(5);
-    expect(desk.deviationFlags.length - onBoth).toBe(49);
+    expect(camTotal - onBoth).toBe(6);
+    expect(desk.deviationFlags.length - onBoth).toBe(51);
   });
 
   it('names a client on every alert, so the manager can route all 74', () => {

@@ -2011,6 +2011,23 @@ export async function createSupabaseClient(name, camProfileId = null, stage = 'A
     uuid: client.id,
     name: client.name,
     status: client.status || 'Active',
+    /* THE FIELDS revenueHealth READS, WHERE IT READS THEM.
+     *
+     * revenueHealth.js is the panel the desk's own manager asked for, and it
+     * reads client.subscriptionPrice, client.createdAt and client.deletedAt at
+     * the top level. subscriptionPrice was mapped only into profile, so tierOf
+     * fell to DEFAULT_SUBSCRIPTION_PRICE for everyone and the panel reported an
+     * MRR of zero with every client unpriced, while the table it reads held 19
+     * at $500 and 11 at $250. createdAt and deletedAt were not mapped at all,
+     * so free client ageing answered null and a deleted client counted as live.
+     * Measured on production 2026-09-22: 140 active clients, 30 of them priced,
+     * $12,250 of MRR the panel was showing as nothing.
+     *
+     * profile keeps its copy: the client form edits that one, and
+     * updateSupabaseClient writes back from profile. */
+    subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+    createdAt: client.created_at || '',
+    deletedAt: client.deleted_at || null,
     pinned: Boolean(client.pinned),
     pinnedNote: client.pinned_note || '',
     notes: client.notes || '',

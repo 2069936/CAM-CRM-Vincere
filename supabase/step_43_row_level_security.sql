@@ -7,8 +7,16 @@
 -- that key can see. On this project only the auto collection tables and two
 -- newer tables had RLS. Everything else, clients, trading_accounts,
 -- account_snapshots, app_users, reports, audit_logs, client_credentials, could
--- be read and written by anyone holding the URL, with no session at all. That
--- was verified from outside the app on 2026-09-18.
+-- be read by anyone holding the URL, with no session at all, and written too:
+-- anon holds the UPDATE and DELETE grants, and a grant with no policy in front
+-- of it is a write. Verified from outside the app on 2026-09-18 and again on
+-- 2026-09-22.
+--
+-- ONE PIECE OF EVIDENCE THAT LOOKED LIKE PROOF AND IS NOT. An UPDATE whose
+-- filter matches no row answers 204 whether or not row level security is on,
+-- so "an update was accepted" proves nothing: a table that already has RLS
+-- answers 204 to the same request. The reads are what prove RLS is absent, and
+-- the grant is what proves a matching write would land.
 --
 -- WHAT THIS DOES. Enables RLS on every table in public that does not have it
 -- yet and gives signed in users (the authenticated role) exactly what they had:
@@ -19,10 +27,22 @@
 --
 -- WHAT IT LEAVES ALONE. Tables that already have RLS keep their own policies
 -- (the ingest tables deny the browser on purpose). Views get security_invoker
--- so they stop bypassing the tables' policies, and lose their anon grant.
+-- so they stop bypassing the tables' policies, and lose their anon grant. That
+-- matters more than it sounds: auth_mapping_status joins app_users to
+-- auth.users and hands anon the username, display name, email, role and last
+-- sign in of every staff account. It is readable today.
 --
--- THE ONE ANONYMOUS PATH. Signing in by username looks the email up in
--- app_users before there is a session. That read moves into
+-- WHAT THIS DOES NOT DO, SO NOBODY READS IT AS MORE THAN IT IS. The policy it
+-- writes is `for all to authenticated using (true) with check (true)`. That
+-- closes the door to the key in the browser bundle, which is the door that is
+-- open. It does not divide the rooms: any signed in user can still read every
+-- credential row and set their own role to Manager through PostgREST. Per role
+-- policies are the next step and are not in this migration.
+--
+-- THE ONE ANONYMOUS PATH TO A TABLE. Signing in by username looks the email up
+-- in app_users before there is a session. (public.current_app_user() is also
+-- granted to anon and stays that way: it filters on auth.uid(), so without a
+-- session it answers nothing.) That read moves into
 -- login_email_for_username, a security definer function that returns the
 -- email for one username and nothing else, callable by anon.
 --

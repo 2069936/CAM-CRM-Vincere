@@ -107,7 +107,7 @@ import {
   removeAccountFromRegistry,
 } from "./domain/crmStateStore";
 import { buildCamOverview } from "./domain/camOverview";
-import { strategyRan } from "./domain/strategyRan";
+import { strategyRan, withStrategyRan } from "./domain/strategyRan";
 import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
 import { daysBetween } from "./domain/overviewCharts";
 import {
@@ -956,7 +956,16 @@ export function buildStrategyAnalyzer(clients = []) {
     const latest = client.dailyImports?.at(-1);
     if (!latest) continue;
     for (const snapshot of latest.snapshots || []) {
-      for (const strategy of snapshot.strategies || []) {
+      /* THE OPPOSITE ERROR TO THE ONE ABOVE, ON THE SAME SCREEN.
+       *
+       * This loop had no filter, so it counted every strategy row the grid
+       * carried whether or not it traded. Measured over the week of
+       * 2026-09-14: 610 rows counted and 494 of them, 81 percent, with no
+       * evidence anything happened, which diluted avgDaily by between 2.7 and
+       * 11.9 times and printed families with a row count and $0.00 that had
+       * not traded at all. One question, one answer, one place. */
+      for (const strategy of withStrategyRan(snapshot.strategies || [], latest.executions || [])) {
+        if (!strategy.ran) continue;
         const key =
           strategy.strategyFamily || strategy.strategyName || "Unknown";
         const entry = stratMap.get(key) || {
@@ -1298,9 +1307,18 @@ export function buildDisconnectAlerts(client) {
     if (meta.accountType === "Inactive / Ignore") continue;
     if (["Inactive", "Failed", "Reserve"].includes(meta.status)) continue;
 
-    const activeStrategies = (snapshot.strategies || []).filter(
-      (s) => s.enabled,
-    );
+    /* WHAT RAN, NOT WHAT THE CHECKBOX SAID.
+     *
+     * The export runs after the desk switches the strategies off, so on
+     * 2026-09-21 forty five of the forty six strategies that produced fills
+     * carried enabled = false. Filtering on the checkbox made this row say a
+     * client had nothing running on a day their algorithm traded, and this is
+     * the row a CAM phones a client about. strategyRan asks the whole
+     * question: the checkbox, the fills, or the money. */
+    const activeStrategies = withStrategyRan(
+      snapshot.strategies || [],
+      latest.executions || [],
+    ).filter((s) => s.ran);
     if (activeStrategies.length === 0) continue;
 
     const todayPnl = Number(snapshot.grossRealizedPnl || 0);

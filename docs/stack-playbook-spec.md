@@ -39,6 +39,23 @@ Panel "Team Algo Performance" (`:628-711`), table columns `:671-678`, aggregator
 
 ## 2. Where it differs from reality
 
+> **Dated measurement, 2026-07 and 2026-08.** Every figure in sections 2.1 to
+> 2.10 was measured against `public/local-snapshot.json`, an export taken
+> 2026-08-20 whose last close is 2026-07-30: 14 trading dates, 865 funded
+> account days, one partial month. The rules the sections argue for are
+> unchanged and section 4 implements them. The numbers are not current. Checked
+> against production on 2026-09-22: replaying the same 2026-07-13 to 07-30
+> window on today's rows reproduces them (66.1% Unknown against the 64.0% here),
+> so the port is faithful, but on the Playbook's own default window production
+> now reads 29.2% Unknown, and the error has inverted: the checkbox is ON on 86%
+> of September rows while only 27% carry evidence they traded, so it now invents
+> days where it used to drop them. Best is no longer a one account row: it is
+> G4M 3.4 over 77 account days on 10 accounts. The `realized` rung of the traded
+> rule fires on zero days, because `realized` is 0 on every row and
+> `derived_realized` carries the figure. Section 2.3's IFSP_PF fold table is
+> stale: IFSP_PF has no days in the current funded population.
+
+
 All figures: `spec_numbers.py` unless noted. "App" = the table as rendered today.
 
 ### 2.1 Blocker: 64.0% of funded account-days are dropped because the combo key is the export-time `enabled` flag
@@ -168,7 +185,7 @@ My Futures Book publishes, per algorithm, the algorithm's own track record: one 
 | Population | Live client accounts of this desk's visible clients, funded, current status | The algorithm's own run |
 | Attribution | Whatever the account did on a day the combo was switched on (multi-algo days, fills from non-enabled algos, days with every algo disabled dropped) | The algorithm alone |
 | Size | posSizes as configured per account (URGO 1/1/0, B2X 3/3/2, RBO 2/2/2, G4M 2/1/1...) and unknown start balance on 123 of 178 accounts | The risk level's own sizing, which is a base size and not a fixed one: `Qty` varies inside a single file as the strategy scales (ARPD MGC Low holds 1, 2 and 4; RBO M2K High reaches 36) |
-| P&L basis | Realized net of commission where the grid reported it, gross otherwise (csvImport.js:244) | Whatever MFB states |
+| P&L basis | Realized net of commission where the grid reported it, gross otherwise (csvImport.js:244) | `Profit` is already net of the separate `Commission` column: adding it double counts |
 | Time | 14 closes 2026-07-13..07-30 in this book | MFB's own history |
 
 The nearest thing the CRM can produce to an MFB-style figure is the strategy row's own `realized` on solo days (exactly one strategy enabled): 166 such days, and even there account gross equals the strategy's realized on only 108. It is still a different sizing, a different population and a different P&L basis.
