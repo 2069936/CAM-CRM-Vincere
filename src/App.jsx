@@ -107,6 +107,7 @@ import {
   removeAccountFromRegistry,
 } from "./domain/crmStateStore";
 import { buildCamOverview } from "./domain/camOverview";
+import { strategyRan } from "./domain/strategyRan";
 import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
 import { daysBetween } from "./domain/overviewCharts";
 import {
@@ -520,7 +521,12 @@ export function buildTodayActions(client, dailyImport) {
     }
   }
 
-  // Funded accounts with no active strategy
+  // Funded accounts nothing ran on.
+  //
+  // This used to filter on the Strategies-grid checkbox, so on every close
+  // exported after the desk switched the algos off it told the CAM that every
+  // funded account had no active strategy. src/domain/strategyRan.js answers
+  // whether the algorithm actually worked that day.
   if (dailyImport) {
     const registry = mergeRegistryCi(
       dailyImport.accounts,
@@ -529,7 +535,7 @@ export function buildTodayActions(client, dailyImport) {
     const noStrat = (dailyImport.snapshots || []).filter((s) => {
       const meta = ciMeta(registry, s.accountName);
       if (meta?.accountType !== "Funded") return false;
-      const active = (s.strategies || []).filter((st) => st.enabled);
+      const active = (s.strategies || []).filter((st) => strategyRan(st));
       return active.length === 0;
     });
     for (const s of noStrat.slice(0, 2)) {
@@ -537,7 +543,7 @@ export function buildTodayActions(client, dailyImport) {
       actions.push({
         severity: "warning",
         icon: "⚙️",
-        text: `No active strategy on ${alias} - check Stack Playbook`,
+        text: `No algorithm ran on ${alias} - check Stack Playbook`,
       });
     }
   }
@@ -641,9 +647,11 @@ export function buildManagerSummary(clients = [], asOfDate = "") {
       (f) => f.status !== "Resolved" && f.status !== "Acknowledged",
     ),
   );
+  // The algorithms that RAN on the desk's latest closes, not the ones whose
+  // checkbox was still ticked when each CAM happened to export.
   const activeStrategies = snapshots
     .flatMap((snapshot) => snapshot.strategies || [])
-    .filter((strategy) => strategy.enabled);
+    .filter((strategy) => strategyRan(strategy));
   const weeklyPnl = snapshots.reduce(
     (total, snapshot) => total + Number(snapshot.weeklyPnl || 0),
     0,
@@ -1097,7 +1105,9 @@ export function buildPnlVarianceAnalysis(client, allClients = []) {
     for (const di of (c.dailyImports || []).slice(-7)) {
       for (const snap of di.snapshots || []) {
         for (const strat of snap.strategies || []) {
-          if (!strat.enabled) continue;
+          // The team average for an algorithm is over the days it ran. A day it
+          // was switched off before the export is still one of its days.
+          if (!strategyRan(strat)) continue;
           const key = strat.strategyFamily || strat.strategyName || "Unknown";
           if (!stratAvg[key]) stratAvg[key] = { total: 0, count: 0 };
           stratAvg[key].total += Number(strat.derivedRealized ?? strat.realized ?? 0);
@@ -1141,7 +1151,7 @@ export function buildPnlVarianceAnalysis(client, allClients = []) {
       entry.totalActual += Number(snap.grossRealizedPnl || 0);
       entry.days += 1;
       for (const strat of snap.strategies || []) {
-        if (!strat.enabled) continue;
+        if (!strategyRan(strat)) continue;
         const key = strat.strategyFamily || strat.strategyName || "Unknown";
         entry.stratNames.add(key);
         entry.totalExpected += avgByStrat[key] || 0;
@@ -1247,7 +1257,16 @@ export function buildConsistencyWarnings(client) {
   return warnings;
 }
 
-// Detect possible VPS/algo disconnect: enabled strategy + zero P&L when prior avg was positive
+// Detect possible VPS/algo disconnect: enabled strategy + zero P&L when prior avg was positive.
+//
+// STILL ON THE CHECKBOX, AND DELIBERATELY. Everything else that asked "did this
+// algorithm run" now reads src/domain/strategyRan.js. This one asks a different
+// question — was it MEANT to be running — and `ran` cannot answer it: an algo
+// the VPS dropped produces no fills and no realized, so it would read as not
+// having run and the alert would never fire at all. The checkbox is weak
+// evidence of intent (it is only ticked on a close exported before the desk
+// switched off), which is why this alert is quiet on most closes. The fix is a
+// comparison against the days it did run, and it is not this change.
 export function buildDisconnectAlerts(client) {
   const alerts = [];
   const latest = client.dailyImports?.at(-1);
@@ -1659,9 +1678,12 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
         alias: meta.alias || snap.accountName,
         connection: meta.connection || "",
         payoutState: meta.payoutState || "",
+        // Which algorithms ran on the account that day. On the checkbox this
+        // column read "None" for every account on a close exported after the
+        // desk shut the algos down, which on the stored book is 207 closes.
         strategies:
           (snap.strategies || [])
-            .filter((s) => s.enabled)
+            .filter((s) => strategyRan(s))
             .map((s) => s.strategyFamily || s.strategyName)
             .join(", ") || "None",
         dailyPnl: Number(snap.grossRealizedPnl || 0),
@@ -7655,13 +7677,16 @@ function ReportPanel({
                 </thead>
                 <tbody>
                   {report.grouped[group].map((row) => {
-                    // Only the strategies actually running. NinjaTrader keeps the
-                    // previous strategy in the grid (disabled) after you switch,
-                    // so showing every row put stale algos on the report even
-                    // though the screen already filtered them out.
+                    // Only the strategies that actually ran. NinjaTrader keeps
+                    // the previous strategy in the grid (disabled) after you
+                    // switch, so showing every row put stale algos on the report
+                    // even though the screen already filtered them out. Reading
+                    // the checkbox went too far the other way: a report built
+                    // from a close exported after the algos were switched off
+                    // listed no strategies at all for the day they traded.
                     const stratNames =
                       (row.strategies || [])
-                        .filter((s) => s.enabled)
+                        .filter((s) => strategyRan(s))
                         .map((s) => s.strategyName || s.strategyFamily || "Strategy")
                         .join(", ") || "-";
                     return (
@@ -9282,8 +9307,8 @@ export function buildPortfolioInsights(clients) {
         const meta = ciMeta(registryCi, snap.accountName);
         if (!["Funded", "Evaluation - Standard"].includes(meta.accountType))
           continue;
-        const enabledStrats = (snap.strategies || []).filter((s) => s.enabled);
-        if (!enabledStrats.length) continue;
+        const ranStrats = (snap.strategies || []).filter((s) => strategyRan(s));
+        if (!ranStrats.length) continue;
         const recentImports = imports.slice(-10);
         if (recentImports.length < 6) continue;
         const pnls = recentImports

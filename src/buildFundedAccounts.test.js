@@ -84,6 +84,45 @@ describe('buildAllFundedAccounts', () => {
     expect(row.camName).toBe('Maria');
   });
 
+  /* THE "WHICH ALGOS" COLUMN, AFTER THE EXPORT CLOCK STOPPED DECIDING IT.
+   *
+   * This column filtered on the Strategies-grid checkbox, so on a close
+   * exported after the desk switched the algos off it printed "None" for an
+   * account that had traded all day. On the stored book that is 207 closes.
+   * It reads src/domain/strategyRan.js now, which prefers the answer step 47
+   * stores on the row and falls back to the rule over the evidence the row
+   * itself carries.
+   */
+  it('names the algorithms that ran, not the ones still ticked at export', () => {
+    const client = makeFundedClient({
+      strategies: [
+        { strategyFamily: 'RBO', strategyName: '0 - RBO-1.8', enabled: false, realized: 0, ran: true, ranBasis: 'fills' },
+        { strategyFamily: 'URGO', strategyName: '1 - URGO-4.5', enabled: false, realized: 0, ran: false, ranBasis: 'none' },
+      ],
+    });
+    const [row] = buildAllFundedAccounts([client], []);
+    expect(row.strategies).toBe('RBO');
+  });
+
+  it('says None only when nothing on the account ran', () => {
+    const client = makeFundedClient({
+      strategies: [{ strategyFamily: 'RBO', strategyName: '0 - RBO-1.8', enabled: false, realized: 0 }],
+    });
+    expect(buildAllFundedAccounts([client], [])[0].strategies).toBe('None');
+  });
+
+  it('falls back to the row\'s own evidence where nothing is stored', () => {
+    // A database where step 47 has not run: a switched-off row that reported
+    // money still ran, and a still-ticked one still counts.
+    const client = makeFundedClient({
+      strategies: [
+        { strategyFamily: 'RBO', strategyName: '0 - RBO-1.8', enabled: false, realized: -485 },
+        { strategyFamily: 'IFSP', strategyName: '1 - IFSP-1.1', enabled: true, realized: 0 },
+      ],
+    });
+    expect(buildAllFundedAccounts([client], [])[0].strategies).toBe('RBO, IFSP');
+  });
+
   it('sorts most at-risk accounts first (lowest bufferPct ascending)', () => {
     const clients = [
       makeFundedClient({ id: 'c1', name: 'Safe', ddLimit: 2000, rawDD: -200 }),   // 90% buffer

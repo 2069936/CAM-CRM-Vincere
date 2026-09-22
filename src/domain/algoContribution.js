@@ -89,6 +89,13 @@
 //
 // And what was always exact stays exact: which algos ran, and what the account
 // did while they ran. The combination periods below attribute nothing at all.
+//
+// WHICH ALGOS RAN is itself a rule, and it is not the Strategies-grid checkbox:
+// the exports are taken after the desk switches the algos off. strategyRan.js
+// owns it, step 47 stores its answer on the row, and the combination periods
+// here are built from it.
+
+import { strategyRan } from './strategyRan';
 
 const dayKey = (s) => `${s.strategyFamily || s.strategyName || 'Unknown'}${s.strategyVersion ? ` ${s.strategyVersion}` : ''}`;
 
@@ -136,6 +143,11 @@ export function buildAlgoAccountHistory(client, accountName) {
       direction: s.direction || '',
       instrument: s.instrument || '',
       enabled: Boolean(s.enabled),
+      // Whether it RAN that day, which is what the combination below is made
+      // of. `enabled` is kept beside it and counted separately: the two differ
+      // on most closes, because the export is taken after the desk switches
+      // the algos off. See src/domain/strategyRan.js.
+      ran: strategyRan(s),
       // What NinjaTrader said. `reported` is null when it said nothing at all —
       // an absent grid column, not a zero — while `realized` keeps the old
       // zero-coalesced reading every existing caller of this shape expects.
@@ -186,7 +198,7 @@ export function buildAlgoAccountHistory(client, accountName) {
       balance: money(snapshot.accountBalance),
       trailing: money(snapshot.trailingMaxDrawdown),
       algos,
-      combo: [...new Set(algos.filter((a) => a.enabled).map((a) => a.key))].sort().join(' + ') || 'None',
+      combo: [...new Set(algos.filter((a) => a.ran).map((a) => a.key))].sort().join(' + ') || 'None',
       reportedSum,
       derivation,
       derived: Boolean(derivedDay),
@@ -261,6 +273,7 @@ export function rollUpAlgos(days = []) {
           instruments: new Set(),
           daysPresent: 0,
           daysEnabled: 0,
+          daysRan: 0,
           firstSeen: day.date,
           lastSeen: day.date,
           reportedPnl: 0,
@@ -275,6 +288,7 @@ export function rollUpAlgos(days = []) {
       if (algo.instrument) row.instruments.add(algo.instrument);
       row.daysPresent += 1;
       row.daysEnabled += algo.enabled ? 1 : 0;
+      row.daysRan += algo.ran ? 1 : 0;
       row.lastSeen = day.date;
       // A day can be derived, reported, or both. When it is both they agree —
       // the measurement that licensed this feature found 11 of 11 exact matches

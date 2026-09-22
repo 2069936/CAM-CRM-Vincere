@@ -255,6 +255,12 @@ describe('persistDailyImportWithClient', () => {
       strategy_name: 'RBO-1.8', strategy_family: 'RBO', strategy_version: '1.8',
       instrument: 'MNQ SEP26', data_series: '1 Minute', parameters_raw: '{}',
       params_parsed: { parsed: true }, direction: 'Long', enabled: true, realized: 125, unrealized: -10,
+      // Whether the algorithm ran that day, beside the checkbox and never over
+      // it. Null here because this fixture's row reached the mapper without an
+      // answer, which is what a close written before step 47 looks like; the
+      // reconcile fixtures below carry one, because reconcile decides it.
+      ran: null,
+      ran_basis: null,
       // ONE derived column, and this assertion is an exact object match, so it
       // is also the guard that the two cut ones do not come back. The account-day
       // verdict and the per-row join reason are answerable from
@@ -288,6 +294,31 @@ describe('persistDailyImportWithClient', () => {
       type: 'Open review', severity: 'Warning', message: 'Still open', status: 'Open',
       resolved_at: null, resolved_by_user_id: null,
     }]);
+  });
+
+  it('stores whether each strategy ran, and the evidence for it', async () => {
+    // The answer reconcile reached over the close's own fills. It is stored
+    // because the screens that ask must not have to load the fills to find out:
+    // `enabled` is a checkbox at export time and the exports are taken after
+    // the desk switches the algos off. See src/domain/strategyRan.js, step 47.
+    const db = makeDb();
+
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: importResult({
+        strategies: [
+          { accountName: 'acc-one', strategyName: 'RBO-1.8', enabled: false, realized: 0, ran: true, ranBasis: 'fills' },
+          { accountName: 'acc-one', strategyName: 'IFSP-1.1', enabled: false, realized: 0, ran: false, ranBasis: 'none' },
+        ],
+      }),
+    });
+
+    const [, rows] = db.insertRows.mock.calls.find(([table]) => table === 'strategy_snapshots');
+    expect(rows.map((row) => [row.strategy_name, row.enabled, row.ran, row.ran_basis])).toEqual([
+      ['RBO-1.8', false, true, 'fills'],
+      ['IFSP-1.1', false, false, 'none'],
+    ]);
   });
 
   it('retains empty strategy/order/execution sections while always refreshing derived flags', async () => {

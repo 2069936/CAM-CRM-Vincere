@@ -129,7 +129,8 @@ import { businessForSegment, segmentForAccount, BUSINESS_KEYS } from './operatio
 import { PROGRAMME_BOUNDARY, isProgrammeFamily, programmeFor, thresholdRefusal } from './algorithmProgrammes';
 import { DESK_BUSINESS_ORDER, bookCloses, deskBusinessColumns } from './deskMoney';
 import { configKeyOf, shortConfigLabel } from './strategyConfigDrift';
-import { comboKeyFromDay, executionsForAccount, familyOfStrategyRow } from './comboPerformance';
+import { comboKeyFromDay, executionsForAccount } from './comboPerformance';
+import { familiesOnFills, strategyRan } from './strategyRan';
 
 /**
  * The evidence a row needs before it is given a rank.
@@ -150,19 +151,27 @@ const Z_95 = 1.959964;
  * Which algorithms are counted as having run on an account-day.
  *
  * TWO BASES, AND THE DIFFERENCE IS NOT A ROUNDING. `enabled` is the
- * Strategies-grid checkbox as it stood at the moment the CAM exported, which is
- * what this module has always used and what the Operations ranking panel still
- * uses. `docs/stack-playbook-spec.md` §2.1 measures what that costs: 64.0% of
+ * Strategies-grid checkbox as it stood at the moment the CAM exported.
+ * `docs/stack-playbook-spec.md` §2.1 measures what reading it costs: 64.0% of
  * funded account-days are dropped because an algorithm that hit its daily stop
  * and switched itself off before the export vanishes, and with it the day it
  * lost. Whether a day counts moves with the hour the CAM exported.
  *
- * `traded` is the basis `comboPerformance.js` owns and the desk period report
- * asks for: enabled, OR named on that account-day's fills, OR carrying a
- * non-zero realized on a row the grid had switched off. It is opt-in rather
- * than the default because the Operations panel's figures are quoted daily and
- * a silent re-basing of them is exactly the class of change this codebase keeps
- * paying for.
+ * `traded` is the product's rule, src/domain/strategyRan.js, stored on the row
+ * by step 47: enabled, OR named on that account-day's fills, OR carrying a
+ * non-zero realized on a row the grid had switched off.
+ *
+ * THE DEFAULT IS `traded`, AND IT USED TO BE `enabled`. It was opt-in on the
+ * argument that the Operations panel's figures are quoted daily and a silent
+ * re-basing of them is the class of change this codebase keeps paying for. What
+ * that left was worse: the desk period report and the Stack Playbook asked for
+ * `traded` while the manager's own first screen asked the checkbox, so two
+ * screens in one session put different account-day counts under one heading.
+ * On 2026-09-21, 45 of the 46 (close, strategy) pairs that produced fills carry
+ * `enabled = false`; on the stored book 1,011 of 2,528 rows that ran were
+ * switched off at export. The re-basing is not silent: it is this comment, the
+ * label the panel prints beside every figure, and the commit that moved it.
+ * `enabled` stays reachable for the comparison, which is what it is for.
  *
  * A family named on the fills with NO grid row carries no measured P&L: the
  * fills say which algorithm ran and nothing says what it made. It is counted as
@@ -567,7 +576,7 @@ function foldStrategy(entry, strategy, pnl) {
  * is per client, and every other figure on the Operations screen already counts
  * those as two accounts.
  */
-function collectObservations(clients, { throughDate, fromDate = '', basis = 'enabled' }) {
+function collectObservations(clients, { throughDate, fromDate = '', basis = 'traded' }) {
   const traded = basis === 'traded';
   const rows = new Map();
   // Per business: the account-days it covers and what the ACCOUNTS made on them,
@@ -598,10 +607,14 @@ function collectObservations(clients, { throughDate, fromDate = '', basis = 'ena
         // asked for. Resolved once per account-day: `comboKeyFromDay` scans the
         // close's executions, and doing that per strategy row would rescan them
         // once for every row on the grid.
+        const accountFills = traded
+          ? executionsForAccount(dailyImport, snapshot?.accountName)
+          : [];
+        const filledFamilies = traded ? familiesOnFills(accountFills) : null;
         const tradedFamilies = traded
           ? new Set(comboKeyFromDay(
             snapshot,
-            executionsForAccount(dailyImport, snapshot?.accountName),
+            accountFills,
             { basis: 'traded', level: 'family' },
           ).elements)
           : null;
@@ -613,9 +626,11 @@ function collectObservations(clients, { throughDate, fromDate = '', basis = 'ena
         for (const strategy of snapshot.strategies || []) {
           const enabledHere = strategy?.enabled === true;
           if (traded) {
-            // An enabled row is always in. A row the grid had switched off is
-            // in when the fills or its own realized say it traded anyway.
-            if (!enabledHere && !tradedFamilies.has(familyOfStrategyRow(strategy))) continue;
+            // The row's own answer: what step 47 stored on it at ingest, or the
+            // rule over this account's fills when nothing is stored. An enabled
+            // row is always in; a row the grid had switched off is in when the
+            // fills or its own realized say it traded anyway.
+            if (!strategyRan(strategy, filledFamilies)) continue;
           } else if (!enabledHere) continue;
           const algo = strategy.strategyFamily || strategy.strategyName || 'Unknown';
           const reported = measuredPnl(strategy);
@@ -1096,13 +1111,13 @@ function buildProgrammeRow(row, { topRanked }) {
 }
 
 export function buildStrategyRanking(clients = [], {
-  asOfDate = '', fromDate = '', withDetail = false, windows = null, basis = 'enabled',
+  asOfDate = '', fromDate = '', withDetail = false, windows = null, basis = 'traded',
 } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const anchor = day(asOfDate) || book.latest || '';
   const lower = day(fromDate);
-  const attribution = ATTRIBUTION_BASES.includes(basis) ? basis : 'enabled';
+  const attribution = ATTRIBUTION_BASES.includes(basis) ? basis : 'traded';
   const { rows, coverage, unmeasured, reconciliation, clientsSeen, dates } =
     collectObservations(list, { throughDate: anchor, fromDate: lower, basis: attribution });
 

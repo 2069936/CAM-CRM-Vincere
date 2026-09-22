@@ -54,6 +54,8 @@ function strat(algo, {
   instrument = 'MNQ SEP26',
   enabled = true,
   strategyName,
+  ran,
+  ranBasis,
 } = {}) {
   const row = {
     strategyFamily: algo,
@@ -63,6 +65,10 @@ function strat(algo, {
     params: { profitTargets: targets, stopLossTicks: stop, posSizes: sizes },
   };
   if (strategyName) row.strategyName = strategyName;
+  // What step 47 stores on the row. Left off unless a test is about it, so
+  // every other test here reads the rule over the evidence it supplies.
+  if (ran !== undefined) row.ran = ran;
+  if (ranBasis !== undefined) row.ranBasis = ranBasis;
   if (realized !== undefined) row.realized = realized;
   if (derivedRealized !== undefined) row.derivedRealized = derivedRealized;
   return row;
@@ -211,11 +217,23 @@ describe('what counts as a measurement', () => {
     expect(row.clients).toBe(2);
   });
 
-  it('ignores a strategy that was not enabled', () => {
-    const client = makeClient({
+  it('counts a switched-off strategy that reported money, and ignores one that did nothing', () => {
+    // It used to ignore both, because it asked the Strategies-grid checkbox.
+    // The checkbox is the state of a box when the CAM exported, and the exports
+    // are taken after the desk switches the algos off: a row reporting -$10 is
+    // a row that traded, whatever the box says. See src/domain/strategyRan.js.
+    const traded = makeClient({
       days: [{ date: '2026-07-10', rows: [{ pnl: -10, strategies: [strat('RBO', { realized: -10, enabled: false })] }] }],
     });
-    expect(buildStrategyRanking([client]).ranking.rows).toHaveLength(0);
+    const row = rowFor(buildStrategyRanking([traded]), 'RBO');
+    expect(row.accountDays).toBe(1);
+    expect(row.meanPerAccountDay).toBe(-10);
+
+    // Switched off, no fills, nothing reported: this one really did not run.
+    const idle = makeClient({
+      days: [{ date: '2026-07-10', rows: [{ pnl: 0, strategies: [strat('RBO', { realized: 0, enabled: false })] }] }],
+    });
+    expect(buildStrategyRanking([idle]).ranking.rows).toHaveLength(0);
   });
 });
 
@@ -734,7 +752,9 @@ describe('the date footing', () => {
   it('states how many closes carry a split out of how many the book holds', () => {
     const client = makeClient({
       days: [
-        { date: '2026-07-09', rows: [{ pnl: -10, strategies: [strat('RBO', { realized: -10, enabled: false })] }] },
+        // Switched off, nothing reported, no fills: a close that carries no
+        // split at all, which is what the count below is about.
+        { date: '2026-07-09', rows: [{ pnl: -10, strategies: [strat('RBO', { realized: 0, enabled: false })] }] },
         { date: '2026-07-10', rows: [{ pnl: -100, strategies: [strat('RBO', { realized: -100 })] }] },
       ],
     });
@@ -1439,7 +1459,7 @@ describe('the programme, which is not a peer of the algorithms', () => {
 /* ---------------------------------------------------------------- */
 /* The attribution basis.                                            */
 
-describe('the attribution basis is an argument, and the default does not move', () => {
+describe('the attribution basis is an argument, and the default is what ran', () => {
   // One account-day the algorithm traded with its Strategies-grid checkbox
   // already switched off: the fills name it, the grid reports realized 0. This
   // is the shape of 456 of the book's 865 funded account-days.
@@ -1478,8 +1498,20 @@ describe('the attribution basis is an argument, and the default does not move', 
     dailyImports: [enabledDay('2026-07-10'), switchedOff('2026-07-13')],
   }];
 
-  it('drops the switched-off day by default, which is what the Operations panel quotes', () => {
+  it('counts the switched-off day by default, as an account-day nothing measured', () => {
+    // `docs/stack-playbook-spec.md` §2.1: the export-time flag drops 64% of
+    // funded account-days and the dropped days are where the losses sit. The
+    // fills say the algorithm ran; nothing says what it made.
     const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13' });
+    const row = rowFor(result, 'RBO');
+    expect(row.accountDays).toBe(1);
+    expect(row.unmeasuredAccountDays).toBe(1);
+    expect(result.basis.attribution).toBe('traded');
+    expect(result.basis.label).toContain('Traded attribution');
+  });
+
+  it('drops it on the enabled basis, which is what that basis is kept for', () => {
+    const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13', basis: 'enabled' });
     const row = rowFor(result, 'RBO');
     expect(row.accountDays).toBe(1);
     expect(row.unmeasuredAccountDays).toBe(0);
@@ -1487,16 +1519,26 @@ describe('the attribution basis is an argument, and the default does not move', 
     expect(result.basis.label).toContain('Enabled at export');
   });
 
-  it('counts it on the traded basis, as an account-day nothing measured', () => {
-    // `docs/stack-playbook-spec.md` §2.1: the export-time flag drops 64% of
-    // funded account-days and the dropped days are where the losses sit. The
-    // fills say the algorithm ran; nothing says what it made.
-    const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13', basis: 'traded' });
-    const row = rowFor(result, 'RBO');
-    expect(row.accountDays).toBe(1);
+  it('reads the answer step 47 stored on the row, without the fills', () => {
+    // The whole point of storing it: a screen that has not loaded 13.5 MB of
+    // executions still knows the day happened. Same day, same grid, no fills
+    // on the close at all, and the row says it ran.
+    const stored = [{
+      ...clients[0],
+      dailyImports: [{
+        ...switchedOff('2026-07-13'),
+        executions: [],
+        snapshots: [{
+          accountName: 'A1',
+          grossRealizedPnl: -300,
+          weeklyPnl: 0,
+          accountBalance: 50000,
+          strategies: [strat('RBO', { realized: 0, enabled: false, ran: true, ranBasis: 'fills' })],
+        }],
+      }],
+    }];
+    const row = rowFor(buildStrategyRanking(stored, { asOfDate: '2026-07-13' }), 'RBO');
     expect(row.unmeasuredAccountDays).toBe(1);
-    expect(result.basis.attribution).toBe('traded');
-    expect(result.basis.label).toContain('Traded attribution');
   });
 
   it('never counts a switched-off row’s zero as a flat day', () => {
@@ -1549,9 +1591,11 @@ describe('the attribution basis is an argument, and the default does not move', 
         executions: [{ accountName: 'A1', strategyName: '0 - URGO-4.5', instrument: 'MNQ SEP26' }],
       }],
     }];
-    expect(rowFor(buildStrategyRanking(noRows, { asOfDate: '2026-07-13' }), 'URGO')).toBeNull();
+    expect(rowFor(
+      buildStrategyRanking(noRows, { asOfDate: '2026-07-13', basis: 'enabled' }), 'URGO',
+    )).toBeNull();
     const traded = rowFor(
-      buildStrategyRanking(noRows, { asOfDate: '2026-07-13', basis: 'traded' }), 'URGO',
+      buildStrategyRanking(noRows, { asOfDate: '2026-07-13' }), 'URGO',
     );
     expect(traded.accountDays).toBe(0);
     expect(traded.unmeasuredAccountDays).toBe(1);
@@ -1560,6 +1604,6 @@ describe('the attribution basis is an argument, and the default does not move', 
 
   it('falls back to the default basis rather than inventing a third one', () => {
     const result = buildStrategyRanking(clients, { asOfDate: '2026-07-13', basis: 'guesswork' });
-    expect(result.basis.attribution).toBe('enabled');
+    expect(result.basis.attribution).toBe('traded');
   });
 });

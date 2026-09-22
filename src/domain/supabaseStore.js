@@ -93,6 +93,18 @@ function strategyFromRow(row, accountById = {}) {
     // the per-row reason recovers it from the two together — see the ROW_JOIN
     // comment in joinDerivedStrategies.js for the mapping.
     derivedRealized: numberOrNull(row.derived_realized),
+    // Whether the algorithm ran that day, and on what evidence. Step 47.
+    //
+    // Carried as null when the column is absent or the row has not been
+    // backfilled, and strategyRan.js then falls back to the rule over whatever
+    // the caller holds — which, at login, is the checkbox and the row's own
+    // realized. That is the answer the product gave before this column existed,
+    // so the code deploys safely ahead of the migration. The point of reading it
+    // here is that it survives without the fills: the executions arrive in a
+    // second pass (hydrateTradeHistory), and until then nothing else on the row
+    // can say the day happened.
+    ran: typeof row.ran === 'boolean' ? row.ran : null,
+    ranBasis: row.ran_basis || '',
   };
 }
 

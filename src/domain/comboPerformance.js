@@ -35,8 +35,12 @@
 // or MIN_ACCOUNTS accounts is shown, flagged, and never crowned "Best".
 
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES } from './reconcile';
-import { strategyFamilyOf } from './strategyFamily';
-import { parseStrategyVersion } from './csvImport';
+import {
+  RAN_BASIS_RANK,
+  familiesOnFills,
+  familyOfStrategyRow as familyOfRow,
+  ranBasisOf,
+} from './strategyRan';
 
 export const MIN_DAYS = 10;
 export const MIN_ACCOUNTS = 3;
@@ -69,34 +73,20 @@ function daysBetween(from, to) {
 
 const lower = (value) => String(value || '').toLowerCase();
 
-// The fills name a strategy the way the Strategies grid does (`0 - OGX-PF-2.4`)
-// but the grid row stores its family as `OGX_PF`: strategyFamilyOf keeps the
-// `-PF` and csvImport's normalizeStrategyFamily turns it into `_PF`. Same rule
-// here, so a family named only on the fills lands on the same key as one that
-// also has a grid row.
-function familyFromName(strategyName) {
-  const family = strategyFamilyOf(strategyName);
-  if (!family) return null;
-  const pf = family.match(/^([A-Z0-9]+)-PF$/i);
-  return pf ? `${pf[1].toUpperCase()}_PF` : family;
-}
-
 function familyOfStrategy(strategy) {
-  return strategy.strategyFamily || familyFromName(strategy.strategyName) || null;
+  return familyOfRow(strategy);
 }
 
 /**
- * The family a single Strategies-grid row belongs to, by this module's rule.
+ * The family a single Strategies-grid row belongs to, by this product's rule.
  *
- * Exported so `algorithmRanking.js` can gate its own rows against the family
- * set `comboKeyFromDay` resolved, rather than reimplementing the `-PF` → `_PF`
- * normalisation and the fill-name fallback a second time. Two copies of an
- * identity rule is how IFSP_PF ended up folded into IFSP on one screen and kept
- * apart on another.
+ * Re-exported from strategyRan.js, which owns the identity rule and the fill
+ * name fallback, so `algorithmRanking.js` can keep gating its own rows against
+ * the family set `comboKeyFromDay` resolved without importing a second copy.
+ * Two copies of an identity rule is how IFSP_PF ended up folded into IFSP on
+ * one screen and kept apart on another.
  */
-export function familyOfStrategyRow(strategy) {
-  return familyOfStrategy(strategy || {});
-}
+export { familyOfRow as familyOfStrategyRow };
 
 const elementOf = (family, version, level) => (
   level === 'family' || !version ? family : `${family} ${version}`
@@ -114,24 +104,24 @@ export function executionsForAccount(dailyImport, accountName) {
   return (dailyImport?.executions || []).filter((e) => lower(e.accountName) === name);
 }
 
-// Evidence, strongest first.
-const RANK = { enabled: 0, fills: 1, realized: 2, none: 3 };
+// Evidence, strongest first. strategyRan.js owns the order; this is the same
+// object under this module's old name.
+const RANK = RAN_BASIS_RANK;
 
 // Which algorithms ran on this account day, as `{ family, version, reason }`
 // pairs. `reason` records the strongest evidence per family: the grid said it
 // was enabled, the fills name it, or the grid reported a non-zero realized on
 // a row it had already switched off.
+//
+// The per-row answer comes from strategyRan.js, which prefers the row's own
+// stored `ran_basis` (step 47) and falls back to the rule over the fills passed
+// in. A close whose executions are not loaded therefore still attributes
+// correctly once the rows carry the stored answer, which is the whole reason
+// the answer is stored.
 function resolveDayAlgos(snapshot, executionsForThisAccount, basis) {
   const strategies = snapshot?.strategies || [];
   const traded = basis === 'traded';
-  const filledFamilies = new Map();
-  if (traded) {
-    for (const execution of executionsForThisAccount || []) {
-      const family = familyFromName(execution.strategyName);
-      if (!family) continue;
-      if (!filledFamilies.has(family)) filledFamilies.set(family, parseStrategyVersion(execution.strategyName));
-    }
-  }
+  const filledFamilies = traded ? familiesOnFills(executionsForThisAccount) : new Map();
 
   const byElement = new Map();
   const add = (family, version, reason) => {
@@ -149,9 +139,10 @@ function resolveDayAlgos(snapshot, executionsForThisAccount, basis) {
     if (!family) continue;
     rowFamilies.add(family);
     const version = strategy.strategyVersion || '';
-    if (strategy.enabled === true) add(family, version, 'enabled');
-    else if (traded && filledFamilies.has(family)) add(family, version, 'fills');
-    else if (traded && strategy.realized != null && Number(strategy.realized) !== 0) add(family, version, 'realized');
+    // `basis: 'enabled'` is the old attribution, kept for the comparison label
+    // on the Stack Playbook: the checkbox alone, stored answer or not.
+    const reason = traded ? ranBasisOf(strategy, filledFamilies) : (strategy.enabled === true ? 'enabled' : 'none');
+    if (reason !== 'none') add(family, version, reason);
   }
   // A family named on the fills with no grid row at all (98 funded days on the
   // book carried no strategy rows): the fill name is the only evidence and it

@@ -113,16 +113,19 @@ describe('the algorithm risk profile scatter', () => {
     // liveAccounts, setFileMatch and strategyConfigDrift import this one
     // function to know that `0 - OGX-PF-2.4` and `1 - OGX-PF-3.0` are the same
     // product. Deleting the module wholesale would have taken all three with it.
-    // comboPerformance joined them later: it reads the same function off the
-    // fills to name the algo an account day traded.
+    // strategyRan joined them later: it reads the same function off the fills to
+    // name the algo an account day traded, and comboPerformance now reads that
+    // one rule instead of its own copy.
     expect(existsSync(join(ROOT, 'src/domain/strategyFamily.js'))).toBe(true);
+    // With and without the extension: a module on the serverless import chain
+    // has to carry `.js` or plain Node ESM cannot resolve it.
     const importers = SOURCES.filter((file) => codeLines(file)
-      .some(({ text }) => text.includes("from './strategyFamily'")));
+      .some(({ text }) => /from '\.\/strategyFamily(\.js)?'/.test(text)));
     expect(importers.sort()).toEqual([
-      'src/domain/comboPerformance.js',
       'src/domain/liveAccounts.js',
       'src/domain/setFileMatch.js',
       'src/domain/strategyConfigDrift.js',
+      'src/domain/strategyRan.js',
     ]);
   });
 });

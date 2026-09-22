@@ -4,6 +4,7 @@ import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcil
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
 import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
 import { buildAccountLifecycle } from '../domain/accountLifecycle';
+import { strategyRan } from '../domain/strategyRan';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
 import { buildBulletBotDeskStats } from '../domain/bulletBotDeskStats';
 import {
@@ -356,8 +357,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                 const last = series[series.length - 1];
                 const buffer = last ? (ddLimit > 0 ? ddLimit - Math.abs(last.trailing) : last.trailing) : 0;
                 const safe = estimateMaxSafeMultiplier(series, buffer, mult);
+                // The algorithms that ran on this account's latest close, not
+                // the ones whose checkbox survived the export. Same rule as the
+                // combo table above it, which is the point: two lines of the
+                // same panel disagreed about the same account day.
                 const stratVersions = (snap?.strategies || [])
-                  .filter((st) => st.enabled)
+                  .filter((st) => strategyRan(st))
                   .map((st) => {
                     const c = classifyStrategy(st, classifications);
                     return c.matched ? `${st.strategyFamily} ${c.version}` : `${st.strategyFamily || st.strategyName || 'Algo'}?`;

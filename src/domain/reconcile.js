@@ -8,6 +8,7 @@ import { deriveTrailingDrawdown, deriveWeeklyPnl, drawdownThresholds } from './d
 import { deriveStrategyPnlByAccount } from './deriveStrategyPnl.js';
 import { carryForwardLots } from './carryForwardLots.js';
 import { joinDerivedStrategies } from './joinDerivedStrategies.js';
+import { strategyRan, withStrategyRan } from './strategyRan.js';
 import {
   ACCOUNT_NATURES,
   SIMULATION_ACCOUNT_TYPE,
@@ -237,8 +238,17 @@ function shouldExpectStrategy(meta) {
   return meta.accountType !== ACCOUNT_TYPES.UNASSIGNED;
 }
 
-function hasActiveStrategy(strategies = []) {
-  return strategies.some((strategy) => strategy.enabled);
+// WAS ANYTHING RUNNING ON THIS ACCOUNT TODAY.
+//
+// This used to be `some(strategy => strategy.enabled)`, and every flag below
+// that asks it was therefore asking the export-time checkbox. The exports are
+// taken after the desk switches the algos off, so on the stored book 261
+// closes carry no enabled row at all and 207 of those ran something: the
+// `Expected strategy missing` Critical fired on accounts that had traded all
+// day, and `Strategy disabled` fired once per row on every one of them.
+// strategyRan.js is the rule and step 47 stores its answer on the row.
+function hasStrategyThatRan(strategies = []) {
+  return strategies.some((strategy) => strategyRan(strategy));
 }
 
 // A source that says null means "I have no value for this" — preserved as null
@@ -536,7 +546,16 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
     // strategy this account's grid never listed, and it must stay visible.
     if (derivation) joinedDerivationByAccount.set(key, { ...derivation, join: joined.join });
   }
-  const strategiesByAccount = groupStrategiesByAccount(strategies);
+  // DID IT RUN, decided here, once, where the day's fills are on hand.
+  //
+  // Every flag below, every screen and every stored row reads the answer from
+  // the row instead of re-deciding it from the export-time checkbox. The rule
+  // is strategyRan.js and the answer is stored by step 47, so a reader that
+  // never loads a fill still gets it. Executions are the day-scoped ones with
+  // their strategy name resolved from the orders, which is exactly what is
+  // stored, so a row's answer does not change when the close is read back.
+  const ranStrategies = withStrategyRan(strategies, executions);
+  const strategiesByAccount = groupStrategiesByAccount(ranStrategies);
   const seen = new Set();
 
   for (const account of sourceAccounts) {
@@ -629,12 +648,18 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }));
     }
 
-    if (isRealMoney && shouldExpectStrategy(meta) && !hasActiveStrategy(strategies)) {
+    if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies)) {
       flags.push(makeFlag({
         type: 'Expected strategy missing',
         severity: 'Critical',
         accountName: account.accountName,
-        message: `${meta.alias} is active but has no enabled strategy in this close.`,
+        // The message moved with the rule. It used to say "has no enabled
+        // strategy in this close", which was the checkbox talking: the flag now
+        // fires only when nothing on the account ran, so it says that instead.
+        // A Recalculate on a close whose old wording was already resolved
+        // regenerates this one as Open, because prior triage is carried forward
+        // by (type, account, message).
+        message: `${meta.alias} is active but no strategy ran in this close.`,
       }));
     }
 
@@ -745,26 +770,34 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
       }));
     }
 
-    if (meta.status === ACCOUNT_STATUSES.PAYOUT_HOLD && hasActiveStrategy(strategies)) {
+    if (meta.status === ACCOUNT_STATUSES.PAYOUT_HOLD && hasStrategyThatRan(strategies)) {
       flags.push(makeFlag({
         type: 'Payout hold violation',
         severity: 'Critical',
         accountName: account.accountName,
-        message: `${meta.alias} is in payout hold but has an enabled strategy.`,
+        // The violation is trading while the account is held, and an account
+        // that traded and was switched off before the export is the case this
+        // flag most needs to catch. It reads the same either way: a strategy
+        // still switched on has run by this rule too.
+        message: `${meta.alias} is in payout hold but ran a strategy.`,
       }));
     }
 
-    if ([ACCOUNT_STATUSES.INACTIVE, ACCOUNT_STATUSES.RESERVE, ACCOUNT_STATUSES.FAILED].includes(meta.status) && hasActiveStrategy(strategies)) {
+    if ([ACCOUNT_STATUSES.INACTIVE, ACCOUNT_STATUSES.RESERVE, ACCOUNT_STATUSES.FAILED].includes(meta.status) && hasStrategyThatRan(strategies)) {
       flags.push(makeFlag({
         type: 'Unexpected strategy active',
         severity: 'Critical',
         accountName: account.accountName,
-        message: `${meta.alias} is ${meta.status} but has an enabled strategy.`,
+        message: `${meta.alias} is ${meta.status} but ran a strategy.`,
       }));
     }
 
     for (const strategy of strategies) {
-      if (!strategy.enabled) {
+      // A row the grid had switched off that the fills name anyway is not an
+      // algorithm somebody forgot to turn on: it is the day's work, exported
+      // after the desk shut it down. 1,011 of the 2,288 switched-off rows on
+      // the stored book traded, and each of them raised this warning.
+      if (!strategyRan(strategy)) {
         flags.push(makeFlag({
           type: 'Strategy disabled',
           severity: 'Warning',
@@ -802,7 +835,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   const split = splitSimulationRows({
     accounts: accountsByName,
     snapshots,
-    strategies,
+    strategies: ranStrategies,
     orders,
     executions,
     platformFlags,

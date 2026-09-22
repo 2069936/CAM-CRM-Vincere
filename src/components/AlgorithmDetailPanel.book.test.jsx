@@ -58,14 +58,16 @@ describe('opening OGX off a ranking row', () => {
     expect(screen.queryByRole('heading', { name: 'Bullet Bot' })).toBe(null);
   });
 
-  it('reads -$12 a day over 77 account-days, with an interval that crosses zero', () => {
+  it('reads -$15 a day over 78 account-days, with an interval that crosses zero', () => {
     open('OGX');
     const overall = blockFor('Across every account it ran on');
     expect(overall.getByText('#2 of 8 ranked')).toBeTruthy();
-    expect(overall.getByText('-$12')).toBeTruthy();
-    expect(overall.getByText('95% CI -$45 to $21')).toBeTruthy();
-    expect(overall.getByText('77 account-days')).toBeTruthy();
-    expect(overall.getByText(/24 accounts · 19 clients/)).toBeTruthy();
+    expect(overall.getByText('-$15')).toBeTruthy();
+    expect(overall.getByText('95% CI -$47 to $17')).toBeTruthy();
+    expect(overall.getByText('78 account-days')).toBeTruthy();
+    // 67 accounts, not the 24 the checkbox basis saw: the other 43 ran OGX on
+    // days the grid was switched off before the export, and measured nothing.
+    expect(overall.getByText(/67 accounts · 36 clients/)).toBeTruthy();
   });
 
   it('keeps the account type as counts, under the refusal that says why', () => {
@@ -74,8 +76,8 @@ describe('opening OGX off a ranking row', () => {
       screen.getByRole('table', { name: /Account types this algorithm is deployed on/ }),
     );
     const cash = table.getByRole('row', { name: /^Cash/ });
-    expect(within(cash).getByText('47')).toBeTruthy();
-    expect(within(cash).getByText('61%')).toBeTruthy();
+    expect(within(cash).getByText('91')).toBeTruthy();
+    expect(within(cash).getByText('41%')).toBeTruthy();
     // The money that used to sit on this row is not on it.
     expect(within(cash).queryByText(/\$/)).toBe(null);
     expect(
@@ -86,10 +88,10 @@ describe('opening OGX off a ranking row', () => {
   it('reads the one configuration that carries evidence, and refuses the other two', () => {
     open('OGX');
     const main = blockFor('v2.4 · PT 220/395/495 · SL 200');
-    expect(main.getByText('reads as a result · 70 account-days on 21 accounts')).toBeTruthy();
-    expect(main.getByText('-$10')).toBeTruthy();
-    expect(main.getByText('95% CI -$46 to $26')).toBeTruthy();
-    expect(main.getByText(/1\/1\/0 on 70 account-days/)).toBeTruthy();
+    expect(main.getByText('reads as a result · 71 account-days on 59 accounts')).toBeTruthy();
+    expect(main.getByText('-$13')).toBeTruthy();
+    expect(main.getByText('95% CI -$47 to $22')).toBeTruthy();
+    expect(main.getByText(/1\/1\/0 on 190, 1\/2\/1 on 1 account-days/)).toBeTruthy();
     expect(main.getByText('13 of 14 closes measured')).toBeTruthy();
 
     expect(screen.getAllByText('not enough evidence to read')).toHaveLength(2);
@@ -98,17 +100,17 @@ describe('opening OGX off a ranking row', () => {
     ).toBeTruthy();
     const thin = blockFor('v2.4 · PT 30/60/90 · SL 181');
     expect(thin.getByText(/4 reported account-days, fewer than the 30 a result needs/)).toBeTruthy();
-    // The only OGX configuration at a different risk level, named beside it.
-    expect(thin.getByText(/1\/2\/1 on 4 account-days/)).toBeTruthy();
+    // The only OGX configuration run at one risk level alone, named beside it.
+    expect(thin.getByText(/1\/2\/1 on 6 account-days/)).toBeTruthy();
   });
 
   it('prints no money for OGX or for a configuration of it, at any sign', () => {
     open('OGX');
     // The overall block used to carry -$1,570 on ordinary prop, +$1,106 on cash
     // and -$459 on bullet-bot, never added — the careful-looking answer. The
-    // deployment table three inches below it prints 29, 47 and 1 account-days
-    // against the same three buckets, so the screen published -$54.12 and
-    // +$23.52 with a division left to the reader. It is not printed now, in any
+    // deployment table three inches below it printed the account-days against
+    // the same three buckets, so the screen published -$54.12 and +$23.52 with
+    // a division left to the reader. It is not printed now, in any
     // block, and neither is the -$923 that adding them would give.
     expect(document.querySelectorAll('.algo-money-list')).toHaveLength(0);
     for (const gone of ['-$1,570', '$1,106', '-$923', '-$922.50', '$24', '-$54']) {
@@ -158,7 +160,7 @@ describe('opening OGX off a ranking row', () => {
     // snapshot predates the fill-derived split.
     expect(within(best).getByText('reported 4d')).toBeTruthy();
     expect(screen.getByText(/What Cash does not see:/)).toBeTruthy();
-    expect(screen.getByText(/53.72% of it — is in no algorithm/)).toBeTruthy();
+    expect(screen.getByText(/55.34% of it — is in no algorithm/)).toBeTruthy();
   });
 });
 
@@ -184,21 +186,21 @@ describe('opening an algorithm the ranking refuses to rank', () => {
 });
 
 describe('the ranking table itself, over the real book', () => {
-  it('renders fourteen algorithms as fourteen rows, ranked eight, plus the programme', () => {
+  it('renders sixteen algorithms as sixteen rows, ranked eight, plus the programme', () => {
     // The panel is otherwise only seen against fixtures, and the book is where
     // the shapes fixtures do not have live: a row with four businesses of money
     // on it, a row whose windows refuse a trend, a name with a space in it.
     render(<AlgorithmRankingPanel result={buildStrategyRanking(clients)} />);
-    expect(screen.getByText(/8 ranked · 6 without a rank/)).toBeTruthy();
+    expect(screen.getByText(/8 ranked · 8 without a rank/)).toBeTruthy();
     expect(screen.getByText(/1 programme off the ranking/)).toBeTruthy();
     const body = screen.getByRole('table').querySelectorAll('tbody tr');
-    // Fourteen ranked-population rows and the programme's own, which is the
-    // fifteenth line on the table and holds no rank and no mean.
-    expect(body).toHaveLength(15);
-    expect(body[14].className).toBe('board-programme');
+    // Sixteen ranked-population rows and the programme's own, which is the
+    // seventeenth line on the table and holds no rank and no mean.
+    expect(body).toHaveLength(17);
+    expect(body[16].className).toBe('board-programme');
     const ogx = screen.getByRole('row', { name: /^1?2\s*OGX/ });
-    expect(within(ogx).getByText('-$12')).toBeTruthy();
-    expect(within(ogx).getByText('95% CI -$45 to $21')).toBeTruthy();
+    expect(within(ogx).getByText('-$15')).toBeTruthy();
+    expect(within(ogx).getByText('95% CI -$47 to $17')).toBeTruthy();
     // The row carried three businesses of money — -$459, -$1,570, +$1,106 —
     // with each business's account-days in the same cell, and no fourth figure
     // adding them. That was still the account-type verdict, one division away.
@@ -220,7 +222,7 @@ describe('the ranking table itself, over the real book', () => {
     expect(within(row).getByText('not ranked')).toBeTruthy();
     expect(within(row).getByText(/A programme, not a peer of the rows above/)).toBeTruthy();
     expect(within(row).getByText('Bullet Bot across the desk')).toBeTruthy();
-    expect(within(row).getByText(/337 measured account-days on 115 accounts across 34 clients/))
+    expect(within(row).getByText(/338 measured account-days on 161 accounts across 41 clients/))
       .toBeTruthy();
     expect(container.textContent).not.toContain('93.68');
   });

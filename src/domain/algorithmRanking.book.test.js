@@ -15,7 +15,10 @@
 // thing that says so.
 //
 // Every figure below was read off the snapshot by running these modules over it,
-// not by trusting them.
+// not by trusting them. They were all re-read when the default attribution moved
+// from `enabled` to `traded` (step 47): the claim above is unchanged by that and
+// the counts under it are not, because the checkbox basis was dropping every
+// account-day whose grid was switched off before the CAM exported.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -39,19 +42,23 @@ describe('the ranking over the whole book', () => {
     expect(result.basis.anchor).toBe('2026-07-30');
     expect(result.basis.firstClose).toBe('2026-07-13');
     expect(result.basis.lastClose).toBe('2026-07-30');
-    expect(result.basis.closeCount).toBe(13);
+    expect(result.basis.closeCount).toBe(14);
     expect(result.basis.closesToAnchor).toBe(14);
   });
 
-  it('gives fourteen algorithms one rank each, eight of them earned', () => {
+  it('gives sixteen algorithms one rank each, eight of them earned', () => {
     // The build this replaced published 25 rows across four boards for the same
     // fifteen algorithms, because an algorithm held a row on every board its
-    // accounts happened to fall on. Fourteen here rather than fifteen: the
-    // fifteenth is the Bullet Bot PROGRAMME, which is off the ranked population
-    // and on its own row below the table.
-    expect(result.ranking.rows).toHaveLength(14);
+    // accounts happened to fall on. One row each here, and the Bullet Bot
+    // PROGRAMME is not among them: it is off the ranked population and on its
+    // own row below the table.
+    //
+    // Sixteen rather than the fourteen the checkbox basis found: FSA and MST are
+    // named on the fills of this book and on no grid row that was still ticked
+    // at export, so they existed on the desk and on no screen.
+    expect(result.ranking.rows).toHaveLength(16);
     expect(result.ranking.rankedCount).toBe(8);
-    expect(result.ranking.unrankedCount).toBe(6);
+    expect(result.ranking.unrankedCount).toBe(8);
     expect(result.ranking.rows.slice(0, 8).map((row) => row.name)).toEqual([
       'ARPD', 'OGX', 'URGO', 'B2X', 'IFSP', 'G4M', 'RBO', 'SYFY',
     ]);
@@ -64,23 +71,25 @@ describe('the ranking over the whole book', () => {
   it('keeps the programme off the ranking and on its own row, with its counts', () => {
     // It was #7 at -$93.68 per account-day against OGX at -$11.98, and read as
     // the seventh-best algorithm on the desk. It is not an algorithm on that
-    // list at all: it is alone on 337 of its 337 account-days, so that figure
-    // is a whole account's day, while OGX's is a share of one.
+    // list at all: it is alone on every one of its 524 account-days, so that
+    // figure is a whole account's day, while OGX's is a share of one.
     expect(result.ranking.programmeCount).toBe(1);
     const bullet = result.ranking.programmes[0];
     expect(bullet.name).toBe('Bullet Bot');
-    expect(bullet.accountDays).toBe(337);
-    expect(bullet.accounts).toBe(115);
-    expect(bullet.clients).toBe(34);
-    expect(bullet.soloAccountDays).toBe(337);
+    expect(bullet.accountDays).toBe(338);
+    expect(bullet.unmeasuredAccountDays).toBe(186);
+    expect(bullet.accounts).toBe(161);
+    expect(bullet.clients).toBe(41);
+    // Solo counts every account-day it ran on, measured or not: 338 + 186.
+    expect(bullet.soloAccountDays).toBe(524);
     expect(bullet.soloShare).toBe(100);
     // It trades NQ where OGX trades MNQ, which is one more reason the two were
     // never one measurement.
     expect(bullet.instruments[0].name).toBe('NQ SEP26');
-    // And 12 of its 337 account-days are on accounts NOT typed for it.
+    // And 17 of its account-days are on accounts NOT typed for it.
     const away = bullet.deployment.filter((entry) => entry.segment !== SEGMENTS.EVAL_BULLET);
-    expect(away.reduce((n, entry) => n + entry.accountDays, 0)).toBe(12);
-    expect(bullet.offTypeAccountDays).toBe(12);
+    expect(away.reduce((n, entry) => n + entry.accountDays, 0)).toBe(17);
+    expect(bullet.offTypeAccountDays).toBe(17);
     expect(bullet.answeredBy).toBe('Bullet Bot across the desk');
   });
 
@@ -98,16 +107,18 @@ describe('the ranking over the whole book', () => {
   });
 
   it('names the ordinary algorithm a solo-versus-stacked threshold would strand', () => {
-    // The boundary is the programme, not the ratio, and this is why. G4M runs
-    // alone on 40% of its account-days and is an ordinary algorithm having
+    // The boundary is the programme, not the ratio, and this is why. URGO runs
+    // alone on 37% of its account-days and is an ordinary algorithm having
     // ordinary days; every line drawn between it and Bullet Bot's 100% is a
-    // number nobody could defend.
-    expect(result.ranking.thresholdRefusal).toMatch(/G4M, alone on 40% of its account-days/);
+    // number nobody could defend. It was G4M at 40% on the checkbox basis: the
+    // algorithm the rule would strand moves with the basis, which is one more
+    // reason the rule is not a ratio.
+    expect(result.ranking.thresholdRefusal).toMatch(/URGO, alone on 37% of its account-days/);
     const g4m = result.ranking.rows.find((row) => row.name === 'G4M');
     expect(g4m.rank).toBe(6);
-    expect(g4m.soloShare).toBe(40);
-    expect(g4m.soloAccountDays).toBe(44);
-    expect(g4m.stackedAccountDays).toBe(66);
+    expect(g4m.soloShare).toBe(37);
+    expect(g4m.soloAccountDays).toBe(52);
+    expect(g4m.stackedAccountDays).toBe(89);
   });
 
   it('states the desk’s money per business, and none of it on a row', () => {
@@ -125,8 +136,8 @@ describe('the ranking over the whole book', () => {
       expect(rows).not.toContain(gone);
     }
     // And the desk still states each business's own money, over every algorithm.
-    expect(businessFor(result, BUSINESS_KEYS.CASH).coverage.attributedPnl).toBe(-23113);
-    expect(businessFor(result, BUSINESS_KEYS.PROP_OTHER).coverage.attributedPnl).toBe(-39123.25);
+    expect(businessFor(result, BUSINESS_KEYS.CASH).coverage.attributedPnl).toBe(-21652);
+    expect(businessFor(result, BUSINESS_KEYS.PROP_OTHER).coverage.attributedPnl).toBe(-39453.25);
   });
 
   it('leaves nearly half the money on those account-days claimed by no algorithm', () => {
@@ -134,20 +145,20 @@ describe('the ranking over the whole book', () => {
       result.businesses.map((row) => [row.key, row.coverage.unattributedShare]),
     );
     expect(shares).toEqual({
-      [BUSINESS_KEYS.BULLET]: 54.88,
-      [BUSINESS_KEYS.PROP_OTHER]: 38.8,
-      [BUSINESS_KEYS.CASH]: 53.72,
+      [BUSINESS_KEYS.BULLET]: 56.67,
+      [BUSINESS_KEYS.PROP_OTHER]: 38.79,
+      [BUSINESS_KEYS.CASH]: 55.34,
       [BUSINESS_KEYS.UNCLASSIFIED]: 36.52,
     });
-    expect(businessFor(result, BUSINESS_KEYS.CASH).coverage.accountPnl).toBe(-49941.29);
-    expect(businessFor(result, BUSINESS_KEYS.PROP_OTHER).coverage.accountPnl).toBe(-63924.21);
+    expect(businessFor(result, BUSINESS_KEYS.CASH).coverage.accountPnl).toBe(-48480.29);
+    expect(businessFor(result, BUSINESS_KEYS.PROP_OTHER).coverage.accountPnl).toBe(-64453.21);
     expect(businessFor(result, BUSINESS_KEYS.BULLET).coverage.accountPnl).toBe(-57000.88);
   });
 
   it('counts the Ignored closes rather than dropping them', () => {
-    expect(result.reconciliation.accountDays).toBe(14);
+    expect(result.reconciliation.accountDays).toBe(44);
     expect(result.reconciliation.rows).toEqual([
-      { segment: SEGMENTS.IGNORED, accountDays: 14, accounts: 7 },
+      { segment: SEGMENTS.IGNORED, accountDays: 44, accounts: 26 },
     ]);
   });
 });
@@ -159,14 +170,19 @@ describe('OGX on the real book — one algorithm, one answer', () => {
     expect(detail.found).toBe(true);
     expect(detail.rank).toBe(2);
     expect(detail.rankedPeers).toBe(8);
-    expect(detail.overall.accountDays).toBe(77);
-    expect(detail.overall.accounts).toBe(24);
-    expect(detail.overall.clients).toBe(19);
-    expect(detail.overall.meanPerAccountDay).toBe(-11.98);
+    expect(detail.overall.accountDays).toBe(78);
+    // Two thirds of the account-days it ran on measured nothing: the grid had
+    // switched the row off and zeroed it, so the fills say the algorithm ran
+    // and nothing says what it made. Those days are counted, and they are in no
+    // mean. On the checkbox basis they were not counted at all.
+    expect(detail.overall.unmeasuredAccountDays).toBe(143);
+    expect(detail.overall.accounts).toBe(67);
+    expect(detail.overall.clients).toBe(36);
+    expect(detail.overall.meanPerAccountDay).toBe(-14.71);
     // The interval crosses zero at #2, and the panel prints it. "Second best on
     // this book" is not the same claim as "makes money".
-    expect(detail.overall.ci.low).toBe(-45.22);
-    expect(detail.overall.ci.high).toBe(21.26);
+    expect(detail.overall.ci.low).toBe(-46.51);
+    expect(detail.overall.ci.high).toBe(17.09);
     expect(detail.overall.ci.clusters).toBe(24);
   });
 
@@ -178,14 +194,17 @@ describe('OGX on the real book — one algorithm, one answer', () => {
     const flat = JSON.stringify(detail);
     expect(flat).not.toContain('23.52');
     expect(flat).not.toContain('-54.12');
-    // The account types are still here, in counts, and 77 = 47 + 29 + 1.
+    // The account types are still here, in counts. They add to every account-day
+    // the algorithm ran on, measured or not: 91 + 90 + 30 + 10 = 221 = 78 + 143.
     expect(detail.deployment.map((entry) => [entry.segment, entry.accountDays, entry.accounts]))
       .toEqual([
-        [SEGMENTS.CASH, 47, 10],
-        [SEGMENTS.FUNDED, 24, 11],
-        [SEGMENTS.EVAL_STANDARD, 5, 2],
-        [SEGMENTS.EVAL_BULLET, 1, 1],
+        [SEGMENTS.CASH, 91, 15],
+        [SEGMENTS.FUNDED, 90, 38],
+        [SEGMENTS.EVAL_STANDARD, 30, 11],
+        [SEGMENTS.EVAL_BULLET, 10, 3],
       ]);
+    expect(detail.deployment.reduce((n, entry) => n + entry.accountDays, 0))
+      .toBe(detail.overall.accountDays + detail.overall.unmeasuredAccountDays);
     for (const entry of detail.deployment) {
       expect(entry.totalPnl).toBeUndefined();
       expect(entry.meanPerAccountDay).toBeUndefined();
@@ -195,8 +214,14 @@ describe('OGX on the real book — one algorithm, one answer', () => {
   it('runs one version at one sizing on one contract, which is why it pools', () => {
     const main = configFor(detail, 'v2.4 · PT 220/395/495 · SL 200');
     expect(main.version).toBe('2.4');
-    expect(main.sizing).toEqual([{ name: '1/1/0', accountDays: 70 }]);
-    expect(main.sizingCaveat).toBeNull();
+    // 190 of its 191 account-days at one sizing, and the one that is not says so
+    // rather than being averaged in silence. On the checkbox basis that single
+    // day was one of the ones dropped, and the caveat did not exist.
+    expect(main.sizing).toEqual([
+      { name: '1/1/0', accountDays: 190 },
+      { name: '1/2/1', accountDays: 1 },
+    ]);
+    expect(main.sizingCaveat).toMatch(/1\/1\/0 on 190, 1\/2\/1 on 1 account-days/);
     expect(main.instruments.map((entry) => entry.name)).toEqual(['MNQ SEP26', 'MNQ 09-26']);
     // Every configuration of OGX on this book is version 2.4 and MNQ.
     expect(detail.configurations.every((config) => config.version === '2.4')).toBe(true);
@@ -210,33 +235,33 @@ describe('OGX on the real book — one algorithm, one answer', () => {
     expect(detail.splitAccountDays).toBe(0);
     expect(detail.configurations.map((config) => [config.label, config.accountDays, config.accounts]))
       .toEqual([
-        ['v2.4 · PT 220/395/495 · SL 200', 70, 21],
+        ['v2.4 · PT 220/395/495 · SL 200', 71, 59],
         ['v2.4 · PT 30/60/90 · SL 181', 4, 1],
-        ['v2.4 · PT 200/350/425 · SL 200', 3, 2],
+        ['v2.4 · PT 200/350/425 · SL 200', 3, 4],
       ]);
-    // 70 + 4 + 3 = 77, the algorithm's own count, because no account-day on this
+    // 71 + 4 + 3 = 78, the algorithm's own count, because no account-day on this
     // book ran two configurations of OGX at once.
     expect(detail.configurations.reduce((n, config) => n + config.accountDays, 0))
       .toBe(detail.overall.accountDays);
   });
 
-  it('reads the one configuration that carries evidence at -$9.52 a day', () => {
+  it('reads the one configuration that carries evidence at -$12.56 a day', () => {
     const main = configFor(detail, 'v2.4 · PT 220/395/495 · SL 200');
     expect(main.sufficient).toBe(true);
-    expect(main.meanPerAccountDay).toBe(-9.52);
-    expect(main.ci.low).toBe(-45.51);
-    expect(main.ci.high).toBe(26.47);
-    expect(main.clients).toBe(16);
+    expect(main.meanPerAccountDay).toBe(-12.56);
+    expect(main.ci.low).toBe(-47);
+    expect(main.ci.high).toBe(21.89);
+    expect(main.clients).toBe(29);
     expect(main.upDays).toBe(20);
-    expect(main.downDays).toBe(23);
+    expect(main.downDays).toBe(24);
     expect(main.flatDays).toBe(27);
     expect(main.measuredCloses).toBe(13);
     // Deployed across all four account types, which is context and not a result.
     expect(main.deployment.map((entry) => [entry.segment, entry.accountDays])).toEqual([
-      [SEGMENTS.CASH, 42],
-      [SEGMENTS.FUNDED, 22],
-      [SEGMENTS.EVAL_STANDARD, 5],
-      [SEGMENTS.EVAL_BULLET, 1],
+      [SEGMENTS.FUNDED, 81],
+      [SEGMENTS.CASH, 70],
+      [SEGMENTS.EVAL_STANDARD, 30],
+      [SEGMENTS.EVAL_BULLET, 10],
     ]);
   });
 
@@ -250,7 +275,7 @@ describe('OGX on the real book — one algorithm, one answer', () => {
     );
     // The only OGX configuration on this book at a different risk level, which
     // is reported beside it and is not part of its identity.
-    expect(thin.sizing).toEqual([{ name: '1/2/1', accountDays: 4 }]);
+    expect(thin.sizing).toEqual([{ name: '1/2/1', accountDays: 6 }]);
 
     const small = configFor(detail, 'v2.4 · PT 200/350/425 · SL 200');
     expect(small.sufficient).toBe(false);
@@ -317,24 +342,39 @@ describe('OGX on the real book — one algorithm, one answer', () => {
   });
 
   it('names the clients running it and what it made them', () => {
-    expect(detail.clientRows).toHaveLength(19);
-    expect(detail.accountRows).toHaveLength(24);
+    expect(detail.clientRows).toHaveLength(36);
+    expect(detail.accountRows).toHaveLength(67);
     expect(detail.accountRows).toHaveLength(detail.overall.accounts);
     expect(detail.clientRows[0].clientName).toBe('Wren Moss');
     expect(detail.clientRows[0].measuredPnl).toBe(935);
   });
 
   it('shows every dollar on this book as reported, because the book carries no derivation', () => {
-    // public/local-snapshot.json predates the fill-derived split: all 1,402
-    // enabled strategy rows on it carry `realized` and none carries
-    // `derivedRealized`. This pins which side of the distinction this export
-    // sits on, so the day an export with derivations lands, it fails and says so
-    // rather than the screen quietly relabelling itself.
-    for (const seat of detail.accountRows) {
+    // public/local-snapshot.json predates the fill-derived split: the strategy
+    // rows on it carry `realized` and none carries `derivedRealized`. This pins
+    // which side of the distinction this export sits on, so the day an export
+    // with derivations lands, it fails and says so rather than the screen
+    // quietly relabelling itself.
+    //
+    // And 43 of the 67 accounts OGX ran on measured nothing at all. Their
+    // figures are NULL, not 0: the fills name the algorithm, the grid zeroed the
+    // row it had switched off, and a zero there would be a measurement nobody
+    // took. That distinction is the one thing the traded basis must not lose.
+    const measured = detail.accountRows.filter((seat) => seat.measuredAccountDays > 0);
+    const unmeasured = detail.accountRows.filter((seat) => seat.measuredAccountDays === 0);
+    expect(measured).toHaveLength(24);
+    expect(unmeasured).toHaveLength(43);
+    for (const seat of measured) {
       expect(seat.derivedPnl).toBe(0);
       expect(seat.daysDerived).toBe(0);
       expect(seat.daysMixed).toBe(0);
       expect(seat.reportedPnl).toBe(seat.measuredPnl);
+    }
+    for (const seat of unmeasured) {
+      expect(seat.measuredPnl).toBeNull();
+      expect(seat.reportedPnl).toBeNull();
+      expect(seat.derivedPnl).toBeNull();
+      expect(seat.unmeasuredAccountDays).toBeGreaterThan(0);
     }
   });
 });
@@ -347,9 +387,9 @@ describe('an algorithm the ranking refuses to rank', () => {
     expect(detail.ranked).toBe(false);
     expect(detail.rank).toBe(null);
     expect(detail.overall.accountDays).toBe(2);
-    expect(detail.overall.accounts).toBe(2);
+    expect(detail.overall.accounts).toBe(3);
     expect(detail.rankRefusal).toMatch(/2 reported account-days, fewer than the 30/);
-    expect(detail.rankRefusal).toMatch(/2 accounts, fewer than the 10/);
+    expect(detail.rankRefusal).toMatch(/3 accounts, fewer than the 10/);
   });
 
   it('shows the closes it did not run on as gaps, not as zeroes', () => {

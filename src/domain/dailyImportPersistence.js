@@ -132,6 +132,16 @@ function mapStrategy(strategy, dailyImportId, accountByName, snapshotByName) {
     params_parsed: strategy.params || {},
     direction: strategy.direction || '',
     enabled: Boolean(strategy.enabled),
+    // WHETHER IT RAN, AND ON WHAT EVIDENCE. Stored beside `enabled`, never over
+    // it: one is the state of a checkbox at export time, the other is whether
+    // the algorithm worked that day, and the exports are taken after the desk
+    // switches the algos off. Decided by reconcile.js through strategyRan.js
+    // while the day's fills are in hand, because the screens that ask must not
+    // have to load 13.5 MB of executions to find out. Null only when the row
+    // reached this mapper without an answer, which nothing in the product does
+    // any more; step 47 backfills the rows written before it existed.
+    ran: typeof strategy.ran === 'boolean' ? strategy.ran : null,
+    ran_basis: strategy.ranBasis || null,
     realized: numberOrLegacyZero(strategy.realized),
     unrealized: numberOrLegacyZero(strategy.unrealized),
     // Stored beside `realized`, never over it. NULL where the fills could not

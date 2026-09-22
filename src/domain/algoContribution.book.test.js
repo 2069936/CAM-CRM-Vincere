@@ -32,7 +32,13 @@ describe('the real book', () => {
 
   it('reads the deepest account history in the book', () => {
     expect(history.days).toHaveLength(13);
-    expect(history.periods).toHaveLength(6);
+    // Seven combination periods, not the six the checkbox basis drew. On
+    // 2026-07-21 every row on this account's grid was switched off by the time
+    // the CAM exported, and three of them reported money anyway: +$150 URGO,
+    // +$220 SYFY, +$485 RBO. That day read as "no enabled algo" and swallowed
+    // the boundary between the period before it and the period after.
+    // See src/domain/strategyRan.js.
+    expect(history.periods).toHaveLength(7);
     expect(Math.round(history.attribution.accountTotal)).toBe(-5765);
   });
 

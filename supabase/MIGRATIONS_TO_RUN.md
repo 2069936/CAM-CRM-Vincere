@@ -1,7 +1,8 @@
 # Migrations to run for PR #10
 
 Run these in Supabase (SQL editor or CLI) in order. All are additive and
-idempotent, so re-running is safe. None drops or rewrites existing data.
+idempotent, so re-running is safe. None drops or rewrites existing data. 47 has
+a second statement to run after the file, and says so below.
 
 | Step | File | What it adds | Feature it powers |
 |---|---|---|---|
@@ -23,6 +24,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates with each month's own days, keyed by vendor first, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report, which reads the saved import instead of asking for the 36 files again |
 | 45 | `step_45_ingest_admission_control.sql` | `ingest_admission_settings` with the tunable cap, `claim_ingest_batch_v4` with the `at_capacity` outcome and its per device retry spread, `finalize_ingest_batch_v3`, and `admission_deferrals` / `stage_durations_ms` / `ingest_duration_ms` on `ingest_batches` | The door that answers 429 with Retry-After when too many uploads are in flight at once, and the ingest timing line on the Auto Collection fleet view |
 | 46 | `step_46_ingest_quarantine_reports.sql` | `ingest_quarantine_reports`: what each VPS holds in `queue\quarantine`, one row per capture with the code, the attempt count and whether the agent will retry it, plus `record_ingest_quarantine_report`, which replaces a device's inventory whole | The quarantine count and dates on the client card, the Quarantine state and chip on the Auto Collection fleet view, and the `POST /api/ingest/quarantine` report agent 1.0.7 sends after its daily review |
+| 47 | `step_47_strategy_ran.sql` | `ran` and `ran_basis` on `strategy_snapshots`, the one close backfill behind `call public.backfill_strategy_ran_all();`, and `persist_auto_daily_import` replaced so the collector stores both | Whether an algorithm RAN that day, on every screen that used to ask the export time checkbox |
 
 ## These three groups behave differently
 
@@ -96,7 +98,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -180,6 +182,46 @@ review and the function replaces the device's inventory whole, so a capture
 that was accepted after a retry, or replayed here and then resent, leaves the
 table on the next report and never before.
 
+**47 degrades gracefully, and it is the only one with a second statement to
+run.** The two columns answer "did this algorithm run that day", which the
+product used to decide from `strategy_snapshots.enabled`: the state of a
+checkbox at the moment the export was taken, on exports taken after the desk
+switches the algos off. On the stored book 1,517 strategy rows are enabled and
+2,528 ran, and 207 closes that carry no enabled row at all ran something.
+
+Without it, every screen falls back to the rule over what it holds, which at
+login is the checkbox and the row's own realized: the answers the product gave
+before this step, unchanged. With it, the answer comes off the row and no longer
+needs the day's fills to be loaded at all, which is what the panels are about to
+be rebuilt on.
+
+Run the file, then run the backfill, which is deliberately not part of it:
+
+    call public.backfill_strategy_ran_all();
+
+It answers one close per transaction and commits between them, because one
+UPDATE across 14,514 rows would hold locks on all of them for as long as a
+starved instance takes, and a procedure cannot commit inside the transaction
+that runs a migration file. It is safe to run twice, safe to interrupt and safe
+to resume: it looks only for rows where `ran is null`, and re-answering a close
+that is already answered writes nothing. Some clients (including `psql -c`) wrap
+every statement in a transaction, and the call then fails with `invalid
+transaction termination`; from one of those, loop on the one batch function
+instead until it returns 0:
+
+    select public.backfill_strategy_ran(2000);
+
+Measured over the stored book, seeded into a local Postgres with every migration
+applied: 3,805 rows answered in 516 closes, 1,517 `enabled`, 1,011 `fills`, 0
+`realized`, 1,277 `none`, and the second run wrote 0. Those answers are
+identical, row for row, to the ones src/domain/strategyRan.js reaches in the
+app.
+
+47 also replaces `persist_auto_daily_import` so that the automatic collector
+stores both columns. The function is step 28's, reproduced with two columns
+added to one INSERT; step 37's separate gap on that path (no `derived_realized`,
+no `derivation`, and `realized` coalesced to 0) is untouched and still open.
+
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either
 timestamp may honestly be newer. The independent five-minute future-skew
@@ -191,6 +233,9 @@ rather than back-filling to `other` — `other` is an option a CAM can choose, a
 a back-fill would make silence indistinguishable from an answer in the one column
 that exists to be counted.
 
-Step 38 is the only one that rewrites existing rows. It is idempotent (a second
-run finds no `Acknowledged` rows) and reversible in one statement, which
+Step 38 is the only one that rewrites a column that already held something. 47
+writes to existing rows too, but only into the two columns it adds in the same
+file, so nothing that was there before it ran can be lost by it. 38 is
+idempotent (a second run
+finds no `Acknowledged` rows) and reversible in one statement, which
 `step_38_flag_acknowledged_to_resolved.sql` spells out at the top.
