@@ -345,6 +345,31 @@ export function createAutoImportStore(admin) {
           }
           return { ...result.daily_import, disposition: result.disposition };
         },
+        /**
+         * The per (close, segment) money for the close just stored.
+         *
+         * The rows were decided by buildSegmentTotals in
+         * src/domain/closeSummary.js, on this side of the wire, from the same
+         * reconciled close the RPC above persisted. The RPC here writes them
+         * and decides nothing: segmentation in SQL as well as in JavaScript is
+         * two desk answers waiting to disagree.
+         *
+         * A database where step 48 has not run answers PGRST202 for a function
+         * it has no schema cache entry for. That is not a failed ingest — the
+         * close is stored, and the manager's screen falls back to the closes it
+         * holds — so it is swallowed here and nowhere else.
+         */
+        async replaceCloseSummaries({ dailyImportId, rows }) {
+          const { error } = await admin.rpc('replace_close_summaries', {
+            p_daily_import_ids: [dailyImportId],
+            p_rows: rows,
+          });
+          if (!error) return;
+          const detail = `${error.code || ''} ${error.message || ''}`.toLowerCase();
+          if (error.code === 'PGRST202' || error.code === '42883'
+            || detail.includes('close_summaries')) return;
+          throw error;
+        },
       };
     },
 

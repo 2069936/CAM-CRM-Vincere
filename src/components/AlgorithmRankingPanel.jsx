@@ -39,6 +39,16 @@ import BusinessCoverageLine from "./BusinessCoverageLine";
  * There is no headline figure and no composite score here for the same reason
  * there is none on the desk-money panel: the moment one exists, it is what gets
  * read.
+ *
+ * WHY IT IS COLLAPSED NOW. This was the one eager reader of whole-book strategy
+ * rows on the manager screen: `buildStrategyRanking` was a bare useMemo in the
+ * ManagerOverview body, and `configurationOf` and `sizingOf` inside it read
+ * `params_parsed` off every row — so every manager login parsed 14,514 rows of
+ * strategy parameters, 30.9 MB of them, to fill in the configuration column of
+ * a board nobody had asked for yet. Behind a CollapsiblePanel the board asks
+ * for its own rows when it is opened. `bare` is what lets it sit inside one:
+ * the panel frame and the heading come from the CollapsiblePanel, and this
+ * component renders the contents.
  */
 
 /**
@@ -332,39 +342,46 @@ export default function AlgorithmRankingPanel({
   result,
   selectedAlgorithm = null,
   onSelectAlgorithm = null,
+  bare = false,
 }) {
   const refusals = rankingRefusals(result);
+  const Frame = bare ? "div" : "section";
+  const frameClass = bare ? "strategy-boards-panel" : "panel strategy-boards-panel";
   // A book that measured only the programme is not a book with nothing to show.
   // The empty state is for a book with neither, and it says so.
   if (!result?.ranking?.rows?.length && !result?.ranking?.programmeCount) {
     return (
-      <section className="panel strategy-boards-panel">
-        <div className="panel-heading">
-          <h3>Algorithm ranking</h3>
-          <span className="badge muted">One rank per algorithm</span>
-        </div>
+      <Frame className={frameClass}>
+        {bare ? null : (
+          <div className="panel-heading">
+            <h3>Algorithm ranking</h3>
+            <span className="badge muted">One rank per algorithm</span>
+          </div>
+        )}
         <p className="muted" style={{ padding: "12px 0" }}>
           No close on this book carries a per-algorithm split, so there is nothing to rank. The
           table is left empty rather than filled by dividing each account&rsquo;s day across
           whatever was running.
         </p>
-      </section>
+      </Frame>
     );
   }
 
   const { ranking } = result;
 
   return (
-    <section className="panel strategy-boards-panel">
-      <div className="panel-heading">
-        <h3>Algorithm ranking</h3>
-        <span className="badge muted">
-          {ranking.rankedCount} ranked · {ranking.unrankedCount} without a rank
-          {ranking.programmeCount
-            ? ` · ${ranking.programmeCount} programme${ranking.programmeCount === 1 ? "" : "s"} off the ranking`
-            : ""}
-        </span>
-      </div>
+    <Frame className={frameClass}>
+      {bare ? null : (
+        <div className="panel-heading">
+          <h3>Algorithm ranking</h3>
+          <span className="badge muted">
+            {ranking.rankedCount} ranked · {ranking.unrankedCount} without a rank
+            {ranking.programmeCount
+              ? ` · ${ranking.programmeCount} programme${ranking.programmeCount === 1 ? "" : "s"} off the ranking`
+              : ""}
+          </span>
+        </div>
+      )}
       <p className="desk-basis">
         <CalendarDays size={13} /> {result.basis.label}
       </p>
@@ -440,7 +457,7 @@ export default function AlgorithmRankingPanel({
           ))}
         </ul>
       </details>
-    </section>
+    </Frame>
   );
 }
 

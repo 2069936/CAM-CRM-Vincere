@@ -172,8 +172,8 @@ describe('a refresh folds in what it learned, and never replaces the screen', ()
 
 describe('a refresh does not cost the user their trade history', () => {
   it('carries the fills already in memory across a full reload', () => {
-    // loadSupabaseCrmState defaults includeTradeHistory=false, so the state a
-    // reload returns has orders:[] executions:[] on every day. Assigning it
+    // A login carries no orders and no executions at all, so the state a reload
+    // returns has `orders: []` `executions: []` on every day. Assigning it
     // dropped ~24,000 rows off the screen on the Refresh button, on opening a
     // workspace, and on every upload.
     const body = bodyOf('reloadSupabaseState');
@@ -181,18 +181,62 @@ describe('a refresh does not cost the user their trade history', () => {
     expect(body).toContain('setState(carried.state)');
   });
 
-  it('re-fetches trade history only for a day it has actually never seen', () => {
-    // `force` existed and was passed nowhere, so the wipe had no recovery at
-    // all. Reaching for it on every refresh would be the other failure: the
-    // request burst the bounded gate was introduced to end.
-    const body = bodyOf('reloadSupabaseState');
-    expect(body).toContain('carried.missingImportIds.length');
-    expect(body).toContain('hydrateTradeHistory({ force: true })');
-    expect(callLines('hydrateTradeHistory')
-      .filter((line) => !line.startsWith('function'))).toEqual([
-      'hydrateTradeHistory();',
-      'hydrateTradeHistory({ force: true });',
-    ]);
+  it('has no book-wide trade history fetch left to reach for', () => {
+    // WHAT THIS ASSERTION USED TO SAY, and why it changed.
+    //
+    // It pinned `hydrateTradeHistory({ force: true })` inside
+    // reloadSupabaseState: `force` existed and was passed nowhere, so the wipe
+    // above had no recovery at all. The recovery was to re-download every order
+    // and execution in the book, 40.5 MB and 85 round trips on production, for
+    // a refresh that turned up one day this session had not seen.
+    //
+    // That function is gone. Fills arrive per close, when a close is opened, so
+    // a day nobody has opened has nothing to recover and a day somebody has is
+    // carried across by the assertion above. The mutation this half now catches
+    // is the obvious one: somebody reintroducing a book-wide fetch to make the
+    // Stack Playbook fill in faster.
+    expect(APP).not.toContain('hydrateTradeHistory');
+    expect(APP).not.toContain('loadSupabaseTradeHistory');
+    expect(APP).not.toContain('mergeSupabaseTradeHistory');
+  });
+
+  it('fetches a close\'s fills when the close is opened, and once', () => {
+    // The replacement for the book-wide pull. `detailLoaded` is the guard: a
+    // close whose fills are already in hand is not refetched, and the cache in
+    // ensureCloseDetail makes moving back and forth between two dates one fetch
+    // rather than one per visit.
+    expect(APP).toContain('const openCloseId = dailyImport && !dailyImport.detailLoaded');
+    expect(APP).toContain('ensureCloseDetail([openCloseId]');
+    const body = bodyOf('ensureCloseDetail');
+    expect(body).toContain('unfetched(closeDetailCache, importIds)');
+    expect(body).toContain('mergeSupabaseCloseDetail(current, detail)');
+    // A failed fetch backs out of the cache and touches nothing on screen. It
+    // is not a failed save and must never be reported as one.
+    expect(body).toContain('closeDetailCache.current.delete(id)');
+    expect(body).not.toContain('setState((current) => ({ ...current, clients: [] }))');
+  });
+
+  it('fetches the parameter columns from the panels that read them, and nowhere else', () => {
+    // 30.9 MB of a production login, for two collapsed panels and a ranking
+    // board. Each asks when it is expanded; nothing asks at login.
+    expect(bodyOf('ensureStrategyParameters')).toContain('loadSupabaseStrategyParameters(wanted)');
+    expect(APP).toContain('onOpen={loadConfigParameters}');
+    expect(APP).toContain('onOpen={loadRankingRows}');
+    expect(APP).toContain('load={parameterLoad}');
+    // The board is null until its panel is opened. An empty ranking is a
+    // finding; a ranking nobody has asked for is not.
+    expect(APP).toContain('() => (rankingOpen ? buildStrategyRanking(clients, { asOfDate }) : null)');
+  });
+
+  it('re-reads a close\'s flags at every status before recalculating it', () => {
+    // A login fetches unresolved flags plus a fortnight of recently closed
+    // ones. Carrying triage forward from that list would regenerate an older
+    // close's resolved flags as Open.
+    const body = bodyOf('recalculateImport');
+    expect(body).toContain('loadSupabaseCloseFlags(dailyImport.uuid || dailyImport.id)');
+    expect(body).toContain('priorFlags,');
+    // And it stops rather than recalculating from a partial history.
+    expect(body).toMatch(/catch \(error\) \{[\s\S]*?return;/);
   });
 });
 

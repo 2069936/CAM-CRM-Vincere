@@ -1,8 +1,8 @@
 # Migrations to run for PR #10
 
 Run these in Supabase (SQL editor or CLI) in order. All are additive and
-idempotent, so re-running is safe. None drops or rewrites existing data. 47 has
-a second statement to run after the file, and says so below.
+idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
+48 each have a second step to run after the file, and both say so below.
 
 | Step | File | What it adds | Feature it powers |
 |---|---|---|---|
@@ -25,6 +25,7 @@ a second statement to run after the file, and says so below.
 | 45 | `step_45_ingest_admission_control.sql` | `ingest_admission_settings` with the tunable cap, `claim_ingest_batch_v4` with the `at_capacity` outcome and its per device retry spread, `finalize_ingest_batch_v3`, and `admission_deferrals` / `stage_durations_ms` / `ingest_duration_ms` on `ingest_batches` | The door that answers 429 with Retry-After when too many uploads are in flight at once, and the ingest timing line on the Auto Collection fleet view |
 | 46 | `step_46_ingest_quarantine_reports.sql` | `ingest_quarantine_reports`: what each VPS holds in `queue\quarantine`, one row per capture with the code, the attempt count and whether the agent will retry it, plus `record_ingest_quarantine_report`, which replaces a device's inventory whole | The quarantine count and dates on the client card, the Quarantine state and chip on the Auto Collection fleet view, and the `POST /api/ingest/quarantine` report agent 1.0.7 sends after its daily review |
 | 47 | `step_47_strategy_ran.sql` | `ran` and `ran_basis` on `strategy_snapshots`, the one close backfill behind `call public.backfill_strategy_ran_all();`, and `persist_auto_daily_import` replaced so the collector stores both | Whether an algorithm RAN that day, on every screen that used to ask the export time checkbox |
+| 48 | `step_48_close_summaries.sql` | `close_summaries`: the desk money of one close per segment, written at ingest by `buildSegmentTotals`, plus `replace_close_summaries` and the Node backfill beside it | The manager's first screen reading about two rows a close instead of downloading 12,778 account rows and 14,514 strategy rows on every login |
 
 ## These three groups behave differently
 
@@ -98,7 +99,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -216,6 +217,40 @@ applied: 3,805 rows answered in 516 closes, 1,517 `enabled`, 1,011 `fills`, 0
 `realized`, 1,277 `none`, and the second run wrote 0. Those answers are
 identical, row for row, to the ones src/domain/strategyRan.js reaches in the
 app.
+
+**48 degrades gracefully, and it is the second one with a step to run after the
+file.** Until the table is filled the app behaves exactly as it did: `deskMoney`
+finds no summary for a close and falls back to the closes the session holds,
+which after this change is each client's latest one. The manager's history strip
+and month then read short, and the basis line under each figure says how many
+closes it could not read. Nothing wrong is displayed; it is incomplete and it
+says so.
+
+Fill it once the migration has run:
+
+    SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+      node scripts/backfill_close_summaries.mjs
+
+It reads one client at a time and replaces that client's rows in one call, so it
+is safe to run twice, safe to interrupt and safe to resume. `--dry-run` reports
+what it would write without writing it, and `--client <uuid>` does one client.
+
+THE BACKFILL IS NOT SQL, AND THAT IS THE POINT. Which desk segment an account
+close belongs to is decided by `segmentForAccount` in
+`src/domain/operationsSegments.js` — it asks whether an account is simulated
+before it asks what it is for, reads the CAM's explicit override, and reports an
+account type nobody has taught it about under that type's own name rather than
+folding it into Unclassified. Writing that again in PL/pgSQL would put the rule
+in two languages, which is the defect `deskMoney.js` was created to end. So the
+backfill imports the same module the ingest calls, and
+`replace_close_summaries` stores what it decided and computes nothing.
+
+A reclassification is retroactive, as it has always been: the split is
+recomputed from each account's CURRENT record on every load, so
+`updateSupabaseTradingAccount` rebuilds that client's summaries when an
+account's type or simulation mode moves. Every stored row also names the
+accounts it counted, so a row the rebuild missed is detected on the way back in
+and refused rather than quietly under-reporting a day.
 
 47 also replaces `persist_auto_daily_import` so that the automatic collector
 stores both columns. The function is step 28's, reproduced with two columns

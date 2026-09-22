@@ -653,3 +653,147 @@ describe('manual reconcile to persistence', () => {
     ]);
   });
 });
+
+/* ── The per (close, segment) money, written where the close is written ──────
+ *
+ * Step 48. The manager's first screen used to compute these figures in the
+ * browser by walking `account_snapshots` for every close in the book — 12,778
+ * rows on production to produce about 5,000 numbers. They are now written once,
+ * at ingest, by the same `buildSegmentTotals` the screen ran.
+ *
+ * What these tests pin is that BOTH ingest paths write them, that they are
+ * decided from the close as reconcile produced it rather than from the
+ * flattened payload the atomic RPC receives, and that an adapter without the
+ * writer still stores the close. */
+
+describe('the close summary the desk money is read from', () => {
+  const closeWithEverything = () => importResult({
+    accounts: {
+      'ACC-One': { accountName: 'ACC-One', accountType: 'Cash' },
+      'ACC-Two': { accountName: 'ACC-Two', accountType: 'Funded' },
+      'SIM-1': { accountName: 'SIM-1', accountType: 'Simulation' },
+    },
+    snapshots: [
+      { accountName: 'ACC-One', grossRealizedPnl: 10, weeklyPnl: 20, accountBalance: 100 },
+      { accountName: 'ACC-Two', grossRealizedPnl: -5, weeklyPnl: -7, accountBalance: 50 },
+    ],
+    simulation: {
+      snapshots: [{ accountName: 'SIM-1', grossRealizedPnl: 999, weeklyPnl: 999, accountBalance: 9999 }],
+      strategies: [],
+      orders: [],
+      executions: [],
+      totals: { accounts: 1, balance: 9999, dailyPnl: 999, weeklyPnl: 999 },
+      denominator: { accountsInClose: 3 },
+      undetermined: {
+        snapshots: [], strategies: [], orders: [], executions: [],
+        totals: { accounts: 0, balance: 0, dailyPnl: 0, weeklyPnl: 0 },
+      },
+    },
+  });
+
+  it('writes one row per segment through the browser adapter', async () => {
+    const db = makeDb();
+    db.replaceCloseSummaries = vi.fn(async () => undefined);
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: closeWithEverything(),
+    });
+
+    expect(db.replaceCloseSummaries).toHaveBeenCalledTimes(1);
+    const { dailyImportId, rows } = db.replaceCloseSummaries.mock.calls[0][0];
+    expect(dailyImportId).toBe('import-1');
+    expect(rows.map((row) => row.segment).sort()).toEqual(['Cash', 'Funded', 'Simulated (not real money)']);
+    const cash = rows.find((row) => row.segment === 'Cash');
+    expect(cash).toMatchObject({
+      client_id: 'client-uuid',
+      trading_date: '2026-07-23',
+      accounts: 1,
+      daily_pnl: 10,
+      weekly_pnl: 20,
+      balance: 100,
+      counted_in_total: true,
+      account_names: ['ACC-One'],
+    });
+    // Counted, and never part of a business. EXCLUDED_FROM_TOTAL is evaluated
+    // by the writer and stored, not re-derived from the segment name on the way
+    // back in.
+    expect(rows.find((row) => row.segment === 'Simulated (not real money)').counted_in_total).toBe(false);
+  });
+
+  it('writes them through the collector adapter too, after the close is stored', async () => {
+    const calls = [];
+    const persistDailyImportAtomic = vi.fn(async () => {
+      calls.push('close');
+      return { id: 'daily-atomic' };
+    });
+    const replaceCloseSummaries = vi.fn(async () => { calls.push('summary'); });
+    await persistDailyImportWithClient({
+      db: { persistDailyImportAtomic, isAtomic: true, replaceCloseSummaries },
+      clientUuid: 'client-uuid',
+      importResult: closeWithEverything(),
+      sourceBatchId: 'batch-1',
+    });
+
+    // Order matters: the summary references the close, so the close is stored
+    // first and its id is what the rows are written against.
+    expect(calls).toEqual(['close', 'summary']);
+    expect(replaceCloseSummaries.mock.calls[0][0].dailyImportId).toBe('daily-atomic');
+  });
+
+  it('counts a simulated account once, not twice', async () => {
+    // THE TRAP. The atomic path sends `{...importResult, ...mergeSimulationRows(importResult)}`
+    // to the RPC, which flattens the simulated rows into `snapshots` while
+    // `simulation` travels along untouched. Summarising THAT payload would read
+    // every simulated account twice — once in `snapshots`, once under
+    // `simulation` — so the summary is taken from the original result.
+    const replaceCloseSummaries = vi.fn(async () => undefined);
+    await persistDailyImportWithClient({
+      db: {
+        persistDailyImportAtomic: vi.fn(async () => ({ id: 'daily-atomic' })),
+        isAtomic: true,
+        replaceCloseSummaries,
+      },
+      clientUuid: 'client-uuid',
+      importResult: closeWithEverything(),
+      sourceBatchId: 'batch-1',
+    });
+    const rows = replaceCloseSummaries.mock.calls[0][0].rows;
+    const simulated = rows.find((row) => row.segment === 'Simulated (not real money)');
+    expect(simulated.accounts).toBe(1);
+    expect(simulated.balance).toBe(9999);
+    expect(rows.reduce((total, row) => total + row.accounts, 0)).toBe(3);
+  });
+
+  it('marks a close that carried no account rows as summarised anyway', async () => {
+    // 8 of the book's 485 closes hold no account rows at all, one of them with
+    // 15 orders against 0 accounts. Without a row the table cannot tell that
+    // close apart from one nobody has summarised, and the manager's basis line
+    // would report eight permanent holes that are not holes.
+    const db = makeDb();
+    db.replaceCloseSummaries = vi.fn(async () => undefined);
+    await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: importResult({ accounts: {}, snapshots: [] }),
+    });
+    const { rows } = db.replaceCloseSummaries.mock.calls[0][0];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].accounts).toBe(0);
+    expect(rows[0].counted_in_total).toBe(false);
+    expect(rows[0].account_names).toEqual([]);
+  });
+
+  it('stores the close on an adapter that cannot write summaries', async () => {
+    // A database where step 48 has not run. The close is saved, the desk figure
+    // falls back to the closes the session holds, and nothing fails.
+    const db = makeDb();
+    const saved = await persistDailyImportWithClient({
+      db,
+      clientUuid: 'client-uuid',
+      importResult: closeWithEverything(),
+    });
+    expect(saved.id).toBe('import-1');
+    expect(db.upsertAccountSnapshots).toHaveBeenCalled();
+  });
+});

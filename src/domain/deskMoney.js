@@ -171,7 +171,22 @@ export function monthFor(clients = [], asOfDate = '') {
   return latest ? latest.slice(0, 7) : '';
 }
 
-function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted, book, onRequested }) {
+/**
+ * The per-close summary rows this desk figure may read instead of snapshots.
+ *
+ * `summaries` is what indexCloseSummaries returns: the closes whose stored rows
+ * still match the accounts' current classification, and the ones whose do not.
+ * A close the map does not hold falls through to its own snapshots, so a login
+ * that carries summaries for the whole book and full detail for each client's
+ * latest close produces one answer out of one addition.
+ */
+function summaryLookup(summaries) {
+  const usable = summaries?.usable;
+  if (!(usable instanceof Map) || !usable.size) return null;
+  return (dailyImport) => usable.get(dailyImport?.uuid || dailyImport?.id) || null;
+}
+
+function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted, book, onRequested, totals, staleSummaries }) {
   const dateCount = dates.length;
   const latest = book.latest;
   const missing = Math.max(0, clientsInScope - clientsCounted);
@@ -220,6 +235,23 @@ function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted,
     // 1,234 is a count of account closes and calling it "accounts" on a desk of
     // 584 would be a lie by label.
     countNoun: mode === 'month' || mode === 'range' ? 'account close' : 'account',
+    // WHERE THE MONEY CAME FROM. `summary` closes were added from the rows the
+    // ingest stored for them; `loaded` closes were walked account by account.
+    // The two are the same arithmetic — see buildSegmentTotals — and the split
+    // is reported so a reader can tell a figure that is complete from one that
+    // is waiting on a fetch. `unreadable` is the count that must never be
+    // printed as a zero: those closes are in the book, in scope, and this
+    // session holds neither a summary nor their snapshots.
+    sources: {
+      summary: totals?.provenance?.fromSummary || 0,
+      loaded: totals?.provenance?.walked || 0,
+      unreadable: totals?.provenance?.withoutData || 0,
+      // Closes whose stored summary was refused because an account has been
+      // reclassified since it was written. They are not read from the summary;
+      // they fall back to their snapshots, or to `unreadable`.
+      staleSummaries: staleSummaries || 0,
+    },
+    complete: !(totals?.provenance?.withoutData || 0),
     label,
   };
 }
@@ -296,8 +328,8 @@ const RECONCILIATION_DEFINITIONS = [
  * makes the tile, the history strip and the clipboard text the same computation
  * rather than three that resemble each other.
  */
-function assemble(entries, { mode, requested, clientsInScope, book, weeklyAdditive = true, balanceComparable = true }) {
-  const totals = buildSegmentTotals(entries);
+function assemble(entries, { mode, requested, clientsInScope, book, weeklyAdditive = true, balanceComparable = true, summaries = null }) {
+  const totals = buildSegmentTotals(entries, { summaryRowsFor: summaryLookup(summaries) });
   const business = rollUpByBusiness(totals);
 
   const dates = [...new Set(entries.map((entry) => day(entry.dailyImport?.date)).filter(Boolean))].sort();
@@ -333,6 +365,7 @@ function assemble(entries, { mode, requested, clientsInScope, book, weeklyAdditi
   return {
     basis: describeBasis({
       mode, requested, dates, clientsInScope, clientsCounted, book, onRequested: onAnchor,
+      totals, staleSummaries: summaries?.stale?.size || 0,
     }),
     // Four rows that do not add up, in a fixed order. There is no total here and
     // there must never be one; see the header of this file.
@@ -361,7 +394,7 @@ export function deskRow(desk, key) {
 /**
  * The desk on the day the page is pinned to, or on each client's latest close.
  */
-export function buildDeskMoney(clients = [], { asOfDate = '' } = {}) {
+export function buildDeskMoney(clients = [], { asOfDate = '', summaries = null } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const entries = [];
@@ -374,6 +407,7 @@ export function buildDeskMoney(clients = [], { asOfDate = '' } = {}) {
     requested: asOfDate ? day(asOfDate) : null,
     clientsInScope: list.length,
     book,
+    summaries,
     weeklyAdditive: true,
     // Balances are comparable within one close. In latest-per-client mode they
     // are each account's last observed balance across several dates, which the
@@ -391,7 +425,7 @@ export function buildDeskMoney(clients = [], { asOfDate = '' } = {}) {
  * Orphan were inside it (-$8,385.58, 2.2% of July) and cash was 26.0% of a
  * figure printed as one number.
  */
-export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
+export function buildDeskMoneyForMonth(clients = [], { month = '', summaries = null } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const entries = [];
@@ -406,6 +440,7 @@ export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
     requested: month || null,
     clientsInScope: list.length,
     book,
+    summaries,
     // Both refused across a range, each with the reason on the row.
     weeklyAdditive: false,
     balanceComparable: false,
@@ -426,7 +461,7 @@ export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
  * weekend would make the money in this object disagree with the coverage table
  * printed above it.
  */
-export function buildDeskMoneyForRange(clients = [], { from = '', to = '' } = {}) {
+export function buildDeskMoneyForRange(clients = [], { from = '', to = '', summaries = null } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const first = day(from);
@@ -446,6 +481,7 @@ export function buildDeskMoneyForRange(clients = [], { from = '', to = '' } = {}
     requested: `${first}..${last}`,
     clientsInScope: list.length,
     book,
+    summaries,
     weeklyAdditive: false,
     balanceComparable: false,
   });
@@ -458,11 +494,11 @@ export function buildDeskMoneyForRange(clients = [], { from = '', to = '' } = {}
  * `buildDeskMoney` pinned to that date, so a day on the strip and the same day
  * on the tile are the same arithmetic by construction.
  */
-export function buildDeskMoneyHistory(clients = [], { limit = 10 } = {}) {
+export function buildDeskMoneyHistory(clients = [], { limit = 10, summaries = null } = {}) {
   const list = clients || [];
   const { closes } = bookCloses(list);
   const window = limit > 0 ? closes.slice(-limit) : closes;
-  return window.map((date) => ({ date, desk: buildDeskMoney(list, { asOfDate: date }) }));
+  return window.map((date) => ({ date, desk: buildDeskMoney(list, { asOfDate: date, summaries }) }));
 }
 
 /* ------------------------------------------------------------------ */

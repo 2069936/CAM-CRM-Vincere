@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import PanelLoadState from './PanelLoadState';
+import { panelIsLoaded } from '../domain/panelLoad';
 import { buildSetFileMatch, MATCH, VERSION_IDENTITY } from '../domain/setFileMatch';
 import { buildSynthesizedReference, REFERENCE } from '../domain/synthesizedReference';
 import {
@@ -32,8 +34,21 @@ import {
  * intersection each match was decided on is printed beside it. A match on 11 of
  * 31 fields (Bullet Bot) and one on 48 of 50 (MotusTemplar) are not the same
  * claim, and 118 of this book's 329 exact matches are the 11-field kind.
+ *
+ * WHERE ITS DATA COMES FROM. `parameters_raw` for the day on screen, fetched
+ * when this panel is expanded — the same two columns ConfigDriftPanel reads,
+ * the same 30.9 MB they cost on every login before, and the same reason the
+ * panel has a load state: "no strategy rows to compare against the library" and
+ * "the rows have not arrived" are the same empty screen, and only one of them
+ * is a finding.
  */
-export default function SetFileMatchPanel({ clients = [], asOfDate = '', limit = 8 }) {
+export default function SetFileMatchPanel({
+  clients = [],
+  asOfDate = '',
+  limit = 8,
+  load = null,
+  onRetry = null,
+}) {
   const view = useMemo(() => {
     const result = buildSetFileMatch(clients, { asOfDate });
     return {
@@ -46,6 +61,16 @@ export default function SetFileMatchPanel({ clients = [], asOfDate = '', limit =
   }, [clients, asOfDate, limit]);
 
   const { totals, families, rest, notMeasured, provenance, observed } = view;
+
+  if (!panelIsLoaded(load)) {
+    return (
+      <PanelLoadState
+        load={load}
+        onRetry={onRetry}
+        waiting={`Reading the settings every account ran on ${asOfDate || 'its latest close'} to compare against the library. Nothing is matched until they arrive.`}
+      />
+    );
+  }
 
   if (!totals.rows) {
     return <p className="muted chart-empty">No strategy rows to compare against the set-file library.</p>;

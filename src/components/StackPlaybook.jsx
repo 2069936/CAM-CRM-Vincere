@@ -21,6 +21,7 @@ import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 import AlgoContributionPanel from './AlgoContributionPanel';
+import { fillsLoadedAcross } from '../domain/closeLoadState';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
@@ -265,14 +266,16 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     () => buildClientComboInsights(client, dailyImport, perf, { basis, level }),
     [client, dailyImport, perf, basis, level],
   );
-  // The fills half of the traded attribution arrives after the dashboard shell:
-  // loadSupabaseCrmState skips the trade history tables and merges them later.
-  // Until that lands the panel is keying days off the strategy grid alone, and
-  // the numbers move when it does.
-  const fillsLoaded = useMemo(
-    () => teamClients.some((c) => (c.dailyImports || []).some((di) => (di.executions || []).length > 0)),
-    [teamClients],
-  );
+  // The fills half of the traded attribution arrives when a close is OPENED: a
+  // login carries the executions of each client's latest close and of no other.
+  // Until the rest land the panel is keying days off the strategy grid alone,
+  // and the numbers move when they do.
+  //
+  // Asked through closeLoadState.js rather than by probing for a fill here. The
+  // probe this replaces was `some close has an execution`, which answered
+  // "loaded" as soon as the login landed and would have dropped the sentence
+  // below over a book whose 2,379 other closes hold nothing.
+  const fillsLoaded = useMemo(() => fillsLoadedAcross(teamClients), [teamClients]);
   const riskCurves = buildRiskScalingCurve(comboPerf.map((row) => ({ combo: row.key, avgPnl: row.avgPnl, winRate: Math.round((row.winRate ?? 0) * 100), accounts: row.accounts })));
   // Desk-wide, despite living in one client's tab: this card has always been fed
   // teamClients. It used to run buildBulletBotStats, which answered the same

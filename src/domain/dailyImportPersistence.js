@@ -1,3 +1,4 @@
+import { buildCloseSummaryRows, closeSummaryToDb } from './closeSummary.js';
 import { summarizePnlSources } from './pnlSourceSummary.js';
 import { mergeSimulationRows, summarizeSimulationSplit } from './simulationAccounts.js';
 
@@ -24,6 +25,7 @@ export const DAILY_IMPORT_CLOSED_CODE = 'daily_import_closed';
  * @property {(table: string, dailyImportId: string) => Promise<void>} deleteDailyImportRows
  * @property {(rows: Object[]) => Promise<Object[]>} upsertAccountSnapshots
  * @property {(table: string, rows: Object[]) => Promise<void>} insertRows
+ * @property {(args: {dailyImportId: string, rows: Object[]}) => Promise<void>} [replaceCloseSummaries]
  */
 
 export class DailyImportClosedError extends Error {
@@ -298,11 +300,13 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
     // source_summary.accounts counts every close it stored, of every nature; the
     // per-nature counts are in `simulation` on the same payload. Nothing there is
     // a money total.
-    return db.persistDailyImportAtomic({
+    const dailyImport = await db.persistDailyImportAtomic({
       clientUuid,
       importResult: { ...importResult, ...mergeSimulationRows(importResult) },
       sourceBatchId,
     });
+    await writeCloseSummaries(db, { clientUuid, importResult, dailyImport });
+    return dailyImport;
   }
 
   return db.transaction(async (tx) => {
@@ -363,6 +367,43 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
       .map((flag) => mapFlag(flag, dailyImport.id, clientUuid, accountByName));
     if (flagRows.length) await tx.insertRows('operational_flags', flagRows);
 
+    await writeCloseSummaries(tx, { clientUuid, importResult, dailyImport });
+
     return dailyImport;
   });
+}
+
+/**
+ * The per (close, segment) money, written where the close is written.
+ *
+ * THE ONE SEGMENTATION. `buildCloseSummaryRows` is `buildSegmentTotals` over
+ * this close, the same function the Operations screen used to run in the
+ * browser over every close in the book. A trigger or a view that re-derived
+ * the segment in SQL would put `segmentForAccount` in two languages, and two
+ * desk answers on one screen is the defect deskMoney.js exists to end — so
+ * step 48's `replace_close_summaries` stores what this decided and computes
+ * nothing.
+ *
+ * NOT from `mergeSimulationRows(importResult)`. The atomic path flattens the
+ * simulated rows into `snapshots` before sending them to SQL; counting a close
+ * in that shape would read every simulated account twice, once in `snapshots`
+ * and once under `simulation`. The original result is what gets summarised.
+ *
+ * Optional on the adapter, and silent when it is absent or when step 48 has
+ * not run: a login without the table falls back to the closes it holds, which
+ * is what the product did before the table existed. A summary that could not
+ * be written must never fail an upload — the close itself is saved, and the
+ * desk figure it feeds is recoverable by rebuilding.
+ */
+async function writeCloseSummaries(db, { clientUuid, importResult, dailyImport }) {
+  if (typeof db?.replaceCloseSummaries !== 'function' || !dailyImport?.id) return;
+  const rows = buildCloseSummaryRows({
+    accountRegistry: importResult.accounts || {},
+    dailyImport: importResult,
+  }).map((row) => closeSummaryToDb(row, {
+    dailyImportId: dailyImport.id,
+    clientId: clientUuid,
+    tradingDate: importResult.date,
+  }));
+  await db.replaceCloseSummaries({ dailyImportId: dailyImport.id, rows });
 }

@@ -858,7 +858,7 @@ export function reconcileDailyImport({ clientId, date, registry = {}, parsed, hi
   };
 }
 
-export function recalculateDailyImport({ dailyImport, registry = {} }) {
+export function recalculateDailyImport({ dailyImport, registry = {}, priorFlags = null }) {
   // Feed the WHOLE close back in, simulated rows included. Passing only
   // `dailyImport.snapshots` would hand reconcile a close its simulation accounts
   // had vanished from, and the registry sweep would then report each of them as
@@ -889,8 +889,20 @@ export function recalculateDailyImport({ dailyImport, registry = {} }) {
   // it: the 460 flags a CAM acknowledged before the button went still survive a
   // Recalculate, and would reopen on the next one if this named its statuses. Match on a reconstructed type|account|message key (not the
   // id) so it also matches flags reloaded from the DB, which carry a uuid id.
+  //
+  // `priorFlags` IS THE CLOSE'S FLAGS AT EVERY STATUS, AND IT IS NOT OPTIONAL
+  // ON SUPABASE. A login fetches unresolved flags plus a fortnight of recently
+  // closed ones — 68.8% of the table is closed and the queue cannot act on any
+  // of it — so `dailyImport.flags` on an older close holds the Open rows and
+  // nothing else. Carrying triage forward from that list would find no match
+  // for a flag somebody resolved in July and would regenerate it as Open: the
+  // operator's work undone by a button that says it only re-reads the numbers.
+  // App.jsx re-reads the close's flags before calling this (one round trip, on
+  // a per-close action) and passes them here. The default is what the close
+  // holds, which is right for local snapshot mode and for a close whose flags
+  // are all loaded anyway.
   const flagKey = (f) => `${f.type}|${f.accountName || 'client'}|${f.message || ''}`;
-  const priorByKey = Object.fromEntries((dailyImport.flags || []).map((f) => [flagKey(f), f]));
+  const priorByKey = Object.fromEntries((priorFlags || dailyImport.flags || []).map((f) => [flagKey(f), f]));
   const flags = (recalculated.flags || []).map((flag) => {
     const prior = priorByKey[flagKey(flag)];
     return prior && prior.status && prior.status !== 'Open'

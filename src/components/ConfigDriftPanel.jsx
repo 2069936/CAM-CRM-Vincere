@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import { buildConfigDrift } from '../domain/strategyConfigDrift';
 import { buildDriftView, DEFAULT_OPEN_ROWS } from '../domain/configDriftPresentation';
+import PanelLoadState from './PanelLoadState';
+import { panelIsLoaded } from '../domain/panelLoad';
 
 /**
  * Accounts running a configuration almost nobody else runs.
@@ -35,12 +37,42 @@ import { buildDriftView, DEFAULT_OPEN_ROWS } from '../domain/configDriftPresenta
  *     parameters with no established meaning are captioned as a block instead of
  *     carrying a tooltip each. A 22-row table that shows `Stop loss 315 vs 300`
  *     and `URGO4 2 vs 4` in identical rows is asking the reader to rank them.
+ *
+ * WHERE ITS DATA COMES FROM, AND WHY IT IS NOT AT LOGIN.
+ *
+ * Every row here is a comparison of `parameters_raw` across the accounts
+ * running one (family, instrument) on one day. Those two parameter columns are
+ * 82% of a strategy row and 30.9 MB of a production login, downloaded on every
+ * sign-in for a panel that is collapsed by default — and `params_parsed`
+ * carries the machine LicenseKey, which has no business in a browser payload at
+ * all. They are fetched when this panel is expanded, for the day it is showing.
+ *
+ * So the panel has a load state, and `load.status` is the difference between
+ * "no cohort disagrees" and "nothing has arrived yet". Printing the first over
+ * the second would be this panel telling the desk its configurations are clean
+ * because a request had not come back.
  */
-export default function ConfigDriftPanel({ clients = [], asOfDate = '', limit = DEFAULT_OPEN_ROWS }) {
+export default function ConfigDriftPanel({
+  clients = [],
+  asOfDate = '',
+  limit = DEFAULT_OPEN_ROWS,
+  load = null,
+  onRetry = null,
+}) {
   const view = useMemo(
     () => buildDriftView(buildConfigDrift(clients, { asOfDate }), { limit }),
     [clients, asOfDate, limit],
   );
+
+  if (!panelIsLoaded(load)) {
+    return (
+      <PanelLoadState
+        load={load}
+        onRetry={onRetry}
+        waiting={`Reading the settings every account ran on ${asOfDate || 'its latest close'}. Nothing is compared until they arrive.`}
+      />
+    );
+  }
 
   if (!view.rows.length) {
     return (

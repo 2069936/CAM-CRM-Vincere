@@ -19,14 +19,22 @@
  *    edit from the screen.
  *
  * 2. TRADE HISTORY WAS WIPED BY EVERY REFRESH AND NEVER CAME BACK.
- *    loadSupabaseCrmState defaults includeTradeHistory=false, so
- *    buildCrmStateFromTables rebuilds every dailyImport with `orders: []` and
- *    `executions: []`. Replacing state with that dropped ~24,000 rows off the
- *    screen on the manager Refresh button, on opening any workspace, and on
- *    every upload. The previous shape re-fetched them straight afterwards,
- *    which is the request burst this project spent a pass removing;
- *    carryTradeHistoryForward keeps them instead, so neither the rows nor the
- *    requests are paid for twice.
+ *    A login carries no orders and no executions, so buildCrmStateFromTables
+ *    rebuilds every dailyImport with `orders: []` and `executions: []`.
+ *    Replacing state with that dropped ~24,000 rows off the screen on the
+ *    manager Refresh button, on opening any workspace, and on every upload. The
+ *    previous shape re-fetched them straight afterwards, which is the request
+ *    burst this project spent a pass removing; carryTradeHistoryForward keeps
+ *    them instead, so neither the rows nor the requests are paid for twice.
+ *
+ *    THE SAME DEFECT, WIDER. A login now carries the per-account rows of each
+ *    client's LATEST close and of no other, so everything the paragraph above
+ *    says about fills is true of the snapshots and strategies of any older
+ *    close the user has opened. A refresh that replaced them with the empty
+ *    arrays a login legitimately holds would blank the close on screen — the
+ *    same symptom, one table further in. What a refresh could not have fetched
+ *    is carried, and the markers that say which closes are fully loaded are
+ *    carried with it.
  *
  * WHAT IS DELIBERATELY NOT MERGED
  *
@@ -61,26 +69,60 @@ function hasFills(dailyImport) {
   return Object.values(fillsOf(dailyImport)).some((rows) => rows.length > 0);
 }
 
+/** True when this session holds rows for a close that the refresh did not fetch. */
+function carriesRows(target, source) {
+  return Boolean(source?.snapshotsLoaded) && target?.snapshotsLoaded === false;
+}
+
+function carriesAnything(target, source) {
+  return hasFills(source) || carriesRows(target, source);
+}
+
 /**
- * Puts `source`'s fills onto `target`, and nothing else.
+ * Puts back whatever `source` holds that `target` could not have fetched.
  *
- * The split's own bookkeeping — totals, the simulated account list, the
- * snapshots and strategies on each side — stays whatever `target` computed,
- * because that half was rebuilt from rows the refresh DID fetch and is fresher
- * than what is in memory. Only the six arrays the refresh could not have
- * fetched come across.
+ * The split's own bookkeeping — totals, the simulated account list — stays
+ * whatever `target` computed, because that half was rebuilt from rows the
+ * refresh DID fetch and is fresher than what is in memory. The six fill arrays
+ * always come across. The snapshots and strategies come across only for a close
+ * the refresh did not read them for, which a login says with `snapshotsLoaded`:
+ * a close the refresh DID read is fresher on `target` and must not be replaced
+ * by what memory holds.
  */
 function withFillsFrom(target, source) {
   const fills = fillsOf(source);
   const next = { ...target, orders: fills.orders, executions: fills.executions };
+  if (carriesRows(target, source)) {
+    next.snapshots = source.snapshots || [];
+    next.strategies = source.strategies || [];
+    next.snapshotsLoaded = true;
+  }
+  // Monotonic on purpose. A close whose fills, derivation or parameters this
+  // session has fetched still holds them after a refresh that did not ask for
+  // any of the three, and a panel must not be sent back to its loading state by
+  // somebody else's upload.
+  next.detailLoaded = Boolean(target?.detailLoaded || source?.detailLoaded);
+  next.parametersLoaded = Boolean(target?.parametersLoaded || source?.parametersLoaded);
   const simulation = target?.simulation || source?.simulation;
   if (simulation) {
     next.simulation = {
       ...simulation,
+      ...(carriesRows(target, source)
+        ? {
+          snapshots: source.simulation?.snapshots || [],
+          strategies: source.simulation?.strategies || [],
+        }
+        : {}),
       orders: fills.simulationOrders,
       executions: fills.simulationExecutions,
       undetermined: {
         ...(simulation.undetermined || {}),
+        ...(carriesRows(target, source)
+          ? {
+            snapshots: source.simulation?.undetermined?.snapshots || [],
+            strategies: source.simulation?.undetermined?.strategies || [],
+          }
+          : {}),
         orders: fills.undeterminedOrders,
         executions: fills.undeterminedExecutions,
       },
@@ -148,7 +190,9 @@ export function carryTradeHistoryForward(current, next) {
           missingImportIds.push(dailyImport.uuid || dailyImport.id);
           return dailyImport;
         }
-        return hasFills(previous) ? withFillsFrom(dailyImport, previous) : dailyImport;
+        return carriesAnything(dailyImport, previous)
+          ? withFillsFrom(dailyImport, previous)
+          : dailyImport;
       }),
     })),
   };

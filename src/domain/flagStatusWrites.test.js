@@ -75,6 +75,19 @@ function codeMentions(file) {
 /** The only shape allowed: a not-equal test against the literal. */
 const COMPARISON = /!==\s*(['"])Acknowledged\1/g;
 
+/**
+ * The second legal shape, and it is the same comparison in another language.
+ *
+ * A login used to fetch every row of `operational_flags` — 26,659 rows and
+ * 10.7 MB on production, of which 68.8% are closed and none of them is work the
+ * queue can offer. The exclusion `isFlagOpen` makes in JavaScript is now also
+ * made in the query, in PostgREST's spelling, so the rows never leave the
+ * database. It decides which rows ARRIVE and never what a row says, which is
+ * the distinction this file is about: an assignment, an argument, an array
+ * member or a `===` still fails below.
+ */
+const READ_FILTER = /status\.not\.in\.\("Resolved","Acknowledged"\)/g;
+
 describe('Acknowledged is compared against and never written', () => {
   it('appears in no write path except as a `!== "Acknowledged"` exclusion', () => {
     const offenders = [];
@@ -82,7 +95,7 @@ describe('Acknowledged is compared against and never written', () => {
       for (const mention of codeMentions(file)) {
         // Strip the legal shape and see whether the status survives. An
         // assignment, an argument, an array member or a `===` all do.
-        const residue = mention.text.replace(COMPARISON, '');
+        const residue = mention.text.replace(COMPARISON, '').replace(READ_FILTER, '');
         if (residue.includes('Acknowledged')) offenders.push(`${mention.file}:${mention.line} ${mention.text}`);
       }
     }
@@ -106,6 +119,15 @@ describe('Acknowledged is compared against and never written', () => {
       );
       expect({ file, found: found >= atLeast }).toEqual({ file, found: true });
     }
+  });
+
+  it('still excludes the closed statuses at the door, so a login does not fetch them', () => {
+    // The read filter's own direction, and the reason it is not optional. With
+    // it deleted the login is back to 26,659 flag rows for the ~8,300 the queue
+    // can act on, and nothing on any screen would look wrong — which is how the
+    // download grew to 105 MB in the first place.
+    const store = readFileSync(`${ROOT}/src/domain/supabaseStore.js`, 'utf8');
+    expect((store.match(READ_FILTER) || []).length).toBeGreaterThanOrEqual(1);
   });
 
   it('offers no acknowledge audit action anywhere', () => {
