@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using NinjaTrader.Cbi;
@@ -168,6 +169,29 @@ public sealed class NinjaTraderFacadeTests : IDisposable
     }
 
     [Fact]
+    public void Attributes_through_a_strategy_whose_collections_are_not_publicly_reflectable()
+    {
+        // The same read one step further out. Which members NinjaTrader declares
+        // public, on each of the versions the AddOn is loaded by, is the one
+        // thing this repository cannot see, and a read that finds nothing does
+        // not fail loudly: it returns an account that looks like it has no
+        // strategies, which is exactly the state this was written to end.
+        Account account = AccountFixture();
+        Order order = OrderFixture("order-1");
+        var strategy = new ShieldedStrategy { Name = "Opening Range", StrategyId = "strategy-1" };
+        strategy.Orders.Add(order);
+        account.Strategies.Add(strategy);
+        account.Orders.Add(order);
+        account.Executions.Add(FillFixture("execution-1", order));
+        Account.All.Add(account);
+
+        var facade = new NinjaTraderFacade();
+
+        Assert.Equal("Opening Range", Assert.Single(facade.ReadOrders()).StrategyName);
+        Assert.Equal("Opening Range", Assert.Single(facade.ReadExecutions()).StrategyName);
+    }
+
+    [Fact]
     public void Leaves_a_trade_two_strategies_claim_unattributed()
     {
         Account account = AccountFixture();
@@ -309,7 +333,7 @@ public sealed class NinjaTraderFacadeTests : IDisposable
     // Answers no properties at all through TypeDescriptor, which is the shape a
     // NinjaScript object with a custom descriptor has: what the platform's grids
     // are shown is not what the type declares.
-    private sealed class DescriptorlessStrategy : StrategyBase, ICustomTypeDescriptor
+    private class DescriptorlessStrategy : StrategyBase, ICustomTypeDescriptor
     {
         public AttributeCollection GetAttributes() => AttributeCollection.Empty;
         public string GetClassName() => null;
@@ -323,6 +347,19 @@ public sealed class NinjaTraderFacadeTests : IDisposable
         public PropertyDescriptorCollection GetProperties() => PropertyDescriptorCollection.Empty;
         public PropertyDescriptorCollection GetProperties(Attribute[] attributes) => PropertyDescriptorCollection.Empty;
         public object GetPropertyOwner(PropertyDescriptor pd) => this;
+    }
+
+    // Keeps its orders where a single public reflection read cannot see them:
+    // hidden from TypeDescriptor like the strategy above, and declared again
+    // away from the base type without being public. Nobody can point at a
+    // NinjaTrader version shaped like this from here, and that is the point.
+    // Which members the platform declares public on 8.1.6 through 8.1.8 is not
+    // visible from this repository, and a read that quietly finds nothing does
+    // not fail: it returns an account that looks like it has no strategies,
+    // which is the state the attribution exists to end.
+    private sealed class ShieldedStrategy : DescriptorlessStrategy
+    {
+        internal new List<Order> Orders { get; } = new List<Order>();
     }
 
     private sealed class TestPosition

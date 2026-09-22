@@ -152,42 +152,52 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
         /// them does not expose has to degrade to no attribution rather than to a
         /// type the assembly cannot bind.
         ///
-        /// All of it happens under the lock ReadStrategies already takes, and
-        /// every collection is copied before it is read, because the platform can
+        /// Every collection is copied before it is read, because the platform can
         /// add an order to a strategy while we walk it.
+        ///
+        /// The lock covers exactly what it covers in ReadStrategies: the copy of
+        /// account.Strategies, and nothing after it. That lock guards the account's
+        /// list of strategies, not the collections hanging off each one, so holding
+        /// it across these reads would protect nothing. It would only mean holding
+        /// a platform lock, on NinjaTrader's own dispatcher thread, while a custom
+        /// type descriptor runs platform code to answer us, which is how a capture
+        /// stops being something that merely fails and starts being something that
+        /// can stall the terminal it is reading. ReadStrategies keeps
+        /// TypeDescriptor out of the lock for the same reason.
         /// </summary>
         private static List<StrategyOrderOwnership> ReadOwnership(Account account)
         {
-            var owned = new List<StrategyOrderOwnership>();
+            List<StrategyBase> strategies;
             lock (account.Strategies)
+                strategies = account.Strategies.ToList();
+
+            var owned = new List<StrategyOrderOwnership>(strategies.Count);
+            foreach (StrategyBase strategy in strategies)
             {
-                foreach (StrategyBase strategy in account.Strategies.ToList())
-                {
-                    List<object> orders = PublicCollection(strategy, "Orders");
-                    List<object> executions = PublicCollection(strategy, "Executions");
+                List<object> orders = PublicCollection(strategy, "Orders");
+                List<object> executions = PublicCollection(strategy, "Executions");
 
-                    var orderIds = new List<string>(orders.Count + executions.Count);
-                    foreach (object order in orders)
-                        orderIds.Add(PublicString(order, "OrderId"));
-                    // A fill carries the id of the order it filled, and a strategy
-                    // can still list a fill whose order has already left its Orders
-                    // collection, so that order id is claimed here too.
-                    foreach (object execution in executions)
-                        orderIds.Add(PublicString(execution, "OrderId"));
+                var orderIds = new List<string>(orders.Count + executions.Count);
+                foreach (object order in orders)
+                    orderIds.Add(PublicString(order, "OrderId"));
+                // A fill carries the id of the order it filled, and a strategy
+                // can still list a fill whose order has already left its Orders
+                // collection, so that order id is claimed here too.
+                foreach (object execution in executions)
+                    orderIds.Add(PublicString(execution, "OrderId"));
 
-                    var executionIds = new List<string>(executions.Count);
-                    foreach (object execution in executions)
-                        executionIds.Add(PublicString(execution, "ExecutionId"));
+                var executionIds = new List<string>(executions.Count);
+                foreach (object execution in executions)
+                    executionIds.Add(PublicString(execution, "ExecutionId"));
 
-                    // The same two members MapStrategy reports the strategy under,
-                    // so an order's strategyId and strategyName are the strings the
-                    // strategies section of this very snapshot carries.
-                    owned.Add(new StrategyOrderOwnership(
-                        PublicString(strategy, "StrategyId", "Id"),
-                        strategy.Name,
-                        orderIds,
-                        executionIds));
-                }
+                // The same two members MapStrategy reports the strategy under,
+                // so an order's strategyId and strategyName are the strings the
+                // strategies section of this very snapshot carries.
+                owned.Add(new StrategyOrderOwnership(
+                    PublicString(strategy, "StrategyId", "Id"),
+                    strategy.Name,
+                    orderIds,
+                    executionIds));
             }
             return owned;
         }
@@ -494,9 +504,20 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
         /// TypeDescriptor does not list. A NinjaScript object can carry a custom
         /// type descriptor, which is how the platform shows a strategy's
         /// parameters and nothing else in its own grids, and a collection kept out
-        /// of that view is still an ordinary public property on the type. Absent,
+        /// of that view is still an ordinary property on the type. Absent,
         /// ambiguous or unreadable, it is null here, exactly as PublicValue leaves
         /// a member that does not exist.
+        ///
+        /// The hierarchy is walked a level at a time, taking non-public members
+        /// too, and that is deliberate rather than thorough. A single GetProperty
+        /// sees only public members and, of those, only the ones the most derived
+        /// type inherits; which members NinjaTrader declares public on which of
+        /// the versions the fleet runs is the one thing this file can never see
+        /// from here. A read that quietly finds nothing costs the whole attribution
+        /// on every machine and looks exactly like an account with no strategies,
+        /// which is the failure this was written to end. Taking the most derived
+        /// declaration also resolves a shadowed member the way the compiler would,
+        /// instead of as an ambiguous match.
         /// </summary>
         private static object ReflectedValue(object source, string name)
         {
@@ -504,10 +525,18 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 return null;
             try
             {
-                System.Reflection.PropertyInfo property = source.GetType().GetProperty(name);
-                return property == null || !property.CanRead
-                    ? null
-                    : property.GetValue(source, null);
+                const System.Reflection.BindingFlags flags =
+                    System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.DeclaredOnly;
+                for (Type type = source.GetType(); type != null; type = type.BaseType)
+                {
+                    System.Reflection.PropertyInfo property = type.GetProperty(name, flags);
+                    if (property != null && property.CanRead)
+                        return property.GetValue(source, null);
+                }
+                return null;
             }
             catch
             {

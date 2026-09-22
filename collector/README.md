@@ -88,7 +88,7 @@ later, which is why 45.9% of the funded account days in the Stack Playbook's
 window were unattributable.
 
 The link is read in the direction the platform exposes it. Each account's
-strategies are walked once per capture, under the lock the strategies section
+strategy list is copied once per capture under the lock the strategies section
 already takes, and the orders and fills each one lists become a lookup from
 order id and execution id to that strategy (`StrategyAttributionMap` in
 `Vincere.AutoExport.NinjaTrader.Core`, covered by the Core tests). The orders
