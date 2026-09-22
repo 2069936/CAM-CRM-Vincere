@@ -54,6 +54,7 @@ export const localSnapshotTests = [
   "src/domain/closeSummary.book.test.js",
   "src/domain/clientLifecycle.book.test.js",
   "src/domain/comboPerformance.book.test.js",
+  "src/domain/deskConfigOutliers.book.test.js",
   "src/domain/deskMoney.book.test.js",
   "src/domain/deskPeriodReport.book.test.js",
   "src/domain/liveAccounts.book.test.js",

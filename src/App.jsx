@@ -184,12 +184,14 @@ import PanelLoadState from "./components/PanelLoadState";
 import { buildAlgorithmDetail, buildStrategyRanking } from "./domain/algorithmRanking";
 import AccountTypeMismatchPanel from "./components/AccountTypeMismatchPanel";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
+import DeskConfigOutlierPanel from "./components/DeskConfigOutlierPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
 import ReportSheetActions from "./components/ReportSheetActions";
 import DeskPeriodReportView from "./components/DeskPeriodReportView";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
+import { deskConfigDayFor, deskDayImportIds } from "./domain/deskConfigOutliers";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
 import QuietAccountsPanel from "./components/QuietAccountsPanel";
 import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
@@ -4408,6 +4410,28 @@ function ManagerOverview({
     [onNeedParameters, configPanelIds],
   );
 
+  /* THE SAME-DAY DESK COMPARISON.
+   *
+   * A third reader of the same two columns, and the cheapest of the three: one
+   * day's closes rather than every client's latest. It cannot share
+   * configPanelIds — that set is "each client's latest close AT OR BEFORE the
+   * date", which on any given day is mostly closes from other days, and mixing
+   * them would compare a client's settings from a fortnight ago against what
+   * the desk was running this morning. Same cache, same gate, same tri-state.
+   */
+  const deskConfigDay = useMemo(
+    () => deskConfigDayFor(clients, asOfDate),
+    [clients, asOfDate],
+  );
+  const deskConfigIds = useMemo(
+    () => deskDayImportIds(clients, deskConfigDay),
+    [clients, deskConfigDay],
+  );
+  const loadDeskConfigParameters = useCallback(
+    () => (onNeedParameters ? onNeedParameters(deskConfigIds) : undefined),
+    [onNeedParameters, deskConfigIds],
+  );
+
   const strategies = useMemo(() => buildStrategyAnalyzer(clients), [clients]);
   /* THE RANKING BOARD, BEHIND ITS OWN PANEL.
    *
@@ -5862,6 +5886,39 @@ function ManagerOverview({
               named after an account type made it look like. */}
           <h4>Account type against the algorithm running</h4>
           <AccountTypeMismatchPanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Its own panel, immediately under the cohort review, because it is the
+          same question asked against a different reference and the two answers
+          have to be readable one after the other.
+
+          The panel above compares each client's own LATEST close, whenever that
+          fell, and ranks whole configurations by how rare they are. This one
+          pins to ONE day and compares field by field. On the book's last close
+          that is the difference between 43 cohorts spread over three weeks and
+          15 groups of accounts that all reported the same morning, which is the
+          only reference that can answer "is somebody out of step with the desk
+          right now".
+
+          Both are lists to verify. Neither calls a difference wrong.
+        */}
+        <CollapsiblePanel
+          title="Settings against the rest of the desk, same day"
+          tone="ops-charts-panel"
+          onOpen={loadDeskConfigParameters}
+          badges={
+            <span className="badge muted">
+              {deskConfigDay || "no day selected"} · every client that closed that day
+            </span>
+          }
+        >
+          <DeskConfigOutlierPanel
+            clients={clients}
+            date={deskConfigDay}
+            load={parameterLoad}
+            onRetry={loadDeskConfigParameters}
+          />
         </CollapsiblePanel>
 
         {/*

@@ -8309,6 +8309,44 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
   color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap;
 }
+/* The same-day desk comparison (DeskConfigOutlierPanel).
+
+   It reuses the .drift-* family deliberately: it sits two panels below the
+   cohort review, asks the same shape of question and must not look like a
+   different product. What it adds is the three things that panel has no place
+   for — the readings the desk is divided on, the readings it runs two of on
+   purpose, and the distance from the desk's own value. */
+.desk-config-note { font-size: 11px; line-height: 1.5; margin: 0 0 8px; }
+.desk-config-split, .desk-config-second { margin: 0 0 10px; }
+.desk-config-split h5, .desk-config-second h5 {
+  font-size: 11px; margin: 0 0 2px; font-weight: 600;
+}
+.desk-config-split p, .desk-config-second p { font-size: 10px; margin: 0 0 4px; line-height: 1.45; }
+.desk-config-split ul, .desk-config-second ul {
+  list-style: none; margin: 0; padding: 0; font-size: 11px;
+}
+.desk-config-split li, .desk-config-second li { padding: 1px 0; line-height: 1.5; }
+/* One table a group, with each account a <tbody>. The account's own line is a
+   colgroup header rather than a paragraph above its own table: nineteen
+   accounts in one group meant nineteen copies of the same four headings. */
+.desk-config-table tbody + tbody > .desk-config-account > th { padding-top: 9px; }
+.desk-config-account > th {
+  font-weight: 400; white-space: normal;
+  border-bottom: 1px solid var(--border);
+}
+.desk-config-account strong { font-weight: 600; font-size: 12px; margin-right: 6px; }
+.desk-config-account .muted { font-size: 10px; margin-left: 6px; }
+/* The denominator, beside the desk's value rather than in a legend. A reader
+   comparing "300 on 67" against "300 on 34" is reading two different strengths
+   of the same sentence, and a footnote cannot carry that. */
+.desk-config-count { font-style: normal; color: var(--muted); font-size: 10px; }
+.desk-config-distance { white-space: nowrap; }
+.desk-config-distance em { font-style: normal; color: var(--muted); font-size: 10px; }
+.desk-config-small { font-size: 11px; line-height: 1.5; }
+.desk-config-small p { margin: 0 0 3px; }
+.desk-config-small ul { list-style: none; margin: 0; padding: 0; }
+.desk-config-small li { padding: 1px 0; }
+
 .drift-rest > summary {
   font-size: 11px; color: var(--muted); cursor: pointer; line-height: 1.45;
 }
