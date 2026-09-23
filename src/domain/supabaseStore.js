@@ -371,6 +371,23 @@ const MISSING_COLUMN = /column\s+"?(?:[a-z0-9_]+\.)?([a-z0-9_]+)"?\s+does not ex
 /** Column lists this session has already agreed with the database. */
 const agreedColumns = new Map();
 
+/** Columns this session has found absent on the write side, per table. */
+const droppedInsertColumns = new Map();
+
+function columnPresent(rows, name) {
+  return (rows || []).some((row) => row && Object.prototype.hasOwnProperty.call(row, name));
+}
+
+function rowsWithout(rows, names) {
+  return (rows || []).map((row) => {
+    const kept = {};
+    for (const [key, value] of Object.entries(row || {})) {
+      if (!names.has(key)) kept[key] = value;
+    }
+    return kept;
+  });
+}
+
 function columnsWithout(columns, name) {
   const kept = String(columns)
     .split(',')
@@ -2696,12 +2713,41 @@ export function createSupabaseDailyImportAdapter(client) {
       if (error) throw new Error(error.message);
       return data || [];
     },
+    /* A WRITE AGAINST A DATABASE ONE MIGRATION BEHIND, TOO.
+     *
+     * selectRows has dropped an absent column and retried since the login
+     * stopped using `select *`. The write side did not, and the asymmetry had
+     * a cost the day it was met: the deploy carrying step 47 reached
+     * production before the migration did, and `strategy_snapshots` inserts
+     * name `ran` and `ran_basis`, so every manual close import answered
+     * `column "ran" does not exist` and wrote nothing. Reads degraded, writes
+     * stopped.
+     *
+     * So a rejected insert drops the column PostgREST named and tries again,
+     * and remembers it for the session exactly as the reads do. What is lost
+     * is the value of that column on the rows written while the database is
+     * behind, which the migration's own backfill puts back. What is kept is
+     * the close.
+     *
+     * Only a missing column is forgiven. Anything else is the caller's to
+     * handle and is rethrown untouched. */
     async insertRows(table, rows) {
       if (!insertTables.has(table)) {
         throw new Error(`Unsupported daily import insert table: ${table}`);
       }
-      const { error } = await client.from(table).insert(rows);
-      if (error) throw new Error(error.message);
+      let payload = rows;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const dropped = droppedInsertColumns.get(table);
+        if (dropped?.size) payload = rowsWithout(payload, dropped);
+        const { error } = await client.from(table).insert(payload);
+        if (!error) return;
+        const missing = MISSING_COLUMN.exec(error.message || '')?.[1] || null;
+        if (!missing || !columnPresent(payload, missing)) throw new Error(error.message);
+        const next = droppedInsertColumns.get(table) || new Set();
+        next.add(missing);
+        droppedInsertColumns.set(table, next);
+      }
+      throw new Error(`Could not agree a column list with ${table}.`);
     },
     // The per (close, segment) money, already decided by buildSegmentTotals.
     // Through the RPC rather than a table write so the delete and the insert

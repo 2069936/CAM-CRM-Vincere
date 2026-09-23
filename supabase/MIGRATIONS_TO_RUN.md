@@ -106,11 +106,24 @@ already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
 
-**47 runs before the deploy, not after it.** Its reads degrade and its writes do
-not: the strategy insert names `ran` and `ran_basis` unconditionally, so a
-deployed build against an un-migrated database fails every upload at the insert.
-39 is in the same position for one client save; 47 is in it for the whole
-ingest. 48 is the opposite and may run either side of the deploy.
+**47 is easier to run before the deploy, and no longer has to be.** It was
+written as a must: the strategy insert named `ran` and `ran_basis`
+unconditionally, so a deployed build against an un-migrated database refused
+every write at the insert. That happened on 2026-09-23, the deploy landing
+first, and the fix is in `createSupabaseDailyImportAdapter.insertRows`, which
+now drops a column PostgREST says does not exist and retries, the way
+`selectRows` has always done on the read side. What a close written before the
+migration loses is the value of those two columns, which the migration's own
+backfill puts back. What it keeps is the close.
+
+The two paths were also not equally exposed, which the original wording missed.
+The collector's uploads go through `persist_auto_daily_import_v3`, which reaches
+the base function this migration replaces, so before it runs the old base
+function ignores the two extra keys in the payload and the automatic closes land
+unharmed. Only the manual import in the browser writes the columns by name.
+
+39 is the same shape for one client save. 48 may run either side of the deploy
+and already refuses quietly when its function is absent.
 
 **43 closes everything that existed before it, and it is the one that cannot
 wait.** It enables Row Level
