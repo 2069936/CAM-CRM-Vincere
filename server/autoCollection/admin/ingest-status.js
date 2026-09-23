@@ -112,6 +112,32 @@ export function createIngestStatusStore(admin) {
     }
   }
 
+  /* THE LAST THING THE VPS ACTUALLY COLLECTED, WHICH THE CARD HAS NEVER SEEN.
+   *
+   * The Connected light is heartbeat-only: this endpoint has never read
+   * ingest_batches at all, so a VPS that checks in every minute and captures
+   * nothing reads exactly like a healthy one. On 2026-09-22, 11 of the 79
+   * clients that captured finished the day with zero trading accounts in the
+   * snapshot, because NinjaTrader was closed or not connected to the broker.
+   *
+   * Swallows its own failure, like the pairing audit and the quarantine read:
+   * the device row is the card, and a courtesy line is not worth a 500. */
+  async function lastBatch(clientId) {
+    try {
+      const { data, error } = await admin
+        .from('ingest_batches')
+        .select('id,trading_date,status,row_counts,received_at,error_code')
+        .eq('client_id', clientId)
+        .order('received_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) return null;
+      return data || null;
+    } catch {
+      return null;
+    }
+  }
+
   return {
     async load(clientId) {
       const clientPromise = admin.from('clients').select('id,name').eq('id', clientId).maybeSingle();
@@ -119,16 +145,37 @@ export function createIngestStatusStore(admin) {
       const enrollmentPromise = maybeLatest('ingest_enrollments', ENROLLMENT_SELECT, clientId);
       const attemptPromise = lastPairAttempt(clientId);
       const quarantinePromise = quarantineRows(clientId);
-      const [{ data: client, error }, device, enrollment, attempt, quarantine] = await Promise.all([
+      const batchPromise = lastBatch(clientId);
+      const [{ data: client, error }, device, enrollment, attempt, quarantine, batch] = await Promise.all([
         clientPromise,
         devicePromise,
         enrollmentPromise,
         attemptPromise,
         quarantinePromise,
+        batchPromise,
       ]);
       if (error) throw error;
       if (!client?.id) throw new ApiError(404, 'client_not_found');
-      return { client, device, enrollment, attempt, quarantine };
+      return { client, device, enrollment, attempt, quarantine, batch };
+    },
+  };
+}
+
+/* Counts and a status, never a storage path or a capture id: this is the
+ * client page, and the only question it asks of a batch is whether the last
+ * collection carried anything. */
+function publicLastBatch(row) {
+  if (!row) return null;
+  const counts = row.row_counts && typeof row.row_counts === 'object' ? row.row_counts : {};
+  return {
+    tradingDate: row.trading_date || null,
+    status: row.status || null,
+    receivedAt: row.received_at || null,
+    rowCounts: {
+      accounts: Number.isFinite(Number(counts.accounts)) ? Number(counts.accounts) : null,
+      strategies: Number.isFinite(Number(counts.strategies)) ? Number(counts.strategies) : null,
+      orders: Number.isFinite(Number(counts.orders)) ? Number(counts.orders) : null,
+      executions: Number.isFinite(Number(counts.executions)) ? Number(counts.executions) : null,
     },
   };
 }
@@ -149,6 +196,9 @@ function publicDevice(row) {
       ? row.last_error_code
       : row.last_error_code ? 'collector_error' : null,
     revokedAt: row.revoked_at || null,
+    // When this VPS was paired. A machine paired an hour ago has collected
+    // nothing yet, and that is what a new install looks like, not a fault.
+    createdAt: row.created_at || null,
     schedule: {
       time: row.schedule_time,
       timezone: row.schedule_timezone,
@@ -251,6 +301,7 @@ export function createHandler({
         enrollment: publicEnrollment(status.enrollment),
         lastPairAttempt: publicPairAttempt(status.attempt),
         quarantine: publicQuarantine(status.quarantine, status.device),
+        lastBatch: publicLastBatch(status.batch),
       });
     } catch (error) {
       return handleApiError(res, publicError(error), { fallbackMessage: 'collector_status_failed' });

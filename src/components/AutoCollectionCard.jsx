@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
+import { collectorFlags } from '../domain/collectorFlags';
 import { describeQuarantineItem, quarantineCounts } from '../domain/autoCollectionFleet';
 import { describePairRefusal } from '../domain/pairRefusal';
 import {
@@ -312,6 +313,8 @@ export default function AutoCollectionCard({
     };
   }, [disableAutoLoad, loadStatus]);
 
+  const flags = useMemo(() => (status ? collectorFlags(status, new Date(nowMs)) : []), [status, nowMs]);
+
   const enrollmentSeconds = remainingEnrollmentSeconds(status?.enrollment?.expiresAt, nowMs);
   useEffect(() => {
     if (!status?.enrollment?.code) return undefined;
@@ -472,6 +475,27 @@ export default function AutoCollectionCard({
       </header>
 
       {error ? <div className="auto-collection-notice danger" role="alert"><AlertTriangle size={15} /><span>{error.message}</span><button type="button" className="ghost-button" onClick={loadStatus}>Try again</button></div> : null}
+
+      {/* DERIVED, SO THERE IS NOTHING TO DISMISS.
+        *
+        * No acknowledge button and no stored row: these are a function of the
+        * device, the release and the last batch, recomputed on every load. A
+        * flag goes away when the thing it describes goes away, and a CAM
+        * cannot clear one by clicking it. The badge in the client header reads
+        * this same array in the same order, so the two can never disagree. */}
+      {flags.length ? (
+        <ul className="collector-flags" aria-label="Collection problems">
+          {flags.map((flag) => (
+            <li key={flag.id} className={`collector-flag ${flag.severity}`}>
+              <AlertTriangle size={15} aria-hidden="true" />
+              <div>
+                <strong>{flag.title}</strong>
+                <span>{flag.detail}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       <div className="auto-collection-binding">
         <Server size={17} aria-hidden="true" />
