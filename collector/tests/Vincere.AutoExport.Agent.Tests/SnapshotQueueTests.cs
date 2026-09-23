@@ -381,6 +381,238 @@ public sealed class SnapshotQueueTests : IDisposable
         Assert.Equal(QueueState.Uploading, claimed.State);
     }
 
+    /* QUARANTINE WAS TERMINAL. THESE ARE THE FACTS THAT MAKE IT NOT.
+     *
+     * A 422 is the CRM reading a capture and refusing it, and a fix on that
+     * side makes the same bytes acceptable, which is what happened this month
+     * with four captures nobody could resend without the path. The review
+     * sends such captures back to pending, counts the attempt, and stops at
+     * three; a capture the CRM answers it already holds is sent again until
+     * the desk has replayed it there. Everything else in the folder stays
+     * where it is. */
+
+    private static readonly DateTimeOffset ReviewNow = new(2026, 7, 24, 16, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task ASchemaOneReasonReadsAsNeverRetried()
+    {
+        // Every reason file written before the review existed. It carries no
+        // attempt fields, and the truth about it is zero attempts and no history.
+        SnapshotQueue queue = CreateQueue();
+        Guid captureId = Guid.Parse("00000000-0000-0000-0000-000000000011");
+        QueueItem quarantined = await QuarantinedAsync(queue, captureId, "snapshot_processing_failed");
+        await File.WriteAllTextAsync(
+            quarantined.PayloadPath + ".reason",
+            """{"SchemaVersion":1,"Code":"snapshot_processing_failed","OriginalFileName":"2026-07-23_00000000-0000-0000-0000-000000000011.json","QuarantinedAt":"2026-07-23T20:46:00+00:00"}""");
+
+        QueueQuarantineReason reason = queue.ReadQuarantineReason(quarantined.PayloadPath + ".reason");
+        QueueQuarantineEntry entry = Assert.Single(await queue.ListQuarantineAsync());
+
+        Assert.Equal(1, reason.SchemaVersion);
+        Assert.Equal(0, reason.Attempts);
+        Assert.Null(reason.LastAttemptAt);
+        Assert.Empty(reason.History);
+        Assert.Equal(captureId, entry.CaptureId);
+        Assert.Equal("2026-07-23", entry.TradingDate);
+        Assert.Equal(0, entry.Attempts);
+        Assert.True(entry.WillRetry);
+    }
+
+    [Fact]
+    public async Task ANewQuarantineIsWrittenAsSchemaTwoWithItsFirstLanding()
+    {
+        SnapshotQueue queue = CreateQueue();
+        QueueItem quarantined = await QuarantinedAsync(queue, Guid.NewGuid(), "snapshot_processing_failed");
+
+        QueueQuarantineReason reason = queue.ReadQuarantineReason(quarantined.PayloadPath + ".reason");
+
+        Assert.Equal(QueueQuarantineReason.CurrentSchemaVersion, reason.SchemaVersion);
+        Assert.Equal(0, reason.Attempts);
+        Assert.Null(reason.LastAttemptAt);
+        QueueQuarantineAttempt landing = Assert.Single(reason.History);
+        Assert.Equal("snapshot_processing_failed", landing.Code);
+        Assert.Equal(reason.QuarantinedAt, landing.At);
+    }
+
+    [Fact]
+    public async Task TheReviewSendsBackOnlyRetryableCodesUnderTheCap()
+    {
+        SnapshotQueue queue = CreateQueue();
+        Guid retryable = Guid.Parse("00000000-0000-0000-0000-000000000021");
+        Guid final = Guid.Parse("00000000-0000-0000-0000-000000000022");
+        Guid spent = Guid.Parse("00000000-0000-0000-0000-000000000023");
+        QueueItem retryableItem = await QuarantinedAsync(queue, retryable, "snapshot_processing_failed");
+        await QuarantinedAsync(queue, final, "snapshot_rejected");
+        QueueItem spentItem = await QuarantinedAsync(queue, spent, "unsupported_schema_version");
+        // Three attempts already spent, written the way the review writes it.
+        await File.WriteAllTextAsync(
+            spentItem.PayloadPath + ".reason",
+            Newtonsoft.Json.JsonConvert.SerializeObject(new QueueQuarantineReason(
+                QueueQuarantineReason.CurrentSchemaVersion,
+                "unsupported_schema_version",
+                Path.GetFileName(spentItem.PayloadPath),
+                ReviewNow.AddDays(-3),
+                QuarantinePolicy.MaximumAttempts,
+                ReviewNow.AddDays(-1),
+                Array.Empty<QueueQuarantineAttempt>())));
+
+        QueueQuarantineReviewResult review = await queue.ReviewQuarantineAsync(ReviewNow);
+
+        QueueQuarantineEntry requeued = Assert.Single(review.Requeued);
+        Assert.Equal(retryable, requeued.CaptureId);
+        Assert.Equal(1, requeued.Attempts);
+        Assert.Equal(ReviewNow, requeued.LastAttemptAt.Value);
+        Assert.Equal(
+            new[] { final, spent },
+            review.Remaining.Select(entry => entry.CaptureId).OrderBy(id => id).ToArray());
+        Assert.All(review.Remaining, entry => Assert.False(entry.WillRetry));
+
+        // The payload is pending for the ordinary uploader; the reason file
+        // stays behind with the attempt counted, which is how a bounce is
+        // recognised.
+        Assert.True(File.Exists(Path.Combine(queue.PendingDirectory, Path.GetFileName(retryableItem.PayloadPath))));
+        Assert.False(File.Exists(retryableItem.PayloadPath));
+        QueueQuarantineReason counted = queue.ReadQuarantineReason(retryableItem.PayloadPath + ".reason");
+        Assert.Equal(1, counted.Attempts);
+        Assert.Equal(ReviewNow, counted.LastAttemptAt.Value);
+        Assert.Equal(
+            new[] { "snapshot_processing_failed", QueueQuarantineReason.RequeuedCode },
+            counted.History.Select(attempt => attempt.Code).ToArray());
+        Assert.Equal(2, (await queue.ListQuarantineAsync()).Count);
+    }
+
+    [Fact]
+    public async Task ACaptureThatBouncesArrivesWithItsAttemptsIntact()
+    {
+        SnapshotQueue queue = CreateQueue();
+        QueueItem first = await QuarantinedAsync(queue, Guid.NewGuid(), "snapshot_processing_failed");
+        await queue.ReviewQuarantineAsync(ReviewNow);
+
+        QueueItem claimed = await queue.ClaimNextAsync();
+        QueueItem bounced = await queue.QuarantineAsync(claimed, "snapshot_processing_failed");
+
+        Assert.Equal(first.PayloadPath, bounced.PayloadPath);
+        QueueQuarantineReason reason = queue.ReadQuarantineReason(bounced.PayloadPath + ".reason");
+        Assert.Equal(1, reason.Attempts);
+        Assert.Equal(ReviewNow, reason.LastAttemptAt.Value);
+        Assert.Equal(
+            new[] { "snapshot_processing_failed", QueueQuarantineReason.RequeuedCode, "snapshot_processing_failed" },
+            reason.History.Select(attempt => attempt.Code).ToArray());
+        QueueQuarantineEntry entry = Assert.Single(await queue.ListQuarantineAsync());
+        Assert.Equal(1, entry.Attempts);
+        Assert.True(entry.WillRetry);
+    }
+
+    [Fact]
+    public async Task TheCapHoldsAfterThreeBounces()
+    {
+        SnapshotQueue queue = CreateQueue();
+        Guid captureId = Guid.NewGuid();
+        await QuarantinedAsync(queue, captureId, "unsupported_schema_version");
+
+        for (int attempt = 1; attempt <= QuarantinePolicy.MaximumAttempts; attempt++)
+        {
+            QueueQuarantineReviewResult review = await queue.ReviewQuarantineAsync(ReviewNow.AddDays(attempt));
+            Assert.Equal(attempt, Assert.Single(review.Requeued).Attempts);
+            QueueItem claimed = await queue.ClaimNextAsync();
+            await queue.QuarantineAsync(claimed, "unsupported_schema_version");
+        }
+
+        QueueQuarantineReviewResult fourth = await queue.ReviewQuarantineAsync(ReviewNow.AddDays(4));
+
+        Assert.Empty(fourth.Requeued);
+        QueueQuarantineEntry entry = Assert.Single(fourth.Remaining);
+        Assert.Equal(captureId, entry.CaptureId);
+        Assert.Equal(QuarantinePolicy.MaximumAttempts, entry.Attempts);
+        Assert.False(entry.WillRetry);
+        Assert.Null(await queue.ClaimNextAsync());
+    }
+
+    [Fact]
+    public async Task ACaptureTheCrmAlreadyHoldsIsSentAgainUntilTheDeskHasReplayedIt()
+    {
+        // The CRM of today answers the resend of a 422 with 409
+        // capture_requires_replay: it kept the refused snapshot as a failed
+        // close and the desk replays it there. The resend costs the CRM one
+        // claim and is the only thing that clears this folder once the desk
+        // has acted, so it goes at every review, past the cap that holds for
+        // a 422, and the count keeps saying how long it has waited.
+        SnapshotQueue queue = CreateQueue();
+        QueueItem first = await QuarantinedAsync(queue, Guid.NewGuid(), "snapshot_processing_failed");
+
+        for (int day = 1; day <= QuarantinePolicy.MaximumAttempts + 1; day++)
+        {
+            QueueQuarantineReviewResult review = await queue.ReviewQuarantineAsync(ReviewNow.AddDays(day));
+            QueueQuarantineEntry requeued = Assert.Single(review.Requeued);
+            Assert.Equal(day, requeued.Attempts);
+            Assert.True(requeued.WillRetry);
+            QueueItem claimed = await queue.ClaimNextAsync();
+            await queue.QuarantineAsync(claimed, QuarantinePolicy.AwaitingReplayCode);
+        }
+
+        QueueQuarantineEntry waiting = Assert.Single(await queue.ListQuarantineAsync());
+        Assert.Equal(QuarantinePolicy.AwaitingReplayCode, waiting.Code);
+        Assert.Equal(QuarantinePolicy.MaximumAttempts + 1, waiting.Attempts);
+        Assert.True(waiting.WillRetry);
+        QueueQuarantineReason reason = queue.ReadQuarantineReason(first.PayloadPath + ".reason");
+        Assert.Equal("snapshot_processing_failed", reason.History[0].Code);
+        Assert.Equal(QuarantinePolicy.AwaitingReplayCode, reason.History[reason.History.Count - 1].Code);
+
+        // The desk replayed it there. The next resend is answered as a
+        // duplicate, the uploader completes it, and nothing of it is left here.
+        DateTimeOffset replayed = ReviewNow.AddDays(QuarantinePolicy.MaximumAttempts + 2);
+        Assert.Single((await queue.ReviewQuarantineAsync(replayed)).Requeued);
+        QueueItem accepted = await queue.ClaimNextAsync();
+        await queue.CompleteAsync(accepted, "batch-replayed", accepted.ContentSha256, replayed.AddMinutes(1));
+
+        Assert.False(File.Exists(first.PayloadPath + ".reason"));
+        Assert.Empty(Directory.EnumerateFiles(queue.QuarantineDirectory));
+        Assert.Empty(await queue.ListQuarantineAsync());
+    }
+
+    [Fact]
+    public async Task AnAcceptedCaptureForgetsItsQuarantineHistory()
+    {
+        // The reason file left behind for a bounce must not outlive the capture
+        // it describes, or it would describe a capture that is in the CRM.
+        SnapshotQueue queue = CreateQueue();
+        QueueItem quarantined = await QuarantinedAsync(queue, Guid.NewGuid(), "snapshot_processing_failed");
+        await queue.ReviewQuarantineAsync(ReviewNow);
+        QueueItem claimed = await queue.ClaimNextAsync();
+
+        await queue.CompleteAsync(claimed, "batch-accepted", claimed.ContentSha256, ReviewNow.AddMinutes(1));
+
+        Assert.False(File.Exists(quarantined.PayloadPath + ".reason"));
+        Assert.Empty(Directory.EnumerateFiles(queue.QuarantineDirectory));
+        Assert.Empty(await queue.ListQuarantineAsync());
+    }
+
+    [Fact]
+    public async Task TheReviewLeavesACaptureWhoseTwinIsAlreadyOnItsWay()
+    {
+        // A pending file of the same name means a copy is already going. The
+        // review does not get to decide which copy is right, and it must not
+        // spend an attempt on one it did not move.
+        SnapshotQueue queue = CreateQueue();
+        Guid captureId = Guid.NewGuid();
+        QueueItem quarantined = await QuarantinedAsync(queue, captureId, "snapshot_processing_failed");
+        await queue.EnqueueAsync(Snapshot(captureId));
+
+        QueueQuarantineReviewResult review = await queue.ReviewQuarantineAsync(ReviewNow);
+
+        Assert.Empty(review.Requeued);
+        Assert.Equal(captureId, Assert.Single(review.Remaining).CaptureId);
+        Assert.True(File.Exists(quarantined.PayloadPath));
+        Assert.Equal(0, queue.ReadQuarantineReason(quarantined.PayloadPath + ".reason").Attempts);
+    }
+
+    private static async Task<QueueItem> QuarantinedAsync(SnapshotQueue queue, Guid captureId, string code)
+    {
+        await queue.EnqueueAsync(Snapshot(captureId));
+        QueueItem claimed = await queue.ClaimNextAsync();
+        return await queue.QuarantineAsync(claimed, code);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);

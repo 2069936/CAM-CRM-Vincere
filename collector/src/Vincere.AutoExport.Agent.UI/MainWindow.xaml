@@ -74,6 +74,63 @@
                 </StackPanel>
             </Border>
         </DataTemplate>
+        <!-- One quarantined capture. Amber when the service will retry it at the
+             review time, red when it is final and waits for the desk. The code is
+             shown beside the sentence so the desk can name it on the CRM side. -->
+        <DataTemplate x:Key="QuarantineItemTemplate">
+            <Border CornerRadius="6" Padding="10,7" Margin="0,6,0,0" BorderThickness="1"
+                    AutomationProperties.Name="{Binding Reason}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="#2E2612" />
+                        <Setter Property="BorderBrush" Value="#F5B841" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Tone}" Value="bad">
+                                <Setter Property="Background" Value="#331A1E" />
+                                <Setter Property="BorderBrush" Value="#FF6B6B" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding DateLabel}" FontWeight="SemiBold" VerticalAlignment="Top" />
+                    <StackPanel Grid.Column="1" Margin="8,0,8,0">
+                        <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Code}" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                        <TextBlock Text="{Binding Disposition}" FontSize="12" HorizontalAlignment="Right" />
+                        <TextBlock Text="{Binding Attempts}" FontSize="11" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Right" Margin="0,2,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
+        <!-- The quarantine card, defined once and placed on the two tabs a paired
+             machine lands on. Hidden while the folder is empty, which is the
+             ordinary state: an empty card would read as a warning about nothing. -->
+        <DataTemplate x:Key="QuarantineCardTemplate">
+            <Border Background="{StaticResource RaisedBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,14,0,0"
+                    Visibility="{Binding HasQuarantine, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel>
+                    <TextBlock Text="Q U A R A N T I N E" Foreground="{StaticResource MutedBrush}" FontSize="10" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding QuarantineSummary}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,7,0,0"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Text="Captures the CRM refused. Ones it could not process are sent again after a fix on the CRM side, up to three times; the rest wait for the desk."
+                               Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" FontSize="12" Margin="0,6,0,0" />
+                    <ItemsControl ItemsSource="{Binding QuarantineItems}" ItemTemplate="{StaticResource QuarantineItemTemplate}" Margin="0,8,0,0"
+                                  AutomationProperties.Name="Captures in quarantine" />
+                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                        <Button Content="Retry quarantine now" Command="{Binding RetryQuarantineCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}"
+                                AutomationProperties.Name="Send the retryable quarantined captures back for upload now" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
     </Window.Resources>
     <Grid>
         <Grid.ColumnDefinitions>
@@ -207,6 +264,7 @@
                                     </Border>
                                 </StackPanel>
                             </Border>
+                            <ContentControl Content="{Binding}" ContentTemplate="{StaticResource QuarantineCardTemplate}" Focusable="False" />
                             <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
                                 <Button Content="Run test capture" Command="{Binding TestCaptureCommand}" AutomationProperties.Name="Run NinjaTrader test capture" />
                             </StackPanel>
@@ -248,6 +306,7 @@
                                 </Border>
                             </StackPanel>
                         </Border>
+                        <ContentControl Content="{Binding}" ContentTemplate="{StaticResource QuarantineCardTemplate}" Focusable="False" />
                         <!-- The queue lives under ProgramData, which is hidden, inside a
                              tree restricted to SYSTEM and Administrators. Copying a
                              capture out by hand is the fallback whenever uploads are

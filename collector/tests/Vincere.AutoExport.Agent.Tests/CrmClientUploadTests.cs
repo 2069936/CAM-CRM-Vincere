@@ -120,6 +120,55 @@ public sealed class CrmClientUploadTests : IDisposable
         Assert.True(File.Exists(item.PayloadPath));
     }
 
+    /* HELD AT THE DOOR IS NOT A REFUSAL.
+     *
+     * Step 45 answers 429 ingest_at_capacity with Retry-After when the CRM is
+     * full. The agent must name it, honour the wait, keep the payload, and
+     * not report it as the CRM having failed: a red row for a machine doing
+     * exactly what it was asked is the wrong picture. */
+    [Fact]
+    public async Task AtCapacityIsNamedHonoursRetryAfterAndKeepsThePayload()
+    {
+        SequenceHandler handler = new(_ =>
+        {
+            HttpResponseMessage response = Json(HttpStatusCode.TooManyRequests, """
+                {"error":"ingest_at_capacity","batchId":"11111111-1111-4111-8111-111111111111","status":"received"}
+                """);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(45));
+            return response;
+        });
+        RecordingDelay delay = new();
+        CrmClient client = CreateClient(handler, delay, maxAttempts: 3);
+        QueueItem item = await QueueItemAsync();
+
+        CrmClientException error = await Assert.ThrowsAsync<CrmClientException>(
+            () => client.UploadAsync(item));
+
+        Assert.Equal("ingest_at_capacity", error.Code);
+        Assert.True(error.Retryable);
+        Assert.Equal(CrmFailureDisposition.Retry, error.Disposition);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal(2, delay.Delays.Count);
+        Assert.All(delay.Delays, waited => Assert.Equal(TimeSpan.FromSeconds(45), waited));
+        Assert.True(File.Exists(item.PayloadPath));
+    }
+
+    [Fact]
+    public async Task APlain429WithoutTheCodeIsStillTheGenericRetryableFailure()
+    {
+        SequenceHandler handler = new(_ => Json(HttpStatusCode.TooManyRequests, """
+            {"error":"rate_limited"}
+            """));
+        CrmClient client = CreateClient(handler, new RecordingDelay(), maxAttempts: 2);
+        QueueItem item = await QueueItemAsync();
+
+        CrmClientException error = await Assert.ThrowsAsync<CrmClientException>(
+            () => client.UploadAsync(item));
+
+        Assert.Equal("upload_failed", error.Code);
+        Assert.Equal(CrmFailureDisposition.Retry, error.Disposition);
+    }
+
     [Fact]
     public async Task RedirectIsNotFollowedAndAuthorizationNeverLeavesConfiguredOrigin()
     {

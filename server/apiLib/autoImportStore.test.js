@@ -113,7 +113,7 @@ describe('auto import Supabase store', () => {
     const store = createAutoImportStore({ rpc });
     await expect(store.claimBatch({ deviceId: 'device-1', captureId: fixture.captureId, clientId: 'client-1', tradingDate: fixture.tradingDate, capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path', sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {}, processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120 }))
       .resolves.toEqual({ outcome: 'busy', retryAfterSeconds: 17, batch: { id: 'batch-1', dailyImportId: null, status: 'processing', errorCode: null } });
-    expect(rpc).toHaveBeenCalledWith('claim_ingest_batch_v3', expect.objectContaining({ p_capture_id: fixture.captureId, p_processing_token: '99999999-9999-4999-8999-999999999999', p_lease_seconds: 120 }));
+    expect(rpc).toHaveBeenCalledWith('claim_ingest_batch_v4', expect.objectContaining({ p_capture_id: fixture.captureId, p_processing_token: '99999999-9999-4999-8999-999999999999', p_lease_seconds: 120 }));
   });
 
   it('maps immutable metadata reuse to a stable conflict', async () => {
@@ -208,7 +208,7 @@ describe('auto import Supabase store', () => {
       completeness: { isComplete: true }, rowCounts: { accounts: 1 },
       eventType: 'ingest_batch_late_closed_day', processingToken: '99999999-9999-4999-8999-999999999999', clientId: 'client-1',
     })).resolves.toEqual({ id: 'batch-1', dailyImportId: 'daily-1', status: 'late_closed_day', errorCode: null });
-    expect(rpc).toHaveBeenCalledWith('finalize_ingest_batch_v2', expect.objectContaining({
+    expect(rpc).toHaveBeenCalledWith('finalize_ingest_batch_v3', expect.objectContaining({
       p_batch_id: 'batch-1', p_device_id: 'device-1', p_status: 'late_closed_day',
       p_success: true, p_event_type: 'ingest_batch_late_closed_day', p_processing_token: expect.any(String),
     }));
@@ -236,6 +236,57 @@ describe('auto import Supabase store', () => {
       batchId: 'batch-1', deviceId: 'device-1',
       processingToken: '99999999-9999-4999-8999-999999999999',
     })).rejects.toMatchObject({ status, message });
+  });
+
+  it('keeps the door\'s answer as its own outcome rather than folding it into busy', async () => {
+    // 'busy' says this capture is already being processed. 'at_capacity' says
+    // the server is full and has nothing to do with this capture. The desk
+    // counts them separately, so they never share a name.
+    const rpc = vi.fn().mockResolvedValue({ data: { outcome: 'at_capacity', retry_after_seconds: 63, batch: { id: 'batch-1', daily_import_id: null, status: 'received', error_code: null } }, error: null });
+    const store = createAutoImportStore({ rpc });
+    await expect(store.claimBatch({ deviceId: 'device-1', captureId: fixture.captureId, clientId: 'client-1', tradingDate: fixture.tradingDate, capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path', sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {}, processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120 }))
+      .resolves.toEqual({ outcome: 'at_capacity', retryAfterSeconds: 63, batch: { id: 'batch-1', dailyImportId: null, status: 'received', errorCode: null } });
+  });
+
+  it('falls back to the claim the running database has when step 45 has not been run yet', async () => {
+    // The deploy and the migration can happen in either order. A server that
+    // asks for v4 before the SQL editor has been opened must keep collecting.
+    const rpc = vi.fn(async (name) => (name === 'claim_ingest_batch_v4'
+      ? { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.claim_ingest_batch_v4 in the schema cache' } }
+      : { data: { outcome: 'owned', retry_after_seconds: 0, batch: { id: 'batch-1', daily_import_id: null, status: 'processing', error_code: null } }, error: null }));
+    const store = createAutoImportStore({ rpc });
+    await expect(store.claimBatch({ deviceId: 'device-1', captureId: fixture.captureId, clientId: 'client-1', tradingDate: fixture.tradingDate, capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path', sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {}, processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120 }))
+      .resolves.toMatchObject({ outcome: 'owned' });
+    expect(rpc.mock.calls.map((call) => call[0])).toEqual(['claim_ingest_batch_v4', 'claim_ingest_batch_v3']);
+  });
+
+  it('does not fall back for a real failure, which would hide it behind the old function', async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }));
+    const store = createAutoImportStore({ rpc });
+    await expect(store.claimBatch({ deviceId: 'device-1', captureId: fixture.captureId, clientId: 'client-1', tradingDate: fixture.tradingDate, capturedAt: fixture.capturedAt, schemaVersion: 1, storagePath: 'path', sha256: 'a'.repeat(64), byteCount: 10, rowCounts: {}, processingToken: '99999999-9999-4999-8999-999999999999', leaseSeconds: 120 }))
+      .rejects.toMatchObject({ code: '57014' });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the stopwatch to the finalize that stores it, and drops it for the older one', async () => {
+    const rpc = vi.fn(async (name) => (name === 'finalize_ingest_batch_v3'
+      ? { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.finalize_ingest_batch_v3 in the schema cache' } }
+      : { data: { id: 'batch-1', status: 'processed', daily_import_id: 'daily-1' }, error: null }));
+    const store = createAutoImportStore({ rpc });
+    await store.completeBatch({
+      batchId: 'batch-1', deviceId: 'device-1', clientId: 'client-1', status: 'processed',
+      dailyImportId: 'daily-1', capturedAt: fixture.capturedAt, success: true,
+      completeness: {}, rowCounts: {}, eventType: 'ingest_batch_processed',
+      processingToken: '99999999-9999-4999-8999-999999999999',
+      stageDurationsMs: { storage: 40, persist: 900 }, ingestDurationMs: 1200,
+    });
+    expect(rpc).toHaveBeenNthCalledWith(1, 'finalize_ingest_batch_v3', expect.objectContaining({
+      p_stage_durations_ms: { storage: 40, persist: 900 }, p_ingest_duration_ms: 1200,
+    }));
+    // The older function has twelve arguments and would refuse fourteen.
+    expect(rpc.mock.calls[1][0]).toBe('finalize_ingest_batch_v2');
+    expect(rpc.mock.calls[1][1]).not.toHaveProperty('p_stage_durations_ms');
+    expect(rpc.mock.calls[1][1]).not.toHaveProperty('p_ingest_duration_ms');
   });
 
   it('maps the locked closed-day persistence result without exposing database details', async () => {

@@ -106,5 +106,13 @@ namespace NinjaTrader.NinjaScript
         public IList<Instrument> Instruments { get; } = new List<Instrument>();
         public bool IsInSync { get; set; }
         public string BarsPeriod { get; set; }
+
+        // The orders and fills the strategy owns. This is the only direction the
+        // platform exposes the link its own database keeps as Strategy2Order, and
+        // the facade reads both of these by name through TypeDescriptor rather
+        // than against the declared type, because the collection is absent on some
+        // NinjaTrader versions the fleet runs.
+        public IList<Order> Orders { get; } = new List<Order>();
+        public IList<Execution> Executions { get; } = new List<Execution>();
     }
 }

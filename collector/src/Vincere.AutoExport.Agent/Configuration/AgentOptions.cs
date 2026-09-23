@@ -39,5 +39,15 @@ public sealed record AgentOptions
     [JsonProperty("lastScheduledTradingDate")]
     public string LastScheduledTradingDate { get; init; }
 
+    /* When the quarantine folder is walked, New York time. Midday because the
+     * previous close has had the night to be looked at on the CRM side, and
+     * because it is hours from the capture window, so a resend never competes
+     * with the day's own upload. */
+    [JsonProperty("quarantineReviewTime")]
+    public string QuarantineReviewTime { get; init; } = "12:00";
+
+    [JsonProperty("lastQuarantineReviewDate")]
+    public string LastQuarantineReviewDate { get; init; }
+
     public static AgentOptions CreateDefault() => new();
 }

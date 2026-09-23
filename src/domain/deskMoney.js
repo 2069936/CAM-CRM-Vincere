@@ -171,7 +171,22 @@ export function monthFor(clients = [], asOfDate = '') {
   return latest ? latest.slice(0, 7) : '';
 }
 
-function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted, book, onRequested }) {
+/**
+ * The per-close summary rows this desk figure may read instead of snapshots.
+ *
+ * `summaries` is what indexCloseSummaries returns: the closes whose stored rows
+ * still match the accounts' current classification, and the ones whose do not.
+ * A close the map does not hold falls through to its own snapshots, so a login
+ * that carries summaries for the whole book and full detail for each client's
+ * latest close produces one answer out of one addition.
+ */
+function summaryLookup(summaries) {
+  const usable = summaries?.usable;
+  if (!(usable instanceof Map) || !usable.size) return null;
+  return (dailyImport) => usable.get(dailyImport?.uuid || dailyImport?.id) || null;
+}
+
+function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted, book, onRequested, totals, staleSummaries }) {
   const dateCount = dates.length;
   const latest = book.latest;
   const missing = Math.max(0, clientsInScope - clientsCounted);
@@ -191,6 +206,12 @@ function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted,
   } else if (mode === 'month') {
     label = `Every close in ${requested} · ${dateCount} date${dateCount === 1 ? '' : 's'}`
       + ` · ${clientsCounted} client${clientsCounted === 1 ? '' : 's'}`;
+  } else if (mode === 'range') {
+    // `requested` is `from..to` for a range, so the label prints the bounds
+    // rather than a month nobody asked for.
+    const [from = '', to = ''] = String(requested || '').split('..');
+    label = `Every close from ${from} to ${to} · ${dateCount} date${dateCount === 1 ? '' : 's'}`
+      + ` · ${clientsCounted} client${clientsCounted === 1 ? '' : 's'}`;
   }
 
   return {
@@ -209,12 +230,78 @@ function describeBasis({ mode, requested, dates, clientsInScope, clientsCounted,
     clientsOffLatestClose: mode === 'latest-per-client' ? clientsCounted - onRequested : 0,
     // True only when every figure in this object comes from one close on one day.
     singleDate: dateCount === 1,
-    // What `row.accounts` counts. Over one close it is accounts; over a month the
-    // same account is read once per close it reported on, so 1,234 is a count of
-    // account closes and calling it "accounts" on a desk of 584 would be a lie
-    // by label.
-    countNoun: mode === 'month' ? 'account close' : 'account',
+    // What `row.accounts` counts. Over one close it is accounts; over a month or
+    // any other range the same account is read once per close it reported on, so
+    // 1,234 is a count of account closes and calling it "accounts" on a desk of
+    // 584 would be a lie by label.
+    countNoun: mode === 'month' || mode === 'range' ? 'account close' : 'account',
+    // WHERE THE MONEY CAME FROM. `summary` closes were added from the rows the
+    // ingest stored for them; `loaded` closes were walked account by account.
+    // The two are the same arithmetic — see buildSegmentTotals — and the split
+    // is reported so a reader can tell a figure that is complete from one that
+    // is waiting on a fetch. `unreadable` is the count that must never be
+    // printed as a zero: those closes are in the book, in scope, and this
+    // session holds neither a summary nor their snapshots.
+    sources: {
+      summary: totals?.provenance?.fromSummary || 0,
+      loaded: totals?.provenance?.walked || 0,
+      unreadable: totals?.provenance?.withoutData || 0,
+      // Closes whose stored summary was refused because an account has been
+      // reclassified since it was written. They are not read from the summary;
+      // they fall back to their snapshots, or to `unreadable`.
+      staleSummaries: staleSummaries || 0,
+    },
+    complete: !(totals?.provenance?.withoutData || 0),
     label,
+  };
+}
+
+/**
+ * WHAT THE FIGURE IS MISSING, IN A SENTENCE, FOR THE SCREEN.
+ *
+ * `basis.sources` and `basis.complete` were computed and then read by nothing:
+ * the manager's money tiles, the history strip and the desk period report each
+ * printed `basis.label` and stopped. So a month short of 92% of its closes
+ * rendered exactly like a month that held all of them, and the promise in
+ * supabase/step_48_close_summaries.sql — "the basis line under each figure says
+ * how many closes it could not read" — was not kept by any line of UI.
+ *
+ * Built here rather than in the two components so both say the same thing, and
+ * so it can be pinned without rendering. Returns `sentence: ''` for a view with
+ * no close in it at all, where the label already says so.
+ */
+export function describeMoneyCompleteness(basis) {
+  const sources = basis?.sources || {};
+  const summary = Number(sources.summary || 0);
+  const loaded = Number(sources.loaded || 0);
+  const unreadable = Number(sources.unreadable || 0);
+  const stale = Number(sources.staleSummaries || 0);
+  const total = summary + loaded + unreadable;
+  const complete = !unreadable;
+  const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+  const staleNote = stale
+    ? ` ${plural(stale, 'stored summary was', 'stored summaries were')} refused because an account`
+      + ` has been reclassified since ${stale === 1 ? 'it was' : 'they were'} written, and`
+      + ` ${stale === 1 ? 'that close was' : 'those closes were'} read from their own rows instead.`
+    : '';
+
+  if (!total) return { complete, unreadable, sentence: '' };
+  if (!complete) {
+    return {
+      complete,
+      unreadable,
+      sentence: `Incomplete: ${unreadable} of the ${plural(total, 'client close', 'client closes')}`
+        + ' in view could not be read, because this session holds neither a stored summary nor'
+        + ' their account rows. Every figure above is short by whatever those closes hold.'
+        + staleNote,
+    };
+  }
+  return {
+    complete,
+    unreadable,
+    sentence: `Every one of the ${plural(total, 'client close', 'client closes')} in view was read:`
+      + ` ${summary} from a stored close summary, ${loaded} from their own account rows.`
+      + staleNote,
   };
 }
 
@@ -290,8 +377,8 @@ const RECONCILIATION_DEFINITIONS = [
  * makes the tile, the history strip and the clipboard text the same computation
  * rather than three that resemble each other.
  */
-function assemble(entries, { mode, requested, clientsInScope, book, weeklyAdditive = true, balanceComparable = true }) {
-  const totals = buildSegmentTotals(entries);
+function assemble(entries, { mode, requested, clientsInScope, book, weeklyAdditive = true, balanceComparable = true, summaries = null }) {
+  const totals = buildSegmentTotals(entries, { summaryRowsFor: summaryLookup(summaries) });
   const business = rollUpByBusiness(totals);
 
   const dates = [...new Set(entries.map((entry) => day(entry.dailyImport?.date)).filter(Boolean))].sort();
@@ -327,6 +414,7 @@ function assemble(entries, { mode, requested, clientsInScope, book, weeklyAdditi
   return {
     basis: describeBasis({
       mode, requested, dates, clientsInScope, clientsCounted, book, onRequested: onAnchor,
+      totals, staleSummaries: summaries?.stale?.size || 0,
     }),
     // Four rows that do not add up, in a fixed order. There is no total here and
     // there must never be one; see the header of this file.
@@ -355,7 +443,7 @@ export function deskRow(desk, key) {
 /**
  * The desk on the day the page is pinned to, or on each client's latest close.
  */
-export function buildDeskMoney(clients = [], { asOfDate = '' } = {}) {
+export function buildDeskMoney(clients = [], { asOfDate = '', summaries = null } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const entries = [];
@@ -368,6 +456,7 @@ export function buildDeskMoney(clients = [], { asOfDate = '' } = {}) {
     requested: asOfDate ? day(asOfDate) : null,
     clientsInScope: list.length,
     book,
+    summaries,
     weeklyAdditive: true,
     // Balances are comparable within one close. In latest-per-client mode they
     // are each account's last observed balance across several dates, which the
@@ -385,7 +474,7 @@ export function buildDeskMoney(clients = [], { asOfDate = '' } = {}) {
  * Orphan were inside it (-$8,385.58, 2.2% of July) and cash was 26.0% of a
  * figure printed as one number.
  */
-export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
+export function buildDeskMoneyForMonth(clients = [], { month = '', summaries = null } = {}) {
   const list = clients || [];
   const book = bookCloses(list);
   const entries = [];
@@ -400,7 +489,48 @@ export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
     requested: month || null,
     clientsInScope: list.length,
     book,
+    summaries,
     // Both refused across a range, each with the reason on the row.
+    weeklyAdditive: false,
+    balanceComparable: false,
+  });
+}
+
+/**
+ * Every close inside an inclusive date range, through the same segmentation.
+ *
+ * `buildDeskMoneyForMonth` with a different filter and nothing else, because a
+ * week is not a calendar month and the period report needs one that is not.
+ * Both refusals the month already carries apply here for the same reasons: a
+ * weekly P&L column summed over a range counts the same trades once per close,
+ * and a balance summed over a range counts the same money once per close.
+ *
+ * The range is INCLUSIVE at both ends. A `to` that is a Sunday therefore holds
+ * the Saturday close this book has on 2026-07-25; dropping it because it is a
+ * weekend would make the money in this object disagree with the coverage table
+ * printed above it.
+ */
+export function buildDeskMoneyForRange(clients = [], { from = '', to = '', summaries = null } = {}) {
+  const list = clients || [];
+  const book = bookCloses(list);
+  const first = day(from);
+  const last = day(to);
+  const entries = [];
+  for (const client of list) {
+    for (const dailyImport of client?.dailyImports || []) {
+      const date = day(dailyImport?.date);
+      if (!date) continue;
+      if (first && date < first) continue;
+      if (last && date > last) continue;
+      entries.push({ client, dailyImport });
+    }
+  }
+  return assemble(entries, {
+    mode: 'range',
+    requested: `${first}..${last}`,
+    clientsInScope: list.length,
+    book,
+    summaries,
     weeklyAdditive: false,
     balanceComparable: false,
   });
@@ -413,11 +543,11 @@ export function buildDeskMoneyForMonth(clients = [], { month = '' } = {}) {
  * `buildDeskMoney` pinned to that date, so a day on the strip and the same day
  * on the tile are the same arithmetic by construction.
  */
-export function buildDeskMoneyHistory(clients = [], { limit = 10 } = {}) {
+export function buildDeskMoneyHistory(clients = [], { limit = 10, summaries = null } = {}) {
   const list = clients || [];
   const { closes } = bookCloses(list);
   const window = limit > 0 ? closes.slice(-limit) : closes;
-  return window.map((date) => ({ date, desk: buildDeskMoney(list, { asOfDate: date }) }));
+  return window.map((date) => ({ date, desk: buildDeskMoney(list, { asOfDate: date, summaries }) }));
 }
 
 /* ------------------------------------------------------------------ */

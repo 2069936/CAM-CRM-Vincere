@@ -485,6 +485,162 @@ describe('reconcileDailyImport', () => {
   });
 });
 
+// ── did it run ────────────────────────────────────────────────────────────────
+
+/* THE EXPORT IS TAKEN AFTER THE DESK SWITCHES THE ALGOS OFF.
+ *
+ * On 2026-09-21, across 84 closes, 46 distinct (close, strategy) pairs produced
+ * fills and 45 of them carry `enabled = false`. Every flag below used to ask
+ * that checkbox, so the CRM told the desk that nothing was running on the
+ * accounts that had traded all day, and raised a Warning per switched-off row
+ * while it did. reconcile decides the answer once, here, where the day's fills
+ * are in hand, and step 47 stores it on the row.
+ */
+describe('whether a strategy ran, decided at ingest', () => {
+  const registry = { ACC1: { accountName: 'ACC1', accountType: 'Funded', status: 'Active' } };
+  const account = { accountName: 'ACC1', connection: 'Lucid', grossRealizedPnl: 485, accountBalance: 50485, weeklyPnl: 485 };
+  const switchedOff = { accountName: 'ACC1', strategyName: '0 - RBO-1.8', strategyFamily: 'RBO', strategyVersion: '1.8', enabled: false, realized: 0 };
+  const order = { id: 'o1', accountName: 'ACC1', strategyName: '2 - RBO-1.8' };
+  const fill = { id: 'e1', orderId: 'o1', accountName: 'ACC1', time: '11:02' };
+
+  const run = (parsed, date = '2026-06-25') =>
+    reconcileDailyImport({ clientId: 'ran-1', date, registry, parsed });
+
+  it('stores the answer and the evidence on every strategy row', () => {
+    const result = run({ accounts: [account], strategies: [switchedOff], orders: [order], executions: [fill] });
+    expect(result.strategies).toHaveLength(1);
+    expect(result.strategies[0].ran).toBe(true);
+    expect(result.strategies[0].ranBasis).toBe('fills');
+    // And on the copy that travels inside the snapshot, which is what the
+    // screens read after a close is opened.
+    expect(result.snapshots[0].strategies[0].ranBasis).toBe('fills');
+  });
+
+  it('raises no Expected strategy missing on a close the fills say traded', () => {
+    const result = run({ accounts: [account], strategies: [switchedOff], orders: [order], executions: [fill] });
+    expect(result.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(0);
+    expect(result.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(0);
+  });
+
+  it('still raises both when the account really did sit idle', () => {
+    const result = run({ accounts: [{ ...account, grossRealizedPnl: 0, accountBalance: 50000, weeklyPnl: 0 }], strategies: [switchedOff], orders: [], executions: [] });
+    const missing = result.flags.filter((f) => f.type === 'Expected strategy missing');
+    expect(missing).toHaveLength(1);
+    expect(missing[0].severity).toBe('Critical');
+    // The message moved with the rule: it used to say "has no enabled strategy
+    // in this close", which was the checkbox talking.
+    expect(missing[0].message).toContain('no strategy ran in this close');
+    expect(result.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(1);
+    expect(result.strategies[0].ranBasis).toBe('none');
+  });
+
+  it('counts a switched-off row that reported money as having run', () => {
+    const result = run({
+      accounts: [account],
+      strategies: [{ ...switchedOff, realized: 485 }],
+      orders: [], executions: [],
+    });
+    expect(result.strategies[0].ranBasis).toBe('realized');
+    expect(result.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(0);
+  });
+
+  it('catches an account that traded while it was held, switched off or not', () => {
+    const held = { ACC1: { ...registry.ACC1, status: 'Payout Hold', payoutState: 'Payout requested' } };
+    const result = reconcileDailyImport({
+      clientId: 'ran-2', date: '2026-06-25', registry: held,
+      parsed: { accounts: [account], strategies: [switchedOff], orders: [order], executions: [fill] },
+    });
+    const violation = result.flags.filter((f) => f.type === 'Payout hold violation');
+    expect(violation).toHaveLength(1);
+    // The claim is what it caught. "has an enabled strategy" would have been
+    // false about this close, which is the one the flag most needs to catch.
+    expect(violation[0].message).toContain('ran a strategy');
+  });
+
+  it('keeps a stored answer through a Recalculate that has no fills loaded', () => {
+    // The browser loads orders and executions after the first screen, and
+    // Recalculate runs on whatever it holds. Without this, one Recalculate
+    // before the trade history arrived would rewrite the close as idle and
+    // raise a Critical on an account that had traded.
+    const imported = run({ accounts: [account], strategies: [switchedOff], orders: [order], executions: [fill] });
+    const recalculated = recalculateDailyImport({
+      dailyImport: { ...imported, orders: [], executions: [], snapshots: imported.snapshots.map((s) => ({ ...s })) },
+      registry,
+    });
+    expect(recalculated.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(0);
+    expect(recalculated.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(0);
+  });
+
+  it('raises nothing on a Recalculate of a close whose rows carry no answer and whose fills are not loaded', () => {
+    // THE GAP THE STORED-ANSWER GUARD LEFT. withStrategyRan protects a row's
+    // answer only when the row already HAS one. On a database where step 47 has
+    // run and `call public.backfill_strategy_ran_all();` has not yet finished,
+    // supabaseStore reads `ran: null, ranBasis: ''`, so the guard does not
+    // fire — and the rule then runs with no fills, which on a close exported
+    // after shutdown answers `none` for nearly every row. One press regenerated
+    // a Critical on every real-money account that had traded all day and a
+    // Warning per row on each of them, and wrote them back Open, because the
+    // message wording changed in this same branch and the resolved ones no
+    // longer matched. 218 closes on the stored book are that shape.
+    const unanswered = { ...switchedOff, ran: null, ranBasis: '' };
+    const recalculated = recalculateDailyImport({
+      dailyImport: {
+        clientId: 'ran-3',
+        date: '2026-06-25',
+        // `detailLoaded: false` is what a login says about every close but each
+        // client's latest: the fills are not in hand.
+        detailLoaded: false,
+        orders: [],
+        executions: [],
+        accounts: registry,
+        snapshots: [{ ...account, strategies: [unanswered] }],
+        strategies: [unanswered],
+        flags: [],
+      },
+      registry,
+    });
+
+    expect(recalculated.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(0);
+    expect(recalculated.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(0);
+  });
+
+  it('still raises them on the ingest path, where an empty execution list is an answer', () => {
+    // The same empty array means something different at ingest: the upload
+    // parsed the fills and there were none. `fillsLoaded` defaults to true, so
+    // nothing about a real close's flags changes.
+    const result = run({
+      accounts: [{ ...account, grossRealizedPnl: 0, accountBalance: 50000, weeklyPnl: 0 }],
+      strategies: [{ ...switchedOff, ran: null, ranBasis: '' }],
+      orders: [], executions: [],
+    });
+
+    expect(result.flags.filter((f) => f.type === 'Expected strategy missing')).toHaveLength(1);
+    expect(result.flags.filter((f) => f.type === 'Strategy disabled')).toHaveLength(1);
+  });
+
+  it('still catches an account that traded while it was held, with the fills not loaded', () => {
+    // A POSITIVE answer needs no fills. Only "nothing ran" does, so the two
+    // flags that fire when something DID run are unchanged.
+    const held = { ACC1: { ...registry.ACC1, status: 'Payout Hold', payoutState: 'Payout requested' } };
+    const recalculated = recalculateDailyImport({
+      dailyImport: {
+        clientId: 'ran-4',
+        date: '2026-06-25',
+        detailLoaded: false,
+        orders: [],
+        executions: [],
+        accounts: held,
+        snapshots: [{ ...account, strategies: [{ ...switchedOff, enabled: true }] }],
+        strategies: [{ ...switchedOff, enabled: true }],
+        flags: [],
+      },
+      registry: held,
+    });
+
+    expect(recalculated.flags.filter((f) => f.type === 'Payout hold violation')).toHaveLength(1);
+  });
+});
+
 // ── makeAccountAlias ──────────────────────────────────────────────────────────
 
 describe('makeAccountAlias', () => {

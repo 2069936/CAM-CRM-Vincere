@@ -103,6 +103,56 @@ public sealed class CollectorLoopTests
         Assert.Contains("did not accept", Assert.Single(reporter.Messages));
     }
 
+    /* HELD AT THE DOOR IS NOT A FAULT THE DESK SHOULD SEE AS RED.
+     *
+     * The CRM answering ingest_at_capacity is flow control: the item stays
+     * queued and the next pass goes. It reaches the log so the day can be
+     * reconstructed, and never the heartbeat, where a red row for a machine
+     * doing what it was asked would be the wrong picture. */
+    [Fact]
+    public async Task BeingHeldAtTheDoorIsLoggedButNeverBecomesTheDeviceError()
+    {
+        FakeQueue queue = new() { Next = Item };
+        MutableCrm crm = new()
+        {
+            UploadError = new CrmClientException(
+                "ingest_at_capacity",
+                "The CRM is busy and asked this VPS to retry the upload shortly.",
+                true,
+                disposition: CrmFailureDisposition.Retry),
+        };
+        RecordingReporter reporter = new();
+        CollectorState state = new();
+        UploadLoop loop = new(queue, crm, new FakeTokenStore("token"), state, new FakeCaptureHistory(), reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "ingest_at_capacity" }, reporter.Codes);
+        Assert.Null(state.Snapshot().LastErrorCode);
+        Assert.Same(Item, queue.Retried);
+        Assert.Null(queue.Completed);
+    }
+
+    /* A SUCCESSFUL UPLOAD IS THE END OF AN UPLOAD ERROR.
+     *
+     * LastErrorCode used to survive a later successful upload until the next
+     * day's capture, so the fleet view showed a failure that was already
+     * over for the rest of the afternoon. A capture error is not touched: it
+     * is the capture's to clear. */
+    [Fact]
+    public void ASuccessfulUploadClearsAnUploadErrorAndLeavesACaptureErrorAlone()
+    {
+        CollectorState state = new();
+        state.RecordError("upload_failed", "refused");
+        state.RecordUploadSuccess(DateTimeOffset.UtcNow);
+        Assert.Null(state.Snapshot().LastErrorCode);
+        Assert.NotNull(state.Snapshot().LastSuccessAt);
+
+        state.RecordError("capture_failed", "no data");
+        state.RecordUploadSuccess(DateTimeOffset.UtcNow);
+        Assert.Equal("capture_failed", state.Snapshot().LastErrorCode);
+    }
+
     [Fact]
     public async Task AFaultThatChangesShapeIsWrittenAgain()
     {
@@ -341,9 +391,102 @@ public sealed class CollectorLoopTests
     private sealed class FakeClock : ICollectorClock
     {
         public FakeClock(Instant now) => Now = now;
-        public Instant Now { get; }
+        public Instant Now { get; set; }
         public Instant GetCurrentInstant() => Now;
         public DateTimeOffset GetCurrentDateTimeOffset() => Now.ToDateTimeOffset();
+    }
+
+    /* THE SPREAD, SEEN FROM THE LOOP THAT OBEYS IT.
+     *
+     * The capture keeps its schedule exactly; only the first upload of it
+     * waits, and only by this machine's own offset. A manual test capture and a
+     * day left over from an earlier failure both go straight out. */
+    private static CaptureRunResult ScheduledCapture(Instant uploadNotBefore) => new(
+        new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-07-23", null),
+        true,
+        null,
+        null,
+        uploadNotBefore);
+
+    [Fact]
+    public async Task TheFirstUploadAfterAScheduledCaptureWaitsForThisMachinesOffset()
+    {
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        FakeQueue queue = new() { Next = Item };
+        FakeClock clock = new(captured + Duration.FromSeconds(10));
+        UploadLoop loop = new(queue, new FakeCrm(), new FakeTokenStore("token"), state, new FakeCaptureHistory(), null, clock);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        // Returned to pending untouched: nothing uploaded, nothing quarantined,
+        // nothing counted as an attempt. The next pass claims it again.
+        Assert.Same(Item, queue.Retried);
+        Assert.Null(queue.Completed);
+
+        clock.Now = captured + Duration.FromSeconds(91);
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(Item, queue.Completed);
+    }
+
+    [Fact]
+    public async Task AManualCaptureClearsTheHoldItWouldOtherwiseHaveWaitedBehind()
+    {
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        // A manual capture queues with no hold, which is what drops the one the
+        // scheduled capture set a moment ago.
+        state.RecordCapture(
+            new CaptureRunResult(new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-07-23", null), true, null, null),
+            captured.ToDateTimeOffset());
+        FakeQueue queue = new() { Next = Item };
+        UploadLoop loop = new(
+            queue, new FakeCrm(), new FakeTokenStore("token"), state, new FakeCaptureHistory(),
+            null, new FakeClock(captured + Duration.FromSeconds(10)));
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(Item, queue.Completed);
+        Assert.Null(queue.Retried);
+    }
+
+    [Fact]
+    public async Task ADayLeftOverFromAnEarlierFailureIsNeverHeld()
+    {
+        // A retry of an already queued item has waited long enough. The hold
+        // names the trading date it belongs to so it can only hold that one.
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        QueueItem older = Item with { TradingDate = "2026-07-20" };
+        FakeQueue queue = new() { Next = older };
+        UploadLoop loop = new(
+            queue, new FakeCrm(), new FakeTokenStore("token"), state, new FakeCaptureHistory(),
+            null, new FakeClock(captured + Duration.FromSeconds(10)));
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Same(older, queue.Completed);
+        Assert.Null(queue.Retried);
+    }
+
+    [Fact]
+    public void AWeekendPassDoesNotDisturbAHoldOrInventOne()
+    {
+        // This loop runs every fifteen seconds and most passes have nothing to
+        // report. Only a capture that actually reached the queue moves the hold.
+        Instant captured = Instant.FromUtc(2026, 7, 23, 20, 35);
+        CollectorState state = new();
+        state.RecordCapture(ScheduledCapture(captured + Duration.FromSeconds(90)), captured.ToDateTimeOffset());
+        state.RecordCapture(
+            new CaptureRunResult(new CaptureScheduleDecision(CaptureScheduleDecisionKind.AlreadyCaptured, "2026-07-23", null), false, null, null),
+            captured.ToDateTimeOffset());
+
+        Assert.True(state.IsUploadHeld("2026-07-23", captured + Duration.FromSeconds(10)));
+        Assert.False(state.IsUploadHeld("2026-07-23", captured + Duration.FromSeconds(90)));
     }
 
     private sealed class FakeScheduler : ICaptureScheduler
@@ -369,6 +512,8 @@ public sealed class CollectorLoopTests
         public Task<QueueItem> QuarantineAsync(QueueItem item, string code, CancellationToken cancellationToken = default) => Task.FromResult(item);
         public Task<QueueStatus> GetStatusAsync(CancellationToken cancellationToken = default) => Task.FromResult(new QueueStatus(1, 0, 2, 0, 128, false));
         public Task<QueueCleanupResult> CleanupAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => Task.FromResult(new QueueCleanupResult(0, 0));
+        public Task<IReadOnlyList<QueueQuarantineEntry>> ListQuarantineAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<QueueQuarantineReviewResult> ReviewQuarantineAsync(DateTimeOffset now, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     // FakeCrm's UploadError is init-only, which is right for the tests that set
@@ -386,6 +531,7 @@ public sealed class CollectorLoopTests
         }
         public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
             => Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class ThrowingHeartbeatCrm : ICollectorCrmClient
@@ -399,6 +545,7 @@ public sealed class CollectorLoopTests
             if (HeartbeatError != null) throw HeartbeatError;
             return Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
         }
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class RecordingReporter : IServiceReporter
@@ -433,6 +580,7 @@ public sealed class CollectorLoopTests
             Heartbeat = payload;
             return Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
         }
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class FakeTokenStore : IDeviceTokenStore

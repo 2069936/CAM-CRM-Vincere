@@ -72,7 +72,7 @@ export default function AlgoContributionPanel({ client, accountName }) {
             <tbody>
               {periods.map((p, i) => (
                 <tr key={`${p.from}-${i}`}>
-                  <td>{p.combo === 'None' ? <em className="muted">no enabled algo</em> : p.combo}</td>
+                  <td>{p.combo === 'None' ? <em className="muted">no algo ran</em> : p.combo}</td>
                   <td className="nums">{p.from === p.to ? p.from : `${p.from} → ${p.to}`}</td>
                   <td className="nums">{p.days}</td>
                   <td className={`nums ${cls(p.totalPnl)}`}>{money(p.totalPnl)}</td>
@@ -93,7 +93,7 @@ export default function AlgoContributionPanel({ client, accountName }) {
                 return (
                   <tr key={a.key}>
                     <td>{a.key}</td>
-                    <td className="nums">{a.daysEnabled}/{a.daysPresent}</td>
+                    <td className="nums" title={`Ran on ${a.daysRan} of the ${a.daysPresent} closes this account carried a row for it. It was still switched on at export on ${a.daysEnabled}, which is a different count: the exports are taken after the desk switches the algos off.`}>{a.daysRan}/{a.daysPresent}</td>
                     <td>{a.directions.join(', ') || '—'}</td>
                     <td className="muted">{a.instruments.slice(0, 2).join(', ') || '—'}</td>
                     <td className={`nums ${covered ? cls(a.contributionPnl) : 'muted'}`}>

@@ -9,7 +9,7 @@
 // This is read-only on purpose. A local copy that could be edited would invite
 // someone to fix a real problem in a file that goes nowhere.
 
-import { buildCrmStateFromTables, CRM_STATE_TABLES } from './supabaseStore';
+import { buildCrmStateFromTables, CRM_STATE_TABLES, DERIVABLE_STATE_TABLES } from './supabaseStore';
 
 /** Where the snapshot is served from. Kept out of the bundle and out of git. */
 export const LOCAL_SNAPSHOT_URL = '/local-snapshot.json';
@@ -40,7 +40,13 @@ export function normalizeSnapshot(payload) {
     if (Array.isArray(rows)) normalized[table] = rows;
     else {
       normalized[table] = [];
-      missing.push(table);
+      // A table buildCrmStateFromTables can work out for itself is not
+      // reported as absent. `close_summaries` is one row per close per segment
+      // and every export predates it; deriving it from the closes the file
+      // already holds is what keeps local mode on the same code path
+      // production uses, rather than on the whole-book walk production no
+      // longer does. Naming it in the status line would read as data loss.
+      if (!DERIVABLE_STATE_TABLES.has(table)) missing.push(table);
     }
   }
   return { tables: normalized, missing };

@@ -85,7 +85,23 @@ builder.Services.AddSingleton<IControlCommandHandler>(provider => new ControlCom
     provider.GetRequiredService<ICaptureHistoryStore>(),
     version,
     "1.0.0",
-    provider.GetRequiredService<IServiceReporter>()));
+    provider.GetRequiredService<IServiceReporter>(),
+    provider.GetRequiredService<IQuarantineReviewer>()));
+// One instance wearing two hats: the loop the supervisor runs at midday, and
+// the reviewer the Setup window's button reaches through the control pipe.
+// The report backoff lives in that instance, so the button and the schedule
+// must share it or a 404 would be logged twice and offered twice a day.
+builder.Services.AddSingleton<QuarantineReviewLoop>(provider => new QuarantineReviewLoop(
+    provider.GetRequiredService<ICollectorQueue>(),
+    provider.GetRequiredService<ICollectorCrmClient>(),
+    provider.GetRequiredService<IDeviceTokenStore>(),
+    provider.GetRequiredService<IAgentOptionsStore>(),
+    provider.GetRequiredService<ICollectorClock>(),
+    provider.GetRequiredService<CollectorState>(),
+    provider.GetRequiredService<IServiceReporter>(),
+    provider.GetRequiredService<IRedactingLogger>()));
+builder.Services.AddSingleton<IQuarantineReviewer>(provider => provider.GetRequiredService<QuarantineReviewLoop>());
+builder.Services.AddSingleton<ICollectorLoop>(provider => provider.GetRequiredService<QuarantineReviewLoop>());
 builder.Services.AddSingleton<ICollectorLoop, QueueRecoveryLoop>();
 builder.Services.AddSingleton<ICollectorLoop, ScheduledCaptureLoop>();
 builder.Services.AddSingleton<ICollectorLoop, UploadLoop>();

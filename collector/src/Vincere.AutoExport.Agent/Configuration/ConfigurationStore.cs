@@ -145,6 +145,8 @@ public sealed class ConfigurationStore : IAgentOptionsStore
             || !TimeOnly.TryParseExact(options.CaptureCutoffTime, "HH:mm", out TimeOnly cutoffTime)
             || cutoffTime <= scheduleTime)
             throw new AgentConfigurationException("configuration_schedule_invalid", "Collector schedule must use 24-hour HH:mm format.");
+        if (!TimeOnly.TryParseExact(options.QuarantineReviewTime, "HH:mm", out _))
+            throw new AgentConfigurationException("configuration_schedule_invalid", "Quarantine review time must use 24-hour HH:mm format.");
         if (options.EnabledTradingDays == null || options.EnabledTradingDays.Length == 0)
             throw new AgentConfigurationException("configuration_schedule_invalid", "At least one trading day must be enabled.");
         HashSet<DayOfWeek> days = new();

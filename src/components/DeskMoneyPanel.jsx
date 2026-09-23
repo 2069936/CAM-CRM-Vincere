@@ -1,5 +1,25 @@
 import { CalendarDays, ChevronDown } from "lucide-react";
 import { formatCurrency } from "../domain/report";
+import { describeMoneyCompleteness } from "../domain/deskMoney";
+
+/**
+ * How much of the view each figure above was actually read from.
+ *
+ * NOT DECORATION. deskMoney computes `basis.sources` and `basis.complete` and
+ * nothing on any screen printed them, so a month whose closes this session
+ * could not read rendered identically to one it read whole — and between step
+ * 48 and its Node backfill that is every close on the book. An incomplete
+ * figure that does not say it is incomplete is a wrong figure.
+ */
+function BasisCompleteness({ basis }) {
+  const state = describeMoneyCompleteness(basis);
+  if (!state.sentence) return null;
+  return (
+    <p className={state.complete ? "muted desk-basis-note" : "desk-basis-incomplete"}>
+      {state.sentence}
+    </p>
+  );
+}
 
 // The id of the panel a business row opens, so aria-expanded has something to
 // point at: the detail cannot render inside the table and lands further down the
@@ -141,6 +161,7 @@ export default function DeskMoneyPanel({ desk, month = null, openSegment = null,
       <p className="desk-basis">
         <CalendarDays size={13} /> {desk.basis.label}
       </p>
+      <BasisCompleteness basis={desk.basis} />
       <p className="muted desk-basis-note">{desk.rowsDoNotSum}</p>
       <DeskRows
         desk={desk}
@@ -163,6 +184,7 @@ export default function DeskMoneyPanel({ desk, month = null, openSegment = null,
           <p className="desk-basis">
             <CalendarDays size={13} /> {month.basis.label}
           </p>
+          <BasisCompleteness basis={month.basis} />
           <DeskRows desk={month} weekly={false} />
           <p className="muted desk-basis-note">
             Weekly P&amp;L and balances are refused over a month: the weekly column is a

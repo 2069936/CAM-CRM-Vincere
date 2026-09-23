@@ -18,15 +18,37 @@ on conflict (id) do nothing;
 -- 2) Storage policies: signed-in (authenticated) users may read/write objects in
 --    the client-forms bucket. RLS is otherwise not enabled in this project yet,
 --    so tighten these later if per-client scoping is required.
-create policy "client-forms authenticated read"
-  on storage.objects for select
-  to authenticated
-  using (bucket_id = 'client-forms');
+--
+--    GUARDED, because the runbook's own first line says every file here is safe
+--    to re-run and this one was not: a bare `create policy` on an existing
+--    policy raises, so a second pass over supabase/ in order died here with
+--    `policy "client-forms authenticated read" for table "objects" already
+--    exists`. Same shape as the guard step 48 uses. `create policy` has no
+--    `if not exists` clause, which is why this is a do block and not a flag.
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'storage' and tablename = 'objects'
+      and policyname = 'client-forms authenticated read'
+  ) then
+    create policy "client-forms authenticated read"
+      on storage.objects for select
+      to authenticated
+      using (bucket_id = 'client-forms');
+  end if;
 
-create policy "client-forms authenticated write"
-  on storage.objects for insert
-  to authenticated
-  with check (bucket_id = 'client-forms');
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'storage' and tablename = 'objects'
+      and policyname = 'client-forms authenticated write'
+  ) then
+    create policy "client-forms authenticated write"
+      on storage.objects for insert
+      to authenticated
+      with check (bucket_id = 'client-forms');
+  end if;
+end $$;
 
 -- 3) Metadata columns on client_credentials so the tab can show "on file"
 --    status without listing storage. Thread these through credentialsToDb and

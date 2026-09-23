@@ -50,3 +50,119 @@ it('keeps failed closed-day attempts on the protected replacement path', () => {
   expect(html).toContain('REPLACE Rome McMahon 2026-07-23');
   expect(html).not.toContain('REPROCESS Rome McMahon 2026-07-23');
 });
+
+/* THE QUARANTINE THE DESK CAN CLEAR FROM ITS OWN SCREEN.
+ *
+ * Every 422 quarantine on a VPS is also a failed batch here, raw snapshot
+ * included. The desk should see them in one place and replay them in one go
+ * once the refusal has been fixed on this side. */
+it('lists every failed close across the fleet with one replay for all of them', () => {
+  const failed = [
+    { id: 'b1', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-09-14', receivedAt: '2026-09-14T20:30:09Z', rowCounts: { accounts: 8, strategies: 4, orders: 16, executions: 6 }, errorCode: 'normalization_failed', status: 'failed' },
+    { id: 'b2', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-09-17', receivedAt: '2026-09-17T20:30:09Z', rowCounts: { accounts: 8, strategies: 13, orders: 49, executions: 19 }, errorCode: 'normalization_failed', status: 'failed' },
+  ];
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={failed} disableAutoLoad />);
+  expect(html).toContain('2 closes the CRM refused');
+  expect(html).toContain('2026-09-14');
+  expect(html).toContain('2026-09-17');
+  expect(html).toContain('normalization_failed');
+  expect(html).toContain('Reprocess all 2');
+  expect(html).toContain(fleet.rows[0].client.name);
+});
+
+it('shows no failed closes panel when there is nothing to replay', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={[]} disableAutoLoad />);
+  expect(html).not.toContain('the CRM refused');
+});
+
+/* THE LINE THAT ANSWERS "IS THE INGEST SLOW?" WITHOUT A DASHBOARD. */
+it('shows the day\'s ingest line with what was accepted, what was shed and how long it took', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager
+    initialFleet={{ ...fleet, tradingDate: '2026-07-23', ingestDay: { accepted: 9, shed: 4, measured: 9, medianMs: 820, slowestMs: 4310 } }}
+    disableAutoLoad
+  />);
+  expect(html).toContain('Ingest on 2026-07-23');
+  expect(html).toContain('9 accepted');
+  expect(html).toContain('4 shed at the door');
+  expect(html).toContain('median 820 ms');
+  expect(html).toContain('slowest 4.3 s');
+});
+
+it('omits the ingest line entirely when nothing has been measured yet', () => {
+  // Before migration step 45 runs there are no timings at all. Zeroes would
+  // read as "every upload was instant", which is the opposite of what is known.
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={{ ...fleet, ingestDay: null }} disableAutoLoad />);
+  expect(html).not.toContain('shed at the door');
+  expect(html).not.toContain('Ingest on');
+});
+
+it('says a measurement is missing rather than calling it zero', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager
+    initialFleet={{ ...fleet, tradingDate: '2026-07-23', ingestDay: { accepted: 0, shed: 2, measured: 0, medianMs: null, slowestMs: null } }}
+    disableAutoLoad
+  />);
+  expect(html).toContain('2 shed at the door');
+  expect(html).toContain('median not measured');
+});
+
+/* THE FOLDER ON THE VPS, ON THE SCREEN THAT CAN ACT ON IT. */
+const quarantined = {
+  ...fleet,
+  rows: [{
+    ...fleet.rows[0],
+    quarantine: {
+      count: 2,
+      final: 1,
+      attention: 1,
+      items: [
+        { captureId: 'q2', tradingDate: '2026-09-17', code: 'snapshot_rejected', attempts: 0, final: true, stored: null },
+        { captureId: 'q1', tradingDate: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false, stored: { batchId: 'b1', status: 'failed', errorCode: 'normalization_failed' } },
+      ],
+    },
+    operationalStatus: { state: 'quarantine', label: 'Quarantine', detail: '2 captures in quarantine on the VPS. 1 is final and needs action here; 1 will be retried by the agent at its next daily review.' },
+  }],
+};
+
+it('shows a chip on the row with how many captures the VPS is holding back, red when one needs a person here', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={quarantined} disableAutoLoad />);
+  expect(html).toContain('2 in quarantine');
+  expect(html).toContain('collector-quarantine-chip attention');
+  expect(html).toContain('aria-label="Collector status: Quarantine"');
+  expect(html).toContain('1 is final and needs action here');
+  const retryingOnly = { ...quarantined, rows: [{ ...quarantined.rows[0], quarantine: { ...quarantined.rows[0].quarantine, count: 1, final: 0, attention: 0, items: [quarantined.rows[0].quarantine.items[1]] } }] };
+  expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={retryingOnly} disableAutoLoad />)).not.toContain('collector-quarantine-chip attention');
+});
+
+it('lists a close waiting for a replay here as one the agent resends until then', () => {
+  // The CRM answered the resend 409: it holds the failed close and the desk
+  // replays it from the panel above. The row says so, and that the agent's
+  // resend after the replay is what clears the VPS.
+  const waiting = { captureId: 'q3', tradingDate: '2026-09-15', code: 'capture_requires_replay', attempts: 4, final: false, stored: { batchId: 'b3', status: 'failed', errorCode: 'normalization_failed' } };
+  const fleetWithWaiting = { ...quarantined, rows: [{ ...quarantined.rows[0], quarantine: { count: 1, final: 0, attention: 1, items: [waiting] } }] };
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleetWithWaiting} initialSelectedClient={fleetWithWaiting.rows[0].client} initialBatches={[]} disableAutoLoad />);
+  expect(html).toContain('Waiting for a replay here');
+  expect(html).toContain('Stored here as a failed close. Reprocess it from the failed closes panel.');
+  expect(html).toContain('The agent sends it again at its next daily review, 4 times so far; the answer will not change until the close is replayed here, and the resend after that clears it from the VPS.');
+  expect(html).toContain('collector-quarantine-item attention');
+});
+
+it('lists each quarantined capture in the drawer, with where it is and what the agent will do', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={quarantined} initialSelectedClient={quarantined.rows[0].client} initialBatches={[]} disableAutoLoad />);
+  expect(html).toContain('Quarantine on the VPS');
+  expect(html).toContain('2026-09-14');
+  expect(html).toContain('2026-09-17');
+  expect(html).toContain('snapshot_processing_failed');
+  expect(html).toContain('snapshot_rejected');
+  // The 422 is stored here and one click away; the 400 never reached storage.
+  expect(html).toContain('Stored here as a failed close. Reprocess it from the failed closes panel.');
+  expect(html).toContain('Never stored here. Only the VPS has this capture.');
+  expect(html).toContain('attempt 2 of 3');
+  expect(html).toContain('The agent will not retry it.');
+});
+
+it('shows no chip and no list when the folder is empty or has not been reported', () => {
+  const empty = { ...fleet, rows: [{ ...fleet.rows[0], quarantine: { count: 0, final: 0, attention: 0, items: [] } }] };
+  expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={empty} initialSelectedClient={empty.rows[0].client} initialBatches={[]} disableAutoLoad />)).not.toContain('in quarantine');
+  const unreported = { ...fleet, rows: [{ ...fleet.rows[0], quarantine: null }] };
+  expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={unreported} initialSelectedClient={unreported.rows[0].client} initialBatches={[]} disableAutoLoad />)).not.toContain('Quarantine on the VPS');
+});

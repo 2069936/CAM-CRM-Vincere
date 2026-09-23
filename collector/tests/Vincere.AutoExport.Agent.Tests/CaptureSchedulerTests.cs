@@ -99,14 +99,84 @@ public sealed class CaptureSchedulerTests
         Assert.Null(store.Options.LastScheduledTradingDate);
     }
 
+    /* THE SPREAD IS DECIDED HERE, WHERE MANUAL AND SCHEDULED ARE STILL
+     * TELLABLE APART AND THE CUTOFF IS STILL IN HAND.
+     *
+     * The capture keeps its schedule to the second; what waits is the first
+     * upload of it. A manual capture returns no hold at all, which is what
+     * clears any hold already standing. */
+    private static AgentOptions Paired => AgentOptions.CreateDefault() with
+    {
+        DeviceId = "22222222-2222-4222-8222-222222222222",
+    };
+
+    [Fact]
+    public async Task AScheduledCaptureHoldsOnlyItsFirstUploadAndOnlyByThisMachinesOffset()
+    {
+        FakeOptionsStore store = new(options: Paired);
+        CaptureScheduler scheduler = new(store, new FakeCaptureWorkflow());
+        Instant now = Instant.FromUtc(2026, 7, 23, 20, 46);
+
+        CaptureRunResult result = await scheduler.RunScheduledAsync(now);
+
+        Assert.True(result.CaptureQueued);
+        Assert.Equal(now + Duration.FromMilliseconds(90027), result.UploadNotBefore);
+        // The capture itself moved by nothing at all. It was taken at `now`.
+        Assert.Equal("2026-07-23", result.Decision.TradingDate);
+    }
+
+    [Fact]
+    public async Task AManualCaptureIsNeverHeld()
+    {
+        // A CAM pressing Test capture is standing at the screen waiting for an
+        // answer. A null hold is also what tells CollectorState to drop a hold
+        // the scheduled capture had just set.
+        FakeOptionsStore store = new(options: Paired);
+        CaptureScheduler scheduler = new(store, new FakeCaptureWorkflow());
+
+        CaptureRunResult result = await scheduler.RunManualAsync(Instant.FromUtc(2026, 7, 23, 20, 46));
+
+        Assert.True(result.CaptureQueued);
+        Assert.Null(result.UploadNotBefore);
+    }
+
+    [Fact]
+    public async Task ACaptureTakenInsideTheLastMinuteOfTheWindowIsNotHeld()
+    {
+        // Default cutoff is 17:00 New York, which is 21:00 UTC on this date.
+        FakeOptionsStore store = new(options: Paired);
+        CaptureScheduler scheduler = new(store, new FakeCaptureWorkflow());
+
+        CaptureRunResult result = await scheduler.RunScheduledAsync(Instant.FromUtc(2026, 7, 23, 20, 59, 30));
+
+        Assert.True(result.CaptureQueued);
+        Assert.Null(result.UploadNotBefore);
+    }
+
+    [Fact]
+    public async Task AFailedCaptureHoldsNothing()
+    {
+        // Nothing was queued, so there is no first upload to spread.
+        FakeOptionsStore store = new(options: Paired);
+        CaptureScheduler scheduler = new(store, new FakeCaptureWorkflow
+        {
+            Error = new CaptureAttemptException("addon_unavailable", "AddOn is unavailable."),
+        });
+
+        CaptureRunResult result = await scheduler.RunScheduledAsync(Instant.FromUtc(2026, 7, 23, 20, 46));
+
+        Assert.False(result.CaptureQueued);
+        Assert.Null(result.UploadNotBefore);
+    }
+
     private sealed class FakeOptionsStore : IAgentOptionsStore
     {
         private readonly List<string> events;
 
-        public FakeOptionsStore(List<string> events = null)
+        public FakeOptionsStore(List<string> events = null, AgentOptions options = null)
         {
             this.events = events;
-            Options = AgentOptions.CreateDefault();
+            Options = options ?? AgentOptions.CreateDefault();
         }
 
         public AgentOptions Options { get; private set; }

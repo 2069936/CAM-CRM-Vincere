@@ -517,3 +517,59 @@ describe('getting the install line back after the VPS has paired', () => {
     expect(render({ ...paired, release: null })).not.toContain('Show install line');
   });
 });
+
+/* WHAT THE VPS IS HOLDING BACK, ON THE CARD THE CAM ALREADY READS. */
+describe('captures in quarantine on the card', () => {
+  const paired = {
+    ...base,
+    device: { id: 'device', status: 'active', healthStatus: 'online', lastSeenAt: '2026-07-23T16:44:00.000Z', agentVersion: '1.0.7', addonVersion: '1.1.0', ninjaTraderVersion: '8.1.5.2', schedule: { time: '16:30:00', timezone: 'America/New_York' } },
+    quarantine: {
+      count: 2,
+      final: 1,
+      items: [
+        { captureId: 'q2', tradingDate: '2026-09-17', code: 'snapshot_rejected', attempts: 0, final: true },
+        { captureId: 'q1', tradingDate: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false },
+      ],
+    },
+  };
+
+  it('says how many and which trading days, with the code in the tooltip', () => {
+    const html = render(paired);
+    expect(html).toContain('2 captures in quarantine: ');
+    expect(html).toContain('>Sep 17</abbr>');
+    expect(html).toContain('>Sep 14</abbr>');
+    expect(html).toContain('title="snapshot_rejected, final"');
+    expect(html).toContain('title="snapshot_processing_failed, attempt 2 of 3 next"');
+    expect(html).toContain('1 is final and will not be sent again by the agent; 1 will be retried by the agent at its next daily review.');
+    expect(html).toContain('aria-label="Captures in quarantine on the VPS"');
+  });
+
+  it('points a Manager at Auto Collection for the replay, and a CAM nowhere', () => {
+    expect(render({ ...paired, permissions: { ...base.permissions, replay: true } })).toContain('Replay them from Auto Collection, in the failed closes panel');
+    expect(render({ ...paired, permissions: { ...base.permissions, replay: false } })).not.toContain('Replay them from Auto Collection');
+  });
+
+  it('says nothing when the folder is empty, before step 46, or before a VPS has paired', () => {
+    expect(render({ ...paired, quarantine: { count: 0, final: 0, items: [] } })).not.toContain('in quarantine');
+    expect(render({ ...paired, quarantine: null })).not.toContain('in quarantine');
+    expect(render({ ...base, quarantine: paired.quarantine })).not.toContain('in quarantine');
+  });
+
+  it('reads a single capture as one', () => {
+    const html = render({ ...paired, quarantine: { count: 1, final: 0, items: [paired.quarantine.items[1]] } });
+    expect(html).toContain('1 capture in quarantine: ');
+    expect(html).toContain('1 will be retried by the agent at its next daily review.');
+    expect(html).not.toContain('is final');
+  });
+
+  it('says when a capture is waiting for a replay here, which the agent resends until then', () => {
+    // This CRM answers the resend of a failed close it holds with 409 until
+    // the close is replayed from Auto Collection; the agent keeps sending it,
+    // and the resend after the replay is what clears the VPS.
+    const waiting = { captureId: 'q3', tradingDate: '2026-09-15', code: 'capture_requires_replay', attempts: 4, final: false };
+    const html = render({ ...paired, quarantine: { count: 3, final: 1, items: [paired.quarantine.items[0], waiting, paired.quarantine.items[1]] } });
+    expect(html).toContain('3 captures in quarantine: ');
+    expect(html).toContain('title="capture_requires_replay, sent again until replayed here"');
+    expect(html).toContain('1 is final and will not be sent again by the agent; 1 waits for a replay here and is sent again by the agent until then; 1 will be retried by the agent at its next daily review.');
+  });
+});

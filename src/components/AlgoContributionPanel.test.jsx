@@ -24,8 +24,12 @@ async function open(client, accountName) {
   await user.click(screen.getByRole('button'));
 }
 
-describe('a period where every algo was switched off', () => {
+describe('a period where nothing ran', () => {
   it('names it instead of leaving the cell blank', async () => {
+    // Switched off, no fills on the close, nothing reported: the only shape
+    // that is honestly a period with no algo on it. A row the grid had switched
+    // off that the fills name is a period the algo ran, and it now reads as one
+    // — see src/domain/strategyRan.js.
     const client = {
       dailyImports: [
         { date: '2026-07-13', snapshots: [{ accountName: 'A', grossRealizedPnl: -300, strategies: [{ strategyFamily: 'IFSP', strategyVersion: '1.1', enabled: true, realized: 0 }] }] },
@@ -33,7 +37,7 @@ describe('a period where every algo was switched off', () => {
       ],
     };
     await open(client, 'A');
-    expect(screen.getByText('no enabled algo')).toBeTruthy();
+    expect(screen.getByText('no algo ran')).toBeTruthy();
     // The account still lost money that day and the panel must not hide it.
     // Total and Avg/day are both -$776 on a one-day period, hence getAllByText.
     const table = screen.getAllByRole('table')[0];

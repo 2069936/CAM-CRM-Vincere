@@ -1,3 +1,4 @@
+import { buildCloseSummaryRows, closeSummaryToDb } from './closeSummary.js';
 import { summarizePnlSources } from './pnlSourceSummary.js';
 import { mergeSimulationRows, summarizeSimulationSplit } from './simulationAccounts.js';
 
@@ -24,6 +25,7 @@ export const DAILY_IMPORT_CLOSED_CODE = 'daily_import_closed';
  * @property {(table: string, dailyImportId: string) => Promise<void>} deleteDailyImportRows
  * @property {(rows: Object[]) => Promise<Object[]>} upsertAccountSnapshots
  * @property {(table: string, rows: Object[]) => Promise<void>} insertRows
+ * @property {(args: {dailyImportId: string, rows: Object[]}) => Promise<void>} [replaceCloseSummaries]
  */
 
 export class DailyImportClosedError extends Error {
@@ -132,6 +134,16 @@ function mapStrategy(strategy, dailyImportId, accountByName, snapshotByName) {
     params_parsed: strategy.params || {},
     direction: strategy.direction || '',
     enabled: Boolean(strategy.enabled),
+    // WHETHER IT RAN, AND ON WHAT EVIDENCE. Stored beside `enabled`, never over
+    // it: one is the state of a checkbox at export time, the other is whether
+    // the algorithm worked that day, and the exports are taken after the desk
+    // switches the algos off. Decided by reconcile.js through strategyRan.js
+    // while the day's fills are in hand, because the screens that ask must not
+    // have to load 13.5 MB of executions to find out. Null only when the row
+    // reached this mapper without an answer, which nothing in the product does
+    // any more; step 47 backfills the rows written before it existed.
+    ran: typeof strategy.ran === 'boolean' ? strategy.ran : null,
+    ran_basis: strategy.ranBasis || null,
     realized: numberOrLegacyZero(strategy.realized),
     unrealized: numberOrLegacyZero(strategy.unrealized),
     // Stored beside `realized`, never over it. NULL where the fills could not
@@ -288,11 +300,15 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
     // source_summary.accounts counts every close it stored, of every nature; the
     // per-nature counts are in `simulation` on the same payload. Nothing there is
     // a money total.
-    return db.persistDailyImportAtomic({
+    const dailyImport = await db.persistDailyImportAtomic({
       clientUuid,
       importResult: { ...importResult, ...mergeSimulationRows(importResult) },
       sourceBatchId,
     });
+    await writeCloseSummaries(db, {
+      clientUuid, importResult, dailyImport, closeAlreadyCommitted: true,
+    });
+    return dailyImport;
   }
 
   return db.transaction(async (tx) => {
@@ -353,6 +369,79 @@ export async function persistDailyImportWithClient({ db, clientUuid, importResul
       .map((flag) => mapFlag(flag, dailyImport.id, clientUuid, accountByName));
     if (flagRows.length) await tx.insertRows('operational_flags', flagRows);
 
+    await writeCloseSummaries(tx, { clientUuid, importResult, dailyImport });
+
     return dailyImport;
   });
+}
+
+/**
+ * The per (close, segment) money, written where the close is written.
+ *
+ * THE ONE SEGMENTATION. `buildCloseSummaryRows` is `buildSegmentTotals` over
+ * this close, the same function the Operations screen used to run in the
+ * browser over every close in the book. A trigger or a view that re-derived
+ * the segment in SQL would put `segmentForAccount` in two languages, and two
+ * desk answers on one screen is the defect deskMoney.js exists to end — so
+ * step 48's `replace_close_summaries` stores what this decided and computes
+ * nothing.
+ *
+ * NOT from `mergeSimulationRows(importResult)`. The atomic path flattens the
+ * simulated rows into `snapshots` before sending them to SQL; counting a close
+ * in that shape would read every simulated account twice, once in `snapshots`
+ * and once under `simulation`. The original result is what gets summarised.
+ *
+ * Optional on the adapter, and silent when it is absent or when step 48 has
+ * not run: a login without the table falls back to the closes it holds, which
+ * is what the product did before the table existed.
+ *
+ * ANY OTHER FAILURE IS RAISED, AND IT SAYS WHICH HALF FAILED. The browser
+ * adapter swallows only the missing-table and missing-function cases and
+ * rethrows the rest (replaceSupabaseCloseSummaries), on purpose: a close whose
+ * summary silently did not write is a day the manager's first screen will
+ * quietly under-report, and this is the one moment at which anybody can be
+ * told. The comment that used to sit here said the opposite ("a summary that
+ * could not be written must never fail an upload"), and the two halves of one
+ * change disagreeing about a failure path is how a CAM ends up re-uploading a
+ * close that is already stored.
+ *
+ * WHERE IT RUNS DECIDES WHAT IT MEANS. On the transactional path this is inside
+ * the transaction, so a failure rolls the close back and it really is a failed
+ * save. On the atomic path the close has already committed, so the error is
+ * re-raised as "The close saved. Its desk summary did not", carrying
+ * `closeSaved: true`, and no caller can report it as a lost upload. The
+ * collector path (server/apiLib/autoImportStore.js) swallows the same class of
+ * error because there is nobody in front of it to tell.
+ */
+async function writeCloseSummaries(db, { clientUuid, importResult, dailyImport, closeAlreadyCommitted = false }) {
+  if (typeof db?.replaceCloseSummaries !== 'function' || !dailyImport?.id) return;
+  const rows = buildCloseSummaryRows({
+    accountRegistry: importResult.accounts || {},
+    dailyImport: importResult,
+  }).map((row) => closeSummaryToDb(row, {
+    dailyImportId: dailyImport.id,
+    clientId: clientUuid,
+    tradingDate: importResult.date,
+  }));
+  if (!closeAlreadyCommitted) {
+    // Inside the transaction that is writing the close: a failure here rolls
+    // the close back with it, so it IS a failed save and reads as one.
+    await db.replaceCloseSummaries({ dailyImportId: dailyImport.id, rows });
+    return;
+  }
+  try {
+    await db.replaceCloseSummaries({ dailyImportId: dailyImport.id, rows });
+  } catch (error) {
+    // The atomic path has already committed the close by the time this runs, so
+    // an "upload failed" alert here would be a lie about a close that is in the
+    // database. The failure is still raised — an unwritten summary is a day the
+    // manager's first screen under-reports, and this is the only moment anybody
+    // can be told — but it says which half failed.
+    const failure = new Error(
+      `The close saved. Its desk summary did not: ${error?.message || 'the database did not answer.'}`,
+    );
+    failure.closeSaved = true;
+    failure.cause = error;
+    throw failure;
+  }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -453,6 +454,92 @@ public sealed class MainViewModelTests
 
         Assert.False(viewModel.InstalledVersionIsFromService);
         Assert.Contains("has not reported its version", viewModel.LatestVersionMessage);
+    }
+
+    /* QUARANTINE, ON THE SCREEN THAT CAN DO SOMETHING ABOUT IT.
+     *
+     * The folder used to be invisible from here. The status reply now carries
+     * it, the card lists it, and the button runs the service's review at once
+     * rather than at midday. */
+
+    private static object QuarantinedStatus(params object[] items) => new
+    {
+        Paired = true,
+        ClientName = "Acme",
+        ScheduleTime = "16:45",
+        Queue = new { PendingCount = 0 },
+        Quarantine = new { Count = items.Length, Items = items, ReviewTime = "12:00" },
+    };
+
+    private static object Quarantined(string date, string code, int attempts, bool willRetry) => new
+    {
+        TradingDate = date,
+        CaptureId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        Code = code,
+        Attempts = attempts,
+        WillRetry = willRetry,
+    };
+
+    [Fact]
+    public async Task StatusShowsTheQuarantineAndOffersTheRetry()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus(
+            Quarantined("2026-07-22", "snapshot_processing_failed", 1, true),
+            Quarantined("2026-07-21", "snapshot_rejected", 0, false))));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+
+        Assert.True(viewModel.HasQuarantine);
+        Assert.Equal(2, viewModel.QuarantineItems.Count);
+        Assert.Contains("2 captures in quarantine", viewModel.QuarantineSummary);
+        Assert.Contains("12:00 PM", viewModel.QuarantineSummary);
+        Assert.True(viewModel.RetryQuarantineCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task AServiceWithoutAQuarantineFieldShowsNoCard()
+    {
+        // An older service, or an empty folder. The card is hidden and the
+        // button is not offered, because there is nothing it could do.
+        MainViewModel viewModel = new(PairedAt("1.0.6"));
+
+        await viewModel.InitializeAsync();
+
+        Assert.False(viewModel.HasQuarantine);
+        Assert.False(viewModel.RetryQuarantineCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task RetryRunsTheReviewSaysWhatMovedAndReadsTheFolderAgain()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus(
+            Quarantined("2026-07-22", "snapshot_processing_failed", 0, true))));
+        client.Responses.Enqueue(Response(true, "quarantine_reviewed", "1 capture sent back for upload.", new { requeued = 1, remaining = 0 }));
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus()));
+        MainViewModel viewModel = new(client);
+        await viewModel.InitializeAsync();
+
+        await viewModel.RetryQuarantineAsync();
+
+        Assert.Equal(new[] { "status", "retryQuarantine", "status" }, client.Calls.Select(call => call.Command).ToArray());
+        Assert.Equal("1 capture sent back for upload.", viewModel.StatusMessage);
+        Assert.False(viewModel.HasQuarantine);
+    }
+
+    [Fact]
+    public async Task ARefusedRetryShowsTheServicesSentence()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(false, "administrator_required", "Administrator approval is required."));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.RetryQuarantineAsync();
+
+        Assert.Equal("Administrator approval is required.", viewModel.StatusMessage);
+        Assert.Equal("retryQuarantine", Assert.Single(client.Calls).Command);
     }
 
     private static UiControlResponse Response(bool ok, string code, string message, object data = null)

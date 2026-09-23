@@ -23,6 +23,7 @@
 // extension-less specifiers in it are now explicit, and node --input-type=module
 // can load this file.
 import { ACCOUNT_STATUSES, isCashType, isSimulationAccountType } from './reconcile.js';
+import { fillsLoadedAcross, fillsLoadedFor } from './closeLoadState.js';
 
 function toDate(value) {
   return value ? new Date(`${value}T00:00:00Z`) : null;
@@ -368,23 +369,18 @@ export function buildAccountLifecycleStates(clients = [], {
 } = {}) {
   const bound = String(asOf || '').slice(0, 10);
 
-  // Orders and executions are the two biggest tables and the app loads them
-  // after the rest of the state (supabaseStore.CRM_STATE_TABLES excludes them,
-  // mergeSupabaseTradeHistory fills them in later). Both arrive as [] either
-  // way, so "no orders that day" and "orders not loaded yet" are structurally
-  // identical per close and can only be told apart book-wide. Without this the
-  // panel would report every account as "never traded" for the first seconds
-  // after a load — a claim, not a hole.
-  let tradeHistoryLoaded = false;
-  for (const client of clients || []) {
-    for (const close of client?.dailyImports || []) {
-      if ((close?.orders || []).length || (close?.executions || []).length) {
-        tradeHistoryLoaded = true;
-        break;
-      }
-    }
-    if (tradeHistoryLoaded) break;
-  }
+  // Orders and executions are the two biggest tables and a login fetches
+  // neither: they arrive when a close is opened. Both are [] either way, so "no
+  // orders that day" and "orders not loaded yet" are the same array per close —
+  // without this the panel would report every account as "never traded" over a
+  // book whose fills nobody has asked for, which is a claim, not a hole.
+  //
+  // This used to be answered book-wide by "does any close carry a fill", which
+  // was right while trade history arrived in one pass and became wrong the day
+  // the login started carrying each client's latest close and nothing else: one
+  // fill in 2,585 closes would have read as all of them. The close itself now
+  // says, and closeLoadState.js is the one place that asks.
+  const tradeHistoryLoaded = fillsLoadedAcross(clients);
 
   const records = [];
   let asOfSeen = '';
@@ -457,7 +453,10 @@ export function buildAccountLifecycleStates(clients = [], {
         // written-off accounts in the latest close can be called trading even
         // before the order rows load.
         const traded = realized !== 0 || (counts ? counts.fills > 0 : false);
-        if (tradeHistoryLoaded || realized !== 0) record.tradeEvidenceSeen = true;
+        // Per close as well as book-wide: a close somebody has opened carries
+        // its fills whatever the rest of the book is missing, and the evidence
+        // from it is as good as evidence gets.
+        if (tradeHistoryLoaded || fillsLoadedFor(close) || realized !== 0) record.tradeEvidenceSeen = true;
         if (traded) {
           record.tradedCloses += 1;
           record.lastTradeIndex = index;

@@ -1,9 +1,10 @@
-import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import {
   AlertTriangle,
   BarChart3,
   CalendarDays,
+  CalendarRange,
   CheckCircle2,
   CheckSquare,
   ChevronDown,
@@ -106,6 +107,7 @@ import {
   removeAccountFromRegistry,
 } from "./domain/crmStateStore";
 import { buildCamOverview } from "./domain/camOverview";
+import { strategyRan, withStrategyRan } from "./domain/strategyRan";
 import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
 import { daysBetween } from "./domain/overviewCharts";
 import {
@@ -172,20 +174,25 @@ import {
   buildDeskMoneyForMonth,
   buildDeskMoneyHistory,
   closeAsOf,
+  describeMoneyCompleteness,
   deskBusinessColumns,
   formatDeskReport,
   monthFor,
 } from "./domain/deskMoney";
 import AlgorithmDetailPanel from "./components/AlgorithmDetailPanel";
 import AlgorithmRankingPanel from "./components/AlgorithmRankingPanel";
+import PanelLoadState from "./components/PanelLoadState";
 import { buildAlgorithmDetail, buildStrategyRanking } from "./domain/algorithmRanking";
 import AccountTypeMismatchPanel from "./components/AccountTypeMismatchPanel";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
+import DeskConfigOutlierPanel from "./components/DeskConfigOutlierPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
 import ReportSheetActions from "./components/ReportSheetActions";
+import DeskPeriodReportView from "./components/DeskPeriodReportView";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
+import { deskConfigDayFor, deskDayImportIds } from "./domain/deskConfigOutliers";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
 import QuietAccountsPanel from "./components/QuietAccountsPanel";
 import { buildAccountLifecycleStates } from "./domain/accountLifecycle";
@@ -204,6 +211,7 @@ import {
   UploadCoverageGrid,
 } from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
+import { parseBenchmarkCsv, summarizeBenchmarkImport } from "./domain/algorithmBenchmark";
 import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import { buildReportReasons } from "./domain/reportReasons";
 import ClientKindBadge from "./components/ClientKindBadge";
@@ -245,8 +253,15 @@ import {
   insertSupabasePayoutEvent,
   insertSupabaseTask,
   loadSupabaseCrmState,
-  loadSupabaseTradeHistory,
-  mergeSupabaseTradeHistory,
+  loadSupabaseClientDetail,
+  loadSupabaseCloseDetail,
+  loadSupabaseCloseFlags,
+  loadSupabaseStrategyParameters,
+  loadSupabaseRankingRows,
+  closeFlagsFromRows,
+  mergeSupabaseClientDetail,
+  mergeSupabaseCloseDetail,
+  mergeSupabaseStrategyParameters,
   loadSupabaseDailySopTemplate,
   loadSupabaseReports,
   loadSupabaseAuditLogs,
@@ -254,6 +269,8 @@ import {
   upsertStrategyClassification,
   loadLogAlgoHistory,
   saveLogAlgoHistory,
+  saveAlgorithmBenchmarks,
+  isMissingBenchmarkTable,
   replaceSupabaseOperationalFlags,
   replaceSupabasePriceChecks,
   softDeleteSupabaseClient,
@@ -282,6 +299,7 @@ import {
 } from "./domain/persistEdit";
 import { createCoalescingRefresh } from "./domain/backgroundRefresh";
 import { carryTradeHistoryForward, mergeRefreshedDays } from "./domain/refreshMerge";
+import { indexCloseSummaries } from "./domain/closeSummary";
 import { describeRemoteStatus } from "./domain/remoteStatus";
 
 function InlineSpinner({ size = 14 }) {
@@ -515,7 +533,12 @@ export function buildTodayActions(client, dailyImport) {
     }
   }
 
-  // Funded accounts with no active strategy
+  // Funded accounts nothing ran on.
+  //
+  // This used to filter on the Strategies-grid checkbox, so on every close
+  // exported after the desk switched the algos off it told the CAM that every
+  // funded account had no active strategy. src/domain/strategyRan.js answers
+  // whether the algorithm actually worked that day.
   if (dailyImport) {
     const registry = mergeRegistryCi(
       dailyImport.accounts,
@@ -524,7 +547,7 @@ export function buildTodayActions(client, dailyImport) {
     const noStrat = (dailyImport.snapshots || []).filter((s) => {
       const meta = ciMeta(registry, s.accountName);
       if (meta?.accountType !== "Funded") return false;
-      const active = (s.strategies || []).filter((st) => st.enabled);
+      const active = (s.strategies || []).filter((st) => strategyRan(st));
       return active.length === 0;
     });
     for (const s of noStrat.slice(0, 2)) {
@@ -532,7 +555,7 @@ export function buildTodayActions(client, dailyImport) {
       actions.push({
         severity: "warning",
         icon: "⚙️",
-        text: `No active strategy on ${alias} - check Stack Playbook`,
+        text: `No algorithm ran on ${alias} - check Stack Playbook`,
       });
     }
   }
@@ -636,9 +659,11 @@ export function buildManagerSummary(clients = [], asOfDate = "") {
       (f) => f.status !== "Resolved" && f.status !== "Acknowledged",
     ),
   );
+  // The algorithms that RAN on the desk's latest closes, not the ones whose
+  // checkbox was still ticked when each CAM happened to export.
   const activeStrategies = snapshots
     .flatMap((snapshot) => snapshot.strategies || [])
-    .filter((strategy) => strategy.enabled);
+    .filter((strategy) => strategyRan(strategy));
   const weeklyPnl = snapshots.reduce(
     (total, snapshot) => total + Number(snapshot.weeklyPnl || 0),
     0,
@@ -931,7 +956,16 @@ export function buildStrategyAnalyzer(clients = []) {
     const latest = client.dailyImports?.at(-1);
     if (!latest) continue;
     for (const snapshot of latest.snapshots || []) {
-      for (const strategy of snapshot.strategies || []) {
+      /* THE OPPOSITE ERROR TO THE ONE ABOVE, ON THE SAME SCREEN.
+       *
+       * This loop had no filter, so it counted every strategy row the grid
+       * carried whether or not it traded. Measured over the week of
+       * 2026-09-14: 610 rows counted and 494 of them, 81 percent, with no
+       * evidence anything happened, which diluted avgDaily by between 2.7 and
+       * 11.9 times and printed families with a row count and $0.00 that had
+       * not traded at all. One question, one answer, one place. */
+      for (const strategy of withStrategyRan(snapshot.strategies || [], latest.executions || [])) {
+        if (!strategy.ran) continue;
         const key =
           strategy.strategyFamily || strategy.strategyName || "Unknown";
         const entry = stratMap.get(key) || {
@@ -1092,7 +1126,9 @@ export function buildPnlVarianceAnalysis(client, allClients = []) {
     for (const di of (c.dailyImports || []).slice(-7)) {
       for (const snap of di.snapshots || []) {
         for (const strat of snap.strategies || []) {
-          if (!strat.enabled) continue;
+          // The team average for an algorithm is over the days it ran. A day it
+          // was switched off before the export is still one of its days.
+          if (!strategyRan(strat)) continue;
           const key = strat.strategyFamily || strat.strategyName || "Unknown";
           if (!stratAvg[key]) stratAvg[key] = { total: 0, count: 0 };
           stratAvg[key].total += Number(strat.derivedRealized ?? strat.realized ?? 0);
@@ -1136,7 +1172,7 @@ export function buildPnlVarianceAnalysis(client, allClients = []) {
       entry.totalActual += Number(snap.grossRealizedPnl || 0);
       entry.days += 1;
       for (const strat of snap.strategies || []) {
-        if (!strat.enabled) continue;
+        if (!strategyRan(strat)) continue;
         const key = strat.strategyFamily || strat.strategyName || "Unknown";
         entry.stratNames.add(key);
         entry.totalExpected += avgByStrat[key] || 0;
@@ -1242,7 +1278,16 @@ export function buildConsistencyWarnings(client) {
   return warnings;
 }
 
-// Detect possible VPS/algo disconnect: enabled strategy + zero P&L when prior avg was positive
+// Detect possible VPS/algo disconnect: enabled strategy + zero P&L when prior avg was positive.
+//
+// STILL ON THE CHECKBOX, AND DELIBERATELY. Everything else that asked "did this
+// algorithm run" now reads src/domain/strategyRan.js. This one asks a different
+// question — was it MEANT to be running — and `ran` cannot answer it: an algo
+// the VPS dropped produces no fills and no realized, so it would read as not
+// having run and the alert would never fire at all. The checkbox is weak
+// evidence of intent (it is only ticked on a close exported before the desk
+// switched off), which is why this alert is quiet on most closes. The fix is a
+// comparison against the days it did run, and it is not this change.
 export function buildDisconnectAlerts(client) {
   const alerts = [];
   const latest = client.dailyImports?.at(-1);
@@ -1262,9 +1307,18 @@ export function buildDisconnectAlerts(client) {
     if (meta.accountType === "Inactive / Ignore") continue;
     if (["Inactive", "Failed", "Reserve"].includes(meta.status)) continue;
 
-    const activeStrategies = (snapshot.strategies || []).filter(
-      (s) => s.enabled,
-    );
+    /* WHAT RAN, NOT WHAT THE CHECKBOX SAID.
+     *
+     * The export runs after the desk switches the strategies off, so on
+     * 2026-09-21 forty five of the forty six strategies that produced fills
+     * carried enabled = false. Filtering on the checkbox made this row say a
+     * client had nothing running on a day their algorithm traded, and this is
+     * the row a CAM phones a client about. strategyRan asks the whole
+     * question: the checkbox, the fills, or the money. */
+    const activeStrategies = withStrategyRan(
+      snapshot.strategies || [],
+      latest.executions || [],
+    ).filter((s) => s.ran);
     if (activeStrategies.length === 0) continue;
 
     const todayPnl = Number(snapshot.grossRealizedPnl || 0);
@@ -1450,6 +1504,72 @@ function clientsForCam(clients = [], camProfile = null, coverage = [], date = nu
   const allowed = effectiveClientIds(camProfile, coverage, date || todayIsoDate());
   if (!allowed.size) return [];
   return clients.filter((client) => allowed.has(client.id));
+}
+
+/**
+ * The CAM profile a login should be narrowed to, or null for the whole book.
+ *
+ * A manager, and anybody whose session cannot name a CAM profile, reads
+ * everything. Only a signed-in CAM is scoped, because a CAM's screens are their
+ * own book plus whatever they are covering and the manager screen is closed to
+ * them — so the other seven books are rows they will never look at.
+ */
+/**
+ * The closes the configuration panels are looking at, by uuid.
+ *
+ * Each client's latest close AT OR BEFORE the date on screen, which is exactly
+ * what buildConfigCohorts walks (`filter(date <= bound).slice(-1)`) and
+ * therefore exactly the set whose `parameters_raw` those panels need. Not
+ * `importAsOf`, which pins to the date exactly: a client who did not close on
+ * the day the manager is looking at still has a configuration, and the panel
+ * compares it.
+ */
+export function configPanelImportIds(clients = [], asOfDate = "") {
+  const bound = String(asOfDate || "").slice(0, 10);
+  const ids = [];
+  for (const client of clients || []) {
+    const inScope = (client?.dailyImports || []).filter(
+      (entry) => entry?.date && (!bound || String(entry.date).slice(0, 10) <= bound),
+    );
+    const latest = inScope.at(-1);
+    if (latest) ids.push(latest.uuid || latest.id);
+  }
+  return ids;
+}
+
+/**
+ * The closes a window-wide panel reads, by uuid.
+ *
+ * `days` back from the date on screen, or from the newest close when nothing is
+ * pinned. A window rather than the book because the book doubles about every 39
+ * days and a panel that fetched all of it would be the login this change exists
+ * to end, moved one click later.
+ */
+export function windowImportIds(clients = [], asOfDate = "", days = 60) {
+  const bound = String(asOfDate || "").slice(0, 10)
+    || (clients || []).flatMap((client) => (client.dailyImports || []).map((entry) => entry.date))
+      .sort()
+      .at(-1)
+    || "";
+  if (!bound) return [];
+  const from = new Date(`${bound}T00:00:00Z`);
+  from.setUTCDate(from.getUTCDate() - days);
+  const first = from.toISOString().slice(0, 10);
+  const ids = [];
+  for (const client of clients || []) {
+    for (const entry of client?.dailyImports || []) {
+      const date = String(entry?.date || "").slice(0, 10);
+      if (!date || date < first || date > bound) continue;
+      ids.push(entry.uuid || entry.id);
+    }
+  }
+  return ids;
+}
+
+export function camScopeFor(session) {
+  return session?.role === USER_ROLES.CAM && session?.camProfileId
+    ? session.camProfileId
+    : null;
 }
 
 function activeCamProfilesForUsers(camProfiles = [], users = []) {
@@ -1654,9 +1774,12 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
         alias: meta.alias || snap.accountName,
         connection: meta.connection || "",
         payoutState: meta.payoutState || "",
+        // Which algorithms ran on the account that day. On the checkbox this
+        // column read "None" for every account on a close exported after the
+        // desk shut the algos down, which on the stored book is 207 closes.
         strategies:
           (snap.strategies || [])
-            .filter((s) => s.enabled)
+            .filter((s) => strategyRan(s))
             .map((s) => s.strategyFamily || s.strategyName)
             .join(", ") || "None",
         dailyPnl: Number(snap.grossRealizedPnl || 0),
@@ -2460,6 +2583,10 @@ function DataToolsPanel({
   const [isParsingTradovate, setIsParsingTradovate] = useState(false);
   const [isParsingLogs, setIsParsingLogs] = useState(false);
   const [logPersisting, setLogPersisting] = useState(false);
+  const [benchmarkImport, setBenchmarkImport] = useState(null);
+  const [isParsingBenchmark, setIsParsingBenchmark] = useState(false);
+  const [benchmarkSaving, setBenchmarkSaving] = useState(false);
+  const [benchmarkSaveNeedsMigration, setBenchmarkSaveNeedsMigration] = useState(false);
 
   const duplicateKeys = useMemo(
     () => {
@@ -2705,6 +2832,86 @@ function DataToolsPanel({
       setStatus("error");
     } finally {
       setLogPersisting(false);
+    }
+  }
+
+  // My Futures Book backtest trade lists. Parsing and every figure below it
+  // live in src/domain/algorithmBenchmark.js; this function only reads the
+  // files and hands the result to the card.
+  async function parseBenchmarkFiles(files = []) {
+    const csvFiles = [...files].filter((file) => file.name.toLowerCase().endsWith(".csv"));
+    if (!csvFiles.length) {
+      setBenchmarkImport({ error: "No CSV files selected. Drop the trade lists downloaded from My Futures Book." });
+      return;
+    }
+    setIsParsingBenchmark(true);
+    setBenchmarkImport(null);
+    setBenchmarkSaveNeedsMigration(false);
+    try {
+      const parsed = [];
+      for (const file of csvFiles) {
+        const text = await readTextFile(file);
+        parsed.push(parseBenchmarkCsv(text, file.name));
+      }
+      const summary = summarizeBenchmarkImport(parsed);
+      setBenchmarkImport(summary);
+      if (summary.totals.series) {
+        setMessage(
+          `Parsed ${summary.totals.series} backtest series, ${summary.totals.trades} trades, ${summary.totals.firstDate} to ${summary.totals.lastDate}.`,
+        );
+        setStatus("ready");
+        auditSilently({
+          entityType: "data_import",
+          action: "data_import.benchmark.parse",
+          afterData: {
+            files: summary.totals.files,
+            series: summary.totals.series,
+            trades: summary.totals.trades,
+            refused: summary.rejected.length,
+            manager: session?.displayName || session?.username || "",
+          },
+        });
+      }
+    } catch (error) {
+      console.error("[CRM] Failed to parse My Futures Book CSV:", error);
+      setBenchmarkImport({ error: error.message || "Could not read the CSV files." });
+      setStatus("error");
+    } finally {
+      setIsParsingBenchmark(false);
+    }
+  }
+
+  async function persistBenchmarkSeries() {
+    const rows = benchmarkImport?.monthlyRows || [];
+    if (!rows.length) return;
+    setBenchmarkSaving(true);
+    try {
+      await saveAlgorithmBenchmarks(rows);
+      setMessage(`Saved ${rows.length} benchmark month${rows.length === 1 ? "" : "s"} across ${benchmarkImport.totals.series} series.`);
+      setStatus("ready");
+      auditSilently({
+        entityType: "data_import",
+        action: "data_import.benchmark.persist",
+        afterData: {
+          series: benchmarkImport.totals.series,
+          months: rows.length,
+          firstDate: benchmarkImport.totals.firstDate,
+          lastDate: benchmarkImport.totals.lastDate,
+        },
+      });
+    } catch (error) {
+      console.error("[CRM] Failed to save My Futures Book benchmarks:", error);
+      // Step 44 not run is not a failure the CAM can fix by trying again, so it
+      // is named rather than shown as a Postgres error. The parse above stays
+      // on screen either way: it is the part that needed no database.
+      if (isMissingBenchmarkTable(error)) {
+        setBenchmarkSaveNeedsMigration(true);
+      } else {
+        setBenchmarkImport((current) => ({ ...(current || {}), error: error.message || "Could not save the benchmark series." }));
+      }
+      setStatus("error");
+    } finally {
+      setBenchmarkSaving(false);
     }
   }
 
@@ -3103,6 +3310,165 @@ function DataToolsPanel({
                 disabled={logPersisting || !logImportResult.files.some((file) => (file.accounts || []).some((row) => row.clientId))}
               >
                 <Upload size={14} /> {logPersisting ? "Saving..." : "Save matched activity"}
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div className="data-tool-card">
+          <strong>My Futures Book backtest import</strong>
+          <p className="muted">
+            Upload the NinjaTrader trade lists downloaded from the desk's My
+            Futures Book portfolio page, one per algorithm, instrument and risk
+            level (<code>RBO_-_M2K_-_Low_Risk.csv</code>). The risk level is read
+            from the file name, because the file does not carry it.
+          </p>
+          <p className="muted">
+            <b>
+              These are backtest results, not client money. Each file is the
+              version the desk runs today re-run over history on one simulated
+              account. Position size is whatever that risk file traded — Qty
+              varies inside a single file as the strategy scales, so a risk level
+              is a base size and not one contract. P&amp;L is the vendor's Profit
+              column, already net of commission. Nothing imported here is summed
+              with, ranked against or charted beside a client account figure.
+            </b>
+          </p>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            multiple
+            onChange={(event) => {
+              parseBenchmarkFiles(event.target.files || []);
+              event.target.value = "";
+            }}
+          />
+          {isParsingBenchmark ? (
+            <div className="notice info">Parsing My Futures Book trade lists...</div>
+          ) : null}
+          {benchmarkImport?.error ? (
+            <div className="notice error">{benchmarkImport.error}</div>
+          ) : null}
+          {benchmarkSaveNeedsMigration ? (
+            <div className="notice warning">
+              Saving needs migration step 44. The parse below still shows what the files hold.
+            </div>
+          ) : null}
+          {benchmarkImport?.rejected?.length ? (
+            <div className="notice warning">
+              <strong>
+                {benchmarkImport.rejected.length} file
+                {benchmarkImport.rejected.length === 1 ? "" : "s"} refused
+              </strong>
+              <ul>
+                {benchmarkImport.rejected.map((file) => (
+                  <li key={file.fileName}>
+                    <code>{file.fileName}</code>: {file.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {benchmarkImport?.warnings?.length ? (
+            <div className="notice info">
+              <ul>
+                {benchmarkImport.warnings.map((entry, index) => (
+                  <li key={`${entry.fileName}-${index}`}>
+                    <code>{entry.fileName}</code>: {entry.warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {benchmarkImport?.series?.length ? (
+            <div className="intake-preview">
+              <div className="intake-preview-head">
+                <strong>Backtest series found</strong>
+                <span className="muted">
+                  {benchmarkImport.totals.series} series · {benchmarkImport.totals.trades} trades ·{" "}
+                  {benchmarkImport.totals.firstDate} to {benchmarkImport.totals.lastDate} ·{" "}
+                  {benchmarkImport.totals.monthlyRows} months to save
+                </span>
+              </div>
+              <div className="table-wrap">
+                <table className="ops-table compact-table">
+                  <thead>
+                    <tr>
+                      <th>Algorithm</th>
+                      <th>Instrument</th>
+                      <th>Risk</th>
+                      <th title="Every Qty the file traded. A risk level is a base size, not a fixed one.">
+                        Qty traded
+                      </th>
+                      <th>Date range</th>
+                      <th title="Days on which the backtest closed at least one trade. A day with no trade is absent, not zero.">
+                        Days
+                      </th>
+                      <th>Trades</th>
+                      <th title="Trades above zero, over all trades. A larger size splits an exit into more legs, so this rate moves with the risk level over identical history.">
+                        Win rate
+                      </th>
+                      <th title="Sum of the vendor's Profit column, already net of commission. One simulated account. Not client money.">
+                        Backtest net
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {benchmarkImport.series.map((entry) => (
+                      <tr key={entry.key}>
+                        <td>
+                          <strong>{entry.algorithm}</strong>{" "}
+                          <span className="muted">{entry.version}</span>
+                        </td>
+                        <td>
+                          <code>{entry.instrument}</code>
+                        </td>
+                        <td>{entry.riskLevel}</td>
+                        <td className="muted">{entry.quantities.join(" / ")}</td>
+                        <td className="muted">
+                          {entry.firstDate} to {entry.lastDate}
+                        </td>
+                        <td>{entry.history.days}</td>
+                        <td>{entry.history.trades}</td>
+                        <td>
+                          {entry.history.winRate == null
+                            ? "-"
+                            : `${Math.round(entry.history.winRate * 1000) / 10}%`}
+                        </td>
+                        <td
+                          className={entry.history.net >= 0 ? "positive" : "negative"}
+                          title={entry.basis}
+                        >
+                          {formatCurrency(entry.history.net)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <small className="muted">
+                Backtest dollars, one simulated account per row, sized as that
+                risk file traded. Not comparable with each other across risk
+                levels, and not comparable with anything a client account did.
+                {benchmarkImport.totals.unreconciled
+                  ? ` ${benchmarkImport.totals.unreconciled} series disagree with the vendor's own running total; check those files before saving.`
+                  : benchmarkImport.totals.unchecked
+                    ? ` ${benchmarkImport.totals.unchecked} series carried no "Cum. net profit" column and were not checked against the vendor's own total.`
+                    : " Every series matches the vendor's own running total."}
+              </small>
+              <button
+                className="primary-button"
+                onClick={persistBenchmarkSeries}
+                disabled={benchmarkSaving || benchmarkSaveNeedsMigration || !benchmarkImport.totals.monthlyRows}
+                title={
+                  benchmarkSaveNeedsMigration
+                    ? "Saving needs migration step 44. The parse above still shows what the files hold."
+                    : "Saves one row per algorithm, version, instrument, risk level and month. A re-import replaces those months."
+                }
+              >
+                <Upload size={14} />{" "}
+                {benchmarkSaving
+                  ? "Saving..."
+                  : `Save ${benchmarkImport.totals.monthlyRows} monthly row${benchmarkImport.totals.monthlyRows === 1 ? "" : "s"}`}
               </button>
             </div>
           ) : null}
@@ -3785,8 +4151,24 @@ function SopBuilderPanel() {
 // renders an empty column for every close and reports nothing, silently.
 const DESK_HISTORY_COLUMNS = deskBusinessColumns();
 
+/**
+ * How far back the ranking board reads when it is opened.
+ *
+ * 60 days, and the number is here rather than inline because the board's own
+ * badge prints it: a reader looking at a rank has to be able to see the window
+ * it was measured over. The board used to walk the whole book, which was free
+ * only because the whole book was already in the browser.
+ */
+const RANKING_WINDOW_DAYS = 60;
+
 function ManagerOverview({
   clients,
+  closeSummaries = null,
+  // One load state per panel, looked up by the panel's own key. It was a single
+  // shared tri-state and the four panels that read it crossed every way they
+  // could: see the comment on `panelLoads` in App().
+  panelLoadFor = null,
+  onNeedParameters = null,
   camProfiles = [],
   coverage = [],
   timeOff = [],
@@ -3814,6 +4196,10 @@ function ManagerOverview({
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
   const [showAutoCollection, setShowAutoCollection] = useState(false);
+  // The desk period report's sidebar destination. A desk-level artefact, so it
+  // lives where the other desk-level destinations do rather than inside a
+  // client workspace nobody would open it from.
+  const [showPeriodReport, setShowPeriodReport] = useState(false);
   const [autoCollectionTarget, setAutoCollectionTarget] = useState(null);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
@@ -3912,8 +4298,8 @@ function ManagerOverview({
   // Every cell of the strip is buildDeskMoney pinned to that close, so a day on
   // the strip is the same arithmetic as the same day on the panel above it.
   const deskHistory = useMemo(
-    () => buildDeskMoneyHistory(clients, { limit: 10 }),
-    [clients],
+    () => buildDeskMoneyHistory(clients, { limit: 10, summaries: closeSummaries }),
+    [clients, closeSummaries],
   );
   const activeCamProfiles = useMemo(
     () => activeCamProfilesForUsers(camProfiles, users),
@@ -3931,16 +4317,16 @@ function ManagerOverview({
   // and the two clipboard buttons all render this object. Three separate loops
   // used to answer the same question three different ways on the same screen.
   const deskMoney = useMemo(
-    () => buildDeskMoney(clients, { asOfDate }),
-    [clients, asOfDate],
+    () => buildDeskMoney(clients, { asOfDate, summaries: closeSummaries }),
+    [clients, asOfDate, closeSummaries],
   );
   // The month the page is looking at, from the date on screen and never from the
   // wall clock. `new Date()` put "Monthly P&L (2026-08) $0.00" over a book whose
   // last close is 2026-07-30, with July unreachable at any as-of date.
   const deskMonthKey = useMemo(() => monthFor(clients, asOfDate), [clients, asOfDate]);
   const deskMonth = useMemo(
-    () => buildDeskMoneyForMonth(clients, { month: deskMonthKey }),
-    [clients, deskMonthKey],
+    () => buildDeskMoneyForMonth(clients, { month: deskMonthKey, summaries: closeSummaries }),
+    [clients, deskMonthKey, closeSummaries],
   );
   // The segment row behind the open capital panel, so the panel can say what the
   // row counted. Null when the open segment has no snapshot on anybody's
@@ -4022,28 +4408,116 @@ function ManagerOverview({
     () => cams.map((cam) => ({
       name: cam.name,
       clients: cam.clients,
-      desk: buildDeskMoney(clientsForCam(clients, cam, coverage, asOfDate), { asOfDate }),
+      desk: buildDeskMoney(clientsForCam(clients, cam, coverage, asOfDate), {
+        asOfDate,
+        summaries: closeSummaries,
+      }),
     })),
-    [cams, clients, coverage, asOfDate],
+    [cams, clients, coverage, asOfDate, closeSummaries],
+  );
+
+  /* THE TWO PANELS THAT FETCH THEIR OWN COLUMNS.
+   *
+   * ConfigDriftPanel and SetFileMatchPanel are the only readers of
+   * `parameters_raw` and `params_parsed` on this screen, both collapsed by
+   * default, and between them those two columns were 30.9 MB of every login.
+   * They now arrive when one of the panels is expanded, scoped to the closes
+   * the panel is actually comparing.
+   */
+  const configPanelIds = useMemo(
+    () => configPanelImportIds(clients, asOfDate),
+    [clients, asOfDate],
+  );
+  /* KEYED ON THE ID SET, NOT ON THE ARRAY.
+   *
+   * CollapsiblePanel re-fires `onOpen` whenever its identity changes while the
+   * panel is open, which is how moving the as-of date re-asks for the new day's
+   * rows. `clients` changes identity on every state update, so a callback keyed
+   * on the array itself would re-fire on every render; keyed on the joined ids
+   * it changes when, and only when, the panel needs different closes. */
+  const configPanelKey = configPanelIds.join(",");
+  const loadConfigParameters = useCallback(
+    () => (onNeedParameters ? onNeedParameters("config", configPanelIds) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onNeedParameters, configPanelKey],
+  );
+
+  /* THE SAME-DAY DESK COMPARISON.
+   *
+   * A third reader of the same two columns, and the cheapest of the three: one
+   * day's closes rather than every client's latest. It cannot share
+   * configPanelIds — that set is "each client's latest close AT OR BEFORE the
+   * date", which on any given day is mostly closes from other days, and mixing
+   * them would compare a client's settings from a fortnight ago against what
+   * the desk was running this morning. Same cache, same gate, same tri-state.
+   */
+  const deskConfigDay = useMemo(
+    () => deskConfigDayFor(clients, asOfDate),
+    [clients, asOfDate],
+  );
+  const deskConfigIds = useMemo(
+    () => deskDayImportIds(clients, deskConfigDay),
+    [clients, deskConfigDay],
+  );
+  const deskConfigKey = deskConfigIds.join(",");
+  const loadDeskConfigParameters = useCallback(
+    () => (onNeedParameters ? onNeedParameters("desk-config", deskConfigIds) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onNeedParameters, deskConfigKey],
   );
 
   const strategies = useMemo(() => buildStrategyAnalyzer(clients), [clients]);
+  /* THE RANKING BOARD, BEHIND ITS OWN PANEL.
+   *
+   * This was a bare useMemo in this body, so every manager login ran
+   * buildStrategyRanking over the whole book before anything was on screen —
+   * and `configurationOf` and `sizingOf` inside it read `params_parsed` off
+   * every strategy row, which is why the 30.9 MB of parameter columns were on
+   * the login in the first place. The board is the one screen on this page that
+   * genuinely needs strategy rows over HISTORY rather than over the latest
+   * close, so it asks for them when it is opened: a 60 day window, lean rows
+   * plus the two parameter columns the configuration split reads.
+   *
+   * Null, not an empty result, while it is closed. An empty ranking is a
+   * finding — "no close on this book carries a per-algorithm split" — and this
+   * is not that.
+   */
+  const [rankingOpen, setRankingOpen] = useState(false);
+  const rankingImportIds = useMemo(
+    () => windowImportIds(clients, asOfDate, RANKING_WINDOW_DAYS),
+    [clients, asOfDate],
+  );
+  const rankingKey = rankingImportIds.join(",");
+  /* THE BOARD ASKS FOR THE ACCOUNT ROWS AS WELL, AND IT IS THE ONLY ONE THAT
+   * DOES. buildStrategyRanking walks dailyImport.snapshots and then each
+   * snapshot's strategies; a login holds the account rows of each client's
+   * LATEST close only, so the strategy rows this fetch pays for had nowhere to
+   * nest on every older close in the window and were dropped. On the book that
+   * was 594 of 3,805 rows landing, and a board of 15 algorithms with none
+   * ranked under a badge reading "One rank per algorithm". */
+  const loadRankingRows = useCallback(() => {
+    setRankingOpen(true);
+    return onNeedParameters
+      ? onNeedParameters("ranking", rankingImportIds, { withAccountRows: true })
+      : undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onNeedParameters, rankingKey]);
   // One rank per algorithm, keyed off the same asOfDate the tiles are pinned to.
   // The board it replaced took no date at all and compared its seven-day windows
   // against `new Date()`, so on 2026-08-20 over a book ending 2026-07-30 every
   // "Last 7d" cell read $0.00 and every trend arrow pointed up.
   const strategyRanking = useMemo(
-    () => buildStrategyRanking(clients, { asOfDate }),
-    [clients, asOfDate],
+    () => (rankingOpen ? buildStrategyRanking(clients, { asOfDate }) : null),
+    [clients, asOfDate, rankingOpen],
   );
   // One algorithm's record, pinned to the same close as the ranking it is opened
   // from. It is the ranking's own row sliced to one name — not a second
   // measurement — so the detail and the row above it cannot disagree.
   const algorithmDetail = useMemo(
-    () => (openAlgorithm
+    () => (openAlgorithm && rankingOpen
       ? buildAlgorithmDetail(clients, { algorithm: openAlgorithm, asOfDate })
       : null),
-    [clients, openAlgorithm, asOfDate],
+    [clients, openAlgorithm, asOfDate, rankingOpen],
   );
   const lifecycle = useMemo(() => buildLifecycleMetrics(clients), [clients]);
   const riskDist = useMemo(
@@ -4313,12 +4787,13 @@ function ManagerOverview({
         </div>
         <div className="manager-sidebar-main">
           <button
-            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel ? "client-link active" : "client-link"}
+            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel && !showPeriodReport ? "client-link active" : "client-link"}
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
               setShowAutoCollection(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4398,11 +4873,26 @@ function ManagerOverview({
               setShowAuditPanel(false);
               setShowAutoCollection(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
             <Shield size={16} />
             <span>Users & Access</span>
+          </button>
+          <button
+            className={showPeriodReport ? "client-link active" : "client-link"}
+            onClick={() => {
+              setShowPeriodReport(true);
+              setShowAutoCollection(false);
+              setShowAuditPanel(false);
+              setShowUserPanel(false);
+              setShowProfilePanel(false);
+              closeMobileSidebar();
+            }}
+          >
+            <CalendarRange size={16} />
+            <span>Period Report</span>
           </button>
           <button
             className={showAutoCollection ? "client-link active" : "client-link"}
@@ -4412,6 +4902,7 @@ function ManagerOverview({
               setShowAuditPanel(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4425,6 +4916,7 @@ function ManagerOverview({
               setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4438,6 +4930,7 @@ function ManagerOverview({
               setShowAutoCollection(false);
               setShowUserPanel(false);
               setShowAuditPanel(false);
+              setShowPeriodReport(false);
               closeMobileSidebar();
             }}
           >
@@ -4461,6 +4954,13 @@ function ManagerOverview({
             camProfiles={camProfiles}
             clients={clients}
             onRefreshState={onRefreshState}
+          />
+        ) : showPeriodReport ? (
+          <DeskPeriodReportView
+            clients={clients}
+            scope="desk"
+            summaries={closeSummaries}
+            builtBy={session?.displayName || session?.username || ""}
           />
         ) : showAutoCollection ? (
           <AutoCollectionManager visible={showAutoCollection} initialSelectedClient={autoCollectionTarget} />
@@ -4642,7 +5142,7 @@ function ManagerOverview({
             className="ghost-button"
             onClick={() => {
               const txt = formatDeskReport(deskMoney, {
-                title: "Desk weekly report",
+                title: "Desk summary",
                 cams: camDesks,
                 openFlags: totals.flags,
               });
@@ -4651,10 +5151,23 @@ function ManagerOverview({
                 setTimeout(() => setWeeklyCopyDone(false), 2000);
               });
             }}
-            title="Copy weekly team summary for Slack / email"
+            title="Copy the desk summary for the close on screen, latest close per client, for Slack or email"
           >
             <ClipboardList size={14} />
-            {weeklyCopyDone ? "Copied!" : "Weekly Report"}
+            {weeklyCopyDone ? "Copied!" : "Copy desk summary"}
+          </button>
+          {/* This button was labelled "Weekly Report" and copied ONE close —
+              `buildDeskMoney(clients, { asOfDate })`, the latest close per
+              client. The desk had a button called Weekly that copied a day,
+              which is the exact defect class this branch exists to remove. It
+              now says what it copies, and the weekly is beside it. */}
+          <button
+            className="ghost-button"
+            onClick={() => setShowPeriodReport(true)}
+            title="Open the desk period report: a week, a month or a range, with its coverage, its roster and its gates"
+          >
+            <CalendarRange size={14} />
+            Period report
           </button>
           <button
             className="ghost-button"
@@ -5399,9 +5912,18 @@ function ManagerOverview({
             manager asked twice for it to go: he could not read it, and a chart
             nobody can read is a chart that gets believed or ignored at random.
             buildStrategyRiskProfile existed only to feed it and went with it. */}
-        <CollapsiblePanel title="Algorithm configuration review" tone="ops-charts-panel">
+        <CollapsiblePanel
+          title="Algorithm configuration review"
+          tone="ops-charts-panel"
+          onOpen={loadConfigParameters}
+        >
           <h4>Settings against the cohort</h4>
-          <ConfigDriftPanel clients={clients} asOfDate={asOfDate} />
+          <ConfigDriftPanel
+            clients={clients}
+            asOfDate={asOfDate}
+            load={panelLoadFor ? panelLoadFor("config") : null}
+            onRetry={loadConfigParameters}
+          />
 
           {/* Second review in the same panel, and in the same register: a list
               to verify, not a fault list. It lives here rather than on the
@@ -5410,6 +5932,39 @@ function ManagerOverview({
               named after an account type made it look like. */}
           <h4>Account type against the algorithm running</h4>
           <AccountTypeMismatchPanel clients={clients} asOfDate={asOfDate} />
+        </CollapsiblePanel>
+
+        {/*
+          Its own panel, immediately under the cohort review, because it is the
+          same question asked against a different reference and the two answers
+          have to be readable one after the other.
+
+          The panel above compares each client's own LATEST close, whenever that
+          fell, and ranks whole configurations by how rare they are. This one
+          pins to ONE day and compares field by field. On the book's last close
+          that is the difference between 43 cohorts spread over three weeks and
+          15 groups of accounts that all reported the same morning, which is the
+          only reference that can answer "is somebody out of step with the desk
+          right now".
+
+          Both are lists to verify. Neither calls a difference wrong.
+        */}
+        <CollapsiblePanel
+          title="Settings against the rest of the desk, same day"
+          tone="ops-charts-panel"
+          onOpen={loadDeskConfigParameters}
+          badges={
+            <span className="badge muted">
+              {deskConfigDay || "no day selected"} · every client that closed that day
+            </span>
+          }
+        >
+          <DeskConfigOutlierPanel
+            clients={clients}
+            date={deskConfigDay}
+            load={panelLoadFor ? panelLoadFor("desk-config") : null}
+            onRetry={loadDeskConfigParameters}
+          />
         </CollapsiblePanel>
 
         {/*
@@ -5476,8 +6031,17 @@ function ManagerOverview({
           version with the same settings changed to the same values, which the
           cohort comparison reads as unanimity.
         */}
-        <CollapsiblePanel title="Against the set-file library" tone="ops-charts-panel">
-          <SetFileMatchPanel clients={clients} asOfDate={asOfDate} />
+        <CollapsiblePanel
+          title="Against the set-file library"
+          tone="ops-charts-panel"
+          onOpen={loadConfigParameters}
+        >
+          <SetFileMatchPanel
+            clients={clients}
+            asOfDate={asOfDate}
+            load={panelLoadFor ? panelLoadFor("config") : null}
+            onRetry={loadConfigParameters}
+          />
         </CollapsiblePanel>
 
         {/*
@@ -6003,7 +6567,25 @@ function ManagerOverview({
               <tbody>
                 {deskHistory.map(({ date, desk }) => (
                   <tr key={date}>
-                    <th scope="row">{date}</th>
+                    <th scope="row">
+                      {date}
+                      {/* A row this session could not read whole says so on the
+                          row. Without it a close whose summaries are not yet
+                          backfilled and whose account rows a login never
+                          carried renders as a line of dashes and small
+                          numbers, indistinguishable from a quiet day, which is
+                          how 2026-07-24 printed +$119.20 on prop against a
+                          true -$25,555.63. */}
+                      {desk.basis.sources.unreadable ? (
+                        <small
+                          className="desk-basis-incomplete"
+                          title={describeMoneyCompleteness(desk.basis).sentence}
+                        >
+                          {desk.basis.sources.unreadable} close
+                          {desk.basis.sources.unreadable === 1 ? "" : "s"} not read
+                        </small>
+                      ) : null}
+                    </th>
                     {DESK_HISTORY_COLUMNS.map((column) => {
                       const row = desk.rows.find((item) => item.key === column.key);
                       return (
@@ -6050,11 +6632,27 @@ function ManagerOverview({
           </p>
         </section>
 
-        <AlgorithmRankingPanel
-          result={strategyRanking}
-          selectedAlgorithm={openAlgorithm}
-          onSelectAlgorithm={setOpenAlgorithm}
-        />
+        <CollapsiblePanel
+          title="Algorithm ranking"
+          tone="strategy-boards-panel"
+          onOpen={loadRankingRows}
+          badges={<span className="badge muted">One rank per algorithm · last {RANKING_WINDOW_DAYS} days</span>}
+        >
+          {strategyRanking ? (
+            <AlgorithmRankingPanel
+              bare
+              result={strategyRanking}
+              selectedAlgorithm={openAlgorithm}
+              onSelectAlgorithm={setOpenAlgorithm}
+            />
+          ) : (
+            <PanelLoadState
+              load={panelLoadFor ? panelLoadFor("ranking") : null}
+              onRetry={loadRankingRows}
+              waiting={`Reading the strategy rows of the last ${RANKING_WINDOW_DAYS} days. Nothing is ranked until they arrive.`}
+            />
+          )}
+        </CollapsiblePanel>
 
         {/* Opened from a ranking row and rendered full width directly under it:
             an algorithm on this book runs up to three configurations and the
@@ -7365,13 +7963,16 @@ function ReportPanel({
                 </thead>
                 <tbody>
                   {report.grouped[group].map((row) => {
-                    // Only the strategies actually running. NinjaTrader keeps the
-                    // previous strategy in the grid (disabled) after you switch,
-                    // so showing every row put stale algos on the report even
-                    // though the screen already filtered them out.
+                    // Only the strategies that actually ran. NinjaTrader keeps
+                    // the previous strategy in the grid (disabled) after you
+                    // switch, so showing every row put stale algos on the report
+                    // even though the screen already filtered them out. Reading
+                    // the checkbox went too far the other way: a report built
+                    // from a close exported after the algos were switched off
+                    // listed no strategies at all for the day they traded.
                     const stratNames =
                       (row.strategies || [])
-                        .filter((s) => s.enabled)
+                        .filter((s) => strategyRan(s))
                         .map((s) => s.strategyName || s.strategyFamily || "Strategy")
                         .join(", ") || "-";
                     return (
@@ -8992,8 +9593,8 @@ export function buildPortfolioInsights(clients) {
         const meta = ciMeta(registryCi, snap.accountName);
         if (!["Funded", "Evaluation - Standard"].includes(meta.accountType))
           continue;
-        const enabledStrats = (snap.strategies || []).filter((s) => s.enabled);
-        if (!enabledStrats.length) continue;
+        const ranStrats = (snap.strategies || []).filter((s) => strategyRan(s));
+        if (!ranStrats.length) continue;
         const recentImports = imports.slice(-10);
         if (recentImports.length < 6) continue;
         const pnls = recentImports
@@ -12553,7 +13154,33 @@ export default function App() {
       }));
     }
   }
+  /* THE SESSION THE LOADERS READ, AND WHY IT IS A REF.
+   *
+   * `camScopeFor(session)` decides whether a load asks for one CAM's book or
+   * the whole desk, and every loader below used to read the `session` of the
+   * render it was DEFINED in. On a fresh tab that is the render before anybody
+   * signed in, where `session` is null and `camScopeFor` answers "manager,
+   * whole book":
+   *
+   *   - LoginScreen.onLogin calls persistSession(user) and then
+   *     openCamWorkspace(...) on the same line, so reloadSupabaseState ran
+   *     against the closure in which the session was still null;
+   *   - backgroundRefresh.current is built once, behind a `if (!...current)`,
+   *     and captured that same first render for the life of the tab.
+   *
+   * So a CAM signing in paid the manager's 59 round trips and 8.34 MB twice and
+   * held all 206 clients, and the scoped path only fired after a page refresh,
+   * when sessionStorage already held the session. The ref is written the moment
+   * the session changes, so the loader that runs on the next line reads the
+   * user who just signed in.
+   */
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  function currentScope() {
+    return camScopeFor(sessionRef.current);
+  }
   function persistSession(user) {
+    sessionRef.current = user;
     setSession(user);
     try {
       if (user) sessionStorage.setItem("cam_crm_session", JSON.stringify(user));
@@ -12585,6 +13212,19 @@ export default function App() {
     }
     persistSession(null);
     setPlatformView("manager");
+    // SIGNING OUT LEAVES NOTHING OF THE PREVIOUS USER BEHIND.
+    //
+    // The `if (!session)` return that shows the login form is an early return
+    // INSIDE App(), so this component never unmounts: `state` survived a sign
+    // out, and so did the three id caches. The next user's first load then ran
+    // carryTradeHistoryForward against the previous user's state and copied
+    // their snapshots, strategies, orders and executions onto every close whose
+    // id matched, while the caches went on reporting those closes and clients
+    // as fetched so nothing refetched what had been carried. That is masked
+    // today only because both users load the whole book; it becomes a
+    // cross-book leak the moment the scoping above works.
+    forgetLoadedData();
+    setState(createInitialState());
   }
   function runWorkspaceConfirmAction() {
     const action = workspaceConfirmAction;
@@ -12611,10 +13251,12 @@ export default function App() {
           return;
         }
         persistSession(fresh);
+        // Same as the login form: the keyed load effect reads the session that
+        // was just written and does the fetching.
         if (fresh.role === USER_ROLES.CAM && fresh.camProfileId) {
-          openCamWorkspace(fresh.camProfileId);
+          openCamWorkspace(fresh.camProfileId, null, { reload: false });
         } else {
-          openManagerWorkspace();
+          openManagerWorkspace({ reload: false });
         }
       })
       .catch((err) => {
@@ -12651,6 +13293,10 @@ export default function App() {
   const [showOverview, setShowOverview] = useState(false);
   const [showSOP, setShowSOP] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  // The CAM's own door to the desk period report. Their coverage, money and
+  // account changes are their book; the roster, results, movement and stack are
+  // the desk's, pooled and labelled as pooled. See DeskPeriodReportView.
+  const [showCamPeriodReport, setShowCamPeriodReport] = useState(false);
   const [showQuickLog, setShowQuickLog] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [quickLogType, setQuickLogType] = useState("Note");
@@ -12702,46 +13348,251 @@ export default function App() {
     });
   }
 
-  /**
-   * Orders and executions are 24,000 rows and roughly a third of every load's
-   * requests, and most screens never render them. They are fetched once per
-   * session, lazily, after the dashboard shell — never again on an edit.
+  /* ── WHAT A CLICK LOADS ────────────────────────────────────────────────────
    *
-   * The guard is the point. This used to run inside reloadSupabaseState, so
-   * every flag, every close and every client rename re-downloaded the entire
-   * trade history behind it. Surfaces that read trade history already handle
-   * "not loaded yet" as distinct from "no trades" (see accountLifecycle.js and
-   * reportReasons.js), and a fresh upload carries its own orders and executions
-   * in local state, so nothing waits on a second pull to be correct.
+   * A login carries the reference tables, every close's DATE, one summary row
+   * per close per segment, the unresolved flags, and the per-account rows of
+   * each client's latest close. It carries no order, no derivation, no
+   * parameter column and nobody's password. Everything else arrives when the
+   * screen that reads it is on screen, through the three caches below.
    *
-   * WHAT THE GUARD USED TO HIDE. Every refresh still WIPED trade history —
-   * loadSupabaseCrmState defaults includeTradeHistory=false, so
-   * buildCrmStateFromTables rebuilds every day with orders:[] executions:[] —
-   * and with `force` never passed anywhere, nothing put it back. The manager
-   * Refresh button, opening a workspace and every upload each dropped ~24,000
-   * rows off the screen with no recovery short of a browser reload. The wipe is
-   * gone: every refresh now carries the fills it already holds across (see
-   * carryTradeHistoryForward). `force` is reached only when a refresh turns up
-   * a day this session has never seen, which is the one case where the fills
-   * were not there to carry.
+   * Each cache holds the in-flight promise as well as the finished answer, so
+   * collapsing and re-expanding a panel, or moving back and forth between two
+   * clients, is one fetch and not two — the same coalescing backgroundRefresh.js
+   * does for refreshes, and for the same reason: eight people each opening
+   * three panels must not reproduce the burst READ_CONCURRENCY exists to
+   * prevent. Every fetch below goes through that same bound.
+   *
+   * A failure leaves `state` alone and reports itself on the panel. It is not a
+   * failed save and must never be shown as one, which is the distinction
+   * persistEdit draws; and it is not a failed login either, which is the
+   * distinction markRefreshFailed draws.
    */
-  const tradeHistoryLoad = useRef("idle");
-  function hydrateTradeHistory({ force = false } = {}) {
-    if (!force && tradeHistoryLoad.current !== "idle") return Promise.resolve(null);
-    if (force && tradeHistoryLoad.current === "loading") return Promise.resolve(null);
-    tradeHistoryLoad.current = "loading";
-    return loadSupabaseTradeHistory()
-      .then((history) => {
-        tradeHistoryLoad.current = "loaded";
-        setState((current) => mergeSupabaseTradeHistory(current, history));
-        return history;
+  const closeDetailCache = useRef(new Map());
+  const clientDetailCache = useRef(new Map());
+  const parameterCache = useRef(new Map());
+  // The tri-state the panels render: idle (nobody has asked), loading, loaded,
+  // error. `idle` and `loading` are NOT `empty`: a panel holding either prints
+  // what it is waiting for, never a zero and never a claim.
+  const [closeDetailLoad, setCloseDetailLoad] = useState({ status: "idle", error: "" });
+  /* ONE LOAD STATE PER PANEL, NOT ONE PER FETCH.
+   *
+   * There was a single `parameterLoad` behind four panels that ask for four
+   * different id sets, and the states crossed every way they could: expanding
+   * the ranking board put an already-open configuration panel back into
+   * "Reading the settings... Nothing is compared until they arrive" over rows
+   * it already held; one panel's failure printed a retry button on all four,
+   * wired to the wrong loader; and one panel's success cleared another's error.
+   * The caches are keyed by close id already, so this is the one thing that was
+   * not.
+   *
+   * Keyed by panel rather than by id set, because the panel is what renders it
+   * and what the retry button belongs to. The id set decides whether a fetch
+   * happens at all, which is the cache's job.
+   */
+  const [panelLoads, setPanelLoads] = useState({});
+  function setPanelLoad(panelKey, next) {
+    setPanelLoads((current) => {
+      const before = current[panelKey];
+      if (before && before.status === next.status && before.error === next.error) return current;
+      return { ...current, [panelKey]: next };
+    });
+  }
+  function panelLoadFor(panelKey) {
+    return panelLoads[panelKey] || { status: "idle", error: "" };
+  }
+
+  /** The close ids of `ids` this session has not already fetched or asked for. */
+  function unfetched(cache, ids) {
+    return [...new Set((ids || []).filter(Boolean))].filter((id) => !cache.current.has(id));
+  }
+
+  /**
+   * The requests already out for `ids`, so a second caller waits on them.
+   *
+   * `unfetched` treats an id marked "loading" as fetched, which is right for
+   * deciding whether to ASK again and wrong for deciding whether the rows are
+   * in hand. Without this, a panel whose ids are all in flight for somebody
+   * else declared itself loaded and rendered a finding over rows that had not
+   * arrived. Each cache entry holds its own promise for exactly this.
+   */
+  function inFlight(cache, ids) {
+    const out = [];
+    for (const id of new Set((ids || []).filter(Boolean))) {
+      const entry = cache.current.get(id);
+      if (entry && entry.status === "loading" && entry.promise) out.push(entry.promise);
+    }
+    return out;
+  }
+
+  /**
+   * Everything this session has fetched since somebody signed in.
+   *
+   * Called on sign out. The caches say what has been fetched and `state` holds
+   * it; leaving either in place hands it to whoever signs in next.
+   */
+  function forgetLoadedData() {
+    closeDetailCache.current = new Map();
+    clientDetailCache.current = new Map();
+    parameterCache.current = new Map();
+    setCloseDetailLoad({ status: "idle", error: "" });
+    setPanelLoads({});
+    // Built once behind a null check and it captured the first render's
+    // session, so it has to be dropped rather than left to rebuild itself.
+    backgroundRefresh.current = null;
+  }
+
+  /**
+   * The fills, the derivation and the full per-account rows of named closes.
+   *
+   * Opening a close costs four round trips and about sixty rows on the book,
+   * against the 27 requests and 24,054 rows a session used to spend on every
+   * close in the book whether or not anybody opened one.
+   */
+  function ensureCloseDetail(importIds, { label = "the close" } = {}) {
+    const wanted = unfetched(closeDetailCache, importIds);
+    if (!wanted.length) return Promise.resolve(null);
+    setCloseDetailLoad({ status: "loading", error: "" });
+    const request = loadSupabaseCloseDetail(wanted)
+      .then((detail) => {
+        for (const id of wanted) closeDetailCache.current.set(id, { status: "loaded" });
+        setState((current) => mergeSupabaseCloseDetail(current, detail));
+        setCloseDetailLoad({ status: "loaded", error: "" });
+        return detail;
       })
       .catch((error) => {
-        // Back to idle so the next screen that wants trade history can try
-        // again. Deliberately not surfaced as a failed save or a failed load:
-        // the dashboard is complete without it.
-        tradeHistoryLoad.current = "idle";
-        console.error("[CRM] Trade history loaded after dashboard shell failed:", error);
+        // Back out of the cache so the next screen that wants these closes can
+        // try again. Nothing touches `state`: a fetch that could not happen has
+        // nothing to replace what is on screen with.
+        for (const id of wanted) closeDetailCache.current.delete(id);
+        console.error("[CRM] Loading a close failed:", error);
+        setCloseDetailLoad({
+          status: "error",
+          error: `Could not load ${label}: ${error.message || "the database did not answer."}`,
+        });
+        return null;
+      });
+    for (const id of wanted) closeDetailCache.current.set(id, { status: "loading", promise: request });
+    return request;
+  }
+
+  /**
+   * The rows a configuration panel or the ranking board needs, for its own day.
+   *
+   * `parameters_raw` and `params_parsed` are 82% of a strategy row and 30.9 MB
+   * of a production login. They are read by ConfigDriftPanel, SetFileMatchPanel
+   * and DeskConfigOutlierPanel and by nothing else, all three behind a
+   * collapsed panel, so they arrive when one is expanded, scoped to the day it
+   * is showing. params_parsed also carries the machine LicenseKey, which is the
+   * other reason it is not in every CAM's tab all day.
+   *
+   * `withAccountRows` IS WHAT THE RANKING BOARD NEEDS AND THE THREE PANELS DO
+   * NOT. The board reads dailyImport.snapshots and then each snapshot's
+   * strategies; a login holds the account rows of each client's LATEST close
+   * only, so a window of sixty days fetched strategy rows that had nowhere to
+   * nest and were dropped — 594 of 3,805 on the book, a board of 15 algorithms
+   * with none ranked under a badge promising one rank per algorithm. The three
+   * configuration panels read the flat dailyImport.strategies and are unchanged
+   * by it, so they do not pay for the account rows.
+   *
+   * Wrapped in useCallback with no dependencies because the panels fetch from
+   * an effect keyed on this function's identity: a new identity every render
+   * would be a fetch every render.
+   */
+  const ensureStrategyParameters = useCallback(function ensureStrategyParameters(
+    panelKey,
+    importIds,
+    { withAccountRows = false } = {},
+  ) {
+    const ids = [...new Set((importIds || []).filter(Boolean))];
+    /* THE CACHE KEY IS THE CLOSE AND WHAT WAS FETCHED FOR IT, NOT THE CLOSE.
+     *
+     * Two fetches land here and they bring different things. A close the
+     * configuration panels already asked for holds its parameters and NOT its
+     * account rows, so the ranking board asking for the same day must fetch it
+     * again or it inherits the very hole this change removes; a close the board
+     * fetched holds both, so a panel asking for it afterwards needs nothing.
+     * A cache keyed on the id alone answers "already fetched" to both, which is
+     * right once and wrong once. */
+    const holds = (id) => {
+      const entry = parameterCache.current.get(id);
+      if (!entry) return false;
+      return withAccountRows ? Boolean(entry.withAccountRows) : true;
+    };
+    const wanted = ids.filter((id) => !holds(id));
+    const waiting = inFlight(parameterCache, ids.filter(holds));
+    if (!wanted.length) {
+      // Nothing to ask for, but somebody else's request may still be out for
+      // these closes. Waiting on it is the difference between a panel that
+      // renders when the rows land and one that states a finding over rows
+      // that have not arrived.
+      if (!waiting.length) {
+        setPanelLoad(panelKey, { status: "loaded", error: "" });
+        return Promise.resolve(null);
+      }
+      setPanelLoad(panelKey, { status: "loading", error: "" });
+      return Promise.all(waiting)
+        .then(() => {
+          setPanelLoad(panelKey, { status: "loaded", error: "" });
+          return null;
+        })
+        .catch(() => {
+          setPanelLoad(panelKey, {
+            status: "error",
+            error: "Could not load the settings for this day: the request that was already out failed.",
+          });
+          return null;
+        });
+    }
+    setPanelLoad(panelKey, { status: "loading", error: "" });
+    const fetcher = withAccountRows ? loadSupabaseRankingRows : loadSupabaseStrategyParameters;
+    const request = fetcher(wanted)
+      .then((parameters) => {
+        for (const id of wanted) parameterCache.current.set(id, { status: "loaded", withAccountRows });
+        setState((current) => mergeSupabaseStrategyParameters(current, parameters));
+        return parameters;
+      })
+      .catch((error) => {
+        for (const id of wanted) parameterCache.current.delete(id);
+        console.error("[CRM] Loading strategy parameters failed:", error);
+        throw error;
+      });
+    for (const id of wanted) {
+      parameterCache.current.set(id, { status: "loading", promise: request, withAccountRows });
+    }
+    return Promise.all([request, ...waiting])
+      .then(([parameters]) => {
+        setPanelLoad(panelKey, { status: "loaded", error: "" });
+        return parameters;
+      })
+      .catch((error) => {
+        setPanelLoad(panelKey, {
+          status: "error",
+          error: `Could not load the settings for this day: ${error.message || "the database did not answer."}`,
+        });
+        return null;
+      });
+  }, []);
+
+  /**
+   * One client's credentials, prop firm logins and export summaries.
+   *
+   * These are Credentials tab data and they left the login as a privacy change
+   * as much as a size one: every CAM's browser held every client's NinjaTrader
+   * and prop firm password on every screen, including the books they do not own.
+   */
+  function ensureClientDetail(clientId) {
+    if (!clientId || clientDetailCache.current.has(clientId)) return Promise.resolve(null);
+    clientDetailCache.current.set(clientId, { status: "loading" });
+    return loadSupabaseClientDetail(clientId)
+      .then((detail) => {
+        clientDetailCache.current.set(clientId, { status: "loaded" });
+        setState((current) => mergeSupabaseClientDetail(current, detail));
+        return detail;
+      })
+      .catch((error) => {
+        clientDetailCache.current.delete(clientId);
+        console.error("[CRM] Loading a client's details failed:", error);
         return null;
       });
   }
@@ -12777,14 +13628,34 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session?.camProfileId]);
 
+  /* THE LOGIN LOAD, AND WHY IT IS KEYED ON THE SESSION.
+   *
+   * This effect had `[]` for its dependency array and is declared above the
+   * `if (!session)` return that renders the login form, so on a fresh tab it
+   * ran AT MOUNT, with `session` null — and `camScopeFor(null)` means "manager,
+   * whole book". It never ran again, so a CAM signing in loaded all 206
+   * clients, every contact detail among them, and the scoped path only fired
+   * on a later page refresh when sessionStorage already held the session.
+   *
+   * Keyed on who is signed in, and skipped while nobody is: the load that
+   * matters is the one after the session exists. `onLogin` and the session
+   * restore below no longer ask for a load of their own, because this is it.
+   */
   useEffect(() => {
     if (isLocalSnapshotEnabled()) return;
     if (!isSupabaseConfigured) return;
+    if (!session) return;
     let cancelled = false;
     beginDashboardLoad();
     loadSupabaseCrmState({
       preferredCamProfileId:
         session?.camProfileId || state.accountManager?.id || state.camProfiles?.[0]?.id || null,
+      // A CAM works one book and cannot open the manager screen, so the other
+      // seven books are 180 clients they will never look at. Scoping their
+      // login to the clients they own plus the ones they are covering takes it
+      // from 9.3 MB to 1.3 MB on the production desk. A manager passes null and
+      // gets the whole thing.
+      scopeToCamProfileId: currentScope(),
     })
       .then((remoteState) => {
         if (cancelled) return;
@@ -12794,7 +13665,6 @@ export default function App() {
           status: "connected",
           message: "Connected to Supabase",
         });
-        hydrateTradeHistory();
         if (session?.role === USER_ROLES.CAM && session.camProfileId)
           setPlatformView("cam");
       })
@@ -12811,7 +13681,15 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [session?.id, session?.role, session?.camProfileId]);
+
+  // NOTHING ONE SESSION FETCHED IS READ BY THE NEXT ONE. performLogout clears
+  // this explicitly, and so does this, for the paths that change the session
+  // without going through it: a revalidation that finds the Supabase session
+  // gone, and a restore that comes back as a different user.
+  useEffect(() => {
+    forgetLoadedData();
+  }, [session?.id, session?.role, session?.camProfileId]);
 
   // Manual strategy classifications (family+signature -> version + risk).
   const [strategyClassifications, setStrategyClassifications] = useState([]);
@@ -12866,14 +13744,17 @@ export default function App() {
         state.accountManager?.id ||
         state.camProfiles?.[0]?.id ||
         null,
+      scopeToCamProfileId: currentScope(),
     });
     const nextState = selectedClientId
       ? selectClient(remoteState, selectedClientId)
       : remoteState;
-    // A shell load carries no orders or executions, so assigning it outright
-    // wiped the 24,000 rows this session had already paid for and left the
+    // A login carries no orders, no executions, no derivation and the
+    // per-account rows of each client's LATEST close only, so assigning it
+    // outright wiped everything this session had already paid for and left the
     // screen reading "no trades" — indistinguishable, on most surfaces, from a
-    // client who did not trade. The fills already in memory come across.
+    // client who did not trade. What the refresh could not have fetched comes
+    // across, including the rows of an older close the user had opened.
     // Computed against the state this load started from rather than inside a
     // setState updater: an updater that assigns to a closure variable runs at
     // React's convenience, not here, and the decision below would read an empty
@@ -12883,13 +13764,10 @@ export default function App() {
     const carried = carryTradeHistoryForward(state, nextState);
     setState(carried.state);
     markConnected();
-    // Only when it was ACTUALLY lost: a day nobody on this machine has seen
-    // before (another CAM's upload) has no fills to carry, and this is the one
-    // path that re-fetches them — through the same bounded gate, and never for
-    // a day that merely traded nothing.
-    if (carried.missingImportIds.length && tradeHistoryLoad.current === "loaded") {
-      hydrateTradeHistory({ force: true });
-    }
+    // A day nobody on this machine has seen before (another CAM's upload) has
+    // nothing to carry. It is not re-fetched here: the close that is on screen
+    // is loaded by the effect below, and re-reading every new day's fills is
+    // the burst this whole change exists to stop.
     return carried.state;
   }
 
@@ -12910,23 +13788,41 @@ export default function App() {
    * and backgroundRefresh.js for why N of these are one load and not N.
    */
   const backgroundRefresh = useRef(null);
-  if (!backgroundRefresh.current) {
-    backgroundRefresh.current = createCoalescingRefresh({
-      run: async (targets) => {
-        const remoteState = await loadSupabaseCrmState({
-          preferredCamProfileId:
-            targets.map((target) => target.preferredCamProfileId).find(Boolean) || null,
-        });
-        setState((current) => mergeRefreshedDays(current, remoteState, targets));
-        markConnected();
-        return remoteState;
-      },
-    });
+  /**
+   * The gate, built on first use and rebuilt after it has been dropped.
+   *
+   * It used to be built in the render body behind a null check, which made it
+   * a thing that existed only because a render had happened — and, worse, a
+   * closure over the `session` of the FIRST render, which on a fresh tab is the
+   * one before anybody signed in. It reads the session through a ref now, and
+   * forgetLoadedData drops it on a sign out so nothing of one user's load is
+   * held by the next; built here so that dropping it can never leave a caller
+   * holding null.
+   */
+  function backgroundRefresher() {
+    if (!backgroundRefresh.current) {
+      backgroundRefresh.current = createCoalescingRefresh({
+        run: async (targets) => {
+          const remoteState = await loadSupabaseCrmState({
+            preferredCamProfileId:
+              targets.map((target) => target.preferredCamProfileId).find(Boolean) || null,
+            // Through the ref, not through this closure: the gate outlives the
+            // render that built it, so a `session` read here would be whichever
+            // one was on screen at the time.
+            scopeToCamProfileId: currentScope(),
+          });
+          setState((current) => mergeRefreshedDays(current, remoteState, targets));
+          markConnected();
+          return remoteState;
+        },
+      });
+    }
+    return backgroundRefresh.current;
   }
 
   async function refreshInBackground(preferredCamProfileId = null, selectedClientId = null, date = null) {
     if (!isSupabaseConfigured) return null;
-    return backgroundRefresh.current.request({
+    return backgroundRefresher().request({
       preferredCamProfileId:
         preferredCamProfileId ||
         session?.camProfileId ||
@@ -13038,7 +13934,37 @@ export default function App() {
     visibleCamProfiles[0] ||
     state.camProfiles?.[0] ||
     null;
-  const currentCamClients = clientsForCam(state.clients, currentCamProfile, state.coverage || []);
+  // Memoised because `clientsForCam` ends in `clients.filter(...)`: recomputed
+  // inline it returned a new array identity on every render of this shell, and
+  // every memo keyed on it downstream — the period report's period, its report,
+  // the sidebar order — churned with it. The period report rebuild alone is
+  // three ranking passes and two combo passes over the whole book.
+  const currentCamClients = useMemo(
+    () => clientsForCam(state.clients, currentCamProfile, state.coverage || []),
+    [state.clients, currentCamProfile, state.coverage],
+  );
+  /* THE DESK'S MONEY, PER CLOSE, WITHOUT THE CLOSE.
+   *
+   * One row per close per segment (step 48), written at ingest by the same
+   * buildSegmentTotals the screen used to run in the browser over every close in
+   * the book. Indexed here rather than in deskMoney so the staleness check runs
+   * once per state change instead of once per figure: the manager's first
+   * screen calls buildDeskMoney fourteen times, once for the tile, once for the
+   * month and twelve for the history strip and the by-CAM lines.
+   *
+   * A close whose accounts have been reclassified since its summary was written
+   * is dropped here, falls back to its own snapshots, and is reported on the
+   * figure's basis line if it has none. That is what keeps a correction
+   * retroactive — see rebuildSupabaseCloseSummariesForClient.
+   */
+  const registryByClientId = useMemo(() => Object.fromEntries(
+    (state.clients || []).map((client) => [client.id, client.accountRegistry || {}]),
+  ), [state.clients]);
+  const closeSummaries = useMemo(
+    () => indexCloseSummaries(state.closeSummaries || [], { registryByClientId }),
+    [state.closeSummaries, registryByClientId],
+  );
+
   // Sidebar order: the CAM's manual drag order when they've set one, otherwise
   // the default pinned + urgency sort. Clients missing from a saved order (newly
   // added) fall to the bottom.
@@ -13364,6 +14290,36 @@ export default function App() {
   const dailyImport = selectedClient
     ? getClientImportByDate(selectedClient, selectedDate)
     : null;
+
+  /* OPENING A CLIENT, AND OPENING A CLOSE.
+   *
+   * Two effects, each fetching exactly what the screen now on it reads and
+   * nothing else. Both are cached by id, so moving back and forth between two
+   * clients or two dates refetches neither.
+   *
+   * The client one brings the Credentials tab's data, which left the login
+   * because it is passwords. The close one brings that close's orders,
+   * executions and per-account derivation — the 40.5 MB and 85 round trips a
+   * login used to spend on every close in the book, for the one close somebody
+   * is actually looking at.
+   */
+  useEffect(() => {
+    if (!isSupabaseConfigured || isLocalSnapshotEnabled()) return;
+    if (!selectedClient?.id || selectedClient.detailLoaded) return;
+    ensureClientDetail(selectedClient.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClient?.id]);
+
+  const openCloseId = dailyImport && !dailyImport.detailLoaded
+    ? dailyImport.uuid || dailyImport.id
+    : null;
+  useEffect(() => {
+    if (!isSupabaseConfigured || isLocalSnapshotEnabled()) return;
+    if (!openCloseId) return;
+    ensureCloseDetail([openCloseId], { label: `the close of ${selectedDate}` });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openCloseId]);
+
   const visibleTabs = selectedClient
     ? buildVisibleTabs(selectedClient, dailyImport)
     : STATIC_TABS;
@@ -13413,7 +14369,16 @@ export default function App() {
     });
   }
 
-  function openCamWorkspace(camId = currentCamProfile?.id, clientId = null) {
+  /* `reload` IS FALSE ON THE FIRST OPEN AFTER A SIGN IN, AND ONLY THERE.
+   *
+   * Signing in used to call persistSession and then this, and this called
+   * reloadSupabaseState — a second whole load, from the render in which the
+   * session was still null. The login effect is now keyed on the session and
+   * runs the moment it changes, so the sign-in path hands the load to it and
+   * this only switches the view. Every other caller (the manager's global
+   * search, the CAM list, the sidebar) is a real workspace change and still
+   * asks for its own read. */
+  function openCamWorkspace(camId = currentCamProfile?.id, clientId = null, { reload = true } = {}) {
     if (!camId) return;
     setState((current) => {
       const next = selectCam(current, camId);
@@ -13424,19 +14389,19 @@ export default function App() {
     setShowOverview(false);
     setShowSOP(false);
     setRegistryOpen(false);
-    if (isSupabaseConfigured) {
+    if (reload && isSupabaseConfigured) {
       reloadSupabaseState(camId, clientId).catch((error) => {
         console.error("[CRM] Failed to refresh CAM workspace:", error);
       });
     }
   }
 
-  function openManagerWorkspace() {
+  function openManagerWorkspace({ reload = true } = {}) {
     setPlatformView("manager");
     setShowProfile(false);
     setShowOverview(false);
     setShowSOP(false);
-    if (isSupabaseConfigured) {
+    if (reload && isSupabaseConfigured) {
       reloadSupabaseState(null).catch((error) => {
         console.error("[CRM] Failed to refresh manager workspace:", error);
       });
@@ -14411,11 +15376,44 @@ export default function App() {
     });
   }
 
-  function recalculateImport() {
+  async function recalculateImport() {
     if (!selectedClient || !dailyImport) return;
+    /* THE CLOSE'S FLAGS AT EVERY STATUS, READ BEFORE ANYTHING IS RECALCULATED.
+     *
+     * A login fetches unresolved flags plus a fortnight of recently closed
+     * ones, because 68.8% of that table is closed and 10.7 MB of it is rows the
+     * queue cannot act on. So an older close on screen holds its Open flags and
+     * none of the ones somebody resolved months ago — and recalculateDailyImport
+     * carries triage forward by matching what it is given. Without this read it
+     * would find no match for a resolved flag and write it back Open, which is
+     * an operator's work undone by a button that only claims to re-read the
+     * numbers. One round trip, on a per-close action.
+     *
+     * A read that fails does NOT fall back to the partial list: it stops, and
+     * says so. Recalculating from an incomplete triage history is the exact
+     * damage this read exists to prevent, and doing it anyway with a warning
+     * would be worse than not offering the button.
+     */
+    let priorFlags = dailyImport.flags || [];
+    if (isSupabaseConfigured && !isLocalSnapshotEnabled()) {
+      try {
+        priorFlags = closeFlagsFromRows(
+          state,
+          await loadSupabaseCloseFlags(dailyImport.uuid || dailyImport.id),
+        );
+      } catch (error) {
+        console.error("[CRM] Could not re-read this close's flags:", error);
+        window.alert(
+          "Could not re-read this close's flags, so Recalculate would reopen the ones already "
+          + `resolved. Nothing has been changed. ${error.message || ""}`.trim(),
+        );
+        return;
+      }
+    }
     const recalculated = recalculateDailyImport({
       dailyImport,
       registry: selectedClient.accountRegistry,
+      priorFlags,
     });
     setState((current) =>
       replaceDailyImport(current, selectedClient.id, recalculated),
@@ -14460,11 +15458,15 @@ export default function App() {
     return (
       <LoginScreen
         onLogin={(user) => {
+          // persistSession writes sessionRef and sets the session, which is
+          // what the keyed login effect above waits for. The workspace openers
+          // are told not to load: the effect is the load, and it is the first
+          // one that knows who signed in.
           persistSession(user);
           if (user.role === USER_ROLES.CAM && user.camProfileId) {
-            openCamWorkspace(user.camProfileId);
+            openCamWorkspace(user.camProfileId, null, { reload: false });
           } else {
-            openManagerWorkspace();
+            openManagerWorkspace({ reload: false });
           }
         }}
       />
@@ -14481,6 +15483,9 @@ export default function App() {
         <>
           <ManagerOverview
             clients={state.clients}
+            closeSummaries={closeSummaries}
+            panelLoadFor={panelLoadFor}
+            onNeedParameters={ensureStrategyParameters}
             camProfiles={state.camProfiles}
             coverage={state.coverage || []}
             timeOff={state.timeOff || []}
@@ -14488,7 +15493,7 @@ export default function App() {
             onDenyTimeOff={handleDenyTimeOff}
             onEndCoverage={handleEndCoverage}
             onEditCoverage={handleEditCoverage}
-            onOpenCam={openCamWorkspace}
+            onOpenCam={(camId, clientId) => openCamWorkspace(camId, clientId)}
             onCreateCam={(name) => {
               saveEdit({
                 what: "the CAM profile",
@@ -14854,6 +15859,7 @@ export default function App() {
                       setShowProfile(false);
                       setShowSOP(true);
                       setShowOverview(false);
+                      setShowCamPeriodReport(false);
                       closeMobileSidebar();
                     }}
                   >
@@ -14862,11 +15868,26 @@ export default function App() {
                     <em>Checklist</em>
                   </button>
                   <button
+                    className={showCamPeriodReport ? "client-link active" : "client-link"}
+                    onClick={() => {
+                      setShowCamPeriodReport(true);
+                      setShowProfile(false);
+                      setShowSOP(false);
+                      setShowOverview(false);
+                      closeMobileSidebar();
+                    }}
+                  >
+                    <CalendarRange size={16} />
+                    <span>Period Report</span>
+                    <em>Week</em>
+                  </button>
+                  <button
                     className={showProfile ? "client-link active" : "client-link"}
                     onClick={() => {
                       setShowProfile(true);
                       setShowOverview(false);
                       setShowSOP(false);
+                      setShowCamPeriodReport(false);
                       closeMobileSidebar();
                     }}
                   >
@@ -15020,7 +16041,19 @@ export default function App() {
             </nav>
           </aside>
 
-          {showProfile ? (
+          {showCamPeriodReport ? (
+            <main className="content">
+              <DeskPeriodReportView
+                clients={state.clients || []}
+                scopedClients={currentCamClients}
+                scope="cam"
+                camName={currentCamProfile?.name || ""}
+                camProfileId={currentCamProfile?.id || null}
+                summaries={closeSummaries}
+                builtBy={session?.displayName || session?.username || ""}
+              />
+            </main>
+          ) : showProfile ? (
             <main className="content">
               <div className="page-header">
                 <div>
@@ -15667,6 +16700,7 @@ export default function App() {
                         dailyImport={dailyImport}
                         onUpdateAccount={handleAccountUpdate}
                         allClients={state.clients || []}
+                        hiddenClientCount={state.hiddenClientCount || 0}
                         classifications={strategyClassifications}
                         onClassify={handleClassifyStrategy}
                         logAlgoHistory={logAlgoHistory}
@@ -15676,6 +16710,32 @@ export default function App() {
                       effectiveActiveTab,
                     ) ? (
                       <>
+                        {/* THE CLOSE'S OWN FILLS, AND WHAT IT SAYS WHEN THEY
+                            ARE NOT HERE. A login carries no order and no
+                            derivation; they arrive when a close is opened. A
+                            fetch that failed leaves every figure on this tab
+                            drawn from the grid alone, and the tab has no other
+                            way to say so — an empty orders array reads as a day
+                            with no trades. It is not a failed save and is not
+                            reported as one. */}
+                        {closeDetailLoad.status === "error" && dailyImport
+                          && !dailyImport.detailLoaded ? (
+                          <p className="muted chart-empty">
+                            {closeDetailLoad.error} The figures below are read from the
+                            account grid; the fills, the per-algorithm split and the order
+                            list are not loaded.{" "}
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => ensureCloseDetail(
+                                [dailyImport.uuid || dailyImport.id],
+                                { label: `the close of ${selectedDate}` },
+                              )}
+                            >
+                              Try again
+                            </button>
+                          </p>
+                        ) : null}
                         <Dashboard
                           dailyImport={dailyImport}
                           rows={currentTabData.snapshots}

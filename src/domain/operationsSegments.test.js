@@ -168,4 +168,30 @@ describe('buildSegmentTotals', () => {
     expect(rollUpByBusiness(totals).cash.dailyPnl).toBe(0);
     expect(rollUpByBusiness(totals).cash.accounts).toBe(0);
   });
+
+  it('counts a close it cannot read even when no summary lookup was supplied', () => {
+    // THE GUARD THAT USED TO BE HERE WAS THE DEFECT. `closesWithoutData` was
+    // incremented only when a `summaryRowsFor` callback had been passed, and
+    // deskMoney passes null when NOT ONE close in view has a usable stored
+    // summary — which is the state between step 48 and its Node backfill, the
+    // state of a database where the migration has not run, and the state where
+    // every stored row was refused as stale. So in exactly the window this
+    // counter exists for, nothing incremented it: `basis.complete` reported
+    // true over a desk month missing most of its closes.
+    const totals = buildSegmentTotals([
+      entry(registry, [], 'not-loaded'),
+      entry(registry, [{ accountName: 'F1', grossRealizedPnl: 100 }], 'loaded'),
+    ]);
+
+    expect(totals.provenance).toEqual({ fromSummary: 0, walked: 1, withoutData: 1 });
+  });
+
+  it('still counts an unreadable close when a summary lookup finds nothing for it', () => {
+    const totals = buildSegmentTotals(
+      [entry(registry, [], 'not-loaded')],
+      { summaryRowsFor: () => null },
+    );
+
+    expect(totals.provenance.withoutData).toBe(1);
+  });
 });

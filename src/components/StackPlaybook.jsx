@@ -1,22 +1,49 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
 import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
 import { buildAccountLifecycle } from '../domain/accountLifecycle';
+import { strategyRan } from '../domain/strategyRan';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
 import { buildBulletBotDeskStats } from '../domain/bulletBotDeskStats';
+import {
+  buildClientComboInsights,
+  buildComboPerformance,
+  comboKeyFromDay,
+  executionsForAccount,
+  isFundedPopulation,
+  MIN_ACCOUNTS,
+  MIN_DAYS,
+  NOTE_NO_GATE,
+} from '../domain/comboPerformance';
 import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 import AlgoContributionPanel from './AlgoContributionPanel';
+import { fillsLoadedAcross } from '../domain/closeLoadState';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
 const DLL_OPTIONS = ['', 'None', '$300', '$400', '$500', '$600', '$700', '$800', '$1,000'];
 
+const WINDOW_PRESETS = [
+  [7, 'Last 7 days'],
+  [30, 'Last 30 days'],
+  [90, 'Last 90 days'],
+  ['all', 'All history'],
+  ['custom', 'Custom range'],
+];
+const LEVELS = [['version', 'By version'], ['family', 'By family']];
+const BASES = [['traded', 'Traded (enabled or filled)'], ['enabled', 'Enabled at export']];
+
+// A trading month, for the income projection: 21 closes.
+const CLOSES_PER_MONTH = 21;
+
 function fmt(n) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(n || 0));
 }
+const signed = (n) => `${Number(n || 0) >= 0 ? '+' : ''}${fmt(n)}`;
+const pct = (ratio) => (ratio == null ? 'n/a' : `${Math.round(ratio * 100)}%`);
 
 function mergeRegCi(importAccounts, clientRegistry) {
   const merged = { ...(importAccounts || {}), ...(clientRegistry || {}) };
@@ -24,33 +51,23 @@ function mergeRegCi(importAccounts, clientRegistry) {
 }
 function ciMeta(reg, name) { return reg[(name || '').toLowerCase()] || {}; }
 
-// Normalize algo combo string from strategy names in a snapshot
-function comboFromStrategies(strategies = []) {
-  const active = strategies
-    .filter((s) => s.enabled)
-    .map((s) => {
-      const name = (s.strategyFamily || s.strategyName || '').toUpperCase();
-      if (name.includes('URGO')) return 'URGO';
-      if (name.includes('IFSP')) return 'IFSP';
-      if (name.includes('BULLET')) return 'Bullet';
-      return name.slice(0, 8) || 'Unknown';
-    })
-    .sort();
-  const unique = [...new Set(active)];
-  return unique.join(' + ') || 'Unknown';
+// The combo an account ran on one close, keyed the way the team table keys it.
+function comboOn(dailyImport, snapshot, keying) {
+  if (!snapshot) return '-';
+  return comboKeyFromDay(snapshot, executionsForAccount(dailyImport, snapshot.accountName), keying).key;
 }
 
 // Combo-change events for an account, aligned to its equity series index (same
 // sorted-by-date, snapshot-present ordering as buildAccountEquitySeries), so the
-// changes can be marked on the curve — "did the change help?".
-function comboChangesFor(client, accountName) {
+// changes can be marked on the curve: did the change help?
+function comboChangesFor(client, accountName, keying) {
   const lower = String(accountName || '').toLowerCase();
   const imports = [...(client?.dailyImports || [])].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
   const points = [];
   for (const di of imports) {
     const snap = (di.snapshots || []).find((s) => s.accountName?.toLowerCase() === lower);
     if (!snap) continue;
-    points.push({ date: di.date || '', combo: comboFromStrategies(snap.strategies || []) });
+    points.push({ date: di.date || '', combo: comboOn(di, snap, keying) });
   }
   const changes = [];
   for (let i = 1; i < points.length; i += 1) {
@@ -61,156 +78,54 @@ function comboChangesFor(client, accountName) {
   return changes;
 }
 
-// Aggregate algo combo performance across ALL clients' historical closes
-// Calendar days that `date` (YYYY-MM-DD) falls before `anchor`. 0 = same day.
-// Date-based so the "recent window" is aligned across clients regardless of how
-// many imports each has — the positional last-N-rows approach misaligned them.
-function daysBefore(anchor, date) {
-  if (!anchor || !date) return Infinity;
-  const a = new Date(`${anchor}T00:00:00Z`).getTime();
-  const d = new Date(`${date}T00:00:00Z`).getTime();
-  return Math.round((a - d) / 86400000);
-}
-
-// Latest import date across a set of clients — the window anchor.
-function latestImportDate(clients) {
-  let anchor = '';
-  for (const client of clients || []) {
-    for (const di of client.dailyImports || []) {
-      if ((di.date || '') > anchor) anchor = di.date || '';
-    }
-  }
-  return anchor;
-}
-
+// The shape the aggregator this component used to own returned, kept under its
+// old name for StackPlaybook.test.js until that suite moves. Nothing on screen
+// reads it, and it is NOT the old function: it is buildComboPerformance at
+// basis 'enabled', level 'family', includeFailed false, over all history, with
+// the recent and prior N-day averages beside it. So the keys are the stored
+// family verbatim (the old includes('URGO') / includes('IFSP') / includes(
+// 'BULLET') folds and the slice(0,8) are gone, and IFSP_PF no longer lands on
+// IFSP), and the trend compares a tenth of the prior's magnitude instead of
+// `recent > prior * 1.1`. Three aggregations per call, which is why it is worth
+// retiring rather than reusing.
 export function buildAlgoComboPerformance(allClients = [], { windowDays = 7 } = {}) {
-  const combos = {};
-  const anchor = latestImportDate(allClients);
-
-  for (const client of allClients) {
-    const rawReg = client.accountRegistry || {};
-    const registry = Object.fromEntries(Object.entries(rawReg).map(([k, v]) => [k.toLowerCase(), v]));
-
-    for (const di of client.dailyImports || []) {
-      const age = daysBefore(anchor, di.date); // days this close is before the anchor
-      const isRecent = age >= 0 && age < windowDays;
-      const isPrior = age >= windowDays && age < windowDays * 2;
-
-      for (const snap of di.snapshots || []) {
-        const meta = registry[(snap.accountName || '').toLowerCase()] || {};
-        if (meta.accountType !== ACCOUNT_TYPES.FUNDED) continue;
-        if (meta.status === ACCOUNT_STATUSES.FAILED || meta.status === ACCOUNT_STATUSES.INACTIVE) continue;
-
-        const combo = comboFromStrategies(snap.strategies || []);
-        if (combo === 'Unknown' || combo === '') continue;
-
-        if (!combos[combo]) {
-          combos[combo] = {
-            combo,
-            totalPnl: 0,
-            days: 0,
-            winDays: 0,
-            recentPnl: 0,
-            recentDays: 0,
-            priorPnl: 0,
-            priorDays: 0,
-            accountSet: new Set(),
-            clientSet: new Set(),
-          };
-        }
-
-        const pnl = Number(snap.grossRealizedPnl || 0);
-        const entry = combos[combo];
-        entry.totalPnl += pnl;
-        entry.days += 1;
-        if (pnl > 0) entry.winDays += 1;
-        entry.accountSet.add(`${client.id}::${snap.accountName}`);
-        entry.clientSet.add(client.id);
-        if (isRecent) { entry.recentPnl += pnl; entry.recentDays += 1; }
-        if (isPrior)  { entry.priorPnl += pnl; entry.priorDays += 1; }
-      }
-    }
-  }
-
-  return Object.values(combos)
-    .map((c) => {
-      const avgPnl = c.days ? c.totalPnl / c.days : 0;
-      const recentAvg = c.recentDays ? c.recentPnl / c.recentDays : null;
-      const priorAvg  = c.priorDays  ? c.priorPnl  / c.priorDays  : null;
+  const legacy = { basis: 'enabled', level: 'family', includeFailed: false };
+  const all = buildComboPerformance(allClients, { ...legacy, window: { preset: 'all' } });
+  if (!all.rows.length) return [];
+  const { anchor } = all.window;
+  const shift = (days) => {
+    const ms = new Date(`${anchor}T00:00:00Z`).getTime() - days * 86400000;
+    return new Date(ms).toISOString().slice(0, 10);
+  };
+  const recent = buildComboPerformance(allClients, { ...legacy, window: { preset: windowDays } });
+  const prior = buildComboPerformance(allClients, { ...legacy, window: { from: shift(windowDays * 2 - 1), to: shift(windowDays) } });
+  const rowIn = (perf, key) => perf.rows.find((row) => row.key === key) || null;
+  return all.rows
+    .map((row) => {
+      const recentRow = rowIn(recent, row.key);
+      const priorRow = rowIn(prior, row.key);
+      const recentAvg = recentRow ? recentRow.avgPnl : null;
+      const priorAvg = priorRow ? priorRow.avgPnl : null;
       let trend = 'stable';
       if (recentAvg !== null && priorAvg !== null) {
-        if (recentAvg > priorAvg * 1.1) trend = 'up';
-        else if (recentAvg < priorAvg * 0.9) trend = 'down';
+        const bar = 0.1 * Math.abs(priorAvg);
+        if (recentAvg - priorAvg > bar) trend = 'up';
+        else if (recentAvg - priorAvg < -bar) trend = 'down';
       }
       return {
-        combo: c.combo,
-        avgPnl,
-        winRate: c.days ? Math.round((c.winDays / c.days) * 100) : 0,
-        totalDays: c.days,
-        accounts: c.accountSet.size,
-        clients: c.clientSet.size,
+        combo: row.key,
+        avgPnl: row.avgPnl,
+        winRate: row.days ? Math.round((row.winDays / row.days) * 100) : 0,
+        totalDays: row.days,
+        accounts: row.accounts,
+        clients: row.clients,
         trend,
         recentAvg,
         priorAvg,
-        recentDays: c.recentDays,
+        recentDays: recentRow ? recentRow.days : 0,
       };
     })
     .sort((a, b) => b.avgPnl - a.avgPnl);
-}
-
-// For a specific client's funded accounts, compare their combo vs team avg and suggest better option
-function buildClientComboInsights(client, dailyImport, comboPerf, { windowDays = 7 } = {}) {
-  if (!client || !comboPerf.length) return [];
-  const registry = mergeRegCi(dailyImport?.accounts, client.accountRegistry);
-  const snapshots = dailyImport?.snapshots || [];
-  const perfByCombo = Object.fromEntries(comboPerf.map((c) => [c.combo, c]));
-  const best = comboPerf[0];
-  // Anchor the account window at the close being viewed, not the array tail.
-  const anchor = dailyImport?.date || latestImportDate([client]);
-
-  return snapshots
-    .filter((s) => {
-      const meta = ciMeta(registry, s.accountName);
-      return meta.accountType === ACCOUNT_TYPES.FUNDED &&
-        meta.status !== ACCOUNT_STATUSES.FAILED &&
-        meta.status !== ACCOUNT_STATUSES.INACTIVE;
-    })
-    .map((s) => {
-      const meta = ciMeta(registry, s.accountName);
-      const currentCombo = comboFromStrategies(s.strategies || []);
-      const teamData = perfByCombo[currentCombo];
-      const sNameLower = (s.accountName || '').toLowerCase();
-      // Sum the account's PnL over the real date window and divide by the days
-      // that actually had data (not a hard-coded 7).
-      let sum = 0;
-      let daysWithData = 0;
-      for (const di of client.dailyImports || []) {
-        const age = daysBefore(anchor, di.date);
-        if (age < 0 || age >= windowDays) continue;
-        const snap = (di.snapshots || []).find((x) => x.accountName?.toLowerCase() === sNameLower);
-        if (snap) { sum += Number(snap.grossRealizedPnl || 0); daysWithData += 1; }
-      }
-      const accountAvg = daysWithData ? sum / daysWithData : 0;
-      const teamAvg = teamData?.recentAvg ?? teamData?.avgPnl ?? null;
-      const delta = teamAvg !== null ? accountAvg - teamAvg : null;
-      const suggestion = best.combo !== currentCombo && best.avgPnl > (teamData?.avgPnl || 0) * 1.15
-        ? best.combo
-        : null;
-
-      return {
-        accountName: s.accountName,
-        alias: meta.alias || s.accountName,
-        currentCombo,
-        accountAvg,
-        accountDays: daysWithData,
-        teamAvg,
-        delta,
-        suggestion,
-        bestCombo: best.combo,
-        bestAvg: best.avgPnl,
-        teamData,
-      };
-    });
 }
 
 function TrendIcon({ trend }) {
@@ -219,9 +134,14 @@ function TrendIcon({ trend }) {
   return <Minus size={14} className="muted" />;
 }
 
-function IncomeProjection({ currentFunded }) {
-  const [avgPerAccount, setAvgPerAccount] = useState(800);
+// bookMonthly is what the selected window says a funded account makes in a
+// month of closes. It is the starting value, and it keeps following the window
+// until the user types a figure of their own; the old +$800 was a constant that
+// the book has never once supported.
+function IncomeProjection({ currentFunded, bookMonthly }) {
+  const [typed, setTyped] = useState(null);
   const [targetMonthly, setTargetMonthly] = useState(10000);
+  const avgPerAccount = typed ?? bookMonthly;
   const accountsNeeded = avgPerAccount > 0 ? Math.ceil(targetMonthly / avgPerAccount) : '-';
   const currentMonthly = currentFunded * avgPerAccount;
   const gap = targetMonthly - currentMonthly;
@@ -229,8 +149,16 @@ function IncomeProjection({ currentFunded }) {
     <div className="income-projection">
       <div className="income-inputs">
         <div>
-          <label>Avg monthly P&amp;L per funded account</label>
-          <input type="number" value={avgPerAccount} min={100} step={100} onChange={(e) => setAvgPerAccount(Number(e.target.value))} />
+          <label>Assumed monthly P&amp;L per funded account (book: {fmt(bookMonthly)} per account over the selected window)</label>
+          {/* An emptied field falls back to the book figure: Number('') is 0,
+              and a typed 0 left the panel stuck on "no number of accounts
+              reaches the target" with no way back to the window's own number. */}
+          <input
+            type="number"
+            value={avgPerAccount}
+            step={100}
+            onChange={(e) => setTyped(e.target.value === '' ? null : Number(e.target.value))}
+          />
         </div>
         <div>
           <label>Monthly income target</label>
@@ -239,23 +167,25 @@ function IncomeProjection({ currentFunded }) {
       </div>
       <div className="income-results">
         <div className="income-result-card"><span>Accounts needed</span><strong>{accountsNeeded}</strong></div>
-        <div className="income-result-card"><span>Current funded</span><strong>{currentFunded}</strong></div>
+        <div className="income-result-card"><span>Funded accounts with data in range</span><strong>{currentFunded}</strong></div>
         <div className="income-result-card"><span>Projected monthly</span><strong className={currentMonthly >= targetMonthly ? 'positive' : ''}>{fmt(currentMonthly)}</strong></div>
         <div className="income-result-card">
           <span>{gap > 0 ? 'Gap to target' : 'Surplus'}</span>
           <strong className={gap <= 0 ? 'positive' : 'warning'}>{fmt(Math.abs(gap))}</strong>
         </div>
       </div>
-      {gap > 0 && currentFunded > 0
-        ? <p className="income-note muted">Need {accountsNeeded - currentFunded} more funded account{accountsNeeded - currentFunded !== 1 ? 's' : ''} to reach {fmt(targetMonthly)}/mo.</p>
-        : gap <= 0 && currentFunded > 0
-          ? <p className="income-note positive">On track - {currentFunded} funded accounts generating ~{fmt(currentMonthly)}/mo.</p>
-          : null}
+      {avgPerAccount <= 0
+        ? <p className="income-note muted">At {fmt(avgPerAccount)} per account per month no number of accounts reaches the target.</p>
+        : gap > 0 && currentFunded > 0
+          ? <p className="income-note muted">Need {accountsNeeded - currentFunded} more funded account{accountsNeeded - currentFunded !== 1 ? 's' : ''} to reach {fmt(targetMonthly)}/mo.</p>
+          : gap <= 0 && currentFunded > 0
+            ? <p className="income-note positive">On track: {currentFunded} funded accounts generating about {fmt(currentMonthly)}/mo.</p>
+            : null}
     </div>
   );
 }
 
-export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], classifications = [], onClassify, logAlgoHistory = [] }) {
+export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], hiddenClientCount = 0, classifications = [], onClassify, logAlgoHistory = [] }) {
   const registryCi = mergeRegCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
 
@@ -275,7 +205,14 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [heatOpen, setHeatOpen] = useState(false);
   const [logHistOpen, setLogHistOpen] = useState(false);
   const [classDraft, setClassDraft] = useState({});
-  const [windowDays, setWindowDays] = useState(30);
+  // The team table's window, grouping and attribution. The window applies to
+  // every column; the old select moved only the trend pair.
+  const [windowPreset, setWindowPreset] = useState(30);
+  const [windowFrom, setWindowFrom] = useState('');
+  const [windowTo, setWindowTo] = useState('');
+  const [level, setLevel] = useState('version');
+  const [basis, setBasis] = useState('traded');
+  const keying = { basis, level };
 
   // Funded + evaluation accounts get a full-history chart (cash accounts are
   // tracked by cash balance, not trajectory).
@@ -302,11 +239,44 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     onUpdateAccount?.(accountName, { dailyLossLimit: value });
   }
 
-  // Build team intelligence using ALL clients
-  const teamClients = allClients.length ? allClients : (client ? [client] : []);
-  const comboPerf = buildAlgoComboPerformance(teamClients, { windowDays });
-  const clientInsights = buildClientComboInsights(client, dailyImport, comboPerf, { windowDays });
-  const riskCurves = buildRiskScalingCurve(comboPerf);
+  // Build team intelligence using ALL clients.
+  //
+  // Memoized, and it has to be: this panel re-renders on every keystroke of a
+  // change note, every classification draft and every income figure, while the
+  // desk-wide aggregation walks 2,934 account days and 7,919 executions on the
+  // book. Unmemoized that was a visible pause per character typed. The deps are
+  // exactly what the builds read; nothing else in the body feeds them.
+  const teamClients = useMemo(
+    () => (allClients.length ? allClients : (client ? [client] : [])),
+    [allClients, client],
+  );
+  const perf = useMemo(
+    () => buildComboPerformance(teamClients, {
+      basis,
+      level,
+      window: windowPreset === 'custom'
+        ? { preset: 'custom', from: windowFrom || null, to: windowTo || null }
+        : { preset: windowPreset },
+      hiddenClientCount,
+    }),
+    [teamClients, basis, level, windowPreset, windowFrom, windowTo, hiddenClientCount],
+  );
+  const comboPerf = perf.rows;
+  const clientInsights = useMemo(
+    () => buildClientComboInsights(client, dailyImport, perf, { basis, level }),
+    [client, dailyImport, perf, basis, level],
+  );
+  // The fills half of the traded attribution arrives when a close is OPENED: a
+  // login carries the executions of each client's latest close and of no other.
+  // Until the rest land the panel is keying days off the strategy grid alone,
+  // and the numbers move when they do.
+  //
+  // Asked through closeLoadState.js rather than by probing for a fill here. The
+  // probe this replaces was `some close has an execution`, which answered
+  // "loaded" as soon as the login landed and would have dropped the sentence
+  // below over a book whose 2,379 other closes hold nothing.
+  const fillsLoaded = useMemo(() => fillsLoadedAcross(teamClients), [teamClients]);
+  const riskCurves = buildRiskScalingCurve(comboPerf.map((row) => ({ combo: row.key, avgPnl: row.avgPnl, winRate: Math.round((row.winRate ?? 0) * 100), accounts: row.accounts })));
   // Desk-wide, despite living in one client's tab: this card has always been fed
   // teamClients. It used to run buildBulletBotStats, which answered the same
   // question with different arithmetic — 236 accounts against 240, 22 passes
@@ -316,7 +286,16 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   // reason a manager stops trusting either. Same component, same numbers, both
   // places.
   const bbStats = buildBulletBotDeskStats(teamClients);
-  const comboFirm = buildComboByFirm(teamClients, comboFromStrategies);
+  // Same population, same key AND same window as the table above, which is what
+  // the caption claims: on "Last 7 days" the windowless cross-tab was averaging
+  // 599 account days under a caption promising the table's 302.
+  const comboFirm = useMemo(
+    () => buildComboByFirm(teamClients, (snap, execs) => comboKeyFromDay(snap, execs, { basis, level }).key, {
+      populationFilter: (meta) => isFundedPopulation(meta),
+      window: { from: perf.window.from, to: perf.window.to },
+    }),
+    [teamClients, basis, level, perf.window.from, perf.window.to],
+  );
   const logAlgoAgg = aggregateLogFamilyHistory(logAlgoHistory);
   const sigGroups = groupStrategiesBySignature(teamClients);
   const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
@@ -336,7 +315,28 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   }
 
   const hasSuggestions = clientInsights.some((i) => i.suggestion);
-  const totalTeamAccounts = comboPerf.reduce((s, c) => s + c.accounts, 0);
+  const { population, window: perfWindow } = perf;
+  const bookMonthly = Math.round(population.avgPnlPerAccountDay * CLOSES_PER_MONTH);
+  // Funded accounts of this client with at least one close inside the window:
+  // the registry count included Reserve rows and accounts with no close at all.
+  const fundedWithData = funded.filter((account) => {
+    const name = String(account.accountName || '').toLowerCase();
+    return (client?.dailyImports || []).some((di) => (
+      di.date >= (perfWindow.from || '') && di.date <= (perfWindow.to || '') &&
+      (di.snapshots || []).some((snap) => String(snap.accountName || '').toLowerCase() === name)
+    ));
+  });
+
+  function selectWindow(value) {
+    const preset = value === 'all' || value === 'custom' ? value : Number(value);
+    if (preset === 'custom') {
+      // Prefill with the range the current preset resolves to, clamped to the
+      // closes the book actually holds.
+      setWindowFrom(perfWindow.from > perfWindow.firstClose ? perfWindow.from : perfWindow.firstClose);
+      setWindowTo(perfWindow.to || perfWindow.lastClose);
+    }
+    setWindowPreset(preset);
+  }
 
   return (
     <div className="stack-playbook">
@@ -356,12 +356,16 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                 const series = buildAccountEquitySeries(client, account.accountName);
                 const ddLimit = Number(account.maxDrawdownLimit || 0);
                 const snap = snapshots.find((s) => s.accountName?.toLowerCase() === account.accountName.toLowerCase());
-                const mult = parseComboRisk(comboFromStrategies(snap?.strategies || [])).multiplier;
+                const mult = parseComboRisk(comboOn(dailyImport, snap, keying)).multiplier;
                 const last = series[series.length - 1];
                 const buffer = last ? (ddLimit > 0 ? ddLimit - Math.abs(last.trailing) : last.trailing) : 0;
                 const safe = estimateMaxSafeMultiplier(series, buffer, mult);
+                // The algorithms that ran on this account's latest close, not
+                // the ones whose checkbox survived the export. Same rule as the
+                // combo table above it, which is the point: two lines of the
+                // same panel disagreed about the same account day.
                 const stratVersions = (snap?.strategies || [])
-                  .filter((st) => st.enabled)
+                  .filter((st) => strategyRan(st))
                   .map((st) => {
                     const c = classifyStrategy(st, classifications);
                     return c.matched ? `${st.strategyFamily} ${c.version}` : `${st.strategyFamily || st.strategyName || 'Algo'}?`;
@@ -385,7 +389,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                         {lc.outcome}{lc.daysAlive != null ? ` · ${lc.daysAlive}d alive` : ''}{lc.phases.length > 1 ? ` · ${lc.phases.length} algo phases` : ''}
                       </small>
                     </div>
-                    <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName)} />
+                    <AccountHistoryChart series={series} ddLimit={ddLimit} alias={account.alias || account.accountName} comboChanges={comboChangesFor(client, account.accountName, keying)} />
                     <AlgoContributionPanel client={client} accountName={account.accountName} />
                   </div>
                 );
@@ -544,7 +548,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           <button className="registry-toggle" onClick={() => setHeatOpen((v) => !v)}>
             <ChevronDown className={heatOpen ? 'chevron open' : 'chevron'} size={16} />
             <h3>Combo × Prop firm</h3>
-            <span className="muted">Avg PnL/day by combo under each firm's rules</span>
+            <span className="muted">Avg P&amp;L per account day by combo and prop firm, same population as the table above</span>
           </button>
           {heatOpen ? (() => {
             const maxAbs = Math.max(1, ...comboFirm.matrix.flatMap((r) => r.cells.map((c) => Math.abs(c.avgPnl || 0))));
@@ -566,7 +570,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                           const alpha = 0.15 + 0.55 * (Math.abs(c.avgPnl) / maxAbs);
                           const bg = c.avgPnl >= 0 ? `rgba(var(--success-rgb), ${alpha})` : `rgba(var(--error-rgb), ${alpha})`;
                           return (
-                            <td key={c.firm} style={{ background: bg }} title={`${c.days} day-runs`}>
+                            <td key={c.firm} style={{ background: bg }} title={`${c.days} account days`}>
                               {c.avgPnl >= 0 ? '+' : ''}{fmt(c.avgPnl)}
                             </td>
                           );
@@ -627,80 +631,140 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
 
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
-        <div className="panel-heading">
+        <div className="panel-heading playbook-heading">
           <h3>Team Algo Performance</h3>
-          <span className="badge muted">{teamClients.length} clients · {totalTeamAccounts} account-runs</span>
+          <span className="badge muted">{comboPerf.length} combos · {population.accounts} accounts · {population.clients} clients</span>
           <select
             className="window-select"
-            value={windowDays}
-            onChange={(e) => setWindowDays(Number(e.target.value))}
-            title="Trend / recent-average window"
+            value={String(windowPreset)}
+            onChange={(e) => selectWindow(e.target.value)}
+            title="Applies to every column in this panel"
+            aria-label="Window"
           >
-            {[7, 30, 60, 90, 180].map((d) => <option key={d} value={d}>{`Last ${d}d`}</option>)}
+            {WINDOW_PRESETS.map(([value, label]) => <option key={value} value={String(value)}>{label}</option>)}
           </select>
+          {windowPreset === 'custom' ? (
+            <span className="playbook-range">
+              <input
+                type="date"
+                aria-label="From"
+                value={windowFrom}
+                min={perfWindow.firstClose}
+                max={windowTo || perfWindow.lastClose}
+                onChange={(e) => setWindowFrom(e.target.value)}
+              />
+              <span className="muted">to</span>
+              <input
+                type="date"
+                aria-label="To"
+                value={windowTo}
+                min={windowFrom || perfWindow.firstClose}
+                max={perfWindow.lastClose}
+                onChange={(e) => setWindowTo(e.target.value)}
+              />
+            </span>
+          ) : null}
+          <span className="playbook-toggles">
+            <span className="muted">Grouping</span>
+            {LEVELS.map(([value, label]) => (
+              <button key={value} type="button" className="ghost-button" aria-pressed={level === value} onClick={() => setLevel(value)}>{label}</button>
+            ))}
+            <span className="muted">Attribution</span>
+            {BASES.map(([value, label]) => (
+              <button key={value} type="button" className="ghost-button" aria-pressed={basis === value} onClick={() => setBasis(value)}>{label}</button>
+            ))}
+          </span>
         </div>
+        <p className="muted playbook-basis" style={{ fontSize: 13, marginBottom: 8 }}>
+          Client account results while the combo was running. Not the algorithm's own track record. Not comparable to My Futures Book.
+        </p>
         {comboPerf.length === 0 ? (
-          <p className="muted" style={{ padding: '12px 0' }}>No strategy data across clients yet - upload daily closes to populate.</p>
+          <p className="muted" style={{ padding: '12px 0' }}>No funded account day in this window carries an attributable algo. Widen the window or upload daily closes to populate.</p>
         ) : (
           <>
             <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
               <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-              Aggregated from every client running each algo combination. Use this to evaluate what's working across the portfolio - not a per-client guarantee.
+              Client account results while the combo was running. {population.includedDays} of {population.fundedDays} funded account days in range; {population.unknownDays} days with no algo attributable ({fmt(population.unknownPnl)}); {population.failedAccountDays} days from accounts now marked Failed are included; {population.hiddenClients} inactive clients are not loaded. P&amp;L is realized net of commission where the grid reported it, gross otherwise. One account day is one observation, unweighted. Not the algorithm's own track record. Not comparable to My Futures Book.
+            </p>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              A row is marked Low sample under {MIN_DAYS} account days or under {MIN_ACCOUNTS} accounts, and a Low sample row is never marked Best.
+              {basis === 'traded' && !fillsLoaded
+                ? ' No fills are loaded for these closes, so traded attribution is reading the strategy grid alone; the figures move when trade history finishes loading.'
+                : ''}
             </p>
             {(() => {
-              const maxAbs = Math.max(...comboPerf.map((c) => Math.abs(c.avgPnl)), 1);
+              const gated = comboPerf.filter((row) => !row.lowSample).slice(0, 8);
+              if (!gated.length) return null;
+              const maxAbs = Math.max(...gated.map((c) => Math.abs(c.avgPnl)), 1);
               return (
                 <div className="combo-bars">
-                  {comboPerf.slice(0, 8).map((row) => (
-                    <div className="combo-bar-row" key={row.combo}>
-                      <span className="combo-bar-label" title={row.combo}>{row.combo}</span>
+                  {gated.map((row) => (
+                    <div className="combo-bar-row" key={row.key}>
+                      <span className="combo-bar-label" title={row.key}>{row.key}</span>
                       <div className="combo-bar-track">
                         <i style={{ width: `${(Math.abs(row.avgPnl) / maxAbs) * 100}%`, background: row.avgPnl >= 0 ? 'var(--success)' : 'var(--error)' }} />
                       </div>
-                      <span className={row.avgPnl >= 0 ? 'positive' : 'negative'}>{row.avgPnl >= 0 ? '+' : ''}{fmt(row.avgPnl)}</span>
-                      <span className="muted">{row.winRate}% win</span>
+                      <span className={row.avgPnl >= 0 ? 'positive' : 'negative'}>{signed(row.avgPnl)}</span>
+                      <span className="muted">{pct(row.winRate)} win</span>
                     </div>
                   ))}
                 </div>
               );
             })()}
+            {perf.best ? null : (
+              // Two different facts, and one sentence for each: a table where 16
+              // rows carry "OK" in the Sample column must not be captioned "No
+              // combo passes the sample gate".
+              <p className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                {comboPerf.some((row) => !row.lowSample)
+                  ? `No combo with a positive average passes the sample gate (${MIN_DAYS} account days and ${MIN_ACCOUNTS} accounts), so no row is marked Best.`
+                  : `No combo passes the sample gate (${MIN_DAYS} account days and ${MIN_ACCOUNTS} accounts).`}
+              </p>
+            )}
             <div className="table-wrap">
               <table className="ops-table">
                 <thead>
                   <tr>
-                    <th>Combo</th>
-                    <th>Avg P&amp;L / day</th>
-                    <th>Win rate</th>
-                    <th>Trend ({windowDays}d)</th>
-                    <th>Last {windowDays}d avg</th>
-                    <th>Accounts</th>
-                    <th>Clients</th>
-                    <th>Total days</th>
+                    <th title="Algorithm families and versions attributed to the account day">Combo</th>
+                    <th title="First and last close with this combo inside the selected window">Range</th>
+                    <th title="Number of account days, one per funded account per close">Account days</th>
+                    <th title="Account days with nonzero P&L">Traded days</th>
+                    <th title="Distinct funded accounts with at least one day on this combo in range">Accounts</th>
+                    <th title="Distinct clients with at least one such account">Clients</th>
+                    <th title="Total P&L divided by account days. Realized net of commission where reported, gross otherwise. Unweighted.">Avg P&amp;L per account day</th>
+                    <th title="Total P&L divided by traded days">Avg P&amp;L per traded day</th>
+                    <th title="Share of traded days with positive P&L; flat days excluded">Win rate on traded days</th>
+                    <th title="Account days with zero P&L">Flat days</th>
+                    <th title="First half of the window vs second half, at least 5 account days each; otherwise n/a">Trend in window</th>
+                    <th title={`OK, or Low sample when under ${MIN_DAYS} account days or ${MIN_ACCOUNTS} accounts`}>Sample</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {comboPerf.map((row, i) => (
-                    <tr key={row.combo} className={i === 0 ? 'row-highlight' : ''}>
-                      <td>
-                        <strong>{row.combo}</strong>
-                        {i === 0 ? <span className="badge success" style={{ marginLeft: 6 }}>Best</span> : null}
+                  {comboPerf.map((row) => (
+                    <tr key={row.key} className={row === perf.best ? 'row-highlight' : row.lowSample ? 'row-muted' : ''}>
+                      <td className="playbook-combo-cell">
+                        <strong>{row.key}</strong>
+                        {row === perf.best ? <span className="badge success" style={{ marginLeft: 6 }}>Best</span> : null}
+                        {row.lowSample ? <span className="badge muted" style={{ marginLeft: 6 }}>Low sample</span> : null}
                       </td>
-                      <td className={row.avgPnl >= 0 ? 'positive' : 'negative'}>
-                        {row.avgPnl >= 0 ? '+' : ''}{fmt(row.avgPnl)}
+                      <td className="muted playbook-range-cell">{row.firstDate} to {row.lastDate}</td>
+                      <td>{row.days}</td>
+                      <td>{row.tradedDays}</td>
+                      <td>{row.accounts}</td>
+                      <td>{row.clients}</td>
+                      <td className={row.avgPnl >= 0 ? 'positive' : 'negative'}>{signed(row.avgPnl)}</td>
+                      <td className={row.avgTradedPnl == null ? 'muted' : row.avgTradedPnl >= 0 ? 'positive' : 'negative'}>
+                        {row.avgTradedPnl == null ? 'n/a' : signed(row.avgTradedPnl)}
                       </td>
-                      <td>{row.winRate}%</td>
+                      <td>{pct(row.winRate)}</td>
+                      <td className="muted">{row.flatDays}</td>
                       <td style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                         <TrendIcon trend={row.trend} />
                         <span className={row.trend === 'up' ? 'positive' : row.trend === 'down' ? 'negative' : 'muted'}>
                           {row.trend}
                         </span>
                       </td>
-                      <td className={row.recentAvg != null ? (row.recentAvg >= 0 ? 'positive' : 'negative') : 'muted'}>
-                        {row.recentAvg != null ? `${row.recentAvg >= 0 ? '+' : ''}${fmt(row.recentAvg)}` : '-'}
-                      </td>
-                      <td>{row.accounts}</td>
-                      <td>{row.clients}</td>
-                      <td className="muted">{row.totalDays}</td>
+                      <td className={row.lowSample ? 'muted' : ''}>{row.lowSample ? 'Low sample' : 'OK'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -716,43 +780,45 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           <div className="panel-heading">
             <h3>Client Config vs Team Avg</h3>
             {hasSuggestions
-              ? <span className="badge warning"><AlertTriangle size={12} /> Consider updating</span>
-              : <span className="badge success">On best combos</span>}
+              ? <span className="badge warning"><AlertTriangle size={12} /> Suggestions available</span>
+              : <span className="badge muted">No suggestion passes the gate</span>}
           </div>
           <div className="table-wrap">
             <table className="ops-table">
               <thead>
                 <tr>
                   <th>Account</th>
-                  <th>Current combo</th>
-                  <th>This acct {windowDays}d avg</th>
-                  <th>Team avg (same combo)</th>
-                  <th>vs Team</th>
-                  <th>Insight</th>
+                  <th>Combo on this close</th>
+                  <th>This account on this combo, avg per account day</th>
+                  <th>Team on this combo, avg per account day</th>
+                  <th>Difference</th>
+                  <th>Suggestion</th>
                 </tr>
               </thead>
               <tbody>
                 {clientInsights.map((row) => (
                   <tr key={row.accountName}>
                     <td><strong>{row.alias}</strong></td>
-                    <td><span className="badge muted">{row.currentCombo}</span></td>
-                    <td className={row.accountAvg >= 0 ? 'positive' : 'negative'}>
-                      {row.accountAvg >= 0 ? '+' : ''}{fmt(row.accountAvg)}
+                    <td><span className="badge muted">{row.currentKey}</span></td>
+                    <td className={row.accountAvg == null ? 'muted' : row.accountAvg >= 0 ? 'positive' : 'negative'}>
+                      {row.accountAvg == null ? 'n/a' : signed(row.accountAvg)}
+                      <small className="muted" style={{ display: 'block' }}>{row.accountDaysOnCombo} of {row.accountDaysTotal} days in range</small>
                     </td>
                     <td className="muted">
-                      {row.teamAvg != null ? `${row.teamAvg >= 0 ? '+' : ''}${fmt(row.teamAvg)}` : '-'}
+                      {row.teamAvg == null ? 'n/a' : signed(row.teamAvg)}
+                      {row.teamRow ? <small className="muted" style={{ display: 'block' }}>{row.teamRow.days} account days, {row.teamRow.accounts} accounts</small> : null}
                     </td>
                     <td className={row.delta == null ? 'muted' : row.delta >= 0 ? 'positive' : 'negative'}>
-                      {row.delta != null ? `${row.delta >= 0 ? '+' : ''}${fmt(row.delta)}` : '-'}
+                      {row.delta == null ? 'n/a' : signed(row.delta)}
                     </td>
                     <td>
                       {row.suggestion ? (
                         <span className="playbook-suggestion">
                           <ArrowRight size={12} />
-                          Consider <strong>{row.suggestion}</strong> - team avg {fmt(row.bestAvg)}/day
+                          Consider <strong>{row.best.key}</strong>: team avg {fmt(row.best.avgPnl)} per account day over {row.best.days} days on {row.best.accounts} accounts
                         </span>
                       ) : (
-                        <span className="muted" style={{ fontSize: 12 }}>On best known combo</span>
+                        <span className="muted" style={{ fontSize: 12 }}>{row.note || NOTE_NO_GATE}</span>
                       )}
                     </td>
                   </tr>
@@ -761,11 +827,10 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
             </table>
           </div>
           <p className="muted" style={{ fontSize: 12, padding: '8px 0 0' }}>
-            Suggestions are based on team aggregate data - market conditions vary. Use as insight, not instruction.
+            Team figures are client account results, not the algorithm's own track record.
           </p>
         </section>
       ) : null}
-
       {/* ── Per-account config editor ───────────────────────── */}
       {funded.length > 0 ? (
         <section className="panel">
@@ -788,7 +853,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               <tbody>
                 {funded.map((account) => {
                   const snap = snapshots.find((s) => s.accountName?.toLowerCase() === account.accountName?.toLowerCase());
-                  const liveCombo = snap ? comboFromStrategies(snap.strategies || []) : '-';
+                  const liveCombo = comboOn(dailyImport, snap, keying);
                   const buffer = snap ? Number(snap.trailingMaxDrawdown || 0) : null;
                   const stackVal = localStack[account.accountName] ?? (account.algoStack || '');
                   const dllVal   = localDll[account.accountName]   ?? (account.dailyLossLimit || '');
@@ -876,7 +941,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
           <h3>Income Projection</h3>
           <span className="badge muted">How many accounts to hit monthly target?</span>
         </div>
-        <IncomeProjection currentFunded={funded.length} />
+        <IncomeProjection currentFunded={fundedWithData.length} bookMonthly={bookMonthly} />
       </section>
 
     </div>

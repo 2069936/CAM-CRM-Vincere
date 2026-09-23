@@ -37,6 +37,12 @@ public sealed class RedactedAgentState
     [JsonProperty("lastScheduledTradingDate")]
     public string LastScheduledTradingDate { get; private init; }
 
+    [JsonProperty("quarantineReviewTime")]
+    public string QuarantineReviewTime { get; private init; }
+
+    [JsonProperty("lastQuarantineReviewDate")]
+    public string LastQuarantineReviewDate { get; private init; }
+
     [JsonProperty("hasCredential")]
     public bool HasCredential { get; private init; }
 
@@ -62,6 +68,8 @@ public sealed class RedactedAgentState
             DeviceId = options.DeviceId,
             ClientName = options.ClientName,
             LastScheduledTradingDate = options.LastScheduledTradingDate,
+            QuarantineReviewTime = options.QuarantineReviewTime,
+            LastQuarantineReviewDate = options.LastQuarantineReviewDate,
             HasCredential = hasCredential,
             MachineIdHash = machineIdHash,
         };

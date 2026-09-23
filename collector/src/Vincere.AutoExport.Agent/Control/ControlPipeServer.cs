@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -52,7 +53,27 @@ public sealed record ControlStatusData(
     QueueStatus Queue,
     IReadOnlyList<CaptureDay> Timeline,
     string AgentVersion = null,
-    string AddonVersion = null);
+    string AddonVersion = null,
+    ControlQuarantineData Quarantine = null);
+
+/// <summary>One quarantined capture as the Setup window lists it.</summary>
+public sealed record ControlQuarantineItem(
+    string TradingDate,
+    string CaptureId,
+    string Code,
+    int Attempts,
+    bool WillRetry,
+    DateTimeOffset QuarantinedAt,
+    DateTimeOffset? LastAttemptAt);
+
+/* Count is the whole folder; Items is capped, because the status reply is one
+ * control frame with a 64 KB ceiling and a machine that has been refused for
+ * months should still get an answer. ReviewTime is the configured New York
+ * time so the window can say when the next retry is rather than "later". */
+public sealed record ControlQuarantineData(
+    int Count,
+    IReadOnlyList<ControlQuarantineItem> Items,
+    string ReviewTime);
 
 public interface IDiagnosticsCollector
 {
@@ -80,6 +101,7 @@ public sealed class ControlCommandHandler : IControlCommandHandler
     private readonly ICaptureHistoryStore history;
     private readonly string agentVersion;
     private readonly string addonVersion;
+    private readonly IQuarantineReviewer quarantineReviewer;
 
     public ControlCommandHandler(
         IAgentOptionsStore optionsStore,
@@ -93,9 +115,11 @@ public sealed class ControlCommandHandler : IControlCommandHandler
         ICaptureHistoryStore history,
         string agentVersion,
         string addonVersion,
-        IServiceReporter reporter = null)
+        IServiceReporter reporter = null,
+        IQuarantineReviewer quarantineReviewer = null)
     {
         this.reporter = reporter;
+        this.quarantineReviewer = quarantineReviewer;
         this.optionsStore = optionsStore ?? throw new ArgumentNullException(nameof(optionsStore));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.scheduler = scheduler ?? throw new ArgumentNullException(nameof(scheduler));
@@ -152,10 +176,15 @@ public sealed class ControlCommandHandler : IControlCommandHandler
                     "The redacted diagnostics package is ready.",
                     new { path = await diagnostics.CollectAsync(cancellationToken).ConfigureAwait(false) }),
                 "forgetDevice" => await ForgetDeviceAsync(request, cancellationToken).ConfigureAwait(false),
+                "retryQuarantine" => await RetryQuarantineAsync(request.RequestId, cancellationToken).ConfigureAwait(false),
                 _ => Failure(request.RequestId, "control_command_unknown", "The control command is not supported."),
             };
         }
         catch (CrmClientException exception)
+        {
+            return ReportedFailure(request.RequestId, exception.Code, exception.Message);
+        }
+        catch (SnapshotQueueException exception)
         {
             return ReportedFailure(request.RequestId, exception.Code, exception.Message);
         }
@@ -188,7 +217,46 @@ public sealed class ControlCommandHandler : IControlCommandHandler
                 queueStatus,
                 await BuildTimelineAsync(options, cancellationToken).ConfigureAwait(false),
                 agentVersion,
-                addonVersion));
+                addonVersion,
+                await BuildQuarantineAsync(options, cancellationToken).ConfigureAwait(false)));
+    }
+
+    /// <summary>
+    /// How many quarantined captures the status reply lists. Fifty is more than
+    /// any machine has ever held and keeps the frame well under its ceiling.
+    /// </summary>
+    private const int QuarantineItemLimit = 50;
+
+    private async Task<ControlQuarantineData> BuildQuarantineAsync(
+        AgentOptions options,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<QueueQuarantineEntry> entries =
+                await queue.ListQuarantineAsync(cancellationToken).ConfigureAwait(false);
+            return new ControlQuarantineData(
+                entries.Count,
+                entries
+                    .OrderByDescending(entry => entry.TradingDate, StringComparer.Ordinal)
+                    .Take(QuarantineItemLimit)
+                    .Select(entry => new ControlQuarantineItem(
+                        entry.TradingDate,
+                        entry.CaptureId.ToString("D"),
+                        entry.Code,
+                        entry.Attempts,
+                        entry.WillRetry,
+                        entry.QuarantinedAt,
+                        entry.LastAttemptAt))
+                    .ToArray(),
+                options.QuarantineReviewTime);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // As with the strip: a folder that cannot be read must not cost the
+            // operator the pairing and queue state they came for.
+            return null;
+        }
     }
 
     /// <summary>
@@ -293,6 +361,38 @@ public sealed class ControlCommandHandler : IControlCommandHandler
             "device_forgotten_with_orphan_warning",
             "The local credential was deleted. Revoke the old device in CRM Manager if it is still active.");
     }
+
+    /* THE BUTTON. It runs the same review the loop runs at midday, with the
+     * same cap on attempts, and reports what moved. A capture whose attempts
+     * are spent, or whose code will never be accepted, stays where it is and
+     * is counted so the sentence on screen does not read as "all fixed" when
+     * it is not. */
+    private async Task<ControlCommandResponse> RetryQuarantineAsync(Guid requestId, CancellationToken cancellationToken)
+    {
+        if (quarantineReviewer == null)
+            return Failure(requestId, "quarantine_review_unavailable", "This service cannot review the quarantine.");
+        QueueQuarantineReviewResult result = await quarantineReviewer.ReviewNowAsync(cancellationToken)
+            .ConfigureAwait(false);
+        int requeued = result.Requeued.Count;
+        int remaining = result.Remaining.Count;
+        string message;
+        if (requeued == 0 && remaining == 0)
+            message = "Quarantine is empty. There is nothing to retry.";
+        else if (requeued == 0)
+            message = $"Nothing was retried. Quarantine holds {Captures(remaining)} that will not be retried automatically.";
+        else if (remaining == 0)
+            message = $"{Captures(requeued)} sent back for upload.";
+        else
+            message = $"{Captures(requeued)} sent back for upload. Quarantine still holds {Captures(remaining)} that will not be retried automatically.";
+        return Success(
+            requestId,
+            "quarantine_reviewed",
+            message,
+            new { requeued, remaining });
+    }
+
+    private static string Captures(int count)
+        => count == 1 ? "1 capture" : $"{count} captures";
 
     private static ControlCommandResponse Success(Guid requestId, string code, string message, object data = null)
         => new(requestId, true, code, message, data);

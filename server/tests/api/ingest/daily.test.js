@@ -28,7 +28,7 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes } = {}) {
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic } = {}) {
   const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
@@ -50,6 +50,7 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authe
     now: now || (() => new Date('2026-07-23T21:00:00Z')),
     createProcessingToken: () => '99999999-9999-4999-8999-999999999999',
     maxCompressedBytes,
+    ...(monotonic ? { monotonic } : {}),
   });
   return { handler, calls };
 }
@@ -129,6 +130,100 @@ describe('daily snapshot ingest', () => {
       statusCode: 409,
       body: { error: 'capture_requires_replay', errorCode: 'normalization_failed' },
     });
+  });
+
+  /* THE DOOR, AND THE FOUR THINGS IT MUST NOT DO.
+   *
+   * It must not lose the capture, must not mark it failed, must not answer the
+   * same way an in-flight duplicate does, and must not ask for a wait the
+   * deployed agent will not honour. The first three are below; the fourth is a
+   * CHECK constraint in step 45 that caps floor plus spread at 120 seconds, the
+   * agent's RetryPolicy.MaximumDelay. */
+  it('answers a full server 429 with Retry-After, and never as a busy capture', async () => {
+    const { handler, calls } = setup({ claim: () => ({
+      outcome: 'at_capacity', retryAfterSeconds: 63,
+      batch: { id: 'batch-1', dailyImportId: null, status: 'received' },
+    }) });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({
+      statusCode: 429,
+      body: { error: 'ingest_at_capacity', batchId: 'batch-1', status: 'received', retryAfterSeconds: 63 },
+    });
+    expect(res.headers).toMatchObject({ 'Retry-After': '63' });
+    expect(res.body).not.toHaveProperty('ok');
+    // Nothing was stored, nothing was finalized, and above all nothing was
+    // finalized as failed: a 'failed' batch answers the agent's next attempt
+    // 409 capture_requires_replay, which it quarantines on. The door would then
+    // have thrown away the day it was built to protect.
+    expect(calls.storeRaw).toHaveLength(0);
+    expect(calls.terminal).toHaveLength(0);
+    expect(calls.audit).toHaveLength(0);
+    expect(calls.device).toHaveLength(0);
+    expect(calls.release).toHaveLength(0);
+  });
+
+  it('leaves the capture claimable, so the agent retry it asked for succeeds', async () => {
+    // What the real claim leaves behind is a row in 'received' with no lease,
+    // which is the same thing a released lease leaves and the same thing the
+    // claim already knows how to pick up.
+    let attempts = 0;
+    const { handler, calls } = setup({
+      useRealDomain: true,
+      claim: () => {
+        attempts += 1;
+        return attempts === 1
+          ? { outcome: 'at_capacity', retryAfterSeconds: 41, batch: { id: 'batch-1', dailyImportId: null, status: 'received' } }
+          : { outcome: 'owned', batch: { id: 'batch-1', dailyImportId: null, status: 'processing' } };
+      },
+    });
+    const shed = await ingest(handler, contractFixture);
+    expect(shed.statusCode).toBe(429);
+    const accepted = await ingest(handler, contractFixture);
+    expect(accepted).toMatchObject({ statusCode: 201, body: { ok: true, duplicate: false, batchId: 'batch-1', status: 'processed' } });
+    expect(calls.claim).toHaveLength(2);
+    expect(calls.claim[1]).toMatchObject({ captureId: CAPTURE_ID, storagePath: calls.claim[0].storagePath });
+    expect(calls.terminal.map((entry) => entry.status)).toEqual(['processed']);
+  });
+
+  it('still answers an in-flight duplicate 409 capture_processing, which the door did not change', async () => {
+    const { handler, calls } = setup({ claim: () => ({
+      outcome: 'busy', retryAfterSeconds: 12,
+      batch: { id: 'batch-old', dailyImportId: null, status: 'processing' },
+    }) });
+    const res = await ingest(handler);
+    expect(res).toMatchObject({ statusCode: 409, body: { error: 'capture_processing', batchId: 'batch-old', status: 'processing' } });
+    expect(res.headers).toMatchObject({ 'Retry-After': '12' });
+    expect(res.body).not.toHaveProperty('retryAfterSeconds');
+    expect(calls.storeRaw).toHaveLength(0);
+  });
+
+  it('times every stage it ran and hands the numbers to the finalize that stores them', async () => {
+    // Five stages here; the sixth, finalize, is measured inside the function
+    // that writes the row, because this handler cannot time the call that
+    // stores the time. The total is larger than their sum on purpose: the gap
+    // is authentication, the gzip decode and the claim.
+    let tick = 1_000;
+    const { handler, calls } = setup({ useRealDomain: true, monotonic: () => (tick += 10) });
+    const res = await ingest(handler, contractFixture);
+    expect(res.statusCode).toBe(201);
+    const finalized = calls.terminal[0];
+    expect(Object.keys(finalized.stageDurationsMs).sort())
+      .toEqual(['normalize', 'persist', 'reconcile', 'registry', 'storage']);
+    for (const value of Object.values(finalized.stageDurationsMs)) expect(value).toBeGreaterThanOrEqual(0);
+    const summed = Object.values(finalized.stageDurationsMs).reduce((total, value) => total + value, 0);
+    expect(finalized.ingestDurationMs).toBeGreaterThanOrEqual(summed);
+  });
+
+  it('times a failure too, in the stage it died in', async () => {
+    const { handler, calls } = setup({
+      useRealDomain: true,
+      persist: () => { throw new Error('the reconciled import could not be written'); },
+    });
+    const res = await ingest(handler, contractFixture);
+    expect(res.statusCode).toBe(422);
+    expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'persistence_failed' });
+    expect(calls.terminal[0].stageDurationsMs).toHaveProperty('persist');
+    expect(calls.terminal[0].ingestDurationMs).toBeGreaterThanOrEqual(0);
   });
 
   it('maps an in-flight revocation to the generic credential re-pair response', async () => {
@@ -257,8 +352,26 @@ describe('daily snapshot ingest', () => {
       const res = await ingest(handler);
       expect(res).toMatchObject({ statusCode: 503, body: { error: 'snapshot_ingest_failed' } });
       expect(calls.storeRaw).toHaveLength(1);
-      expect(calls.terminal[0]).toMatchObject({ status: 'failed', errorCode: 'persistence_unavailable' });
+      // The lease is released, the batch is NOT finalized as failed: the
+      // agent retries the same capture and must be claimed again, not told
+      // 409 capture_requires_replay and sent to quarantine.
+      expect(calls.release).toHaveLength(1);
+      expect(calls.terminal).toHaveLength(0);
     }
+  });
+
+  it('claims the same capture again after a transient persistence failure', async () => {
+    let attempts = 0;
+    const { handler, calls } = setup({ persist: async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+      return { id: 'daily-1', status: 'Needs review' };
+    } });
+    expect((await ingest(handler)).statusCode).toBe(503);
+    const second = await ingest(handler);
+    expect(second).toMatchObject({ statusCode: 201, body: { ok: true } });
+    expect(calls.claim).toHaveLength(2);
+    expect(calls.terminal.at(-1)).toMatchObject({ status: expect.stringMatching(/processed|incomplete/) });
   });
 
   it('still answers 422 when persistence fails because of the snapshot itself', async () => {

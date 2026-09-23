@@ -13,11 +13,20 @@ public sealed record CaptureRequestContext(
     string TimeZone,
     bool IsManual);
 
+/* UploadNotBefore IS SET BY THE SCHEDULED CAPTURE AND BY NOTHING ELSE.
+ *
+ * It is when this machine's first upload of the capture just queued may start,
+ * spread across the fleet so 139 VPSes do not arrive at the CRM in the same
+ * second. A manual capture leaves it null, which is what tells CollectorState
+ * to drop any hold it is holding: a CAM pressing Test capture is standing at
+ * the screen waiting for an answer and must never be made to wait behind the
+ * spread. */
 public sealed record CaptureRunResult(
     CaptureScheduleDecision Decision,
     bool CaptureQueued,
     string ErrorCode,
-    Instant? RetryAt);
+    Instant? RetryAt,
+    Instant? UploadNotBefore = null);
 
 public interface ICaptureWorkflow
 {
@@ -113,7 +122,15 @@ public sealed class CaptureScheduler : ICaptureScheduler
                 LastScheduledTradingDate = decision.TradingDate,
             };
             await optionsStore.SaveAsync(saved, cancellationToken).ConfigureAwait(false);
-            return new CaptureRunResult(decision, true, null, null);
+            // The capture is on disk and the day is collected. Only the first
+            // upload attempt waits, and only inside the window the cutoff
+            // leaves, so a held upload can never outlive the capture window.
+            LocalDate capturedDate = now.InZone(DateTimeZoneProviders.Tzdb[CaptureSchedule.TimeZoneId]).Date;
+            Instant? uploadNotBefore = UploadSpread.HoldUntil(
+                configuration.Options.DeviceId,
+                now,
+                schedule.GetCutoffInstant(capturedDate));
+            return new CaptureRunResult(decision, true, null, null, uploadNotBefore);
         }
         finally
         {

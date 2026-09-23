@@ -10,8 +10,8 @@
 // It also hid the shape of the loss: Bullet Bot evaluations alone were -96,905
 // of that total, 56% of the day, which is invisible in a single tile.
 
-import { ACCOUNT_TYPES, isCashType } from './reconcile';
-import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
+import { ACCOUNT_TYPES, isCashType } from './reconcile.js';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts.js';
 
 export const SEGMENTS = {
   EVAL_STANDARD: 'Evaluations - standard',
@@ -123,8 +123,8 @@ export function businessForSegment(segment) {
   return BUSINESS_KEYS.PROP_OTHER;
 }
 
-function emptyRow(segment) {
-  return {
+function emptyRow(segment, { withAccountNames = false } = {}) {
+  const row = {
     segment,
     accounts: 0,
     // Distinct clients contributing to this row. Never added across rows: one
@@ -136,39 +136,107 @@ function emptyRow(segment) {
     balance: 0,
     countedInTotal: !EXCLUDED_FROM_TOTAL.has(segment),
   };
+  // Only when a caller asks. The summary writer needs the names so a stored row
+  // can be re-checked against a later reclassification; every screen reads the
+  // four business rows and none of them wants a list of every account on the
+  // desk hanging off each one.
+  if (withAccountNames) row.accountNames = [];
+  return row;
 }
 
 /**
- * Per-segment totals for one close.
+ * Per-segment totals for one close, or for many.
  *
  * `imports` is the same shape latestImports produces: one entry per client,
  * holding the client and the daily import being read.
+ *
+ * TWO INPUT SHAPES, ONE ANSWER. `summaryRowsFor` is how a close that is NOT
+ * loaded row by row still reports: it returns the per-segment rows stored for
+ * that close (see closeSummary.js), which this function's own earlier run
+ * produced at ingest, and they are added to the same accumulator as a walked
+ * close. So a login that holds summaries for 2,500 closes and full snapshots
+ * for the 206 latest ones produces one totals object, by one addition, with no
+ * second segmentation anywhere. A close the callback declines (absent, or stale
+ * against the current account classification) falls through to its snapshots,
+ * and when it has none it is reported by `closesWithoutData` rather than
+ * counted as a zero.
  */
-export function buildSegmentTotals(imports = []) {
+export function buildSegmentTotals(imports = [], {
+  withAccountNames = false,
+  summaryRowsFor = null,
+} = {}) {
   const rows = new Map();
   const clientsPerSegment = new Map();
   const add = (segment) => {
-    if (!rows.has(segment)) rows.set(segment, emptyRow(segment));
+    if (!rows.has(segment)) rows.set(segment, emptyRow(segment, { withAccountNames }));
     if (!clientsPerSegment.has(segment)) clientsPerSegment.set(segment, new Set());
     return rows.get(segment);
   };
+
+  let closesFromSummary = 0;
+  let closesWalked = 0;
+  let closesWithoutData = 0;
 
   for (const entry of imports) {
     const registry = entry?.client?.accountRegistry || {};
     const clientId = entry?.client?.id ?? entry?.client?.name ?? '';
     const sim = entry?.dailyImport?.simulation;
+
+    const summaryRows = summaryRowsFor ? summaryRowsFor(entry?.dailyImport, entry?.client) : null;
+    if (summaryRows && summaryRows.length) {
+      closesFromSummary += 1;
+      for (const stored of summaryRows) {
+        // A summary row with no accounts is a MARKER, not a figure: it is how a
+        // close that held no account rows says it was summarised anyway. See
+        // EMPTY_CLOSE_SEGMENT in closeSummary.js. Adding it would put a
+        // zero-account segment on the screen that the same close walked row by
+        // row would not produce, and the two answers have to be one answer.
+        if (!Number(stored.accounts || 0)) continue;
+        const row = add(stored.segment);
+        clientsPerSegment.get(stored.segment).add(clientId);
+        row.accounts += Number(stored.accounts || 0);
+        row.dailyPnl += Number(stored.dailyPnl || 0);
+        row.weeklyPnl += Number(stored.weeklyPnl || 0);
+        row.balance += Number(stored.balance || 0);
+        if (withAccountNames) row.accountNames.push(...(stored.accountNames || []));
+      }
+      continue;
+    }
+
     // `dailyImport.snapshots` is live-money-only by construction (reconcile.js
     // and buildCrmStateFromTables both split before anyone reads it). The
     // simulated and undetermined closes are appended explicitly so they are
     // COUNTED and visible as their own rows — dropping them would hide the sim
     // engagement the desk is being paid to run — while EXCLUDED_FROM_TOTAL keeps
     // them out of the businesses deskMoney reports.
-    const rows = [
+    const snapshotRows = [
       ...(entry?.dailyImport?.snapshots || []),
       ...(sim?.snapshots || []),
       ...(sim?.undetermined?.snapshots || []),
     ];
-    for (const snapshot of rows) {
+    // A close with no summary and no snapshots is NOT a close that made
+    // nothing. It is a close this session has not loaded, and it is counted
+    // separately so deskMoney can say so instead of printing a zero.
+    //
+    // COUNTED WHETHER OR NOT A SUMMARY LOOKUP WAS SUPPLIED, and the guard that
+    // used to be here was the defect. `summaryLookup` in deskMoney.js returns
+    // NULL when not one close in view has a usable summary — which is exactly
+    // the state step 48 ships in until `scripts/backfill_close_summaries.mjs`
+    // has run, the state of a database where the migration has not run at all
+    // (loadCloseSummaryRows swallows PGRST205 and returns []), and the state
+    // where every stored row was refused as stale. So in the one window this
+    // counter exists for, nothing incremented it: `basis.sources.unreadable`
+    // stayed 0, `basis.complete` stayed true, and a desk month missing most of
+    // its closes printed as a figure. Measured on the book with a
+    // production-shaped login, month-to-date 2026-07 read -$42,200.94 of other
+    // prop against a true -$166,205.23, and the 2026-07-24 history row read
+    // +$119.20 where the desk had lost $25,555.63.
+    if (!snapshotRows.length) {
+      closesWithoutData += 1;
+      continue;
+    }
+    closesWalked += 1;
+    for (const snapshot of snapshotRows) {
       const segment = segmentForAccount(registry[snapshot.accountName], snapshot.accountName);
       const row = add(segment);
       clientsPerSegment.get(segment).add(clientId);
@@ -176,6 +244,7 @@ export function buildSegmentTotals(imports = []) {
       row.dailyPnl += Number(snapshot.grossRealizedPnl || 0);
       row.weeklyPnl += Number(snapshot.weeklyPnl || 0);
       row.balance += Number(snapshot.accountBalance || 0);
+      if (withAccountNames) row.accountNames.push(snapshot.accountName || '');
     }
   }
 
@@ -213,6 +282,16 @@ export function buildSegmentTotals(imports = []) {
     // Denominator for every count above: how many account closes were read in
     // total, real and simulated together.
     accountsSeen: segments.reduce((sum, row) => sum + row.accounts, 0),
+    // Where the figures came from. A screen reading a mixture of stored
+    // summaries and fully loaded closes has to be able to say which, because
+    // "this close is not loaded" and "this close was flat" are the same zero
+    // otherwise — the distinction accountLifecycle.js and StackPlaybook.jsx
+    // already draw for fills, applied to money.
+    provenance: {
+      fromSummary: closesFromSummary,
+      walked: closesWalked,
+      withoutData: closesWithoutData,
+    },
   };
 }
 

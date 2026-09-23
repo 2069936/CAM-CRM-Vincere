@@ -233,3 +233,62 @@ describe('nothing to review', () => {
     expect(strip(empty)).not.toMatch(/\d/);
   });
 });
+
+/* ── Waiting for its own columns ─────────────────────────────────────────────
+ *
+ * `parameters_raw` and `params_parsed` are 82% of a strategy row and were
+ * 30.9 MB of every production login, downloaded for two panels that are
+ * collapsed by default. They arrive when one of them is expanded, scoped to the
+ * day it is showing — so this panel now has a state in which it holds no rows
+ * because nobody has fetched them yet.
+ *
+ * IDLE IS NOT EMPTY, and that distinction is the whole risk of the change. The
+ * empty state here reads "Every algorithm cohort with a clear majority is
+ * running one configuration", which is a FINDING about the desk. Printing it
+ * over rows that never arrived would be this panel telling a manager his
+ * configurations are clean because a request had not come back. */
+
+describe('a panel waiting for its own parameters', () => {
+  const load = (status, error = '') => ({ status, error });
+
+  it('says what it is waiting for, and states no finding', () => {
+    for (const status of ['idle', 'loading']) {
+      const html = renderToStaticMarkup(
+        <ConfigDriftPanel clients={[]} asOfDate="2026-09-22" load={load(status)} />,
+      );
+      expect(html).toContain('Reading the settings every account ran on 2026-09-22');
+      expect(html).not.toContain('is running one configuration');
+      expect(html).not.toContain('to review, worst first');
+    }
+  });
+
+  it('says what failed, and offers to try again', () => {
+    const html = renderToStaticMarkup(
+      <ConfigDriftPanel
+        clients={[]}
+        asOfDate="2026-09-22"
+        load={load('error', 'Could not load the settings for this day: the database did not answer.')}
+        onRetry={() => {}}
+      />,
+    );
+    expect(html).toContain('Could not load the settings for this day');
+    expect(html).toContain('Try again');
+    expect(html).not.toContain('is running one configuration');
+  });
+
+  it('states the finding once the rows are in hand', () => {
+    // And the empty state is reachable again, which is what makes it a finding
+    // rather than a default.
+    const html = renderToStaticMarkup(
+      <ConfigDriftPanel clients={[]} asOfDate="2026-09-22" load={load('loaded')} />,
+    );
+    expect(html).toContain('is running one configuration');
+  });
+
+  it('renders exactly as before when nobody passes a load state', () => {
+    // Every existing caller, and every test above. A component handed rows in
+    // its props has nothing to wait for.
+    expect(renderToStaticMarkup(<ConfigDriftPanel clients={[]} asOfDate="2026-09-22" />))
+      .toContain('is running one configuration');
+  });
+});

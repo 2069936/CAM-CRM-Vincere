@@ -1,7 +1,8 @@
 # Migrations to run for PR #10
 
 Run these in Supabase (SQL editor or CLI) in order. All are additive and
-idempotent, so re-running is safe. None drops or rewrites existing data.
+idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
+48 each have a second step to run after the file, and both say so below.
 
 | Step | File | What it adds | Feature it powers |
 |---|---|---|---|
@@ -18,6 +19,13 @@ idempotent, so re-running is safe. None drops or rewrites existing data.
 | 38 | `step_38_flag_acknowledged_to_resolved.sql` | `acknowledged_before_step_38` on `operational_flags`, and the 460 `Acknowledged` rows set to `Resolved` | Retiring the Acknowledge action on flags |
 | 39 | `step_39_client_churn_reason.sql` | `churn_reason`, `churn_note`, `churned_at` on `clients` | The churn drill-down, and the reason captured when a CAM marks a client Inactive |
 | 41 | `step_41_heartbeat_ordering.sql` | replaces `record_ingest_heartbeat` without the invalid capture/success ordering rule | Collector heartbeats remain valid after a successful upload |
+| 42 | `step_42_client_tags_and_price_history.sql` | `tags` and `account_focus` on `clients`, and the `client_price_changes` log | Client tags and the revenue movement figures |
+| 43 | `step_43_row_level_security.sql` | Row Level Security on every table that lacked it, plus `login_email_for_username` | Closes the database to the publishable key that ships in the browser bundle |
+| 44 | `step_44_algorithm_benchmarks.sql` | `algorithm_benchmarks`: the imported My Futures Book monthly backtest aggregates with each month's own days, keyed by vendor first, with its own RLS and policy | The My Futures Book backtest import in Data Tools, and the benchmark section of the desk period report, which reads the saved import instead of asking for the 36 files again |
+| 45 | `step_45_ingest_admission_control.sql` | `ingest_admission_settings` with the tunable cap, `claim_ingest_batch_v4` with the `at_capacity` outcome and its per device retry spread, `finalize_ingest_batch_v3`, and `admission_deferrals` / `stage_durations_ms` / `ingest_duration_ms` on `ingest_batches` | The door that answers 429 with Retry-After when too many uploads are in flight at once, and the ingest timing line on the Auto Collection fleet view |
+| 46 | `step_46_ingest_quarantine_reports.sql` | `ingest_quarantine_reports`: what each VPS holds in `queue\quarantine`, one row per capture with the code, the attempt count and whether the agent will retry it, plus `record_ingest_quarantine_report`, which replaces a device's inventory whole | The quarantine count and dates on the client card, the Quarantine state and chip on the Auto Collection fleet view, and the `POST /api/ingest/quarantine` report agent 1.0.7 sends after its daily review |
+| 47 | `step_47_strategy_ran.sql` | `ran` and `ran_basis` on `strategy_snapshots`, the one close backfill behind `call public.backfill_strategy_ran_all();`, and `persist_auto_daily_import` replaced so the collector stores both | Whether an algorithm RAN that day, on every screen that used to ask the export time checkbox |
+| 48 | `step_48_close_summaries.sql` | `close_summaries`: the desk money of one close per segment, written at ingest by `buildSegmentTotals`, plus `replace_close_summaries` and the Node backfill beside it | The manager's first screen reading about two rows a close instead of downloading 12,778 account rows and 14,514 strategy rows on every login |
 
 ## These three groups behave differently
 
@@ -91,12 +99,184 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
+
+**47 runs before the deploy, not after it.** Its reads degrade and its writes do
+not: the strategy insert names `ran` and `ran_basis` unconditionally, so a
+deployed build against an un-migrated database fails every upload at the insert.
+39 is in the same position for one client save; 47 is in it for the whole
+ingest. 48 is the opposite and may run either side of the deploy.
+
+**43 closes everything that existed before it, and it is the one that cannot
+wait.** It enables Row Level
+Security on every table that did not have it, which on 2026-09-18 was all of
+them except the auto collection tables, `client_forms` and `client_price_changes`.
+Until it runs, the publishable key that ships inside the browser bundle can read
+and write `clients`, `trading_accounts`, `account_snapshots`, `app_users`,
+`reports`, `audit_logs` and `client_credentials` with no session at all; that was
+verified from outside the app. It must run after 42 so the table 42 creates is
+covered too. Signed in users keep exactly the access they have today, and the
+server endpoints use the service role and are unaffected. The one browser read
+that happens before a session, looking a username's email up to sign in, moves
+into `login_email_for_username`; the app falls back to the old select when the
+function is not there yet, so the code can deploy before the migration runs.
+
+**44 creates a table after 43 has already run, so it carries its own RLS and its
+own `authenticated full access` policy inline** rather than relying on 43's
+enumeration, and it ends with the same "no table in public is open" check 43
+does. Every table added from here on has to do the same; 43 cannot cover what
+did not exist when it ran.
+
+**44 degrades like 31–38.** Without it the My Futures Book import card in Data
+Tools still parses the CSVs and still shows what it found — the algorithm, the
+version, the instrument, the risk level, the date range and the trade count —
+and the Save button is disabled with the title
+**`Saving needs migration step 44. The parse above still shows what the files hold.`**
+The desk period report's benchmark section then holds only the
+files the reader drags into the sheet in that visit, which is what it held for
+everybody before this table was read at all: empty rather than wrong. With the
+step run it reads the saved import on open, so the manager does not re-upload
+36 CSVs every visit. Nothing else on any screen changes; no other feature reads
+`algorithm_benchmarks`.
+
+**45 degrades gracefully, and it is the first step that has to survive being run
+either side of its deploy.** It adds `claim_ingest_batch_v4` and
+`finalize_ingest_batch_v3` and leaves `claim_ingest_batch_v3` and
+`finalize_ingest_batch_v2` exactly as they are, granted and callable, because
+the server that is running at the moment the migration executes is still calling
+them. The new server asks for v4 first and falls back to v3 for the life of the
+process when the database answers that no such function exists, the same way the
+login lookup in 43 falls back to its old select.
+
+So without it the collector behaves precisely as it does today: every upload is
+accepted the moment it arrives, nothing is ever answered 429 at the door, and the
+Auto Collection fleet view simply omits its ingest line rather than showing
+zeroes. With it, uploads past the cap are answered 429 with a per device
+Retry-After, the capture stays queued on the VPS and arrives a minute later, and
+the fleet view gains one line for the selected day: accepted, shed at the door,
+median and slowest ingest time. No VPS needs updating for any of that; the agents
+already deployed honour 429 and Retry-After.
+
+**46 degrades gracefully, in both directions, and the agent that fills it is
+already written to expect its absence.** Agent 1.0.7 reviews its
+quarantine folder once a day and then posts the inventory to
+`POST /api/ingest/quarantine`. Against a CRM without this step's table the
+endpoint answers 404 `not_found`, which is exactly what a CRM without the
+endpoint at all answers, and the agent treats both the same way: one INFO line,
+one attempt a day, nothing marked on the device. Nothing rides on the heartbeat,
+so an un-migrated CRM sees every heartbeat it sees today.
+
+Without it the client card and the fleet view read as they do today: no
+quarantine line, no Quarantine state, no chip. With it, the client card says
+"N captures in quarantine" with the trading dates beside the version line, the
+fleet view ranks a row as needing attention when a capture in its quarantine
+needs a person here, and the client drawer lists each capture with whether the
+CRM holds it as a failed close (replay it from the failed closes panel) or never
+stored it. What a resend gets from this CRM is the part to know: a failed close
+it already holds is answered 409 `capture_requires_replay` at the door, before
+storage or processing, and keeps being answered that way until the close is
+replayed here. The agent sends such a capture again at every review, without a
+cap, because the resend after the replay is what clears the VPS (the CRM then
+answers duplicate and the queue completes it); until then the capture counts as
+needing attention, and `attempts` on its row says how many trading days the
+replay has waited. Every row is the VPS's own word: the agent reports after each
+review and the function replaces the device's inventory whole, so a capture
+that was accepted after a retry, or replayed here and then resent, leaves the
+table on the next report and never before.
+
+**47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
+Everything below about falling back to the rule is true of *reads* and false of
+*writes*, which is the same split step 39 carries and for the same reason.
+
+`mapStrategy` in `src/domain/dailyImportPersistence.js` puts `ran` and
+`ran_basis` on every strategy row unconditionally, and the insert path has no
+missing-column recovery: the fallback in `supabaseStore.selectRows` is on reads
+only. So between a deploy of this branch and this file being run, every manual
+upload, every batch import and every auto-collector close fails with PGRST204 on
+`strategy_snapshots.ran`. That is the whole ingest, not a dormant feature.
+
+Run 47 before the deploy. If it has already gone out the other way round, run
+the file and the ingest recovers on the next attempt; nothing is lost, because a
+close that failed at the door was never stored.
+
+**47 also has a second statement to run.** The two columns answer "did this algorithm run that day", which the
+product used to decide from `strategy_snapshots.enabled`: the state of a
+checkbox at the moment the export was taken, on exports taken after the desk
+switches the algos off. On the stored book 1,517 strategy rows are enabled and
+2,528 ran, and 207 closes that carry no enabled row at all ran something.
+
+Without it, every screen falls back to the rule over what it holds, which at
+login is the checkbox and the row's own realized: the answers the product gave
+before this step, unchanged. With it, the answer comes off the row and no longer
+needs the day's fills to be loaded at all, which is what the panels are about to
+be rebuilt on.
+
+Run the file, then run the backfill, which is deliberately not part of it:
+
+    call public.backfill_strategy_ran_all();
+
+It answers a batch of at most 2,000 rows per transaction, taking closes whole so
+none is left half answered, and commits between batches, because one UPDATE
+across 14,514 rows would hold locks on all of them for as long as a starved
+instance takes, and a procedure cannot commit inside the transaction that runs a
+migration file. It is safe to run twice, safe to interrupt and safe
+to resume: it looks only for rows where `ran is null`, and re-answering a close
+that is already answered writes nothing. Some clients (including `psql -c`) wrap
+every statement in a transaction, and the call then fails with `invalid
+transaction termination`; from one of those, loop on the one batch function
+instead until it returns 0:
+
+    select public.backfill_strategy_ran(2000);
+
+Measured over the stored book, seeded into a local Postgres with every migration
+applied: 3,805 rows answered in 516 closes, 1,517 `enabled`, 1,011 `fills`, 0
+`realized`, 1,277 `none`, and the second run wrote 0. Those answers are
+identical, row for row, to the ones src/domain/strategyRan.js reaches in the
+app.
+
+**48 degrades gracefully, and it is the second one with a step to run after the
+file.** Until the table is filled the app behaves exactly as it did: `deskMoney`
+finds no summary for a close and falls back to the closes the session holds,
+which after this change is each client's latest one. The manager's history strip
+and month then read short, and the basis line under each figure says how many
+closes it could not read. Nothing wrong is displayed; it is incomplete and it
+says so.
+
+Fill it once the migration has run:
+
+    SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+      node scripts/backfill_close_summaries.mjs
+
+It reads one client at a time and replaces that client's rows in one call, so it
+is safe to run twice, safe to interrupt and safe to resume. `--dry-run` reports
+what it would write without writing it, and `--client <uuid>` does one client.
+
+THE BACKFILL IS NOT SQL, AND THAT IS THE POINT. Which desk segment an account
+close belongs to is decided by `segmentForAccount` in
+`src/domain/operationsSegments.js` — it asks whether an account is simulated
+before it asks what it is for, reads the CAM's explicit override, and reports an
+account type nobody has taught it about under that type's own name rather than
+folding it into Unclassified. Writing that again in PL/pgSQL would put the rule
+in two languages, which is the defect `deskMoney.js` was created to end. So the
+backfill imports the same module the ingest calls, and
+`replace_close_summaries` stores what it decided and computes nothing.
+
+A reclassification is retroactive, as it has always been: the split is
+recomputed from each account's CURRENT record on every load, so
+`updateSupabaseTradingAccount` rebuilds that client's summaries when an
+account's type or simulation mode moves. Every stored row also names the
+accounts it counted, so a row the rebuild missed is detected on the way back in
+and refused rather than quietly under-reporting a day.
+
+47 also replaces `persist_auto_daily_import` so that the automatic collector
+stores both columns. The function is step 28's, reproduced with two columns
+added to one INSERT; step 37's separate gap on that path (no `derived_realized`,
+no `derivation`, and `realized` coalesced to 0) is untouched and still open.
 
 Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either
@@ -109,6 +289,9 @@ rather than back-filling to `other` — `other` is an option a CAM can choose, a
 a back-fill would make silence indistinguishable from an answer in the one column
 that exists to be counted.
 
-Step 38 is the only one that rewrites existing rows. It is idempotent (a second
-run finds no `Acknowledged` rows) and reversible in one statement, which
+Step 38 is the only one that rewrites a column that already held something. 47
+writes to existing rows too, but only into the two columns it adds in the same
+file, so nothing that was there before it ran can be lost by it. 38 is
+idempotent (a second run
+finds no `Acknowledged` rows) and reversible in one statement, which
 `step_38_flag_acknowledged_to_resolved.sql` spells out at the top.
