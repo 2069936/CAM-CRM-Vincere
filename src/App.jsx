@@ -60,6 +60,7 @@ import PerformanceCharts from './components/PerformanceCharts';
 import StackPlaybook from "./components/StackPlaybook";
 import UploadArea from "./components/UploadArea";
 import AutoCollectionCard from "./components/AutoCollectionCard";
+import CollectorFlagBadge from "./components/CollectorFlagBadge";
 import ClientTagPicker from "./components/ClientTagPicker";
 import ClientAccountFocusPicker from "./components/ClientAccountFocusPicker";
 import RevenueHealthPanel from "./components/RevenueHealthPanel";
@@ -16244,6 +16245,15 @@ export default function App() {
                             {selectedClient.profile.stage}
                           </span>
                         ) : null}
+                        {/* A collection problem lives on Credentials & Notes,
+                            a tab nobody opens unless they already suspect
+                            something. It is said here too, on every tab, and
+                            clicking it goes to where it is fixed. */}
+                        <CollectorFlagBadge
+                          key={selectedClient.uuid}
+                          clientUuid={selectedClient.uuid}
+                          onOpen={setActiveTab}
+                        />
                       </h1>
                       {selectedClient.credentials?.ip ? (
                         <p

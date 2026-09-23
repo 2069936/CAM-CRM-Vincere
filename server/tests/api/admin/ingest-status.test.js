@@ -273,6 +273,10 @@ describe('collector profile status store', () => {
       ingest_enrollments: { id: ENROLLMENT_ID, expires_at: '2026-07-23T17:00:00Z' },
       audit_logs: { created_at: '2026-09-01T21:03:00Z', after_data: { reasonCode: 'machine_conflict' } },
       ingest_quarantine_reports: [{ device_id: DEVICE_ID, capture_id: 'c1', trading_date: '2026-09-14', code: 'snapshot_processing_failed', attempts: 1, final: false }],
+      // The last collection. This endpoint never read a batch until the client
+      // card needed to know whether the VPS is checking in and collecting
+      // nothing, which the heartbeat alone cannot tell it.
+      ingest_batches: { id: 'batch-1', trading_date: '2026-09-22', status: 'processed', row_counts: { accounts: 0 }, received_at: '2026-09-22T21:00:00Z' },
     };
     function builder(table) {
       const query = {
@@ -292,10 +296,11 @@ describe('collector profile status store', () => {
       enrollment: rows.ingest_enrollments,
       attempt: rows.audit_logs,
       quarantine: rows.ingest_quarantine_reports,
+      batch: rows.ingest_batches,
     });
     const columns = selected.map(([, value]) => value).join(',');
     expect(columns).not.toMatch(/product.?key|machine|credential|code_hash|metadata/i);
-    expect(admin.from).toHaveBeenCalledTimes(5);
+    expect(admin.from).toHaveBeenCalledTimes(6);
   });
 
   it('renders the page even when the audit read fails, because a card is worth more than a 500', async () => {
