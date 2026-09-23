@@ -219,6 +219,13 @@ describe('the historical date drill-down', () => {
     //     every flag on it is open by construction and there is no status to
     //     filter on. Filtering there would read as though some of a brand new
     //     import's flags had already been closed.
+    //   * a filter for 'Drawdown breached' in report.js, which is asking a
+    //     different question. This panel's rule is about COUNTING open work,
+    //     and a resolved flag is work that is done. That one asks whether an
+    //     account died on this close, and a breach that a CAM has since
+    //     acknowledged is still a breach that happened. Testing the status
+    //     there would put a dead account back on every later report the moment
+    //     someone triaged it, which is the bug it was written to end.
     const CALL = /(\w+)\??\.flags\s*\|\|\s*\[\]\s*\)?\s*\.filter\(/g;
     const unfiltered = [];
     let scanned = 0;
@@ -239,6 +246,7 @@ describe('the historical date drill-down', () => {
         }
         const body = source.slice(match.index, end + 1);
         if (/status|isFlagOpen|isOpen/.test(body)) continue;
+        if (/Drawdown breached/.test(body)) continue;
         unfiltered.push(`${file}:${source.slice(0, match.index).split('\n').length} ${body.replace(/\s+/g, ' ')}`);
       }
     }

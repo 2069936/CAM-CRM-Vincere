@@ -1,5 +1,5 @@
 import { buildClientSegments } from './clientSegments';
-import { ACCOUNT_TYPES, isCashType } from './reconcile';
+import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile';
 import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
 import { strategyRan } from './strategyRan';
 
@@ -285,11 +285,54 @@ export function buildDailyReportSummary(client, dailyImport) {
     // client's money, and `ignored` is not counted anywhere.
     unclassified: [],
     ignored: [],
+    /* A BREACHED ACCOUNT IS NOT THIS CLIENT'S DAY.
+     *
+     * A prop account that breached in July still exports a row every evening,
+     * so it kept appearing on every daily report after it died, with its dead
+     * balance in the section subtotal. The client reads their report and sees
+     * an account they lost weeks ago listed beside the ones they are trading.
+     *
+     * The day it fails IS the day's news, and it stays: that is when the loss
+     * happened and when the client has to be told. Every day after that it is
+     * history, and history belongs in the account's own record, not in today's
+     * close.
+     *
+     * Kept in its own bucket rather than dropped, so the report can say how
+     * many it left out. Silently shrinking a client's account list is how the
+     * desk stops trusting the number. */
+    retired: [],
   };
+
+  const closeDate = String(dailyImport?.date || '').slice(0, 10);
+  /* WHICH ACCOUNTS THIS CLOSE ITSELF SAYS DIED TODAY.
+   *
+   * `dateFailed` is the stamp a CAM's save leaves, and it is the cleanest
+   * evidence, but it cannot be the only one: on the stored book 48 accounts
+   * are Failed and exactly ONE carries the stamp, because the stamp was added
+   * after most of them were classified. A rule that required it would have
+   * hidden nothing and left the report exactly as it was.
+   *
+   * The close knows anyway. Reconcile raises a Critical "Drawdown breached"
+   * flag naming the account on the day the buffer goes to zero, which is the
+   * day the account died and the day the client has to be told. */
+  const breachedOnThisClose = new Set(
+    (dailyImport?.flags || [])
+      .filter((flag) => flag.type === 'Drawdown breached')
+      .map((flag) => String(flag.accountName || '').toLowerCase())
+      .filter(Boolean),
+  );
 
   for (const snapshot of snapshots) {
     const meta = ciLookup(registry, snapshot.accountName) || {};
     const row = { ...snapshot, meta };
+    // Failed, and nothing about THIS close says it happened today.
+    const failedOn = String(meta.dateFailed || '').slice(0, 10);
+    const diedToday = (failedOn && failedOn === closeDate)
+      || breachedOnThisClose.has(String(snapshot.accountName || '').toLowerCase());
+    if (meta.status === ACCOUNT_STATUSES.FAILED && !diedToday) {
+      grouped.retired.push(row);
+      continue;
+    }
     if (isCashType(meta.accountType)) {
       grouped.cash.push(row);
       if (meta.accountType === ACCOUNT_TYPES.CASH_IRA) grouped.cashIra.push(row);
@@ -407,6 +450,9 @@ export function buildDailyReportSummary(client, dailyImport) {
       cashStraight: grouped.cashStraight.length,
       openFlags: openFlags.length,
       criticalFlags: criticalFlags.length,
+      // Accounts that failed on an earlier day and are therefore not on this
+      // report. Counted so the sheet can say so rather than just being shorter.
+      retired: grouped.retired.length,
     },
   };
 }

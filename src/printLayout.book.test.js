@@ -85,8 +85,13 @@ describe('the real book (public/local-snapshot.json)', () => {
     // whole" throws away the better part of a sheet to move it: that is the
     // shape of the report the desk sent on 2026-08-21 with its first page 80%
     // blank, and it is why this is a rule about breaking, not about one client.
+    // 55 before accounts that failed on an earlier close stopped being printed
+    // on every later one. That removed 175 rows across 14 clients from the
+    // book's 2,893, and with them the tallest sections: a client with four dead
+    // prop accounts had all four on every report for months. The reports got
+    // shorter, which is the point, and this population shrank with them.
     const overHalfASheet = closes.filter((close) => close.largestSection * SHORTEST_ROW_PX > PAGE_PX / 2);
-    expect(overHalfASheet).toHaveLength(55);
+    expect(overHalfASheet).toHaveLength(39);
   });
 
   it('is 425 closes of 476 that DO fit a sheet, which is why the waste looked like bad luck', () => {
@@ -96,11 +101,13 @@ describe('the real book (public/local-snapshot.json)', () => {
     // survived: anything that moves them is changing what this fix is for.
     expect(closes).toHaveLength(476);
     const fits = closes.filter((close) => shortestHeight(close) <= PAGE_PX);
-    expect(fits).toHaveLength(425);
-    // 51 closes in the book cannot be one sheet however the rules are written.
-    // Those are the ones where "break where a reader would break it" is the
-    // whole question.
-    expect(closes.length - fits.length).toBe(51);
+    // 425 before dead accounts stopped being reprinted. Twelve more closes fit
+    // a single sheet now, for the same reason the population above shrank: the
+    // rows that pushed them over were accounts the client lost weeks earlier.
+    expect(fits).toHaveLength(437);
+    // 51 before, and the same cause. These are the closes where "break where a
+    // reader would break it" is still the whole question.
+    expect(closes.length - fits.length).toBe(39);
   });
 
   it('gives a break somewhere good to land: 264 closes of 476 carry more than one pool', () => {
@@ -110,7 +117,9 @@ describe('the real book (public/local-snapshot.json)', () => {
     // boundaries for the page to prefer over a mid-table one.
     const bySections = {};
     for (const close of closes) bySections[close.sections] = (bySections[close.sections] || 0) + 1;
-    expect(bySections).toEqual({ 1: 212, 2: 252, 3: 12 });
-    expect(closes.filter((close) => close.sections >= 2)).toHaveLength(264);
+    // One close moved from two pools to one: its only surviving account in the
+    // second pool had failed months earlier and is no longer printed.
+    expect(bySections).toEqual({ 1: 213, 2: 251, 3: 12 });
+    expect(closes.filter((close) => close.sections >= 2)).toHaveLength(263);
   });
 });

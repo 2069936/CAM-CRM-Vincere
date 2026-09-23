@@ -7949,6 +7949,19 @@ function ReportPanel({
           </section>
         ) : null}
 
+        {/* A row that is not here is a fact, so it is stated. An account that
+            breached weeks ago is not this close's news and its dead balance is
+            not in these subtotals, but a client counting their accounts has to
+            be able to tell "removed" from "lost". */}
+        {cfg.showAccountTable && report.counts.retired > 0 ? (
+          <p className="report-note">
+            {report.counts.retired} account{report.counts.retired === 1 ? "" : "s"}
+            {" "}that failed before this close {report.counts.retired === 1 ? "is" : "are"} not
+            shown. {report.counts.retired === 1 ? "It appears" : "They appear"} on the close
+            {" "}{report.counts.retired === 1 ? "it" : "they"} failed on.
+          </p>
+        ) : null}
+
         {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy", "unclassified"].map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>

@@ -424,3 +424,140 @@ describe('what counts towards the daily PnL', () => {
     expect(report.evaluationTotals.grossRealizedPnl).toBe(-810);
   });
 });
+
+/* ------------------------------------------------------------------------- *
+ * AN ACCOUNT THAT BREACHED WEEKS AGO IS NOT TODAY'S NEWS.
+ *
+ * Raised on Todd's report: a prop account that had breached and been
+ * classified Failed was still printed on every daily close after it died, with
+ * its dead balance inside the section subtotal. The day it fails is the day it
+ * belongs on, because that is when the loss happened and when the client has
+ * to be told. Every day after that it is history.
+ * ------------------------------------------------------------------------- */
+describe('accounts that failed before this close', () => {
+  const CLOSE = '2026-09-23';
+
+  function build({ status = 'Failed', dateFailed = '2026-07-15' } = {}) {
+    const client = {
+      name: 'Todd',
+      accountRegistry: {
+        LIVE: { accountName: 'LIVE', accountType: 'Funded', status: 'Active' },
+        DEAD: { accountName: 'DEAD', accountType: 'Funded', status, dateFailed },
+      },
+    };
+    const dailyImport = {
+      date: CLOSE,
+      status: 'Needs review',
+      snapshots: [
+        { accountName: 'LIVE', accountBalance: 51000, grossRealizedPnl: 250 },
+        { accountName: 'DEAD', accountBalance: 47500, grossRealizedPnl: 0 },
+      ],
+    };
+    return buildDailyReportSummary(client, dailyImport);
+  }
+
+  it('leaves it off the report and out of the totals', () => {
+    const report = build();
+    expect(report.grouped.funded.map((r) => r.accountName)).toEqual(['LIVE']);
+    expect(report.grouped.retired.map((r) => r.accountName)).toEqual(['DEAD']);
+    expect(report.counts.retired).toBe(1);
+    // The dead balance is the point: $47,500 of an account the client lost in
+    // July was being added to what they hold today.
+    expect(report.totals.aggregateBalance).toBe(51000);
+  });
+
+  it('keeps it on the close it failed on, which is the one that has to say so', () => {
+    const report = build({ dateFailed: CLOSE });
+    expect(report.grouped.funded.map((r) => r.accountName)).toEqual(['LIVE', 'DEAD']);
+    expect(report.counts.retired).toBe(0);
+  });
+
+  it('keeps an account nobody has marked Failed', () => {
+    const report = build({ status: 'Active', dateFailed: '' });
+    expect(report.grouped.retired).toEqual([]);
+    expect(report.grouped.funded).toHaveLength(2);
+  });
+
+  it('does not need the stamp, because almost nothing has it', () => {
+    // Measured on the stored book: 48 accounts are Failed and exactly ONE
+    // carries a dateFailed, because the stamp was added after most of them
+    // were classified. A rule that required it would have hidden nothing and
+    // left the report exactly as it was, which is the bug being fixed.
+    const report = build({ dateFailed: '' });
+    expect(report.counts.retired).toBe(1);
+    expect(report.grouped.funded.map((r) => r.accountName)).toEqual(['LIVE']);
+  });
+
+  it('keeps an unstamped account on the close whose own flags say it died', () => {
+    // Reconcile raises a Critical "Drawdown breached" naming the account on
+    // the day the buffer reaches zero. That is the day it died and the day the
+    // client has to be told, stamp or no stamp.
+    const client = {
+      name: 'Todd',
+      accountRegistry: {
+        DEAD: { accountName: 'DEAD', accountType: 'Funded', status: 'Failed', dateFailed: '' },
+      },
+    };
+    const dailyImport = {
+      date: CLOSE,
+      snapshots: [{ accountName: 'DEAD', accountBalance: 47500, grossRealizedPnl: -2100 }],
+      flags: [{ type: 'Drawdown breached', severity: 'Critical', accountName: 'DEAD', status: 'Open' }],
+    };
+    const report = buildDailyReportSummary(client, dailyImport);
+    expect(report.counts.retired).toBe(0);
+    expect(report.grouped.funded.map((r) => r.accountName)).toEqual(['DEAD']);
+    // And the day's loss is in the day's number, which is the point of keeping it.
+    expect(report.totals.grossRealizedPnl).toBe(-2100);
+  });
+
+  it('matches the flag to the account whatever the casing', () => {
+    const client = {
+      name: 'Todd',
+      accountRegistry: { Dead: { accountName: 'Dead', accountType: 'Funded', status: 'Failed' } },
+    };
+    const report = buildDailyReportSummary(client, {
+      date: CLOSE,
+      snapshots: [{ accountName: 'Dead', accountBalance: 1, grossRealizedPnl: 0 }],
+      flags: [{ type: 'Drawdown breached', accountName: 'DEAD' }],
+    });
+    expect(report.counts.retired).toBe(0);
+  });
+
+  it('is not fooled by a warning that is not a breach', () => {
+    const client = {
+      name: 'Todd',
+      accountRegistry: { DEAD: { accountName: 'DEAD', accountType: 'Funded', status: 'Failed' } },
+    };
+    const report = buildDailyReportSummary(client, {
+      date: CLOSE,
+      snapshots: [{ accountName: 'DEAD', accountBalance: 1, grossRealizedPnl: 0 }],
+      flags: [{ type: 'Drawdown approaching limit', accountName: 'DEAD' }],
+    });
+    expect(report.counts.retired).toBe(1);
+  });
+
+  it('reads a timestamped date the same as a plain one', () => {
+    const report = build({ dateFailed: '2026-07-15T20:30:00Z' });
+    expect(report.counts.retired).toBe(1);
+  });
+
+  it('applies to every pool, not just funded', () => {
+    const client = {
+      name: 'Todd',
+      accountRegistry: {
+        EVAL: { accountName: 'EVAL', accountType: 'Evaluation - standard', status: 'Failed', dateFailed: '2026-08-01' },
+        CASH: { accountName: 'CASH', accountType: 'Cash - Straight', status: 'Failed', dateFailed: '2026-08-01' },
+      },
+    };
+    const report = buildDailyReportSummary(client, {
+      date: CLOSE,
+      snapshots: [
+        { accountName: 'EVAL', accountBalance: 100, grossRealizedPnl: 0 },
+        { accountName: 'CASH', accountBalance: 200, grossRealizedPnl: 0 },
+      ],
+    });
+    expect(report.counts.retired).toBe(2);
+    expect(report.grouped.evaluations).toEqual([]);
+    expect(report.grouped.cash).toEqual([]);
+  });
+});
