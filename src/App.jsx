@@ -52,6 +52,7 @@ import {
 } from "lucide-react";
 import AccountManager from "./components/AccountManager";
 import Dashboard from "./components/Dashboard";
+import SidebarResizer from "./components/SidebarResizer";
 import DatabaseCheck from "./components/DatabaseCheck";
 import DailySOP from "./components/DailySOP";
 import ProfilePanel from "./components/ProfilePanel";
@@ -4767,6 +4768,7 @@ function ManagerOverview({
         onClick={closeMobileSidebar}
         aria-label="Close navigation"
       />
+      <SidebarResizer label="Navigation width" />
       <aside className={`manager-sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
         <div className="manager-sidebar-header">
           <div className="sidebar-role-row">
@@ -9270,28 +9272,35 @@ function PnlCalendarHeatmap({ client }) {
 
   return (
     <div className="pnl-heatmap">
-      <div className="pnl-heatmap-day-labels">
-        {DAY_LABELS.map((l) => (
-          <span key={l}>{l}</span>
-        ))}
-      </div>
-      <div className="pnl-heatmap-grid">
-        {weeks.map((week, wi) => (
-          <div className="pnl-heatmap-week" key={wi}>
-            {week.map((day) => (
-              <div
-                key={day.date}
-                className="pnl-heatmap-cell"
-                style={{ background: cellColor(day) }}
-                title={
-                  day.pnl !== null
-                    ? `${day.date}: ${day.pnl >= 0 ? "+" : ""}${formatCurrency(day.pnl)}`
-                    : `${day.date} - no close`
-                }
-              />
-            ))}
-          </div>
-        ))}
+      {/* A column is a week and a row is a weekday, so the weekday names belong
+          down the left beside the rows they name. They were laid out as a
+          horizontal strip above the grid, five 16px boxes holding three
+          uppercase letters each, so they overlapped into MONTUEWEDTHUFRI and
+          named nothing. */}
+      <div className="pnl-heatmap-body">
+        <div className="pnl-heatmap-day-labels" aria-hidden="true">
+          {DAY_LABELS.map((l) => (
+            <span key={l}>{l}</span>
+          ))}
+        </div>
+        <div className="pnl-heatmap-grid">
+          {weeks.map((week, wi) => (
+            <div className="pnl-heatmap-week" key={wi}>
+              {week.map((day, di) => (
+                <div
+                  key={day.date}
+                  className="pnl-heatmap-cell"
+                  style={{ background: cellColor(day) }}
+                  title={
+                    day.pnl !== null
+                      ? `${DAY_LABELS[di]} ${day.date}: ${day.pnl >= 0 ? "+" : ""}${formatCurrency(day.pnl)}`
+                      : `${DAY_LABELS[di]} ${day.date} - no close`
+                  }
+                />
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
       <div className="pnl-heatmap-legend">
         <span className="negative">Loss</span>
@@ -15684,6 +15693,7 @@ export default function App() {
             onClick={closeMobileSidebar}
             aria-label="Close navigation"
           />
+          <SidebarResizer label="Client list width" />
           <aside className={`sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
             <div className="sidebar-header">
               <div className="sidebar-role-row">
