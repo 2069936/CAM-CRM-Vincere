@@ -110,9 +110,40 @@ describe('bulk replay of failed batches', () => {
     const res = response();
     await handler({ method: 'POST', body: { batchIds: [A, B], reason: 'Replaying after the fix' } }, res);
     expect(res.statusCode).toBe(200);
-    expect(res.body.results[0]).toMatchObject({ batchId: A, outcome: 'failed', error: 'batch_reprocess_failed' });
+    // 57014 is a statement timeout, and the desk's next move for one is to
+    // press the button again. This used to answer batch_reprocess_failed,
+    // which is the same word a closed day and a revoked device answered, so
+    // the screen could not tell "try again" from "stop". The SQLSTATE names
+    // the fault and names no data; the message itself still never travels.
+    expect(res.body.results[0]).toMatchObject({ batchId: A, outcome: 'failed', error: 'postgres_57014' });
     expect(res.body.results[1]).toMatchObject({ batchId: B, outcome: 'replayed' });
+    expect(JSON.stringify(res.body)).not.toMatch(/statement timeout/);
     expect(report).toHaveBeenCalledWith(A, expect.objectContaining({ code: '57014' }));
+  });
+
+  it('names the causes the desk can act on instead of one word for all of them', async () => {
+    // Measured on 43 client days replayed on 2026-09-23: sixteen came back
+    // failed and every one of them said batch_reprocess_failed, so the only
+    // way to tell a day a CAM had already closed from a device that had been
+    // re-paired was an account with access to the server log.
+    const closed = Object.assign(new Error('Daily import is closed for 2026-09-18.'), { code: 'daily_import_closed' });
+    const revoked = Object.assign(new Error('invalid_ingest_device'), { code: 'P0001' });
+    const replay = vi.fn(async ({ batch: b }) => { throw b.id === A ? closed : revoked; });
+    const { handler } = setup({ batches: { [A]: batch(A), [B]: batch(B) }, replay });
+    const res = response();
+    await handler({ method: 'POST', body: { batchIds: [A, B], reason: 'Replaying after the fix' } }, res);
+    expect(res.body.results.map((r) => r.error)).toEqual(['daily_import_closed', 'invalid_ingest_device']);
+    expect(JSON.stringify(res.body)).not.toMatch(/2026-09-18/);
+  });
+
+  it('keeps a database message out of the answer when it is not an identifier', async () => {
+    const leaky = new Error('duplicate key value violates unique constraint "accounts_pkey" (BSKELAUNCH26643)');
+    const replay = vi.fn(async () => { throw leaky; });
+    const { handler } = setup({ batches: { [A]: batch(A) }, replay });
+    const res = response();
+    await handler({ method: 'POST', body: { batchIds: [A], reason: 'Replaying after the fix' } }, res);
+    expect(res.body.results[0]).toMatchObject({ outcome: 'failed', error: 'batch_reprocess_failed' });
+    expect(JSON.stringify(res.body)).not.toMatch(/BSKELAUNCH/);
   });
 
   it('is for managers only', async () => {

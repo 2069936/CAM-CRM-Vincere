@@ -31,9 +31,21 @@ export function createReplayStore(admin) {
       const batch = await download.getBatch(batchId);
       if (!batch) return null;
       const clientPromise = admin.from('clients').select('name').eq('id', batch.clientId).maybeSingle();
-      const dailyPromise = batch.dailyImportId
-        ? admin.from('daily_imports').select('status').eq('id', batch.dailyImportId).maybeSingle()
-        : Promise.resolve({ data: null, error: null });
+      // THE DAY, NOT THIS BATCH'S IMPORT.
+      //
+      // A failed batch has no daily import of its own, so looking the day up
+      // through batch.dailyImportId answered null for every batch a replay
+      // would ever be aimed at, and closedDay was therefore always false. The
+      // day was still closed: a CAM had filled it by hand precisely because
+      // the automatic capture failed. The replay then walked past the guard,
+      // claimed a lease, downloaded the snapshot and only learned the truth
+      // when persistence refused, which reached the desk as a nameless
+      // failure. The day the replay would write is the day to ask about.
+      const dailyPromise = admin.from('daily_imports')
+        .select('status')
+        .eq('client_id', batch.clientId)
+        .eq('trading_date', batch.tradingDate)
+        .maybeSingle();
       const modePromise = admin.from('ingest_batches').select('reprocess_mode').eq('id', batch.id).maybeSingle();
       const [{ data: client, error }, { data: daily, error: dailyError }, { data: mode, error: modeError }] = await Promise.all([clientPromise, dailyPromise, modePromise]);
       if (error || dailyError || modeError) throw error || dailyError || modeError;

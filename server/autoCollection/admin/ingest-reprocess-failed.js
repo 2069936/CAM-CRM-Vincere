@@ -43,8 +43,39 @@ export function parseBulkReplayBody(body = {}) {
   return { batchIds, reason };
 }
 
-function publicOutcome(error) {
+/* A REPLAY THAT FAILS AGAIN HAS TO SAY WHY, ON THE SCREEN.
+ *
+ * Everything that is not an ApiError used to collapse into
+ * batch_reprocess_failed, and a bulk run of forty batches came back as forty
+ * identical words. The reasons were all different and all actionable: a day a
+ * CAM had already closed by hand, a device that was re-paired after the
+ * capture, a stored object that no longer matches its hash. Only the server
+ * log knew, and reading it needs an account the desk does not have.
+ *
+ * Codes only, never a database message: our own raise strings are snake_case
+ * identifiers, and anything else could carry a row in it. */
+const NAMED_CAUSES = new Set([
+  'daily_import_closed',
+  'invalid_ingest_device',
+  'invalid_batch_reprocess',
+  'batch_not_found',
+  'closed_day_required',
+  'manager_permission_required',
+]);
+const IDENTIFIER = /^[a-z][a-z0-9_]{2,63}$/;
+
+export function publicOutcome(error) {
   if (error instanceof ApiError) return error.message;
+  for (const candidate of [error?.code, error?.message]) {
+    const text = String(candidate || '').trim();
+    if (NAMED_CAUSES.has(text)) return text;
+  }
+  // A Postgres SQLSTATE ('57014' for a statement timeout) names the fault
+  // without naming any data, and it is the difference between "try again" and
+  // "stop pressing the button".
+  const sqlState = String(error?.code || '').trim();
+  if (/^[0-9A-Z]{5}$/.test(sqlState)) return `postgres_${sqlState}`;
+  if (IDENTIFIER.test(sqlState)) return sqlState;
   return 'batch_reprocess_failed';
 }
 
