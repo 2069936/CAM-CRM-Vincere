@@ -6,6 +6,7 @@ import { ApiError } from '../../../apiLib/http.js';
 
 const BATCH_ID = '33333333-3333-4333-8333-333333333333';
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
+const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
 const baseBatch = { id: BATCH_ID, clientId: CLIENT_ID, clientName: 'Acme Trading', deviceId: '22222222-2222-4222-8222-222222222222', tradingDate: '2026-07-23', capturedAt: '2026-07-23T20:45:00Z', status: 'failed', rowCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1 } };
 
 function response() { return { headers: {}, setHeader(k, v) { this.headers[k] = v; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } }; }
@@ -139,6 +140,63 @@ describe('immutable stored replay processor', () => {
     await expect(processStoredReplay({ batch, store, processingToken: 'token', actorId: 'manager-1', reason: 'Approved replay reason', closedReplacement: false, normalize: () => ({ date: batch.tradingDate, parsed: {}, metadata: { isComplete: true } }), reconcile: () => ({ date: batch.tradingDate }), persist: async () => ({ id: 'daily-1' }) })).rejects.toThrow('finalizer unavailable');
     expect(store.completeBatch).toHaveBeenCalledTimes(1);
     expect(store.completeBatch).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+  });
+});
+
+describe('the day a replay would write', () => {
+  /* A failed batch owns no daily import, so asking the day about itself
+   * through batch.dailyImportId asked about null and answered "not closed"
+   * for every batch a replay is ever aimed at. Meanwhile the day was closed,
+   * by hand, by the CAM who covered for the capture that failed. */
+  function adminFor(batchRow, dailyRows) {
+    const calls = [];
+    return {
+      calls,
+      from(table) {
+        const filters = {};
+        const chain = {
+          select() { return chain; },
+          eq(column, value) { filters[column] = value; return chain; },
+          async maybeSingle() {
+            calls.push({ table, filters });
+            if (table === 'ingest_batches') return { data: batchRow, error: null };
+            if (table === 'clients') return { data: { name: 'Acme Trading' }, error: null };
+            if (table === 'daily_imports') {
+              const row = dailyRows.find((candidate) => candidate.client_id === filters.client_id
+                && candidate.trading_date === filters.trading_date) || null;
+              return { data: row ? { status: row.status } : null, error: null };
+            }
+            return { data: null, error: null };
+          },
+        };
+        return chain;
+      },
+    };
+  }
+
+  const failedRow = {
+    id: BATCH_ID, capture_id: BATCH_ID, device_id: DEVICE_ID, client_id: CLIENT_ID,
+    trading_date: '2026-09-18', captured_at: '2026-09-18T20:30:00Z', received_at: '2026-09-18T20:31:00Z',
+    processed_at: null, status: 'failed', schema_version: 1, storage_path: 'p.json.gz',
+    content_sha256: 'a'.repeat(64), byte_count: 10, row_counts: {}, completeness: {},
+    daily_import_id: null, replaces_batch_id: null, error_code: 'invalid_auto_import_snapshot',
+  };
+
+  it('sees a day a CAM closed by hand even though the failed batch has no import of its own', async () => {
+    const admin = adminFor(failedRow, [{ client_id: CLIENT_ID, trading_date: '2026-09-18', status: 'Closed' }]);
+    const batch = await createReplayStore(admin).getBatch(BATCH_ID);
+    expect(batch).toMatchObject({ closedDay: true, dailyImportId: null, clientName: 'Acme Trading' });
+    expect(admin.calls).toContainEqual({ table: 'daily_imports', filters: { client_id: CLIENT_ID, trading_date: '2026-09-18' } });
+  });
+
+  it('leaves an open day open', async () => {
+    const admin = adminFor(failedRow, [{ client_id: CLIENT_ID, trading_date: '2026-09-18', status: 'Open' }]);
+    expect(await createReplayStore(admin).getBatch(BATCH_ID)).toMatchObject({ closedDay: false });
+  });
+
+  it('leaves a day with no import at all open', async () => {
+    const admin = adminFor(failedRow, []);
+    expect(await createReplayStore(admin).getBatch(BATCH_ID)).toMatchObject({ closedDay: false });
   });
 });
 
