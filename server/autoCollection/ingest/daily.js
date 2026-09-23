@@ -13,6 +13,11 @@ import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPer
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
 import { resolveAutoCollectionLimits } from '../../apiLib/autoCollectionLimits.js';
 import { normalizeMachineId } from '../../apiLib/ingestTokens.js';
+import {
+  completenessWithOpenPositions,
+  decideCaptureThrottle,
+  throttledCompleteness,
+} from './captureThrottle.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -203,6 +208,7 @@ export function createHandler({
   normalizeSnapshot = normalizeAutoImportSnapshot,
   reconcile = reconcileDailyImport,
   persist = persistDailyImportWithClient,
+  decideThrottle = decideCaptureThrottle,
   env = process.env,
   pepper = resolveIngestPepper(env),
   maxCompressedBytes = resolveAutoCollectionLimits(env).maxCompressedBytes,
@@ -293,6 +299,55 @@ export function createHandler({
       });
       stage = timer.enter('normalize');
       const normalized = normalizeSnapshot(decoded.snapshot);
+
+      /* THE SEAM. Everything above is cheap and everything below rewrites the
+       * client's whole trading day under a lock on their row. A machine whose
+       * client left positions open past 16:30 sends a capture every 15 seconds
+       * until the cutoff, and each one pays the full price of the first. The
+       * snapshot is already stored, so skipping here loses no evidence: it
+       * declines to rewrite a day that was rewritten seconds ago with a capture
+       * that is not the close. decideCaptureThrottle explains which ones those
+       * are and, more importantly, which ones are never skipped. */
+      stage = timer.enter('throttle');
+      // A throttle that cannot read the day knows nothing, and knowing nothing
+      // means doing the full work. This read must never be able to fail an
+      // upload: it exists to skip work, not to gate it.
+      let openDay = null;
+      let throttleReadable = typeof store.currentDailyImport === 'function';
+      if (throttleReadable) {
+        try {
+          openDay = await store.currentDailyImport(device.clientId, info.tradingDate);
+        } catch {
+          throttleReadable = false;
+        }
+      }
+      const throttle = throttleReadable
+        ? decideThrottle({
+          openPositions: normalized.metadata?.openPositions,
+          dailyImport: openDay,
+          now: now(),
+        })
+        : { skip: false, reason: 'throttle_unavailable', dailyImportId: null, quietForMs: null };
+      if (throttle.skip) {
+        stage = 'finalize';
+        // 'replaced' and not a new status: the deployed agent accepts exactly
+        // processed, incomplete, late_closed_day and replaced and quarantines
+        // anything else (CrmClient.ValidateUploadResponse). 'replaced' is also
+        // the honest word — a later capture of this day is the one that stands.
+        await completeBatch(store, {
+          eventType: 'ingest_batch_superseded', clientId: device.clientId,
+          deviceId: device.id, batchId: batch.id, dailyImportId: throttle.dailyImportId,
+          processingToken, capturedAt: info.capturedAt, success: true,
+          status: 'replaced', rowCounts: info.rowCounts,
+          completeness: throttledCompleteness(normalized.metadata, throttle),
+          ...timer.seal(),
+        });
+        return sendJson(res, 201, {
+          ok: true, duplicate: false, batchId: batch.id,
+          dailyImportId: throttle.dailyImportId, status: 'replaced',
+        });
+      }
+
       stage = timer.enter('registry');
       const registry = await store.loadRegistry(device.clientId);
       stage = timer.enter('reconcile');
@@ -347,10 +402,7 @@ export function createHandler({
           deviceId: device.id, batchId: batch.id, dailyImportId: dailyImport.id,
           processingToken, capturedAt: info.capturedAt, success: true,
           status: 'replaced', rowCounts: info.rowCounts,
-          completeness: {
-            isComplete: normalized.metadata.isComplete,
-            emptySections: normalized.metadata.emptySections,
-          },
+          completeness: completenessWithOpenPositions(normalized.metadata),
           ...timer.seal(),
         });
         return sendJson(res, 201, {
@@ -367,10 +419,7 @@ export function createHandler({
         processingToken,
         capturedAt: info.capturedAt, success: true,
         status, rowCounts: info.rowCounts,
-        completeness: {
-          isComplete: normalized.metadata.isComplete,
-          emptySections: normalized.metadata.emptySections,
-        },
+        completeness: completenessWithOpenPositions(normalized.metadata),
         ...timer.seal(),
       });
       return sendJson(res, 201, {

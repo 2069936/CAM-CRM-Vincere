@@ -28,14 +28,21 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic } = {}) {
-  const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [] };
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay } = {}) {
+  const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [], currentDay: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
     async claimBatch(value) { calls.order.push('claim'); calls.claim.push(value); return claim ? claim(value) : { outcome: 'owned', batch: { ...batch, status: 'processing' } }; },
     async ensureRaw(...args) { calls.order.push('storage'); calls.storeRaw.push(args); if (storeRaw) return storeRaw(...args); return { existed: false }; },
     async releaseLease(value) { calls.release.push(value); if (release) return release(value); },
     async loadRegistry() { calls.order.push('registry'); return registry || {}; },
+    ...(currentDay === undefined ? {} : {
+      async currentDailyImport(clientUuid, tradingDate) {
+        calls.order.push('throttle');
+        calls.currentDay.push({ clientUuid, tradingDate });
+        return typeof currentDay === 'function' ? currentDay() : currentDay;
+      },
+    }),
     createPersistenceAdapter(processingToken) { return { persistDailyImportAtomic: async (value) => persist(value), supportsDailyImportSourceColumns: true, processingToken }; },
     async finalizeBatch(value) { calls.terminal.push(value); if (complete) return complete(value); return { ...batch, ...value }; },
     async recordDeviceResult(value) { calls.device.push(value); },
@@ -197,18 +204,112 @@ describe('daily snapshot ingest', () => {
     expect(calls.storeRaw).toHaveLength(0);
   });
 
+  /* THE STORM, AND THE ONE CAPTURE THAT MUST NEVER BE SKIPPED.
+   *
+   * On 2026-09-22 one VPS sent 62 captures of the same day between 16:30 and
+   * 17:00: its client had positions open, so the agent queued each snapshot
+   * and threw positions_open, leaving the day unmarked for the 15-second
+   * scheduler to try again. Each one rewrote the client's entire trading day.
+   * The throttle declines the middle of that, and only the middle. */
+  function openSnapshot(unrealized) {
+    // The contract fixture with one number changed, so the real normalizer
+    // runs against a shape it accepts and only the open-positions verdict
+    // differs between these cases.
+    return {
+      ...contractFixture,
+      accounts: contractFixture.accounts.map((account, index) => (
+        index === 0 ? { ...account, unrealizedPnl: unrealized } : account
+      )),
+    };
+  }
+
+  it('skips the day rewrite for a provisional capture on a day just written', async () => {
+    const { handler, calls } = setup({
+      useRealDomain: true,
+      currentDay: { id: 'daily-77', status: 'Open', updatedAt: '2026-07-23T20:59:45Z' },
+      now: () => new Date('2026-07-23T21:00:00Z'),
+    });
+    const res = await ingest(handler, openSnapshot(-420));
+    // 201 and a status the deployed agent accepts, so the item leaves its
+    // queue for good. A 429 would have put it back in pending, where the
+    // uploader re-offers it every ten seconds forever.
+    expect(res).toMatchObject({
+      statusCode: 201,
+      body: { ok: true, duplicate: false, batchId: 'batch-1', dailyImportId: 'daily-77', status: 'replaced' },
+    });
+    // The expensive half never ran.
+    expect(calls.order).not.toContain('registry');
+    expect(calls.order).not.toContain('reconcile');
+    expect(calls.order).not.toContain('persist');
+    // The snapshot is still stored: skipping the rewrite is not losing evidence.
+    expect(calls.storeRaw).toHaveLength(1);
+    expect(calls.currentDay[0]).toEqual({ clientUuid: CLIENT_ID, tradingDate: '2026-07-23' });
+    const finalized = calls.terminal[0];
+    expect(finalized).toMatchObject({ status: 'replaced', success: true, eventType: 'ingest_batch_superseded' });
+    expect(finalized.completeness.throttled).toMatchObject({ skipped: true, quietForMs: 15000 });
+    expect(finalized.completeness.openPositions).toMatchObject({ open: true });
+  });
+
+  it('writes the settled close even one second after the last rewrite', async () => {
+    const { handler, calls } = setup({
+      useRealDomain: true,
+      currentDay: { id: 'daily-77', status: 'Open', updatedAt: '2026-07-23T20:59:59Z' },
+      now: () => new Date('2026-07-23T21:00:00Z'),
+    });
+    const res = await ingest(handler, openSnapshot(0));
+    expect(res.statusCode).toBe(201);
+    expect(res.body.status).not.toBe('replaced');
+    expect(calls.order).toContain('persist');
+  });
+
+  it('writes when nothing is the day yet, and when the day has gone quiet', async () => {
+    for (const currentDay of [null, { id: 'daily-77', status: 'Open', updatedAt: '2026-07-23T20:50:00Z' }]) {
+      const { handler, calls } = setup({
+        useRealDomain: true, currentDay, now: () => new Date('2026-07-23T21:00:00Z'),
+      });
+      const res = await ingest(handler, openSnapshot(-420));
+      expect(res.statusCode).toBe(201);
+      expect(calls.order).toContain('persist');
+    }
+  });
+
+  it('does the full work when the day cannot be read, and never fails the upload for it', async () => {
+    // The throttle exists to skip work. It must never be able to gate it.
+    const { handler, calls } = setup({
+      useRealDomain: true,
+      currentDay: () => { throw new Error('canceling statement due to statement timeout'); },
+      now: () => new Date('2026-07-23T21:00:00Z'),
+    });
+    const res = await ingest(handler, openSnapshot(-420));
+    expect(res.statusCode).toBe(201);
+    expect(calls.order).toContain('persist');
+  });
+
+  it('carries the open-positions verdict into the batch on the ordinary path', async () => {
+    // Computed on every capture since the normalizer was written, and read by
+    // nothing until now.
+    const { handler, calls } = setup({ useRealDomain: true, currentDay: null });
+    await ingest(handler, openSnapshot(-420));
+    expect(calls.terminal[0].completeness.openPositions).toMatchObject({ open: true, unrealizedTotal: -420 });
+  });
+
   it('times every stage it ran and hands the numbers to the finalize that stores them', async () => {
-    // Five stages here; the sixth, finalize, is measured inside the function
+    // Six stages here; the seventh, finalize, is measured inside the function
     // that writes the row, because this handler cannot time the call that
     // stores the time. The total is larger than their sum on purpose: the gap
     // is authentication, the gzip decode and the claim.
+    //
+    // 'throttle' joined the list when the capture throttle was added. It sits
+    // between normalize and registry, which is the seam where the cheap half
+    // of the request ends, and it is timed like everything else because a
+    // guard that exists to save work has to be measurable itself.
     let tick = 1_000;
     const { handler, calls } = setup({ useRealDomain: true, monotonic: () => (tick += 10) });
     const res = await ingest(handler, contractFixture);
     expect(res.statusCode).toBe(201);
     const finalized = calls.terminal[0];
     expect(Object.keys(finalized.stageDurationsMs).sort())
-      .toEqual(['normalize', 'persist', 'reconcile', 'registry', 'storage']);
+      .toEqual(['normalize', 'persist', 'reconcile', 'registry', 'storage', 'throttle']);
     for (const value of Object.values(finalized.stageDurationsMs)) expect(value).toBeGreaterThanOrEqual(0);
     const summed = Object.values(finalized.stageDurationsMs).reduce((total, value) => total + value, 0);
     expect(finalized.ingestDurationMs).toBeGreaterThanOrEqual(summed);
