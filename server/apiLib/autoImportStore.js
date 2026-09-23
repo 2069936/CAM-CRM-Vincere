@@ -317,6 +317,30 @@ export function createAutoImportStore(admin) {
       return registryFromRows(data || []);
     },
 
+    /* WHAT THE DAY ALREADY SAYS, READ BEFORE DECIDING TO SAY IT AGAIN.
+     *
+     * One row, by the unique (client_id, trading_date) key. The caller uses
+     * updated_at to tell a capture that arrived a moment after the last one
+     * from a capture that arrived after the desk had gone home, and status to
+     * leave a closed day alone. Deliberately not the batch: what matters is
+     * when the DAY was last rewritten, which is a different question from when
+     * a batch was last received. */
+    async currentDailyImport(clientUuid, tradingDate) {
+      const { data, error } = await admin.from('daily_imports')
+        .select('id,status,updated_at,created_at,source_batch_id')
+        .eq('client_id', clientUuid)
+        .eq('trading_date', tradingDate)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      return {
+        id: data.id,
+        status: data.status || null,
+        sourceBatchId: data.source_batch_id || null,
+        updatedAt: data.updated_at || data.created_at || null,
+      };
+    },
+
     createPersistenceAdapter(processingToken) {
       return {
         isAtomic: true,
