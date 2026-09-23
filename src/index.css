@@ -7674,6 +7674,60 @@ tr:nth-child(2) .rank-badge {
 }
 .report-design-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* THE REPORT SHEET IS ALWAYS A WHITE PAGE, SO ITS CHROME HAS TO BE TOO.
+   The sheet hardcodes `background: #ffffff; color: #12202b` because it is a
+   document, not a panel, and it prints. The controls sitting on it kept
+   reading the app's theme tokens, which on the dark theme means near-white
+   text and a dark border. The result on a white bar: `Download PDF` was
+   legible only because .secondary-button paints itself with --surface-2, and
+   `Design` and `Print` were near-invisible transparent buttons with white
+   text on white. The design drawer was worse — a dark --surface-2 card
+   inheriting the sheet's dark text, so every unchecked option label read as
+   grey on charcoal.
+   One local palette, on the two containers that are chrome rather than
+   document, fixes the bar and the drawer together and leaves the printed
+   content untouched. */
+.report-sheet .report-actions,
+.report-sheet .report-design-drawer {
+  --text: #12202b;
+  --text-muted: #556675;
+  --muted: #556675;
+  --line: #ccd9e3;
+  --surface: #ffffff;
+  --surface-2: #eff5f9;
+  --surface-3: #dfe9f0;
+  --accent: #1257c3;
+  color: #12202b;
+  accent-color: #1257c3;
+}
+
+/* A transparent button on a near-white bar needs an edge and a ground of its
+   own, or it is a floating word. Both of these are real actions: Print is the
+   fallback the PDF error message tells people to use, so it can never be the
+   thing nobody can find. */
+.report-sheet .report-actions .ghost-button {
+  background: #ffffff;
+  border-color: #ccd9e3;
+  color: #12202b;
+}
+
+.report-sheet .report-actions .ghost-button:hover,
+.report-sheet .report-actions .secondary-button:hover {
+  background: #e7f0f7;
+  border-color: #9fb8cc;
+}
+
+.report-sheet .report-design-drawer .report-design-toggle {
+  /* An unchecked option is still an option a CAM has to read to choose it.
+     It was inheriting the muted token and disappearing into the card. */
+  color: #12202b;
+}
+
+.report-sheet .report-design-drawer .report-design-head p,
+.report-sheet .report-design-drawer .report-design-note {
+  color: #556675;
+}
+
 .report-note {
   margin: 4px 0 0;
   font-size: 13px;
