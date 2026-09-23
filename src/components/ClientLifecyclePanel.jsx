@@ -105,7 +105,7 @@ export function ClientLifecyclePanel({ lifecycle, defaultOpen = false }) {
           tone={lifecycle.passedCount ? 'positive' : ''}
         />
         <Stat label="Avg days to pass" value={days(lifecycle.avgDaysToPass)} />
-        <Stat label="Funded now" value={lifecycle.fundedCount} />
+        <Stat label="Funded, all time" value={lifecycle.fundedCount} />
         <Stat label="Payouts" value={`${lifecycle.payoutCount} · ${money(lifecycle.payoutTotal)}`} />
         <Stat label="Avg days to payout" value={days(lifecycle.avgDaysToFirstPayout)} />
         {lifecycle.cashAccounts ? (
@@ -171,8 +171,23 @@ export function LifecycleRollupPanel({
     <section className="panel">
       <div className="panel-heading">
         <h3>{title}</h3>
-        <span className="muted">{rollup.clients} clients</span>
+        <span className="muted">{rollup.clients} clients, all time</span>
       </div>
+      {/* EVERY FIGURE HERE IS ALL-TIME, AND SAYING SO IS THE POINT.
+          This panel is the one place on the page that MUST keep the clients who
+          left: retention and churn are meaningless without them, and a payout
+          that happened does not un-happen when the client goes. The defect was
+          never the population, it was that nothing on screen said so, while the
+          tiles a few hundred pixels up are present-tense. "Funded now" was the
+          worst of it — it counts every account ever funded, on everyone who was
+          ever on the book — so it is named for what it is. */}
+      <p className="muted lifecycle-line">
+        Everything below counts the whole history of this book, including the
+        {' '}
+        {rollup.churned}
+        {' '}
+        {rollup.churned === 1 ? 'client who has' : 'clients who have'} left.
+      </p>
       <div className="lifecycle-stats">
         <Stat label="Retention" value={pct(rollup.retentionRate)} tone={rollup.retentionRate >= 0.9 ? 'positive' : 'negative'} />
         <StatButton
@@ -186,7 +201,7 @@ export function LifecycleRollupPanel({
         <Stat label="Evaluations" value={rollup.evaluationCount} />
         <Stat label="Pass rate" value={pct(rollup.passRate)} />
         <Stat label="Avg days to pass" value={days(rollup.avgDaysToPass)} />
-        <Stat label="Funded now" value={rollup.fundedCount} />
+        <Stat label="Funded, all time" value={rollup.fundedCount} />
         <Stat label="Payouts" value={`${rollup.payoutCount} · ${money(rollup.payoutTotal)}`} />
         <Stat label="Avg days to payout" value={days(rollup.avgDaysToFirstPayout)} />
         {rollup.cashAccounts ? <Stat label="Cash balance" value={money(rollup.cashBalance)} /> : null}

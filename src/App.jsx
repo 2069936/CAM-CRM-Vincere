@@ -113,6 +113,7 @@ import { strategyRan, withStrategyRan } from "./domain/strategyRan";
 import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
 import { daysBetween } from "./domain/overviewCharts";
 import {
+  ACCOUNT_STATUSES,
   recalculateDailyImport,
   reconcileDailyImport,
   isCashType,
@@ -10034,6 +10035,86 @@ async function renderReportSheetHtml({ client, dailyImport, camProfile }) {
 }
 
 
+
+/* THE FUNDED BOOK AS IT IS NOW, PRICED OFF WHATEVER DAY IT WAS LAST PRICED.
+ *
+ * Pulled out of the CAM Overview's render so it can be tested, because nothing
+ * tested it and it carried two defects for as long as it existed.
+ *
+ * It answers neither of the two questions a CAM asks of it. It is not every
+ * funded account they ever had, because Failed accounts are dropped. It is not
+ * the accounts they have now, because every number on the row comes from that
+ * client's LAST close, whenever that was. Both halves are now visible: the
+ * caller passes the working book, and every row carries the date it was read
+ * from so the table can say so.
+ */
+export function buildCamFundedRows(clients = []) {
+  return clients.flatMap((client) => {
+    const latestImport = client.dailyImports?.at(-1);
+    return Object.values(client.accountRegistry || {})
+      /* `a.status !== "Ignore"` stood here and matched nothing, ever.
+       * ACCOUNT_STATUSES is Active, Inactive, Reserve, Failed and Payout
+       * Hold; "Inactive / Ignore" is an account TYPE, not a status. So
+       * every retired Funded account has been in this table since it was
+       * written, on every CAM's book. The rest of the codebase drops
+       * Failed AND Inactive (App.jsx buildAllFundedAccounts,
+       * comboPerformance, StackPlaybook); this is the same rule. It
+       * matters here more than anywhere because the table sorts by
+       * drawdown buffer ascending, so a retired account with a thin
+       * buffer sorts ABOVE the live accounts a CAM can still act on. */
+      .filter(
+        (a) =>
+          a.accountType === "Funded" &&
+          a.status !== ACCOUNT_STATUSES.FAILED &&
+          a.status !== ACCOUNT_STATUSES.INACTIVE,
+      )
+      .map((a) => {
+        const snap = (latestImport?.snapshots || []).find(
+          (s) => s.accountName === a.accountName,
+        );
+        const todayPnl = snap
+          ? (latestImport?.snapshots || [])
+              .filter((s) => s.accountName === a.accountName)
+              .reduce((t, s) => t + Number(s.grossRealizedPnl || 0), 0)
+          : null;
+        const rawDD = snap
+          ? Number(snap.dailyNetPnl ?? snap.netPnl ?? 0)
+          : null;
+        const ddLimit = Number(a.maxDrawdownLimit || 0);
+        const buffer =
+          ddLimit > 0 && rawDD !== null
+            ? ddLimit - Math.abs(Math.min(0, rawDD))
+            : null;
+        const bufferPct =
+          buffer !== null && ddLimit > 0
+            ? Math.round((buffer / ddLimit) * 100)
+            : null;
+        const target = Number(a.targetProfit || 0);
+        const weeklyPnl = snap ? Number(snap.weeklyPnl || 0) : null;
+        const pct =
+          target > 0 && weeklyPnl !== null
+            ? Math.min(100, Math.round((weeklyPnl / target) * 100))
+            : null;
+        return {
+          client,
+          account: a,
+          // The day this row was priced on. Every number to the right of
+          // the client's name comes off that client's LAST close, which
+          // is today for a desk that has uploaded and some Friday in July
+          // for one that has not. The column used to say "Today P&L" over
+          // all of it.
+          readDate: latestImport?.date || null,
+          todayPnl,
+          buffer,
+          bufferPct,
+          pct,
+          weeklyPnl,
+          target,
+        };
+      });
+  });
+}
+
 function CamOverview({
   clients,
   camProfiles = [],
@@ -10065,8 +10146,31 @@ function CamOverview({
   const monthlyGoal = monthlyGoalProp;
   const [editingGoal, setEditingGoal] = useState(false);
   const [goalDraft, setGoalDraft] = useState("");
+  /* THE WORKING BOOK, DECLARED ONCE AND BEFORE ANYTHING READS IT.
+   *
+   * Almost everything on this page answers a question about the clients a CAM
+   * still has. Counting churned ones produced the header-disagrees-with-the-list
+   * defect this codebase keeps re-growing: on Oakley Ash's book with two
+   * Inactive clients the page read "0/12 clients closed today" over a sidebar
+   * showing 10 rows. It is also a target nobody can hit, because a churned
+   * client never uploads a close, so the completion bar caps at 10/12 forever.
+   *
+   * This used to be declared two hundred lines down, below half the figures
+   * that should have been using it, which is most of why they were not. It is
+   * now the first thing computed, so a panel added later reaches for the right
+   * list by default and has to go out of its way to count former clients.
+   *
+   * `clients` remains for the figures that are HISTORY: retention, churn,
+   * payouts, lifetime counts. Those must keep the people who left, and the
+   * lifecycle panel says on screen that it is all-time. formerCount keeps the
+   * number visible rather than silently shrinking the book. */
+  const workingClients = useMemo(
+    () => clients.filter((c) => !isChurnedClient(c)),
+    [clients],
+  );
+  const formerCount = clients.length - workingClients.length;
   const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthlyPnl = clients.reduce(
+  const monthlyPnl = workingClients.reduce(
     (sum, c) =>
       sum +
       (c.dailyImports || [])
@@ -10087,13 +10191,13 @@ function CamOverview({
       ? Math.min(100, Math.round((monthlyPnl / monthlyGoal) * 100))
       : null;
   const overview = useMemo(
-    () => buildCamOverview(clients),
-    [clients],
+    () => buildCamOverview(workingClients),
+    [workingClients],
   );
-  const briefing = useMemo(() => buildTodayBriefing(clients), [clients]);
+  const briefing = useMemo(() => buildTodayBriefing(workingClients), [workingClients]);
   const insights = useMemo(
-    () => buildPortfolioInsights(clients),
-    [clients],
+    () => buildPortfolioInsights(workingClients),
+    [workingClients],
   );
 
   const urgencyCounts = { critical: 0, warning: 0, info: 0, pending: 0, ok: 0 };
@@ -10107,7 +10211,7 @@ function CamOverview({
   // because a run of eleven takes long enough that a button with no state on it
   // reads as frozen and gets clicked again.
   const [packageState, setPackageState] = useState(null);
-  const packageReady = clientsWithCloseOn(clients, today).length;
+  const packageReady = clientsWithCloseOn(workingClients, today).length;
 
   async function downloadDayPackage() {
     if (packageState?.busy) return;
@@ -10152,20 +10256,6 @@ function CamOverview({
     }
   }
 
-  // The two per-client counters on this page count the CAM's WORKING book, the
-  // same set the sidebar lists above the "Former clients" disclosure. Counting
-  // churned clients here produced the header-disagrees-with-the-list defect this
-  // codebase keeps re-growing: on Oakley Ash's book with two Inactive clients the
-  // page read "0/12 clients closed today" over a sidebar showing 10 rows. It is
-  // also a target nobody can hit — a churned client never uploads a close, so the
-  // completion bar caps at 10/12 forever — and "no contact 7d+" nags about people
-  // who are not coming back. formerCount keeps the other two on screen rather
-  // than silently shrinking the book.
-  const workingClients = useMemo(
-    () => clients.filter((c) => !isChurnedClient(c)),
-    [clients],
-  );
-  const formerCount = clients.length - workingClients.length;
   // Memoised rather than the bare IIFE it was, on the same inputs it already
   // read: two full passes over the CAM's book per render, and the React
   // Compiler refused to compile this component at all without a reactive scope
@@ -10188,22 +10278,39 @@ function CamOverview({
   const closePct = closeStats.total
     ? Math.round((closeStats.closed / closeStats.total) * 100)
     : 0;
-  const todayPortfolioPnl = clients.reduce((sum, c) => {
-    const imp = getClientImportByDate(c, today) || c.dailyImports?.at(-1);
-    return (
-      sum +
-      (imp?.snapshots || []).reduce(
-        (s, sn) => s + Number(sn.grossRealizedPnl || 0),
+  /* TODAY MEANS TODAY.
+   *
+   * This read `getClientImportByDate(c, today) || c.dailyImports?.at(-1)`, and
+   * that `||` was the whole defect: a client with no close today silently
+   * contributed whatever their last close was, from whenever that was. The
+   * biggest number on the page was the sum of dozens of different days under
+   * one date. On a book where half the desk has not uploaded yet it was not a
+   * portfolio figure at all.
+   *
+   * Now only today's closes count, and the tile says how many clients are in
+   * it. A number that covers 6 of 12 clients is useful; a number that pretends
+   * to cover 12 is not. */
+  const todayPortfolio = useMemo(() => {
+    let total = 0;
+    let counted = 0;
+    for (const client of workingClients) {
+      const imp = getClientImportByDate(client, today);
+      if (!imp) continue;
+      counted += 1;
+      total += (imp.snapshots || []).reduce(
+        (sum, sn) => sum + Number(sn.grossRealizedPnl || 0),
         0,
-      )
-    );
-  }, 0);
-  const openTasksToday = clients.reduce(
+      );
+    }
+    return { total, counted, of: workingClients.length };
+  }, [workingClients, today]);
+  const todayPortfolioPnl = todayPortfolio.total;
+  const openTasksToday = workingClients.reduce(
     (n, c) =>
       n + (c.tasks || []).filter((t) => !t.done && t.dueDate === today).length,
     0,
   );
-  const overdueTotal = clients.reduce(
+  const overdueTotal = workingClients.reduce(
     (n, c) =>
       n +
       (c.tasks || []).filter((t) => !t.done && t.dueDate && t.dueDate < today)
@@ -10222,8 +10329,8 @@ function CamOverview({
   // queue reports `occurrences` separately so the historical copies stay
   // visible and closable rather than being summed into the headline.
   const flagQueue = useMemo(
-    () => buildCamFlagQueue(clients, { today }),
-    [clients, today],
+    () => buildCamFlagQueue(workingClients, { today }),
+    [workingClients, today],
   );
   const criticalFlagsOpen = flagQueue.totals.critical;
   const staleContactClients = workingClients.filter((c) => {
@@ -10326,6 +10433,9 @@ function CamOverview({
             >
               {formatCurrency(todayPortfolioPnl)}
             </strong>
+            <small className="muted">
+              {todayPortfolio.counted} of {todayPortfolio.of} closed
+            </small>
           </div>
           {criticalFlagsOpen > 0 && (
             <div className="metric" style={{ textAlign: "right" }}>
@@ -10500,7 +10610,7 @@ function CamOverview({
         <div className="ov-pair">
           <div>
             <h4>Uploads over the last 10 trading days</h4>
-            <UploadCoverageGrid clients={clients} today={today} />
+            <UploadCoverageGrid clients={workingClients} today={today} />
           </div>
           <div>
             <h4>Accounts by type</h4>
@@ -10512,7 +10622,7 @@ function CamOverview({
       <InsightFeedPanel insights={insights} onSelectClient={onSelectClient} />
 
       {(() => {
-        const allOpenTasks = clients
+        const allOpenTasks = workingClients
           .flatMap((c) =>
             (c.tasks || [])
               .filter((t) => !t.done)
@@ -10559,7 +10669,7 @@ function CamOverview({
                 style={{ marginLeft: "auto", fontSize: 12 }}
                 onClick={() => {
                   setShowBulkTask((v) => !v);
-                  setBulkTaskTargets(clients.map((c) => c.id));
+                  setBulkTaskTargets(workingClients.map((c) => c.id));
                 }}
               >
                 + Bulk task
@@ -11006,9 +11116,16 @@ function CamOverview({
       ) : null}
 
       <div className="metric-grid">
+        {/* The header twenty lines up counts the WORKING book and this tile
+            counted everyone, so the same page printed two different client
+            numbers and explained neither. Same list now; the former ones are
+            still visible, as their own number, rather than folded in. */}
         <div className="metric">
           <span>Clients</span>
-          <strong>{clients.length}</strong>
+          <strong>{workingClients.length}</strong>
+          {formerCount > 0 ? (
+            <small className="muted">+{formerCount} former</small>
+          ) : null}
         </div>
         <div className="metric">
           <span>Algorithms</span>
@@ -11046,54 +11163,7 @@ function CamOverview({
       </CollapsiblePanel>
 
       {(() => {
-        const fundedRows = clients.flatMap((client) => {
-          const latestImport = client.dailyImports?.at(-1);
-          return Object.values(client.accountRegistry || {})
-            .filter(
-              (a) =>
-                a.accountType === "Funded" &&
-                a.status !== "Failed" &&
-                a.status !== "Ignore",
-            )
-            .map((a) => {
-              const snap = (latestImport?.snapshots || []).find(
-                (s) => s.accountName === a.accountName,
-              );
-              const todayPnl = snap
-                ? (latestImport?.snapshots || [])
-                    .filter((s) => s.accountName === a.accountName)
-                    .reduce((t, s) => t + Number(s.grossRealizedPnl || 0), 0)
-                : null;
-              const rawDD = snap
-                ? Number(snap.dailyNetPnl ?? snap.netPnl ?? 0)
-                : null;
-              const ddLimit = Number(a.maxDrawdownLimit || 0);
-              const buffer =
-                ddLimit > 0 && rawDD !== null
-                  ? ddLimit - Math.abs(Math.min(0, rawDD))
-                  : null;
-              const bufferPct =
-                buffer !== null && ddLimit > 0
-                  ? Math.round((buffer / ddLimit) * 100)
-                  : null;
-              const target = Number(a.targetProfit || 0);
-              const weeklyPnl = snap ? Number(snap.weeklyPnl || 0) : null;
-              const pct =
-                target > 0 && weeklyPnl !== null
-                  ? Math.min(100, Math.round((weeklyPnl / target) * 100))
-                  : null;
-              return {
-                client,
-                account: a,
-                todayPnl,
-                buffer,
-                bufferPct,
-                pct,
-                weeklyPnl,
-                target,
-              };
-            });
-        });
+        const fundedRows = buildCamFundedRows(workingClients);
         if (!fundedRows.length) return null;
         return (
           <section className="panel">
@@ -11115,7 +11185,7 @@ function CamOverview({
                   <tr>
                     <th>Account</th>
                     <th>Client</th>
-                    <th>Today P&L</th>
+                    <th>Last close P&L</th>
                     <th>Trailing</th>
                     <th>Target %</th>
                     <th>Payout</th>
@@ -11128,6 +11198,7 @@ function CamOverview({
                       ({
                         client,
                         account,
+                        readDate,
                         todayPnl,
                         buffer,
                         bufferPct,
@@ -11146,7 +11217,14 @@ function CamOverview({
                               {account.accountName}
                             </small>
                           </td>
-                          <td>{client.name}</td>
+                          <td>
+                            {client.name}
+                            {readDate && readDate !== today ? (
+                              <small className="muted">
+                                read {readDate}
+                              </small>
+                            ) : null}
+                          </td>
                           <td
                             className={
                               todayPnl === null
@@ -11333,7 +11411,7 @@ function CamOverview({
       </CollapsiblePanel>
 
       {(() => {
-        const allEntries = clients
+        const allEntries = workingClients
           .flatMap((c) =>
             (c.activityLog || []).map((e) => ({
               ...e,
