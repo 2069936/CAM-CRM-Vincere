@@ -205,11 +205,31 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * Environment variables still win when set, so another deployment can point
  * elsewhere without touching code.
  *
- * Built by run 33845829413 of the Collector Windows workflow, published as
- * release agent-v1.0.3.
+ * Agent 1.0.9, built by run 36040647790 of the Collector Windows workflow and
+ * published on release agent-v1.0.3. The package is 109,221,808 bytes with
+ * sha256 dc129ad4…c7a8, and the manifest naming it was verified against
+ * resolveInstallerRelease itself before it was committed.
+ *
+ * A NEW FILE RATHER THAN A REPLACED ONE, and that is the point of the digest.
+ * The manifest this used to name still sits beside the new one, untouched and
+ * still matching its own old hash. Overwriting it would have broken the check
+ * for every request between the upload and this deploy, and the card reports no
+ * release at all while that check fails. Pointing at a new name means the two
+ * states are each individually valid and the switch is this one commit.
+ *
+ * It also means the way back is this constant, not a scramble: set it to the
+ * previous pair and the desk installs 1.0.8 again.
+ *
+ * THE FILE IT REPLACED WAS WRONG, which is worth recording. It declared version
+ * 1.0.3 and a sha256 of 3f3444ee… for a 108,034,406 byte package, while the
+ * file beside it had been replaced four times and was 1.0.8 at 109,152,561
+ * bytes. Nothing verified that claim — the PowerShell installer downloads and
+ * expands without checking — so the CRM told every CAM it was installing 1.0.3
+ * while handing them 1.0.8, and the "agent needs updating" flag could never
+ * fire because every machine looked newer than the release.
  */
-const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/release-manifest.json';
-const DEFAULT_RELEASE_MANIFEST_SHA256 = '6ab28ff7d06fac99e9963f4fd442f88ac5e2330cad17dc5adba8b8334e607fe2';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/release-manifest-1.0.9.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = '7e87a83aaf2bbcf75c7de4fd363f96703cd5535de1671223e53e1ff8e5ec4012';
 
 export async function resolveInstallerRelease(env = process.env, {
   production = env.NODE_ENV === 'production',

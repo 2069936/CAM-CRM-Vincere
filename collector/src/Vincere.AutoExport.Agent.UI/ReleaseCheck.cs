@@ -63,8 +63,11 @@ public sealed class ReleaseCheck
      * (server/apiLib/collectorRelease.js), so replacing it takes the install
      * card down for every client until that constant is changed and deployed.
      * It is therefore frozen in practice, while the package beside it is
-     * replaced whenever a build ships. On the release serving this fleet the
-     * manifest already declares 3f3444ee... for a package that is fcb82fce...
+     * replaced whenever a build ships. On the release serving this fleet that
+     * file still declares 1.0.3 and 3f3444ee... for a package that is 1.0.9 and
+     * dc129ad4..., and it is left that way deliberately: the CRM was moved onto
+     * a differently named manifest rather than this one being overwritten, so
+     * the install card never spent a minute reporting no release.
      *
      * Verifying an install against a checksum that is known to be stale would
      * refuse every real package. Not verifying at all would download and
