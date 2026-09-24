@@ -4,7 +4,7 @@
          reads the service's version over the control pipe and this is only the
          answer before the pipe replies, but a fallback that is wrong by two
          releases is how the window came to report 1.0.0 forever. -->
-    <Version>1.0.8</Version>
+    <Version>1.0.9</Version>
     <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>WinExe</OutputType>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
@@ -15,6 +15,11 @@
 
   <ItemGroup>
     <ProjectReference Include="../Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
+    <!-- The attribution engine: which algorithm placed a trade, from the shape
+         of the trade. netstandard2.0, and deliberately free of any SQLite or
+         file dependency so it can be tested off Windows - this project is the
+         only place that touches the database and the template folder. -->
+    <ProjectReference Include="../Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
     <!-- The deep export copies NinjaTrader's database through the SQLite
          Online Backup API. Copying the file by hand while the platform holds
          it open produces a snapshot whose pages disagree with each other. -->
