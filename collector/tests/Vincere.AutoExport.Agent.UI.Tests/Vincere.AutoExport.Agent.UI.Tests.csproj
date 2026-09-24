@@ -6,6 +6,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <!-- The attribution engine AttributionExport calls. Referenced as a project
+         rather than listed file by file below: it is netstandard2.0, builds
+         everywhere, and has its own suite. -->
+    <ProjectReference Include="../../src/Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Newtonsoft.Json" />
     <PackageReference Include="xunit" />
@@ -28,6 +32,7 @@
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SecretRedactor.cs" Link="DeepExport/SecretRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportSources.cs" Link="DeepExport/DeepExportSources.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SqliteSnapshot.cs" Link="DeepExport/SqliteSnapshot.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AttributionExport.cs" Link="DeepExport/AttributionExport.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs" Link="DeepExport/DeepExportRunner.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/NinjaTraderFolder.cs" Link="DeepExport/NinjaTraderFolder.cs" />
   </ItemGroup>
