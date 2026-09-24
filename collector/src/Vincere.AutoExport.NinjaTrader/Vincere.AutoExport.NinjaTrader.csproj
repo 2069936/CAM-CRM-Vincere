@@ -13,7 +13,7 @@
          that placed them, so the version has to say so. Keep it in step with the
          agent and with the release tag; the installer ships both from the same
          collector-v tag. -->
-    <Version>1.0.8</Version>
+    <Version>1.0.9</Version>
     <TargetFramework>net48</TargetFramework>
     <NinjaTraderHome Condition="'$(NinjaTraderHome)' == '' and '$(NINJATRADER_HOME)' != ''">$(NINJATRADER_HOME)</NinjaTraderHome>
   </PropertyGroup>

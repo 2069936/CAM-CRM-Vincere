@@ -111,7 +111,10 @@ public sealed class DeepExportRunner
             }
             catch (Exception) { }
 
-            int total = DeepExportSources.All.Count + 3;
+            // database, attribution, config, manifest: four steps beside the
+            // folder sources, and the bar has to know about all of them or it
+            // reports 105% on the way past the last one.
+            int total = DeepExportSources.All.Count + 4;
             int done = 0;
             void Report(string source)
             {
@@ -148,6 +151,24 @@ public sealed class DeepExportRunner
                 warnings.Add("database not found at " + DeepExportSources.DatabaseRelativePath);
             }
             Report("database");
+
+            // 1b. WHICH ALGORITHM PLACED WHAT, worked out here rather than
+            // shipped as tables for somebody else to join. The join mostly
+            // fails anyway: NinjaTrader cascades Strategy2Order away every time
+            // a strategy is removed, so a real machine holds a few dozen links
+            // against tens of thousands of orders. This reads the template
+            // catalogue, reconstructs the trades, and writes the answer, and it
+            // accumulates every link the platform has ever shown us so the
+            // cascade cannot take back what we have already seen.
+            AttributionSummary attribution = database == null
+                ? null
+                : AttributionExport.Write(
+                    staging,
+                    ninjaTraderRoot,
+                    copyPath,
+                    agentRoot == null ? null : Path.Combine(agentRoot, "attribution-ledger.jsonl"),
+                    warnings);
+            Report("attribution");
 
             // 2. Every file source. A missing folder is a warning and nothing more.
             foreach (DeepExportSource source in DeepExportSources.All)
@@ -227,6 +248,16 @@ public sealed class DeepExportRunner
                     sha256 = File.Exists(copyPath) ? HashFile(copyPath) : null,
                     rowCounts = database.RowCounts,
                     executionsRange = new { min = database.ExecutionsMin, max = database.ExecutionsMax },
+                },
+                attribution = attribution == null ? null : new
+                {
+                    templates = attribution.Templates,
+                    trades = attribution.Trades,
+                    inferred = attribution.Inferred,
+                    versioned = attribution.Versioned,
+                    recorded = attribution.Recorded,
+                    ledgerOrders = attribution.LedgerOrders,
+                    orders = attribution.Orders,
                 },
                 files,
                 warnings,
