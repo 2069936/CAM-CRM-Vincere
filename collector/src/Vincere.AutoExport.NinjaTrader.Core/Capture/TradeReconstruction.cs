@@ -67,6 +67,14 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         /// <summary>
         /// The limit or stop price as FIRST submitted, before any trail moved
         /// it. Null when the order has no update history to read it from.
+        ///
+        /// A ZERO IS NOT A PRICE, and the caller filling this must say so. An
+        /// order row carries both a limit and a stop column and the one it does
+        /// not use holds 0 rather than null, so a reader that takes
+        /// `limit ?? stop` takes the zero and measures every stop from the
+        /// instrument's own price. On crude that produced stops 6,411 ticks
+        /// away and matched nothing at all; filtering the zeros took the same
+        /// code from 0% to 55% on the same seven months.
         /// </summary>
         public double? OriginalPrice { get; private set; }
 
