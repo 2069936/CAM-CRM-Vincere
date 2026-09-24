@@ -66,6 +66,13 @@
         "dependencies": {
           "Newtonsoft.Json": "[13.0.3, )"
         }
+      },
+      "vincere.autoexport.ninjatrader.core": {
+        "type": "Project",
+        "dependencies": {
+          "Newtonsoft.Json": "[13.0.3, )",
+          "Vincere.AutoExport.Contracts": "[1.0.0, )"
+        }
       }
     },
     "net8.0-windows7.0/win-x64": {}
