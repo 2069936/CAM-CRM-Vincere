@@ -2,6 +2,77 @@ import { describe, expect, it } from 'vitest';
 import { buildDailyReportSummary, buildClientMessageReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport } from './report';
 
 describe('buildDailyReportSummary', () => {
+  /* -----------------------------------------------------------------------
+   * AN ACCOUNT NOBODY HAS TOLD THIS REPORT ABOUT.
+   *
+   * Only reachable offline: the collector agent renders from the roster the
+   * CRM sent the last time it answered, and an account opened since then is
+   * absent from it. It is shown, it is never counted, and it is not the same
+   * fact as `unclassified`, which the desk HAS seen and which is counted.
+   * --------------------------------------------------------------------- */
+  const pendingCase = () => ({
+    client: {
+      name: 'Amanda',
+      accountRegistry: {
+        KNOWN1: { accountName: 'KNOWN1', accountType: 'Funded', status: 'Active' },
+      },
+    },
+    dailyImport: {
+      date: '2026-09-25',
+      status: 'Closed',
+      accounts: {
+        KNOWN1: { accountName: 'KNOWN1', accountType: 'Funded', status: 'Active' },
+        // The agent marks what its roster could not explain.
+        NEW2: { accountName: 'NEW2', accountType: 'Pending classification', status: 'Active' },
+      },
+      snapshots: [
+        { accountName: 'KNOWN1', accountBalance: 50000, grossRealizedPnl: 120, weeklyPnl: 120 },
+        { accountName: 'NEW2', accountBalance: 25000, grossRealizedPnl: 1550, weeklyPnl: 1550 },
+      ],
+      flags: [],
+    },
+  });
+
+  it('keeps an unknown account out of the headline', () => {
+    // THE DEFECT THIS EXISTS FOR. Measured on a real capture from 2026-09-22:
+    // treating unknown accounts as unclassified headlined +$1,565 when the
+    // real-money answer was $0.00, because the money had moved in evaluation
+    // accounts holding challenge capital the client does not own.
+    const { client, dailyImport } = pendingCase();
+    const report = buildDailyReportSummary(client, dailyImport);
+    expect(report.totals.grossRealizedPnl).toBe(120);
+  });
+
+  it('still shows it, with its own subtotal', () => {
+    // Out of the total is not the same as hidden. A client who opened an
+    // account today must still see it on today's report.
+    const { client, dailyImport } = pendingCase();
+    const report = buildDailyReportSummary(client, dailyImport);
+    expect(report.grouped.pendingClassification.map((row) => row.accountName)).toEqual(['NEW2']);
+    expect(report.pendingClassificationTotals.grossRealizedPnl).toBe(1550);
+  });
+
+  it('does not put it in unclassified, which is counted', () => {
+    // `unclassified` means the desk has seen the account and not named its
+    // pool. That account is certainly the client's money. This one might be an
+    // evaluation, and nobody here knows.
+    const { client, dailyImport } = pendingCase();
+    const report = buildDailyReportSummary(client, dailyImport);
+    expect(report.grouped.unclassified).toHaveLength(0);
+  });
+
+  it('leaves the online report exactly as it was', () => {
+    // Online every account is in the registry, so the bucket is empty and
+    // nothing about the existing report moves.
+    const { client, dailyImport } = pendingCase();
+    dailyImport.accounts.NEW2.accountType = 'Funded';
+    client.accountRegistry.NEW2 = { accountName: 'NEW2', accountType: 'Funded', status: 'Active' };
+    const report = buildDailyReportSummary(client, dailyImport);
+    expect(report.grouped.pendingClassification).toHaveLength(0);
+    expect(report.totals.grossRealizedPnl).toBe(1670);
+  });
+
+
   it('uses current account registry metadata over stale import metadata', () => {
     const client = {
       name: 'Amanda',

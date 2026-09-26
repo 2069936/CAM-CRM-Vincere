@@ -38,6 +38,21 @@ export const ACCOUNT_TYPES = {
   // picks it — see simulationAccounts.js for why the money in it is never summed
   // with the rest.
   SIMULATION: SIMULATION_ACCOUNT_TYPE,
+  /* NEVER STORED. This one exists only in memory, and only offline.
+   *
+   * When the collector agent renders a client's report on the machine with the
+   * CRM unreachable, it classifies accounts from the roster the CRM sent the
+   * last time it answered. An account opened since then is absent from that
+   * roster, and the agent marks it with this so the report can show it without
+   * counting it.
+   *
+   * Nothing writes it to trading_accounts.account_type and nothing should: the
+   * desk classifying an account is a decision a person makes in the CRM, and
+   * this value means the opposite - that nobody has told this report anything
+   * about the account yet. Online, every account is in the registry by
+   * construction, so the bucket it feeds is always empty.
+   */
+  PENDING_CLASSIFICATION: 'Pending classification',
 };
 
 // Every value that must behave like cash: no profit target, no drawdown limit,
