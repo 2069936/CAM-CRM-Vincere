@@ -146,4 +146,70 @@ public sealed class CaptureTimelineTests
         Assert.Contains("4 accounts", CaptureTimeline.Summarize(days));
         Assert.Equal("ok", days[0].Tone);
     }
+
+    /* ---------------------------------------------------------------------
+     * HasCaptured is what lets the Setup window stop re-asking. It answers
+     * "has this machine ever collected", which is the question the wizard was
+     * really asking when it demanded a test capture before showing Deep
+     * Export, the queue folder and the diagnostics.
+     * ------------------------------------------------------------------- */
+
+    [Fact]
+    public void AnUploadedDayIsProofEnough()
+    {
+        // The machine collected and the CRM took it. Nothing about closing and
+        // reopening NinjaTrader would tell anyone more than this already does.
+        Assert.True(CaptureTimeline.HasCaptured(CaptureTimeline.Parse(Timeline(
+            Day("2026-09-24", "Thu", "Uploaded", accounts: 7)))));
+    }
+
+    [Fact]
+    public void AQueuedDayIsProofToo()
+    {
+        // The capture happened; only the upload is waiting. The AddOn talked to
+        // the service, which is the whole thing the test capture verifies, and
+        // during a CRM outage this is the only state a working machine can
+        // reach.
+        Assert.True(CaptureTimeline.HasCaptured(CaptureTimeline.Parse(Timeline(
+            Day("2026-09-25", "Fri", "Queued", accounts: 4)))));
+    }
+
+    [Fact]
+    public void AMachineThatOnlyFailedHasNotCaptured()
+    {
+        // Failed and Missed are the states that mean nothing came out. A
+        // machine showing only these has not shown that the AddOn works, so
+        // the wizard is right to keep asking.
+        Assert.False(CaptureTimeline.HasCaptured(CaptureTimeline.Parse(Timeline(
+            Day("2026-09-23", "Wed", "Missed"),
+            Day("2026-09-24", "Thu", "Failed", errorCode: "addon_unavailable")))));
+    }
+
+    [Fact]
+    public void WeekendsAloneAreNotProof()
+    {
+        Assert.False(CaptureTimeline.HasCaptured(CaptureTimeline.Parse(Timeline(
+            Day("2026-09-26", "Sat", "NotScheduled"),
+            Day("2026-09-27", "Sun", "NotScheduled")))));
+    }
+
+    [Fact]
+    public void NoHistoryAtAllIsNotProof()
+    {
+        // A freshly paired machine. This is the one case where the wizard
+        // should still walk the operator through the test.
+        Assert.False(CaptureTimeline.HasCaptured(CaptureTimeline.Parse(Timeline())));
+        Assert.False(CaptureTimeline.HasCaptured(null));
+    }
+
+    [Fact]
+    public void OneGoodDayAmongBadOnesStillCounts()
+    {
+        // A machine that missed Monday and collected Tuesday is a working
+        // machine with a bad Monday, not an unproven install.
+        Assert.True(CaptureTimeline.HasCaptured(CaptureTimeline.Parse(Timeline(
+            Day("2026-09-21", "Mon", "Missed"),
+            Day("2026-09-22", "Tue", "Uploaded", accounts: 3),
+            Day("2026-09-23", "Wed", "Failed", errorCode: "capture_failed")))));
+    }
 }

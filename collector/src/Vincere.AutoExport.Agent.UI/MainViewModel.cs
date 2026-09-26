@@ -658,10 +658,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
             QueueSummary = pending == 0 ? "No uploads waiting" : $"{pending} upload{(pending == 1 ? string.Empty : "s")} waiting";
             ApplyTimeline(data);
             ApplyQuarantine(data);
-            CurrentStep = paired ? 3 : 2;
-            StatusMessage = paired
-                ? $"Connected to {ClientName}. Restart NinjaTrader, then test the connection."
-                : "Service ready. Enter the one-time code from the CRM.";
+            // A MACHINE THAT HAS COLLECTED DOES NOT HAVE TO PROVE IT AGAIN.
+            //
+            // This used to be `paired ? 3 : 2`, so every time the window was
+            // closed and reopened a working VPS landed back on "Restart and test
+            // NinjaTrader". Step 4 is the only step that carries Deep Export,
+            // the queue folder and the diagnostics, and the only way into it is
+            // TestCaptureAsync, which needs NinjaTrader running and connected.
+            // The cost of that was a CAM opening NinjaTrader purely so the tool
+            // would let them do something that never touches it.
+            bool collected = CaptureTimeline.HasCaptured(Days);
+            CurrentStep = paired ? (collected ? 4 : 3) : 2;
+            IsComplete = collected;
+            StatusMessage = !paired
+                ? "Service ready. Enter the one-time code from the CRM."
+                : collected
+                    ? $"Collecting for {ClientName}. {CollectionSummary}."
+                    : $"Connected to {ClientName}. Restart NinjaTrader, then test the connection.";
         }, "The Windows service is unavailable. Open setup as administrator or repair the installation.");
     }
 
