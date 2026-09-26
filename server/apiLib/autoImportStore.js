@@ -190,6 +190,10 @@ function registryFromRows(rows = []) {
     connection: row.connection,
     accountType: row.account_type,
     status: row.status,
+    // loadRegistry selects '*' and this dropped it, while supabaseStore.js and
+    // server/export/absentAccounts.js both carry it. A no-op on today's book
+    // (simulation_mode is null on all 221 rows) and wrong the day it is not.
+    simulationMode: row.simulation_mode,
     payoutState: row.payout_state,
     startBalance: row.start_balance,
     targetProfit: row.target_profit,
@@ -206,6 +210,59 @@ function registryFromRows(rows = []) {
     dateLastPayout: row.date_last_payout,
     payoutCount: row.payout_count,
   }]));
+}
+
+/* WHAT AN AGENT NEEDS TO CLASSIFY ITS OWN ACCOUNTS WITH THE CRM UNREACHABLE.
+ *
+ * The collector renders a client's daily report on the machine when the CRM
+ * cannot be reached, and the one thing the NinjaTrader capture cannot tell it
+ * is which pool an account belongs to. Without that every account lands in the
+ * counted bucket, and an evaluation's profit - challenge capital the client
+ * does not own - walks into the headline. Measured on a real capture from
+ * 2026-09-22: +$1,565 against a true $0.00.
+ *
+ * EIGHT FIELDS, NOT THE WHOLE REGISTRY. `registryFromRows` carries twenty-one,
+ * including notes and payout history that have no business sitting on a client
+ * machine. These eight are what report.js actually reads. Measured at about
+ * 2 kB for twelve accounts, against the agent's 64 KiB response cap.
+ *
+ * Empty values are omitted rather than sent as null: the payload rides on every
+ * upload response, and a null tells the agent nothing a missing key does not.
+ */
+export function offlineRegistryProjection(rows = []) {
+  const out = {};
+  for (const row of rows) {
+    const name = row?.account_name;
+    if (!name) continue;
+    const account = {};
+    const put = (key, value) => {
+      if (value !== null && value !== undefined && value !== '') account[key] = value;
+    };
+    put('accountType', row.account_type);
+    put('status', row.status);
+    put('alias', row.alias);
+    put('dateFailed', row.date_failed);
+    put('simulationMode', row.simulation_mode);
+    put('startBalance', row.start_balance);
+    put('targetProfit', row.target_profit);
+    put('maxDrawdownLimit', row.max_drawdown_limit);
+    out[name] = account;
+  }
+  return out;
+}
+
+/* THE VERSION IS A HASH OF WHAT IS SENT, NEVER max(updated_at).
+ *
+ * persist_auto_daily_import_v3 rewrites updated_at on every account on every
+ * ingest (step_28_auto_collection.sql:1736-1756), so a timestamp version says
+ * "this changed" every single day and therefore says nothing. Hashing the
+ * projection means the version moves when the answer moves and not otherwise.
+ */
+export function offlineRegistryVersion(projection) {
+  const canonical = JSON.stringify(
+    Object.keys(projection || {}).sort().map((name) => [name, projection[name]]),
+  );
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
 /* THE MIGRATION AND THE DEPLOY DO NOT HAVE TO HAPPEN IN THAT ORDER.
@@ -315,6 +372,26 @@ export function createAutoImportStore(admin) {
       const { data, error } = await admin.from('trading_accounts').select('*').eq('client_id', clientUuid);
       if (error) throw error;
       return registryFromRows(data || []);
+    },
+
+    /* The same single read, shaped twice.
+     *
+     * The ingest already loads this registry to reconcile the capture, so the
+     * copy the agent caches for offline reporting costs no extra query. Kept as
+     * its own method rather than changing loadRegistry's return, because the
+     * reconcile path wants the full twenty-one fields and the machine must not
+     * receive them.
+     */
+    async loadRegistryForIngest(clientUuid) {
+      const { data, error } = await admin.from('trading_accounts').select('*').eq('client_id', clientUuid);
+      if (error) throw error;
+      const rows = data || [];
+      const offline = offlineRegistryProjection(rows);
+      return {
+        registry: registryFromRows(rows),
+        offlineRegistry: offline,
+        offlineRegistryVersion: offlineRegistryVersion(offline),
+      };
     },
 
     /* WHAT THE DAY ALREADY SAYS, READ BEFORE DECIDING TO SAY IT AGAIN.

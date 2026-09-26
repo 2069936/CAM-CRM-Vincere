@@ -349,7 +349,24 @@ export function createHandler({
       }
 
       stage = timer.enter('registry');
-      const registry = await store.loadRegistry(device.clientId);
+      /* THE AGENT GETS A COPY OF THIS, AND IT COSTS NOTHING EXTRA.
+       *
+       * The reconcile below needs the registry, so it is already being read.
+       * The collector needs a much smaller projection of the same rows to
+       * classify accounts when it renders a report with the CRM unreachable -
+       * without it an evaluation's profit walks into the client's headline.
+       *
+       * It rides here rather than on the heartbeat deliberately. The heartbeat
+       * fires every 60 seconds from about 30 machines, so 2 kB there is roughly
+       * 86 MB a day of identical bytes plus a database read per machine per
+       * minute. An upload happens once a day and is already paying for this
+       * query.
+       */
+      const {
+        registry,
+        offlineRegistry,
+        offlineRegistryVersion: registryVersion,
+      } = await store.loadRegistryForIngest(device.clientId);
       stage = timer.enter('reconcile');
       // NO `priorImports` HERE, AND THAT IS A KNOWN GAP, NOT A DECISION THAT
       // NOTHING WAS OPEN. reconcileDailyImport uses the client's previous closes
@@ -408,6 +425,7 @@ export function createHandler({
         return sendJson(res, 201, {
           ok: true, duplicate: false, batchId: batch.id,
           dailyImportId: dailyImport.id, status: 'replaced',
+          registry: offlineRegistry, registryVersion,
         });
       }
 
@@ -425,6 +443,7 @@ export function createHandler({
       return sendJson(res, 201, {
         ok: true, duplicate: false, batchId: batch.id,
         dailyImportId: dailyImport.id, status,
+        registry: offlineRegistry, registryVersion,
       });
     } catch (error) {
       if (isDeviceCredentialError(error)) return sendDeviceCredentialError(res);
