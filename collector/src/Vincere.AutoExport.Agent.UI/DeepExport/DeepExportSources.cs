@@ -56,6 +56,15 @@ public static class DeepExportSources
         new DeepExportSource("trace", DeepExportRoot.NinjaTrader, "trace", "trace.*.txt", "trace", false),
         new DeepExportSource("workspaces", DeepExportRoot.NinjaTrader, "workspaces", "*.xml", "workspaces", false),
         new DeepExportSource("strategy templates", DeepExportRoot.NinjaTrader, "templates/Strategy", "*.xml", "templates/Strategy", true),
+        // PENDING COMES FIRST BECAUSE IT HOLDS THE DAY THAT IS MISSING.
+        //
+        // A capture is written to pending/ and only moves to sent/ once the CRM
+        // has accepted it. A failed upload returns it to pending/. So on the one
+        // day this export exists for - the day the CRM could not be reached -
+        // every other queue folder holds history and pending/ holds today.
+        // Measured on 2026-09-25: an export taken during the outage carried
+        // twelve historical days and omitted the day nobody had a report for.
+        new DeepExportSource("pending snapshots", DeepExportRoot.Agent, "queue/pending", "*.*", "autoexport/pending", false),
         new DeepExportSource("sent snapshots", DeepExportRoot.Agent, "queue/sent", "*.*", "autoexport/sent", false),
         new DeepExportSource("uploading snapshots", DeepExportRoot.Agent, "queue/uploading", "*.*", "autoexport/uploading", false),
         new DeepExportSource("quarantined snapshots", DeepExportRoot.Agent, "queue/quarantine", "*.*", "autoexport/quarantine", false),
