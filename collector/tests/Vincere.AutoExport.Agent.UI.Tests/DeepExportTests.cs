@@ -249,7 +249,12 @@ public sealed class DeepExportTests : IDisposable
         DeepExportRunner runner = new(
             nt, agent, outDir, null,
             new DeepExportEnvironment("m", "h", "1.0.5", "1.0.0", "8.1.6.2", false, "America/New_York"),
-            () => new DateTimeOffset(2026, 9, 16, 14, 0, tick++, TimeSpan.FromHours(-4)));
+            // ADDED AS A TIMESPAN, NOT AS THE SECONDS FIELD. This used to read
+            // `14, 0, tick++`, so the clock threw the moment the run made sixty
+            // progress reports across five runs - which adding one source to
+            // DeepExportSources did. The package names still differ per run,
+            // which is all this needs, and now a new source cannot break it.
+            () => new DateTimeOffset(2026, 9, 16, 14, 0, 0, TimeSpan.FromHours(-4)).AddSeconds(tick++));
         for (int i = 0; i < 5; i++) await runner.RunAsync();
         Assert.Equal(DeepExportRunner.KeepMostRecent, Directory.EnumerateFiles(outDir, "deep_*.zip").Count());
         Assert.Equal(DeepExportRunner.KeepMostRecent, Directory.EnumerateFiles(outDir, "deep_*.zip.sha256").Count());

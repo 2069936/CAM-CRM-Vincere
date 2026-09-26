@@ -284,6 +284,27 @@ export function buildDailyReportSummary(client, dailyImport) {
     // corner of `ignored`: an account the desk has not classified is still the
     // client's money, and `ignored` is not counted anywhere.
     unclassified: [],
+    /* AN ACCOUNT THIS REPORT HAS NEVER BEEN TOLD ABOUT.
+     *
+     * Different from `unclassified`, and the difference is the whole reason
+     * this bucket exists. `unclassified` means the desk has seen the account
+     * and not named its pool yet, so it is certainly the client's money and is
+     * counted. THIS means nobody has told this report the account exists at
+     * all, which only happens offline: the agent renders from a roster the CRM
+     * sent the last time it was reachable, and an account opened since is
+     * simply absent from it.
+     *
+     * It cannot be counted, because the one thing an unknown account might be
+     * is an evaluation, and an evaluation's profit is not the client's money.
+     * Measured on a real capture from 2026-09-22: folding the unknown accounts
+     * in headlined +$1,565 against a true $0.00, all of it challenge capital.
+     * Even five of six accounts correctly typed still headlined +$1,548.28.
+     *
+     * So it gets a row, a section and its own subtotal, and stays out of the
+     * total - exactly like the evaluations beside it. The report is still made,
+     * and it is made correctly, which is better than refusing to make one.
+     */
+    pendingClassification: [],
     ignored: [],
     /* A BREACHED ACCOUNT IS NOT THIS CLIENT'S DAY.
      *
@@ -342,6 +363,7 @@ export function buildDailyReportSummary(client, dailyImport) {
     else if (meta.accountType === 'Funded') grouped.funded.push(row);
     else if (meta.accountType === 'Inactive / Ignore') grouped.ignored.push(row);
     else if (meta.accountType?.startsWith('Evaluation')) grouped.evaluations.push(row);
+    else if (meta.accountType === ACCOUNT_TYPES.PENDING_CLASSIFICATION) grouped.pendingClassification.push(row);
     else grouped.unclassified.push(row);
   }
 
@@ -366,7 +388,7 @@ export function buildDailyReportSummary(client, dailyImport) {
   // `ignored` keeps only 'Inactive / Ignore' — an explicit human decision that
   // this account is not to be counted, which is a different fact from "not yet
   // looked at".
-  const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash, ...grouped.unclassified];
+  const allVisible = [...grouped.evaluations, ...grouped.funded, ...grouped.cash, ...grouped.unclassified, ...grouped.pendingClassification];
   /* EVALUATIONS ARE COUNTED, AND NOT TOWARDS THE DAILY PnL.
    *
    * An evaluation is a challenge account. Its profit and loss is not the
@@ -396,6 +418,10 @@ export function buildDailyReportSummary(client, dailyImport) {
   // two can never be summed by accident.
   const { totals } = summarizeAccountRows(countedTowardsDailyPnl);
   const evaluationTotals = summarizeAccountRows(grouped.evaluations).totals;
+  // Beside the headline, never inside it. Same treatment as the evaluations
+  // above and for the same reason: a reader must be able to see what these
+  // accounts did without it moving the client's daily number.
+  const pendingClassificationTotals = summarizeAccountRows(grouped.pendingClassification).totals;
   // The denominator is every LIVE CLOSE, not every close the report happened to
   // group into a tile. `allVisible` drops an Unassigned or Inactive / Ignore
   // account, so a client with two unclassified real accounts and one Sim101 was
@@ -431,6 +457,7 @@ export function buildDailyReportSummary(client, dailyImport) {
     // Shown beside the headline, never inside it. A reader has to be able to
     // see what the evaluations did without it moving the client's daily number.
     evaluationTotals,
+    pendingClassificationTotals,
     // Its own block, its own totals, never folded into `totals` or `counts`.
     // Null when the client has no simulation and nothing undetermined, so a
     // renderer can tell "no sim engagement" apart from "a sim engagement that

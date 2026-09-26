@@ -28,7 +28,18 @@ describe('MONEY_ACCOUNT_TYPES stays in step with ACCOUNT_TYPES', () => {
   // in every total.
   it('covers every account type exactly once', () => {
     const all = Object.values(ACCOUNT_TYPES);
-    const notMoney = [ACCOUNT_TYPES.UNASSIGNED, ACCOUNT_TYPES.IGNORE, ACCOUNT_TYPES.SIMULATION];
+    // PENDING_CLASSIFICATION sits with UNASSIGNED, not with the money types.
+    // Membership of MONEY_ACCOUNT_TYPES asserts isSimulated === false, which is
+    // a claim that the account is live. This value means nobody has told the
+    // offline report anything about the account, so it must fall through to the
+    // name heuristic - the one that recognises Sim101 - instead of declaring
+    // live on no evidence.
+    const notMoney = [
+      ACCOUNT_TYPES.UNASSIGNED,
+      ACCOUNT_TYPES.IGNORE,
+      ACCOUNT_TYPES.SIMULATION,
+      ACCOUNT_TYPES.PENDING_CLASSIFICATION,
+    ];
     expect([...MONEY_ACCOUNT_TYPES].sort())
       .toEqual(all.filter((type) => !notMoney.includes(type)).sort());
     expect(SIMULATION_ACCOUNT_TYPE).toBe(ACCOUNT_TYPES.SIMULATION);

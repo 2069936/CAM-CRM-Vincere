@@ -78,6 +78,29 @@ public static class CaptureTimeline
     }
 
     /// <summary>
+    /// Whether this machine has ever produced a capture.
+    ///
+    /// THIS IS THE QUESTION THE SETUP WIZARD SHOULD ASK, AND DID NOT. Reaching
+    /// the finished step - the one holding Deep Export, the queue folder and the
+    /// diagnostics - required running a test capture, and a test capture
+    /// requires NinjaTrader open and connected. But the window only ever opens
+    /// on step 3 for a paired machine, so a VPS that has been collecting
+    /// perfectly for weeks demanded the operator close NinjaTrader, open it,
+    /// sign in and prove it again before letting them near a button that reads
+    /// files off the disk.
+    ///
+    /// A CAM who wanted a Deep Export after the session therefore had to start
+    /// NinjaTrader in order to be allowed to stop it. An Uploaded or Queued day
+    /// is that proof already, recorded by the service, and it is sitting on the
+    /// same screen that asks for it.
+    /// </summary>
+    public static bool HasCaptured(IReadOnlyList<CaptureDayView> days)
+    {
+        if (days == null) return false;
+        return days.Any(day => day.Status is Uploaded or Queued);
+    }
+
+    /// <summary>
     /// Null unless something needs attention. Counting only scheduled days that
     /// closed empty keeps weekends out of the alert.
     /// </summary>

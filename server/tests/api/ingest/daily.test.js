@@ -28,7 +28,7 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay } = {}) {
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offlineRegistry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay } = {}) {
   const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [], currentDay: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
@@ -36,6 +36,10 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, authe
     async ensureRaw(...args) { calls.order.push('storage'); calls.storeRaw.push(args); if (storeRaw) return storeRaw(...args); return { existed: false }; },
     async releaseLease(value) { calls.release.push(value); if (release) return release(value); },
     async loadRegistry() { calls.order.push('registry'); return registry || {}; },
+    async loadRegistryForIngest() {
+      calls.order.push('registry');
+      return { registry: registry || {}, offlineRegistry: offlineRegistry || {}, offlineRegistryVersion: 'v-test' };
+    },
     ...(currentDay === undefined ? {} : {
       async currentDailyImport(clientUuid, tradingDate) {
         calls.order.push('throttle');
@@ -546,5 +550,26 @@ describe('daily snapshot ingest', () => {
     const res = await ingest(handler, value, { body: incoming });
     expect(res).toMatchObject({ statusCode: 413, body: { error: 'compressed_payload_too_large' } });
     expect(calls.claim).toHaveLength(0);
+  });
+});
+
+describe('the roster the agent caches for offline reporting', () => {
+  it('rides the upload response, with a version', async () => {
+    // WHY HERE AND NOT ON THE HEARTBEAT. The heartbeat fires every 60 seconds
+    // from about 30 machines, so 2 kB there is roughly 86 MB a day of identical
+    // bytes plus a database read per machine per minute. An upload happens once
+    // a day and has already paid for this query, because reconcile needs the
+    // same rows.
+    //
+    // Without it the report the collector renders offline cannot tell an
+    // evaluation from funded money, and an evaluation's profit is not the
+    // client's. Measured on a real capture from 2026-09-22: a headline of
+    // +$1,565 against a true $0.00.
+    const offlineRegistry = { ACC1: { accountType: 'Funded', status: 'Active' } };
+    const { handler } = setup({ useRealDomain: true, offlineRegistry });
+    const res = await ingest(handler, contractFixture);
+    expect(res.statusCode).toBe(201);
+    expect(res.body.registry).toEqual(offlineRegistry);
+    expect(res.body.registryVersion).toBe('v-test');
   });
 });
