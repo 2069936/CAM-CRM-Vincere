@@ -175,6 +175,20 @@ export const PROVENANCE =
  * classify an account, and a message that quotes the total without saying so
  * is worse than no message.
  */
+
+/* THE SAME SHEET CAN COME FROM TWO PLACES, AND IT MUST SAY WHICH.
+ *
+ * This renderer was written for a machine with no CRM, so its provenance line
+ * says so. The same function now also builds the reports the CRM emails at the
+ * close, where every word of that sentence is false: there is a database, it
+ * answered, and the classification is not a cached roster. A document that
+ * misstates where its numbers came from is worse than one that says nothing,
+ * and the line exists precisely so a reader can tell the two apart.
+ */
+export const PROVENANCE_FROM_CRM =
+  'Generated from the desk record at the close. '
+  + 'Account classification is the registry as it stood when this was built.';
+
 export function summaryText(built) {
   const { client, dailyImport, warnings = [] } = built || {};
   if (!client || !dailyImport) return '';
@@ -213,7 +227,7 @@ const COPY_SCRIPT = `
 `;
 
 export function renderOfflineReport(built) {
-  const { report, warnings = [], metadata } = built || {};
+  const { report, warnings = [], metadata, provenance = PROVENANCE } = built || {};
   if (!report) throw new Error('There is no report to render.');
 
   const g = report.grouped || {};
@@ -259,7 +273,7 @@ export function renderOfflineReport(built) {
     'These accounts are not in the roster this machine holds, so they could not be classified and are not in the total above.')}
 
   <footer>
-    ${esc(PROVENANCE)}
+    ${esc(provenance)}
     ${metadata?.capturedAt ? `<br />Capture taken ${esc(metadata.capturedAt)}.` : ''}
   </footer>
 </div>
