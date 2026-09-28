@@ -230,6 +230,7 @@ public sealed class UploadLoop : ICollectorLoop
     private readonly ICaptureHistoryStore history;
     private readonly IServiceReporter reporter;
     private readonly ICollectorClock clock;
+    private readonly IRosterStore roster;
     private string lastReportedCode;
 
     public UploadLoop(
@@ -239,11 +240,15 @@ public sealed class UploadLoop : ICollectorLoop
         CollectorState state,
         ICaptureHistoryStore history,
         IServiceReporter reporter = null,
-        ICollectorClock clock = null)
+        ICollectorClock clock = null,
+        IRosterStore roster = null)
     {
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
+        // Optional: a machine that never records one still uploads, it just
+        // cannot classify its own accounts if the CRM later goes away.
+        this.roster = roster;
         this.state = state ?? throw new ArgumentNullException(nameof(state));
         this.history = history ?? throw new ArgumentNullException(nameof(history));
         this.reporter = reporter;
@@ -313,6 +318,23 @@ public sealed class UploadLoop : ICollectorLoop
                 acknowledgement.AcknowledgedAt,
                 cancellationToken).ConfigureAwait(false);
             state.RecordUploadSuccess(acknowledgement.AcknowledgedAt);
+            /* KEEP THE CLASSIFICATION THE CRM JUST SENT.
+             *
+             * This is the only moment the machine is told what its accounts
+             * are. On 2026-09-25 the database stopped answering for three days
+             * while captures piled up on disk, and the reports nobody could
+             * print were unprintable for exactly this one missing fact.
+             *
+             * After the queue is completed and the success recorded, so a
+             * roster that cannot be written never costs an upload. */
+            if (roster != null && !string.IsNullOrWhiteSpace(acknowledgement.RegistryJson))
+            {
+                await roster.SaveAsync(
+                    acknowledgement.RegistryJson,
+                    acknowledgement.RegistryVersion,
+                    acknowledgement.AcknowledgedAt,
+                    cancellationToken).ConfigureAwait(false);
+            }
             ReportChange(null, null);
             await RecordHistoryAsync(
                 () => history.RecordUploadedAsync(

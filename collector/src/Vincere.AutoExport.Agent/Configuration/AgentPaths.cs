@@ -12,7 +12,9 @@ public sealed record AgentPaths(
     string SentQueue,
     string QuarantineQueue,
     string Logs,
-    string History)
+    string History,
+    /// <summary>The last account classification the CRM was able to send. See RosterStore.</summary>
+    string Roster)
 {
     public static AgentPaths FromEnvironment()
     {
@@ -34,6 +36,7 @@ public sealed record AgentPaths(
             Path.Combine(queue, "sent"),
             Path.Combine(queue, "quarantine"),
             Path.Combine(root, "logs"),
-            Path.Combine(root, "history.json"));
+            Path.Combine(root, "history.json"),
+            Path.Combine(root, "roster.json"));
     }
 }
