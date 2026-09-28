@@ -293,17 +293,37 @@ describe('the page it prints', () => {
     expect(html).toMatch(/\.no-print \{ display: none !important; \}/);
   });
 
-  it('hands over the same three numbers it displays, and the warnings with them', () => {
+  it("hands over the desk's own message, not a second one invented here", () => {
+    /* A client reading their channel must not be able to tell which day came
+     * from the database and which from a VPS with no network, so this is
+     * buildClientMessageReport: the same function behind the CRM's "Copy
+     * Update" button and behind content.message on every stored close. */
     const summary = summaryText(built());
+    expect(summary).toContain('Daily Update');
     expect(summary).toContain('Corey Krupp');
-    expect(summary).toMatch(/^Day: /m);
-    expect(summary).toMatch(/^Week: /m);
-    // FUNDED1 is in the roster and counted; MYSTERY is not, so it sits in its
-    // own section, out of the total, and the label says which number this is.
-    expect(summary).toMatch(/^Accounts in the total: 1$/m);
-    // MYSTERY is not in the roster, so the sheet warns and so must the text
-    // that travels in the message.
-    expect(summary).toMatch(/^Note: /m);
+    expect(summary).toMatch(/\*Daily P&L:\*/);
+    expect(summary).toMatch(/\*Weekly P&L:\*/);
+    expect(summary).toContain('_Any questions? Reply to this message._');
+  });
+
+  it('carries the offline warnings into the message', () => {
+    // They are the reason a number might be wrong and they exist on this side
+    // only. MYSTERY is not in this machine's roster.
+    const summary = summaryText(built());
+    expect(summary).toMatch(/MYSTERY/);
+    expect(summary).toMatch(/not in the total/i);
+  });
+
+  it('says the same number the printed sheet says', () => {
+    // One arithmetic. The message is pasted into the channel the PDF is
+    // attached to; the two disagreeing is the whole defect this guards.
+    const report = built();
+    const summary = summaryText(report);
+    const total = report.report.totals.grossRealizedPnl;
+    const money = new Intl.NumberFormat('en-US', {
+      style: 'currency', currency: 'USD', maximumFractionDigits: 0,
+    }).format(total);
+    expect(summary).toContain(`*Daily P&L:* ${total >= 0 ? '+' : ''}${money}`);
   });
 
   it('escapes what it prints', () => {

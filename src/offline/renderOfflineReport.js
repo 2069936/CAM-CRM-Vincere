@@ -23,6 +23,8 @@
  * carries `no-print` and never reaches the paper.
  * ------------------------------------------------------------------------- */
 
+import { buildClientMessageReport } from '../domain/report.js';
+
 const MONEY = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
 function money(value) {
@@ -159,45 +161,26 @@ export const PROVENANCE =
   'Generated on the trading machine from its own captured close, without the CRM. '
   + 'Account classification comes from the last roster the CRM was able to send to this machine.';
 
-/* THE THREE NUMBERS, AS TEXT, FOR THE MESSAGE THAT CARRIES THE PDF.
+/* THE DESK'S OWN MESSAGE, NOT A SECOND ONE INVENTED HERE.
  *
- * The close is not finished when the file exists. It is finished when the
- * client has been told, and on this desk that is a Discord message with the
- * report attached. Retyping the headline out of a printed page is where a
- * digit changes, so the page hands over the same three numbers it displays,
- * already written out.
+ * The close ends in a Discord message with the report attached, and the CRM
+ * already writes that message: buildClientMessageReport in src/domain/report.js
+ * is what the "Copy Update" button hands over, and what is stored with every
+ * daily close as content.message. A client reading their channel must not be
+ * able to tell which day came from the database and which from a VPS with no
+ * network, so this calls that function rather than formatting its own.
  *
- * DELIBERATELY ONLY WHAT IS ON THE SHEET. Anything computed here and not shown
- * above would be a second, unreviewed report travelling in the message body,
- * and the first time the two disagree the client is reading both.
- *
- * Warnings come along because they are the reason a number might be wrong. A
- * machine with no roster cannot total the day, and a message that quotes the
- * total without saying so is worse than no message.
+ * The warnings are appended because they are the reason a number might be
+ * wrong, and they exist only on this side. A machine with no roster cannot
+ * classify an account, and a message that quotes the total without saying so
+ * is worse than no message.
  */
 export function summaryText(built) {
-  const { report, warnings = [] } = built || {};
-  if (!report) return '';
-  const accounts = (report.grouped?.funded?.length || 0)
-    + (report.grouped?.cash?.length || 0)
-    + (report.grouped?.unclassified?.length || 0);
-  const lines = [
-    `${report.clientName} · ${report.date} daily close`,
-    `Day: ${money(report.totals?.grossRealizedPnl)}`,
-    `Week: ${money(report.totals?.weeklyPnl)}`,
-    /* "Accounts in the total", not "Accounts". The headline tile counts the
-     * three groups that are money and counted: funded, cash and unclassified.
-     * Evaluations and accounts this machine could not classify are on the
-     * sheet and out of the total on purpose, so a bare "Accounts: 1" sent to a
-     * client with two accounts on the page reads as an error. The number is
-     * the tile's; the label says which number it is. */
-    `Accounts in the total: ${accounts}`,
-  ];
-  if (warnings.length) {
-    lines.push('');
-    warnings.forEach((warning) => lines.push(`Note: ${warning}`));
-  }
-  return lines.join('\n');
+  const { client, dailyImport, warnings = [] } = built || {};
+  if (!client || !dailyImport) return '';
+  const message = buildClientMessageReport(client, dailyImport);
+  if (!warnings.length) return message;
+  return [message, '', ...warnings.map((warning) => `_${warning}_`)].join('\n');
 }
 
 /* The copy button, written out rather than bundled.
