@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildStrategyAnalyzer, buildVisibleTabs } from './App';
+import { buildStrategyAnalyzer, buildVisibleTabs, filteredAccountsForTab } from './App';
 
 // ── buildStrategyAnalyzer ─────────────────────────────────────────────────────
 
@@ -125,6 +125,89 @@ describe('buildVisibleTabs', () => {
     expect(tabs).not.toContain('Evaluations');
     expect(tabs).not.toContain('Cash');
     expect(tabs).not.toContain('Review');
+    expect(tabs).not.toContain('Simulation');
+  });
+
+  /* 126 ACCOUNTS ON 124 CLIENTS WERE IN NO TAB AT ALL.
+   *
+   * `Simulation` became a real account type on 2026-08-13. By 2026-09-28
+   * production held 126 of them, every one Active, across 124 of the book's
+   * clients, and not one test or branch above knew the type existed. */
+  it('includes Simulation tab when any Simulation account exists', () => {
+    const client = { accountRegistry: { A1: { accountType: 'Simulation' } } };
+    expect(buildVisibleTabs(client, null)).toContain('Simulation');
+  });
+
+  it('catches a Sim101 the desk never retyped', () => {
+    // Asked of the classifier, not of the string, so this tab and the split
+    // that moves the rows agree about the same account.
+    const client = { accountRegistry: { Sim101: { accountType: 'Unassigned' } } };
+    expect(buildVisibleTabs(client, null)).toContain('Simulation');
+  });
+
+  it('does not put a simulated account on the money tabs', () => {
+    const client = { accountRegistry: { Sim101: { accountType: 'Simulation' } } };
+    const tabs = buildVisibleTabs(client, null);
+    expect(tabs).not.toContain('Funded');
+    expect(tabs).not.toContain('Cash');
+    expect(tabs).not.toContain('Evaluations');
+  });
+});
+
+describe('filteredAccountsForTab, Simulation', () => {
+  /* THE SIMULATED ROWS ARE NOT IN `snapshots`.
+   *
+   * reconcileDailyImport splits the close at the boundary: `snapshots` is
+   * live money only and everything simulated travels in `simulation`. A tab
+   * that filtered `snapshots` would always be empty, which looks exactly like
+   * a broken tab. */
+  const client = {
+    accountRegistry: {
+      F1: { accountType: 'Funded' },
+      Sim101: { accountType: 'Simulation' },
+    },
+  };
+  const dailyImport = {
+    accounts: {},
+    snapshots: [{ accountName: 'F1', grossRealizedPnl: 100 }],
+    simulation: {
+      snapshots: [{ accountName: 'Sim101', grossRealizedPnl: 4200 }],
+      undetermined: { snapshots: [] },
+    },
+  };
+
+  it('reads the rows from the other side of the split', () => {
+    const data = filteredAccountsForTab(client, dailyImport, 'Simulation');
+    expect(Object.keys(data.accounts)).toEqual(['Sim101']);
+    expect(data.snapshots).toHaveLength(1);
+    expect(data.snapshots[0].accountName).toBe('Sim101');
+    expect(data.snapshots[0].grossRealizedPnl).toBe(4200);
+  });
+
+  it('keeps the simulated dollars off the Funded tab', () => {
+    const data = filteredAccountsForTab(client, dailyImport, 'Funded');
+    expect(data.snapshots).toHaveLength(1);
+    expect(data.snapshots[0].accountName).toBe('F1');
+  });
+
+  it('shows an account whose signals disagree rather than losing it', () => {
+    // Undetermined rows are in neither the live list nor the simulated one.
+    // None exist in production today, measured, but an account that lands
+    // there is otherwise invisible in every tab.
+    const conflicted = {
+      accountRegistry: { Sim101: { accountType: 'Funded' } },
+    };
+    const close = {
+      accounts: {},
+      snapshots: [],
+      simulation: {
+        snapshots: [],
+        undetermined: { snapshots: [{ accountName: 'Sim101', grossRealizedPnl: 7 }] },
+      },
+    };
+    const data = filteredAccountsForTab(conflicted, close, 'Simulation');
+    expect(data.snapshots).toHaveLength(1);
+    expect(data.snapshots[0].grossRealizedPnl).toBe(7);
   });
 
   it('merges dailyImport accounts with registry for tab detection', () => {
