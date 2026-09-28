@@ -21,7 +21,13 @@ try {
         & $signtool sign /fd SHA256 /f $certificatePath /p $CertificatePassword /tr $TimestampUrl /td SHA256 $resolved
         if ($LASTEXITCODE -ne 0) { throw "signtool failed for $resolved" }
         $signature = Get-AuthenticodeSignature -LiteralPath $resolved
-        if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature for $resolved: $($signature.Status)" }
+        # ${resolved}, not $resolved: a colon straight after a variable name is
+        # how PowerShell writes a scope or a drive ($env:PATH), so "$resolved:"
+        # is a parse error and the whole file fails to load. This one had been
+        # sitting here since the script was written, unnoticed because nothing
+        # has run a production-signed build yet - the first attempt would have
+        # failed before a single line executed.
+        if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature for ${resolved}: $($signature.Status)" }
     }
 }
 finally {

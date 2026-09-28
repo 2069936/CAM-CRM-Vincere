@@ -7,15 +7,19 @@ command: **Auto Collection → the client → step 1**, with a copy button.
 
 `collector/scripts/install-agent.ps1`:
 
-1. Copies the self-contained agent to `C:\Program Files\Vincere\Auto Export`.
+1. Copies NinjaTrader's `db\NinjaTrader.sqlite*`, `workspaces\` and
+   `templates\Strategy\` into `C:\ProgramData\Vincere\AutoExport\backups\<date-time>`
+   before touching anything, keeping the last three. This runs first, so a
+   failed backup stops the install with the machine untouched.
+2. Copies the self-contained agent to `C:\Program Files\Vincere\Auto Export`.
    The build is `win-x64` self-contained, so the machine needs no .NET runtime.
-2. Creates `C:\ProgramData\Vincere\AutoExport`, restricted to LocalSystem and
+3. Creates `C:\ProgramData\Vincere\AutoExport`, restricted to LocalSystem and
    Administrators — it holds the device pairing token.
-3. Deploys the NinjaTrader AddOn to `Documents\NinjaTrader 8\bin\Custom\AddOns`
+4. Deploys the NinjaTrader AddOn to `Documents\NinjaTrader 8\bin\Custom\AddOns`
    when the package carries one.
-4. Registers the `Vincere Auto Export` service as LocalSystem, delayed auto
+5. Registers the `Vincere Auto Export` service as LocalSystem, delayed auto
    start, restarting three times on failure.
-5. Starts the service and opens the pairing window.
+6. Starts the service and opens the pairing window.
 
 `uninstall-agent.ps1` reverses it. The data folder is kept by default so a
 re-install stays paired; `-RemoveData` forces a fresh pairing.
@@ -39,6 +43,21 @@ Updating the agent later, leaving NinjaTrader alone:
 ```powershell
 .\install-agent.ps1 -PackagePath <new package> -SkipAddOn
 ```
+
+## The backup, and getting a strategy set back
+
+On 2026-09-28 two machines came out of an update with an empty Strategies table
+and an emptied workspace, and the desk had nothing to restore from. Every
+install now copies the database, the workspaces and the strategy templates
+aside first.
+
+To put them back: close NinjaTrader, then copy the files from the newest folder
+under `C:\ProgramData\Vincere\AutoExport\backups` back over
+`Documents\NinjaTrader 8`. NinjaTrader must be closed for the database, or it
+overwrites what you restore on the way out.
+
+`-SkipBackup` skips the copy. Only for a machine whose database is too large to
+copy in the time available, and it costs you the restore.
 
 ## If Windows blocks the script
 
