@@ -27,6 +27,11 @@
     Install the service only and leave NinjaTrader untouched. Useful when
     re-running the script to update the agent.
 
+.PARAMETER SkipBackup
+    Don't copy NinjaTrader's database and workspaces aside before installing.
+    Only for a machine where the database is too large to copy; you lose the
+    ability to put the strategies back if the install loses them.
+
 .PARAMETER NoPairing
     Don't open the setup window at the end. Pair later from the Start menu
     shortcut or by running Setup\Vincere.AutoExport.Agent.UI.exe.
@@ -52,6 +57,8 @@ param(
     [string]$NinjaTraderHome = "${env:ProgramFiles}\NinjaTrader 8",
 
     [switch]$SkipAddOn,
+
+    [switch]$SkipBackup,
 
     [switch]$NoPairing
 )
@@ -113,6 +120,98 @@ $agentSource = Join-Path $PackagePath 'Agent'
 $agentExe = Join-Path $agentSource 'Vincere.AutoExport.Agent.exe'
 if (-not (Test-Path -LiteralPath $agentExe)) {
     throw "The package does not contain Agent\Vincere.AutoExport.Agent.exe (looked in $PackagePath)."
+}
+
+# --- back up what NinjaTrader cannot rebuild -------------------------------
+
+# TWO CLIENTS CAME BACK FROM AN UPDATE WITH NO STRATEGIES.
+#
+# On 2026-09-28, two machines updated from addon 1.0.9 to 1.1.0 and came up with
+# an empty Strategies table and an emptied VincereChart workspace. Nothing in the
+# NinjaTrader logs, nothing in this script that writes to either place, and no
+# explanation yet. What is certain is that the desk had nothing to restore from,
+# and that a client's strategy set is not something a CAM can retype.
+#
+# So this copies the two things NinjaTrader cannot rebuild before the install
+# touches anything: the database that holds the strategies, accounts and orders,
+# and the workspaces that hold the chart layouts. It runs before the service is
+# stopped, so if the copy fails the machine is still exactly as it was and the
+# person can stop and think, rather than finding out halfway through.
+#
+# Into ProgramData, not into the NinjaTrader folder: NinjaTrader reads what is
+# under workspaces\, and a backup copy sitting next to the real ones is how you
+# get a client opening last month's layout by accident. Deep Export does not
+# sweep this folder either, so it never leaves the machine.
+if (-not $SkipBackup) {
+    if (Test-Path -LiteralPath $NinjaTraderDocumentsPath) {
+        Write-Step 'Backing up NinjaTrader database and workspaces'
+
+        # A running NinjaTrader is holding the database open, so the copy can be
+        # torn. Said out loud rather than refused: -SkipAddOn exists precisely so
+        # the agent can be updated without closing NinjaTrader, and a torn copy
+        # is still worth more than the nothing the desk had on 2026-09-28. The
+        # -wal and -shm files come along for the same reason, which is what the
+        # wildcard is for.
+        if (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue) {
+            Write-Warning 'NinjaTrader is open, so the database copy may be mid-write. Close it for a clean backup.'
+        }
+
+        $backupRoot = Join-Path $DataRoot 'backups'
+        $backupPath = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
+        try {
+            New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+
+            $dbSource = Join-Path $NinjaTraderDocumentsPath 'db'
+            $dbFiles = @()
+            if (Test-Path -LiteralPath $dbSource) {
+                $dbFiles = @(Get-ChildItem -LiteralPath $dbSource -Filter 'NinjaTrader.sqlite*' -File -ErrorAction SilentlyContinue)
+            }
+            if ($dbFiles.Count -gt 0) {
+                $dbTarget = Join-Path $backupPath 'db'
+                New-Item -ItemType Directory -Path $dbTarget -Force | Out-Null
+                foreach ($file in $dbFiles) {
+                    Copy-Item -LiteralPath $file.FullName -Destination $dbTarget -Force
+                }
+                $megabytes = [Math]::Round((($dbFiles | Measure-Object -Property Length -Sum).Sum / 1MB), 1)
+                Write-Ok "Database copied ($($dbFiles.Count) file(s), $megabytes MB)."
+            }
+            else {
+                Write-Warning "No NinjaTrader.sqlite found under $dbSource - nothing to back up there."
+            }
+
+            # The workspaces hold the chart layouts, and templates\Strategy holds
+            # the strategy parameter sets the desk builds by hand. Both are small
+            # XML, both were empty or suspect after the 2026-09-28 update.
+            foreach ($relative in @('workspaces', 'templates\Strategy')) {
+                $source = Join-Path $NinjaTraderDocumentsPath $relative
+                if (-not (Test-Path -LiteralPath $source)) { continue }
+                $target = Join-Path $backupPath $relative
+                New-Item -ItemType Directory -Path $target -Force | Out-Null
+                Copy-Item -Path (Join-Path $source '*') -Destination $target -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Ok "$relative copied."
+            }
+
+            Write-Ok "Backup at $backupPath"
+
+            # Three deep, like the deep export packages. These are copies of a
+            # database that grows, and a backup folder nobody prunes is how a
+            # trading VPS runs out of disk in the middle of a session.
+            $old = @(Get-ChildItem -LiteralPath $backupRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | Select-Object -Skip 3)
+            foreach ($folder in $old) {
+                Remove-Item -LiteralPath $folder.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            # Nothing on this machine has been touched yet, so stopping here
+            # costs nothing and continuing could cost a client's strategies.
+            throw "The NinjaTrader backup failed, so nothing was installed: $($_.Exception.Message)`n" +
+                  'Free some disk or pass -SkipBackup to install without one.'
+        }
+    }
+    else {
+        Write-Warning "No NinjaTrader folder at $NinjaTraderDocumentsPath - skipping the backup."
+    }
 }
 
 # --- stop any existing install --------------------------------------------
