@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -218,6 +219,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             Set(ref localReportPath, value);
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasLocalReport)));
+            /* AND THE BUTTON HAS TO BE TOLD. AsyncCommand does not hook
+             * CommandManager.RequerySuggested, so a command whose CanExecute
+             * reads a property stays disabled until something raises this by
+             * hand. Without it the report was written, the path appeared on
+             * screen, and Open report sat greyed out - which is how it shipped
+             * in 1.1.1. DeepExportPath does the same two lines below. */
+            (OpenLocalReportCommand as AsyncCommand)?.RaiseCanExecuteChanged();
         }
     }
 
@@ -936,10 +944,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return true;
     }
 
+    /* EVERY COMMAND ON THE WINDOW, FOUND RATHER THAN LISTED.
+     *
+     * This was a hand-written array, and a hand-written array of every button
+     * is a list that goes stale the first time somebody adds a button. It did:
+     * the two local-report commands were added and not added here, and 1.1.1
+     * shipped with Open report permanently greyed out on every machine. The
+     * type already knows what its commands are, so ask it. A command added
+     * tomorrow is covered the moment it is declared. */
+    private static readonly PropertyInfo[] CommandProperties = typeof(MainViewModel)
+        .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        .Where(property => typeof(ICommand).IsAssignableFrom(property.PropertyType))
+        .ToArray();
+
     private void RaiseCommands()
     {
-        foreach (AsyncCommand command in new[] { PairCommand, TestCaptureCommand, SaveScheduleCommand, CollectDiagnosticsCommand, OpenQueueFolderCommand, CheckForUpdateCommand, DeepExportCommand, RetryQuarantineCommand }.OfType<AsyncCommand>())
-            command.RaiseCanExecuteChanged();
+        foreach (PropertyInfo property in CommandProperties)
+            (property.GetValue(this) as AsyncCommand)?.RaiseCanExecuteChanged();
     }
 }
 

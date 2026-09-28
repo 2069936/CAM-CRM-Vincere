@@ -65,6 +65,28 @@ jobs:
           cache-dependency-path: 'collector/**/packages.lock.json'
       - name: Restore locked dependencies
         run: dotnet restore collector\Vincere.AutoExport.sln --locked-mode
+      # THE SCRIPTS SHIP UNCOMPILED AND UNREAD.
+      #
+      # install-agent.ps1 goes into the package as text and is first parsed on a
+      # client's trading VPS, by an elevated shell, halfway through replacing the
+      # agent. A typo there is found at the worst moment by the person least able
+      # to fix it. Parsing costs a second here. Parse only, never run: the script
+      # installs services.
+      - name: Parse the installer scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($script in Get-ChildItem -Path 'collector\scripts\*.ps1') {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              foreach ($parseError in $errors) {
+                Write-Host "::error file=$($script.FullName),line=$($parseError.Extent.StartLineNumber)::$($parseError.Message)"
+              }
+            }
+          }
+          if ($failed) { throw 'A script that ships to client machines does not parse.' }
       - name: Test contracts, service, and setup view model
         run: dotnet test collector\Vincere.AutoExport.sln -c Release --no-restore -p:TreatWarningsAsErrors=true
       - name: Verify formatting

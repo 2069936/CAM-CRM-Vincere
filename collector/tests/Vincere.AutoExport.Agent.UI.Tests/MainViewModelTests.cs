@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Newtonsoft.Json.Linq;
 using Vincere.AutoExport.Agent.UI;
 using Vincere.AutoExport.Agent.UI.DeepExport;
@@ -541,6 +543,60 @@ public sealed class MainViewModelTests
         Assert.Equal("Administrator approval is required.", viewModel.StatusMessage);
         Assert.Equal("retryQuarantine", Assert.Single(client.Calls).Command);
     }
+
+    /* THE REPORT WAS WRITTEN AND THE BUTTON STAYED GREY.
+     *
+     * AsyncCommand does not hook CommandManager.RequerySuggested, so nothing
+     * re-asks CanExecute on its own. 1.1.1 went to the fleet with the local
+     * report landing on the Desktop and Open report disabled beside it. These
+     * two pin the wiring rather than the symptom. */
+    [Fact]
+    public void WritingTheLocalReportEnablesTheButtonThatOpensIt()
+    {
+        MainViewModel viewModel = new(new FakeClient());
+        AsyncCommand open = (AsyncCommand)viewModel.OpenLocalReportCommand;
+        int raised = 0;
+        open.CanExecuteChanged += (_, _) => raised++;
+
+        Assert.False(open.CanExecute(null));
+
+        SetLocalReportPath(viewModel, @"C:\Users\Administrator\Desktop\Joel Onafowokan - 2026-09-28 daily report.html");
+
+        Assert.True(viewModel.HasLocalReport);
+        Assert.True(open.CanExecute(null));
+        Assert.True(raised > 0, "Open report was never told its answer changed, so WPF never re-asked and the button stayed disabled.");
+    }
+
+    [Fact]
+    public void EveryCommandOnTheWindowFollowsTheBusyFlag()
+    {
+        MainViewModel viewModel = new(new FakeClient());
+        List<string> quiet = new();
+
+        foreach (PropertyInfo property in typeof(MainViewModel)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(property => typeof(ICommand).IsAssignableFrom(property.PropertyType)))
+        {
+            if (property.GetValue(viewModel) is not AsyncCommand command) continue;
+            string name = property.Name;
+            bool heard = false;
+            command.CanExecuteChanged += (_, _) => heard = true;
+            quiet.Add(name);
+            command.CanExecuteChanged += (_, _) => quiet.Remove(name);
+            _ = heard;
+        }
+
+        typeof(MainViewModel)
+            .GetMethod("RaiseCommands", BindingFlags.NonPublic | BindingFlags.Instance)
+            .Invoke(viewModel, null);
+
+        Assert.True(quiet.Count == 0, "These commands are never re-queried when the window becomes busy or idle: " + string.Join(", ", quiet));
+    }
+
+    private static void SetLocalReportPath(MainViewModel viewModel, string path)
+        => typeof(MainViewModel)
+            .GetProperty(nameof(MainViewModel.LocalReportPath))
+            .SetValue(viewModel, path);
 
     private static UiControlResponse Response(bool ok, string code, string message, object data = null)
         => new(Guid.NewGuid(), ok, code, message, data == null ? null : JObject.FromObject(data));
