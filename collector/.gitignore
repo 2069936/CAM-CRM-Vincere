@@ -8,8 +8,19 @@ artifacts/
 *.msi
 *.msix
 *.nupkg
-queue/
-logs/
+# A PATTERN WITH NO SLASH IN FRONT MATCHES AT EVERY DEPTH.
+#
+# `queue/` was meant for the agent's runtime queue, which a local test run
+# leaves beside the binaries. It also matched
+# src/Vincere.AutoExport.Agent/Queue/, the SOURCE folder, so every file added
+# there after this line was written was skipped by `git add -A` in silence.
+# QueueCaptureReader.cs was committed only because CI failed to compile
+# without it; the three files already tracked in that folder predate the rule.
+# Anchored now, so it means the folder it was written for.
+/queue/
+/logs/
+**/bin/queue/
+**/bin/logs/
 secret.bin
 config.json
 NinjaTraderReferences/
