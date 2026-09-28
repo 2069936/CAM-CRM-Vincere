@@ -80,7 +80,14 @@ worse than one that does not run.
 
 ### 4. The schedule
 
-In the SQL editor. `pg_cron` is enabled by default on every Supabase project.
+In the SQL editor. **Neither extension is installed on this project** — checked
+on 2026-09-28, `pg_cron` and `pg_net` both absent. Enable them first, in
+**Database → Extensions**, or:
+
+```sql
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+```
 
 ```sql
 -- The key the schedule sends, kept out of the job definition, which is
@@ -163,6 +170,17 @@ run reports a clean success having sent no mail.
 A CAM with no reachable address is reported in `unreachable` rather than
 skipped: a CAM who silently stops receiving their close is worse than a job that
 fails.
+
+## What this does NOT cover
+
+**The schedule lives inside Postgres.** If the database is down, the job does
+not fire — and there is nothing to send anyway, because the reports are built
+from the desk record. The outage of 2026-09-26 was exactly this.
+
+The agent's local report is the answer to that case and it is a separate path
+on purpose: it is built on the trading machine, from that machine's own
+captured close, with no CRM. Routing it through here would make it depend on
+the thing it exists to survive.
 
 ## Changing provider
 
