@@ -32,6 +32,23 @@ public interface ICollectorCrmClient
      * until then. So the inventory goes to /api/ingest/quarantine, which the
      * CRM of today answers with 404, and 404 is reported here as Unsupported
      * rather than thrown: it is the expected answer for a while. */
+    /* Mailing this machine's own close, on a day the database cannot answer.
+     *
+     * Answers false rather than throwing for every ordinary reason it cannot
+     * go: no relay configured on the deployment, no secret on this machine
+     * yet, nothing captured. The caller is a loop whose failure costs a
+     * courtesy, and it must not learn to swallow exceptions to live with it.
+     *
+     * Defaulted so every existing test double of this interface still
+     * compiles; a double that does not override it simply never sends. */
+    Task<bool> SendReportEmailAsync(
+        string captureJson,
+        string clientName,
+        string rosterJson,
+        DateTimeOffset? rosterFetchedAt,
+        string relaySecret,
+        CancellationToken cancellationToken = default) => Task.FromResult(false);
+
     Task<QuarantineReportOutcome> ReportQuarantineAsync(
         QuarantineReport report,
         CancellationToken cancellationToken = default);

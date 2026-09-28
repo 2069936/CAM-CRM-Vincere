@@ -122,6 +122,27 @@ builder.Services.AddSingleton<ICollectorLoop>(provider => new HeartbeatLoop(
     // 8.1.6.0. Null now, and the server accepts null.
     "1.0.0",
     null,
+    provider.GetRequiredService<IServiceReporter>(),
+    // Writes the relay secret the response carries. Without this the loop
+    // below never finds one and mails nothing, silently, forever.
+    new DpapiSecretStore(paths.RelaySecret)));
+/* MAILING THIS MACHINE'S OWN CLOSE, EVERY TRADING DAY.
+ *
+ * Keyed on its own DPAPI file rather than the device token's: the two are
+ * different credentials with different lifetimes, and unpairing a machine
+ * deletes the token while leaving this one, which is correct - a machine that
+ * has been unpaired can still tell the desk what its last close was.
+ *
+ * Registered after the upload loop so that on a normal day the capture is
+ * already on its way before this reads it. Nothing depends on that order; it
+ * just avoids two things opening the same file in the same second. */
+builder.Services.AddSingleton<ICollectorLoop>(provider => new ReportEmailLoop(
+    new QueueCaptureReader(queueRoot),
+    provider.GetRequiredService<ICollectorCrmClient>(),
+    provider.GetRequiredService<IRosterStore>(),
+    new DpapiSecretStore(paths.RelaySecret),
+    provider.GetRequiredService<IAgentOptionsStore>(),
+    provider.GetRequiredService<ICollectorClock>(),
     provider.GetRequiredService<IServiceReporter>()));
 builder.Services.AddSingleton<ICollectorLoop, ControlPipeServer>();
 builder.Services.AddHostedService<Worker>();
