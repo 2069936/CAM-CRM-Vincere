@@ -1,7 +1,7 @@
-import { buildClientSegments } from './clientSegments';
-import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile';
-import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
-import { strategyRan } from './strategyRan';
+import { buildClientSegments } from './clientSegments.js';
+import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile.js';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts.js';
+import { strategyRan } from './strategyRan.js';
 
 // THE TWO MESSAGES A CLIENT ACTUALLY RECEIVES ASK "DID IT RUN", NOT "WAS IT
 // ENABLED".
@@ -42,11 +42,17 @@ export function buildWeeklyMessageReport(client) {
   const sign = (n) => (n >= 0 ? '+' : '');
   const fmt = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(n || 0));
 
-  const registry = client.accountRegistry || {};
-  const dailyTotals = recent.map((di) => {
-    const pnl = (di.snapshots || []).reduce((s, snap) => s + Number(snap.grossRealizedPnl || 0), 0);
-    return { date: di.date, pnl };
-  });
+  /* THE SAME DAY'S NUMBER AS THE DAILY MESSAGE AND THE PDF.
+   *
+   * This summed every snapshot, which means every evaluation, which is the
+   * 2026-09-08 defect a week at a time: a client whose challenge account failed
+   * on Tuesday read the loss again in Friday's "Net P&L" as though it had come
+   * off their own capital. buildDailyReportSummary is the one place that
+   * decides what counts, so each day is asked rather than re-added here. */
+  const dailyTotals = recent.map((di) => ({
+    date: di.date,
+    pnl: Number(buildDailyReportSummary(client, di)?.totals?.grossRealizedPnl || 0),
+  }));
 
   const weekPnl = dailyTotals.reduce((s, d) => s + d.pnl, 0);
   const bestDay = dailyTotals.reduce((best, d) => d.pnl > best.pnl ? d : best, dailyTotals[0]);
@@ -54,7 +60,10 @@ export function buildWeeklyMessageReport(client) {
   const positiveDays = dailyTotals.filter((d) => d.pnl > 0).length;
 
   const latestImport = recent.at(-1);
-  const fundedSnaps = (latestImport?.snapshots || []).filter((s) => ciLookup(registry, s.accountName)?.accountType === 'Funded');
+  // From the sheet's own grouping, so "Funded" means here what it means on the
+  // paper: aliases resolved, simulated closes already split off, an account the
+  // desk marked Inactive / Ignore left out.
+  const fundedSnaps = buildDailyReportSummary(client, latestImport)?.grouped?.funded || [];
 
   const weekStart = recent[0]?.date;
   const weekEnd = recent.at(-1)?.date;
@@ -74,8 +83,7 @@ export function buildWeeklyMessageReport(client) {
   if (fundedSnaps.length) {
     lines.push(`✅ *Funded Accounts (${fundedSnaps.length}):*`);
     for (const s of fundedSnaps) {
-      const meta = ciLookup(registry, s.accountName) || {};
-      const alias = meta.alias || s.accountName;
+      const alias = s.meta?.alias || s.accountName;
       const strats = (s.strategies || []).filter((st) => strategyRan(st)).map((st) => st.strategyFamily || st.strategyName).join(', ');
       const dd = Number(s.trailingMaxDrawdown || 0);
       lines.push(`  • ${alias}${strats ? ` [${strats}]` : ''}${dd > 0 ? ` - Buffer: ${fmt(dd)}` : ''}`);
@@ -83,7 +91,11 @@ export function buildWeeklyMessageReport(client) {
     lines.push('');
   }
 
-  lines.push(`_Great week! Any questions, reply here._`);
+  /* NO VERDICT ON THE WEEK. This said "Great week!" on every week it was ever
+   * sent, including the losing ones, which is an opinion the desk does not
+   * offer and a bad one on the weeks it lands hardest. The daily message has
+   * closed with the neutral sentence for as long as it has existed. */
+  lines.push('_Any questions? Reply to this message._');
   return lines.join('\n');
 }
 
@@ -114,18 +126,33 @@ export function summarizeAccountRows(rows = []) {
   };
 }
 
+/* THE MESSAGE AND THE PDF HAVE TO SAY THE SAME NUMBER.
+ *
+ * On 2026-09-08 a client's headline read -$1,319 when -$810 was the day and
+ * -$509 was a Failed evaluation. buildDailyReportSummary was fixed for that and
+ * carries a long comment about why: an evaluation is challenge capital, the
+ * profit and loss on it is not the client's money, and folding it into "Daily
+ * realized PnL" makes the headline answer a question nobody asked.
+ *
+ * THIS FUNCTION WAS NEVER BROUGHT ALONG. It summed every snapshot, so the
+ * "Copy Update" text a CAM pastes into the client's channel carried -$1,319
+ * while the PDF attached to the same message carried -$810. Measured, not
+ * inferred: the two are asserted against each other below in report.test.js.
+ * Two numbers for one day, from one desk, in one message.
+ *
+ * So the totals are no longer computed here at all. They come from
+ * buildDailyReportSummary, which is the sheet, which is the PDF. There is one
+ * arithmetic and the message cannot drift from the paper again.
+ *
+ * EVERY COUNTED ACCOUNT IS LISTED, for the same reason. The total covers
+ * funded, cash and unclassified; the text used to list funded alone, so a
+ * client holding cash accounts was given a total their own lines could not add
+ * up to. Evaluations keep their own block, shown and not counted, exactly as
+ * the sheet shows them.
+ */
 export function buildClientMessageReport(client, dailyImport) {
-  const snapshots = dailyImport?.snapshots || [];
-  const registry = {
-    ...(dailyImport?.accounts || {}),
-    ...(client?.accountRegistry || {}),
-  };
-
-  const funded = snapshots.filter((s) => ciLookup(registry, s.accountName)?.accountType === 'Funded');
-  const evals = snapshots.filter((s) => ciLookup(registry, s.accountName)?.accountType?.startsWith('Evaluation'));
-
-  const totalDaily = snapshots.reduce((sum, s) => sum + Number(s.grossRealizedPnl || 0), 0);
-  const totalWeekly = snapshots.reduce((sum, s) => sum + Number(s.weeklyPnl || 0), 0);
+  const summary = buildDailyReportSummary(client, dailyImport);
+  const grouped = summary?.grouped || {};
 
   const sign = (n) => (n >= 0 ? '+' : '');
   const fmt = (n) => formatCurrency(n);
@@ -135,33 +162,46 @@ export function buildClientMessageReport(client, dailyImport) {
   lines.push(`📊 *Daily Update - ${date}*`);
   lines.push(`👤 ${client?.name || 'Client'}`);
   lines.push('');
-  lines.push(`💰 *Daily P&L:* ${sign(totalDaily)}${fmt(totalDaily)}`);
-  lines.push(`📈 *Weekly P&L:* ${sign(totalWeekly)}${fmt(totalWeekly)}`);
+  lines.push(`💰 *Daily P&L:* ${sign(summary.totals.grossRealizedPnl)}${fmt(summary.totals.grossRealizedPnl)}`);
+  lines.push(`📈 *Weekly P&L:* ${sign(summary.totals.weeklyPnl)}${fmt(summary.totals.weeklyPnl)}`);
   lines.push('');
 
-  if (funded.length) {
-    lines.push(`✅ *Funded Accounts (${funded.length}):*`);
-    for (const s of funded) {
-      const meta = ciLookup(registry, s.accountName) || {};
-      const alias = meta.alias || s.accountName;
-      const dd = Number(s.trailingMaxDrawdown || 0);
-      const pnl = Number(s.grossRealizedPnl || 0);
-      const strats = (s.strategies || []).filter((st) => strategyRan(st)).map((st) => st.strategyFamily || st.strategyName).join(', ');
-      lines.push(`  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily${dd > 0 ? ` | Buffer: ${fmt(dd)}` : ''}${strats ? ` | ${strats}` : ''}`);
-    }
-    lines.push('');
-  }
+  // The buffer and the algorithm names belong to a funded account and to no
+  // other block: a cash account has no trailing drawdown to run out of.
+  const fundedLine = (row) => {
+    const alias = row.meta?.alias || row.accountName;
+    const drawdown = Number(row.trailingMaxDrawdown || 0);
+    const pnl = Number(row.grossRealizedPnl || 0);
+    const ran = (row.strategies || [])
+      .filter((strategy) => strategyRan(strategy))
+      .map((strategy) => strategy.strategyFamily || strategy.strategyName)
+      .join(', ');
+    return `  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily`
+      + `${drawdown > 0 ? ` | Buffer: ${fmt(drawdown)}` : ''}`
+      + `${ran ? ` | ${ran}` : ''}`;
+  };
 
-  if (evals.length) {
-    lines.push(`🔄 *Evaluations (${evals.length}):*`);
-    for (const s of evals) {
-      const meta = ciLookup(registry, s.accountName) || {};
-      const alias = meta.alias || s.accountName;
-      const pnl = Number(s.grossRealizedPnl || 0);
-      lines.push(`  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily`);
-    }
+  const plainLine = (row) => {
+    const alias = row.meta?.alias || row.accountName;
+    const pnl = Number(row.grossRealizedPnl || 0);
+    return `  • ${alias}: ${sign(pnl)}${fmt(pnl)} daily`;
+  };
+
+  const block = (heading, rows, line) => {
+    if (!rows?.length) return;
+    lines.push(heading(rows.length));
+    for (const row of rows) lines.push(line(row));
     lines.push('');
-  }
+  };
+
+  block((n) => `✅ *Funded Accounts (${n}):*`, grouped.funded, fundedLine);
+  block((n) => `💵 *Cash Accounts (${n}):*`, grouped.cash, plainLine);
+  /* "Other", not "Unclassified". These are the client's real accounts and
+   * their money is in the total above; that the desk has not yet named which
+   * pool they belong to is the desk's business, not a heading to send them. */
+  block((n) => `📁 *Other Accounts (${n}):*`, grouped.unclassified, plainLine);
+  // Shown and never counted, the same treatment the sheet gives them.
+  block((n) => `🔄 *Evaluations (${n}):*`, grouped.evaluations, plainLine);
 
   lines.push('_Any questions? Reply to this message._');
 

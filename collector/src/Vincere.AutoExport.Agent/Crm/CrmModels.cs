@@ -32,6 +32,24 @@ public interface ICollectorCrmClient
      * until then. So the inventory goes to /api/ingest/quarantine, which the
      * CRM of today answers with 404, and 404 is reported here as Unsupported
      * rather than thrown: it is the expected answer for a while. */
+    /* Mailing this machine's own close, on a day the database cannot answer.
+     *
+     * Answers false rather than throwing for every ordinary reason it cannot
+     * go: no relay configured on the deployment, no secret on this machine
+     * yet, nothing captured. The caller is a loop whose failure costs a
+     * courtesy, and it must not learn to swallow exceptions to live with it.
+     *
+     * Defaulted so every existing test double of this interface still
+     * compiles; a double that does not override it simply never sends. */
+    Task<bool> SendReportEmailAsync(
+        string captureJson,
+        string clientName,
+        string rosterJson,
+        DateTimeOffset? rosterFetchedAt,
+        string relaySecret,
+        string relayUrl = null,
+        CancellationToken cancellationToken = default) => Task.FromResult(false);
+
     Task<QuarantineReportOutcome> ReportQuarantineAsync(
         QuarantineReport report,
         CancellationToken cancellationToken = default);
@@ -120,7 +138,26 @@ public sealed record HeartbeatResult(
     bool UpdateRequired,
     bool Throttled,
     string ScheduleTime,
-    string TimeZone);
+    string TimeZone,
+    /* THE SECRET THAT LETS THIS MACHINE MAIL ITS OWN REPORT.
+     *
+     * Null on every deployment that has no relay configured, and null on every
+     * older CRM, which is why it is last and why nothing reads it without
+     * checking. It buys one thing: asking api/ingest/report-email to send this
+     * machine's report to an address that route reads from its own
+     * environment and never from the request. It is not a mail credential and
+     * it grants nothing in the database.
+     *
+     * It arrives here rather than at pairing because every machine in the
+     * field is already paired, and it has to arrive on an ordinary day: the
+     * day it is needed is the day the database cannot answer. */
+    string ReportEmailSecret = null,
+    /* Where to post it, which is not the CRM. The send happens in a Supabase
+     * Edge Function because the mail key cannot live on the CRM's deployment.
+     * Told rather than compiled in, so moving it later costs a heartbeat
+     * instead of thirty machine visits. Null on an older CRM, and the agent
+     * then posts to the CRM's own relay route as it always did. */
+    string ReportEmailUrl = null);
 
 public sealed class CrmClientException : Exception
 {

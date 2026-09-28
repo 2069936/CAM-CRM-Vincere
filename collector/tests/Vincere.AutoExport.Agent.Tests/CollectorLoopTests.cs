@@ -233,6 +233,46 @@ public sealed class CollectorLoopTests
         Assert.Contains("server_permission_denied", Assert.Single(reporter.Messages));
     }
 
+    /* THE SECRET THE HEARTBEAT HANDS OUT HAS TO ACTUALLY BE WRITTEN.
+     *
+     * The loop takes the store as an optional last argument, which is how it
+     * avoided breaking every existing construction, and which is also how it
+     * silently does nothing when a composition root forgets to pass it. That
+     * happened once already, in Program.cs, and nothing would have failed: the
+     * heartbeat succeeds, the mail loop finds no secret, and no report is ever
+     * sent, forever, with no error anywhere. */
+    [Fact]
+    public async Task HeartbeatKeepsTheRelaySecretItIsHanded()
+    {
+        FakeTokenStore token = new("token");
+        FakeTokenStore relay = new(null);
+        RecordingHeartbeatCrm crm = new("a-long-shared-secret");
+        HeartbeatLoop loop = new(
+            new FakeQueue(), crm, token, new CollectorState(),
+            "1.0.0", "1.0.0", "8.1.0", null, relay);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal("a-long-shared-secret", relay.Saved);
+    }
+
+    [Fact]
+    public async Task HeartbeatWritesNothingWhenTheDeploymentHasNoRelay()
+    {
+        // Absent rather than empty in the response, so a machine with nothing
+        // to cache leaves the last secret it had rather than blanking it.
+        FakeTokenStore relay = new("previous");
+        RecordingHeartbeatCrm crm = new(null);
+        HeartbeatLoop loop = new(
+            new FakeQueue(), crm, new FakeTokenStore("token"), new CollectorState(),
+            "1.0.0", "1.0.0", "8.1.0", null, relay);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Null(relay.Saved);
+    }
+
+
     [Fact]
     public async Task RevokedCredentialIsDeletedAndClaimIsReturnedToQueue()
     {
@@ -534,6 +574,22 @@ public sealed class CollectorLoopTests
         public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
+    private sealed class RecordingHeartbeatCrm : ICollectorCrmClient
+    {
+        private readonly string relaySecret;
+
+        public RecordingHeartbeatCrm(string relaySecret) => this.relaySecret = relaySecret;
+
+        public Task<PairingResult> PairAsync(string code, string agentVersion, string addonVersion, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<UploadAcknowledgement> UploadAsync(QueueItem item, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
+            => Task.FromResult(new HeartbeatResult(
+                "33333333-3333-4333-8333-333333333333", "online", false, false,
+                "16:45", "America/New_York", relaySecret));
+    }
+
     private sealed class ThrowingHeartbeatCrm : ICollectorCrmClient
     {
         public CrmClientException HeartbeatError { get; set; }
@@ -588,7 +644,9 @@ public sealed class CollectorLoopTests
         private string value;
         public FakeTokenStore(string value) => this.value = value;
         public bool Deleted { get; private set; }
-        public Task SaveTokenAsync(string token, CancellationToken cancellationToken = default) { value = token; return Task.CompletedTask; }
+        /// <summary>What was written, as against what it started holding.</summary>
+        public string Saved { get; private set; }
+        public Task SaveTokenAsync(string token, CancellationToken cancellationToken = default) { value = token; Saved = token; return Task.CompletedTask; }
         public Task<string> LoadTokenAsync(CancellationToken cancellationToken = default) => Task.FromResult(value);
         public Task DeleteTokenAsync(CancellationToken cancellationToken = default) { value = null; Deleted = true; return Task.CompletedTask; }
     }

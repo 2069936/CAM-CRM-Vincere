@@ -144,6 +144,71 @@ public sealed class OfflineReportWriterTests : IDisposable
     }
 
     [Fact]
+    public void TheFileDoesNotCarryTheStrategyTuningOrTheLicenceKey()
+    {
+        /* THE SHEET WAS CLEAN AND THE FILE WAS NOT.
+         *
+         * renderOfflineReport reads four named fields off a strategy and never
+         * spreads the row, and src/offline/offlineReport.test.js asserts the
+         * rendered page carries no LicenseKey and no StopLossTicks. All true,
+         * and all about the page. The file written to the Desktop is the raw
+         * capture in a script tag plus a bundle that rewrites the document when
+         * it opens, so everything the page refused to print was still in the
+         * bytes a CAM attaches to a message.
+         *
+         * These field names and this shape are what a real machine's queue
+         * carried, `extraValues` and all: 149 entries on one strategy row,
+         * LicenseKey among them with a working value. */
+        string capture = CaptureJson("2026-09-25", "2026-09-25T20:30:00Z")
+            .TrimEnd('}')
+            + ",\"strategies\":[{\"strategyId\":\"1\",\"strategyName\":\"0 - URGO-4.5\","
+            + "\"accountName\":\"A0\",\"instrument\":\"MNQ DEC26\",\"state\":\"Realtime\","
+            + "\"parameterCaptureStatus\":\"partial\","
+            + "\"parameters\":{\"URGO1\":33,\"StopLossTicks\":300},"
+            + "\"extraValues\":{\"LicenseKey\":\"V-9E2B00-SECRET\",\"URGO1\":33,"
+            + "\"StopLossTicks\":300,\"ProfitTargetTicks1\":400,\"TradeStartTime\":\"2020-01-01T09:30:00\","
+            + "\"EdgeLeverage\":false}}]}";
+
+        string payload = OfflineReportWriter.BuildPayload(capture, "{}", null, "A Client");
+
+        // The algorithm is still named: that is what the report is for.
+        Assert.Contains("URGO-4.5", payload);
+        Assert.Contains("MNQ DEC26", payload);
+        // The licence and the tuning are not, from either map.
+        Assert.DoesNotContain("V-9E2B00-SECRET", payload);
+        Assert.DoesNotContain("LicenseKey", payload);
+        Assert.DoesNotContain("StopLossTicks", payload);
+        Assert.DoesNotContain("ProfitTargetTicks1", payload);
+        Assert.DoesNotContain("TradeStartTime", payload);
+        Assert.DoesNotContain("EdgeLeverage", payload);
+        Assert.DoesNotContain("URGO1", payload);
+        /* AND BOTH PROPERTIES ARE STILL THERE, EMPTY. autoExportContract.js
+         * requires `parameters` to be an object; removing it made the page
+         * render "strategies[0].parameters must be an object" instead of the
+         * client's day. Caught by opening a real capture in a browser, not by
+         * this suite, which is why the assertion is here now. */
+        Assert.Contains("\"parameters\":{}", payload);
+        Assert.Contains("\"extraValues\":{}", payload);
+    }
+
+    [Fact]
+    public void TheClientsOwnAccountFiguresSurviveTheStrip()
+    {
+        /* accountValues is the other large map in a capture: BuyingPower,
+         * NetLiquidation, the drawdown limits. It is the client's own account
+         * and the subject of the report, so a strip aimed at the desk's tuning
+         * must not take it. Only strategy rows are touched. */
+        string capture = CaptureJson("2026-09-25", "2026-09-25T20:30:00Z")
+            .Replace("\"accountName\":\"A0\"",
+                "\"accountName\":\"A0\",\"accountValues\":{\"NetLiquidation\":52000,\"TrailingMaxDrawdown\":2500}");
+
+        string payload = OfflineReportWriter.BuildPayload(capture, "{}", null, "A Client");
+
+        Assert.Contains("NetLiquidation", payload);
+        Assert.Contains("TrailingMaxDrawdown", payload);
+    }
+
+    [Fact]
     public void SendsNoRosterRatherThanNullWhenItHasNone()
     {
         // The bundle treats an empty roster as "classify nothing and total

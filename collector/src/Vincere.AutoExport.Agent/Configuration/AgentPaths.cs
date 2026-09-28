@@ -14,7 +14,9 @@ public sealed record AgentPaths(
     string Logs,
     string History,
     /// <summary>The last account classification the CRM was able to send. See RosterStore.</summary>
-    string Roster)
+    string Roster,
+    /// <summary>The relay secret the heartbeat hands out, so this machine can mail its own close when the CRM cannot be reached. Its own file rather than a second field in config.json, because it is a credential and belongs encrypted at rest like the device token beside it.</summary>
+    string RelaySecret = null)
 {
     public static AgentPaths FromEnvironment()
     {
@@ -37,6 +39,7 @@ public sealed record AgentPaths(
             Path.Combine(queue, "quarantine"),
             Path.Combine(root, "logs"),
             Path.Combine(root, "history.json"),
-            Path.Combine(root, "roster.json"));
+            Path.Combine(root, "roster.json"),
+            Path.Combine(root, "relay-secret.bin"));
     }
 }

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Security.Authentication;
@@ -391,7 +392,9 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             heartbeat.UpdateRequired,
                             heartbeat.Throttled,
                             heartbeat.Schedule.Time,
-                            heartbeat.Schedule.TimeZone);
+                            heartbeat.Schedule.TimeZone,
+                            heartbeat.ReportEmailSecret,
+                            heartbeat.ReportEmailUrl);
                     }
 
                     TimeSpan? retryAfter = ParseRetryAfter(response.Headers.RetryAfter);
@@ -532,16 +535,82 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         httpClient.Dispose();
     }
 
+    /* MAIL THIS MACHINE'S OWN CLOSE, ON A DAY THE DATABASE CANNOT ANSWER.
+     *
+     * Deliberately NOT device-authenticated, and that is the whole reason it
+     * exists. Every other route here verifies the device token against
+     * `ingest_devices`, which is the table that is unreachable on exactly the
+     * day this is for: on 2026-09-26 Vercel was up, Postgres was not, and the
+     * desk went three days unable to send a client a report.
+     *
+     * So it carries the relay secret the heartbeat handed this machine on some
+     * earlier, ordinary day. That secret is not a mail credential: it asks the
+     * route to send to an address the route reads from its own environment,
+     * and a request cannot name a destination.
+     *
+     * THE CAPTURE GOES UP UNCHANGED AND THE SERVER REDACTS. The licence key
+     * and the strategy tuning are stripped by the route, in one place, rather
+     * than by thirty machines each trusted to have done it. The local file
+     * written to the Desktop is redacted here, by OfflineReportWriter, because
+     * that file leaves by a different door.
+     *
+     * NOT RETRIED. The queue's own upload is what must not be lost; this is a
+     * copy of something the machine still holds on disk. A failure is reported
+     * and the day moves on rather than a service spending its evening retrying
+     * a courtesy.
+     */
+    public async Task<bool> SendReportEmailAsync(
+        string captureJson,
+        string clientName,
+        string rosterJson,
+        DateTimeOffset? rosterFetchedAt,
+        string relaySecret,
+        string relayUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(captureJson)) return false;
+        // No secret means this deployment has no relay, or this machine has not
+        // heard from the CRM since one was configured. Either way there is
+        // nothing to try and nothing to report.
+        if (string.IsNullOrWhiteSpace(relaySecret)) return false;
+
+        JObject request = new()
+        {
+            ["clientName"] = clientName ?? string.Empty,
+            ["capture"] = JToken.Parse(captureJson),
+            ["roster"] = string.IsNullOrWhiteSpace(rosterJson) ? new JObject() : JToken.Parse(rosterJson),
+            ["rosterFetchedAt"] = rosterFetchedAt.HasValue
+                ? rosterFetchedAt.Value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
+                : null,
+        };
+        byte[] body = Encoding.UTF8.GetBytes(request.ToString(Formatting.None));
+
+        /* The address the CRM gave this machine, or the CRM's own relay route
+         * when it gave none. new Uri(base, absolute) answers the absolute one,
+         * so both cases go through the same send. */
+        using HttpResponseMessage response = await SendAsync(
+            HttpMethod.Post,
+            string.IsNullOrWhiteSpace(relayUrl) ? "api/ingest/report-email" : relayUrl,
+            body,
+            authenticated: false,
+            contentEncoding: null,
+            cancellationToken,
+            ("x-agent-mail-secret", relaySecret)).ConfigureAwait(false);
+        return response.IsSuccessStatusCode;
+    }
+
     private async Task<HttpResponseMessage> SendAsync(
         HttpMethod method,
         string relativePath,
         byte[] body,
         bool authenticated,
         string contentEncoding,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        (string Name, string Value)? extraHeader = null)
     {
         using HttpRequestMessage request = new(method, new Uri(baseUri, relativePath));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        if (extraHeader.HasValue) request.Headers.Add(extraHeader.Value.Name, extraHeader.Value.Value);
         if (authenticated)
         {
             string token = await tokenStore.LoadTokenAsync(cancellationToken).ConfigureAwait(false);
@@ -1071,6 +1140,12 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
 
         [JsonProperty("updateRequired")]
         public bool UpdateRequired { get; set; }
+
+        [JsonProperty("reportEmailSecret")]
+        public string ReportEmailSecret { get; set; }
+
+        [JsonProperty("reportEmailUrl")]
+        public string ReportEmailUrl { get; set; }
 
         [JsonProperty("throttled")]
         public bool Throttled { get; set; }

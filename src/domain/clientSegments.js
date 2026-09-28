@@ -5,8 +5,8 @@
 // split by type, and also list which prop firms (connections) the client runs
 // on so a CAM can see what to enable.
 
-import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType, isPropAccountType } from './reconcile';
-import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
+import { ACCOUNT_TYPES, ACCOUNT_STATUSES, isCashType, isPropAccountType } from './reconcile.js';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts.js';
 
 function accountMetaFor(client, dailyImport, accountName) {
   const lower = String(accountName || '').toLowerCase();

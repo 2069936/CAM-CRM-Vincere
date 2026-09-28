@@ -49,5 +49,20 @@ public sealed record AgentOptions
     [JsonProperty("lastQuarantineReviewDate")]
     public string LastQuarantineReviewDate { get; init; }
 
+    /* The last trading date whose report was mailed from this machine.
+     *
+     * Same shape as the quarantine review above and for the same reason: the
+     * loop runs every few minutes and the thing it does must happen once a
+     * day. A machine that restarts at 17:05 must not mail the close again. */
+    [JsonProperty("lastReportEmailDate")]
+    public string LastReportEmailDate { get; init; }
+
+    /* Where to post the daily report, as the CRM last told this machine. Not a
+     * credential, so it sits here beside the schedule rather than in the DPAPI
+     * file next to the secret. Empty until a heartbeat supplies one, and the
+     * agent then posts to the CRM's own relay route instead. */
+    [JsonProperty("reportEmailUrl")]
+    public string ReportEmailUrl { get; init; }
+
     public static AgentOptions CreateDefault() => new();
 }

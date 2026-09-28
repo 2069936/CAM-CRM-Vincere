@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDailyReportSummary, buildClientMessageReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport } from './report';
+import { buildDailyReportSummary, buildClientMessageReport, buildWeeklyMessageReport, summarizeAccountRows, buildCamDayReport, formatCurrency } from './report';
 
 describe('buildDailyReportSummary', () => {
   /* -----------------------------------------------------------------------
@@ -215,6 +215,84 @@ describe('buildClientMessageReport', () => {
     const text = buildClientMessageReport(client, dailyImport);
     expect(text).toContain('Evaluations');
     expect(text).toContain('Eval 1');
+  });
+
+  /* THE NUMBER IN THE MESSAGE AND THE NUMBER ON THE PAPER.
+   *
+   * Nothing in this file ever asserted what the totals actually were, only
+   * that the words "Daily P&L" appeared, which is how the message went on
+   * counting challenge capital as the client's money for as long as it did.
+   * These are the 2026-09-08 figures: -$810 on funded, -$509 on a failed
+   * evaluation, and a headline that read -$1,319. */
+  const incident = {
+    client: {
+      name: 'Someone',
+      accountRegistry: {
+        F1: { accountName: 'F1', accountType: 'Funded', status: 'Active' },
+        E1: { accountName: 'E1', accountType: 'Evaluation - Phase 1', status: 'Active' },
+      },
+    },
+    dailyImport: {
+      date: '2026-09-08',
+      accounts: {},
+      snapshots: [
+        { accountName: 'F1', grossRealizedPnl: -810, weeklyPnl: -810, accountBalance: 50000, strategies: [] },
+        { accountName: 'E1', grossRealizedPnl: -509, weeklyPnl: -509, accountBalance: 10000, strategies: [] },
+      ],
+      flags: [],
+    },
+  };
+
+  it('keeps the evaluation out of the headline, as the sheet does', () => {
+    const text = buildClientMessageReport(incident.client, incident.dailyImport);
+    expect(text).toContain('*Daily P&L:* -$810');
+    expect(text).not.toContain('-$1,319');
+    // The evaluation is still shown, in its own block, as on the sheet.
+    expect(text).toContain('Evaluations');
+    expect(text).toContain('E1');
+  });
+
+  it('says the same number the PDF says', () => {
+    // One arithmetic, not two. If this ever fails, a CAM is pasting one figure
+    // and attaching another in the same message.
+    const summary = buildDailyReportSummary(incident.client, incident.dailyImport);
+    const text = buildClientMessageReport(incident.client, incident.dailyImport);
+    expect(text).toContain(`*Daily P&L:* ${summary.totals.grossRealizedPnl >= 0 ? '+' : ''}${formatCurrency(summary.totals.grossRealizedPnl)}`);
+    expect(text).toContain(`*Weekly P&L:* ${summary.totals.weeklyPnl >= 0 ? '+' : ''}${formatCurrency(summary.totals.weeklyPnl)}`);
+  });
+
+  it('lists every account its total counts, not only the funded ones', () => {
+    /* The total covers funded, cash and unclassified. Listing funded alone
+     * handed a client holding cash accounts a figure their own lines could not
+     * add up to. */
+    const withCash = {
+      client: {
+        name: 'Someone',
+        accountRegistry: {
+          F1: { accountName: 'F1', accountType: 'Funded', status: 'Active' },
+          C1: { accountName: 'C1', accountType: 'Cash', status: 'Active' },
+        },
+      },
+      dailyImport: {
+        date: '2026-09-08',
+        accounts: {},
+        snapshots: [
+          { accountName: 'F1', grossRealizedPnl: 100, weeklyPnl: 100, accountBalance: 50000, strategies: [] },
+          { accountName: 'C1', grossRealizedPnl: 40, weeklyPnl: 40, accountBalance: 9000, strategies: [] },
+          { accountName: 'U1', grossRealizedPnl: 10, weeklyPnl: 10, accountBalance: 1000, strategies: [] },
+        ],
+        flags: [],
+      },
+    };
+    const text = buildClientMessageReport(withCash.client, withCash.dailyImport);
+    expect(text).toContain('*Daily P&L:* +$150');
+    expect(text).toContain('Funded Accounts');
+    expect(text).toContain('Cash Accounts');
+    expect(text).toContain('Other Accounts');
+    expect(text).toContain('U1');
+    // "Unclassified" is the desk's word for its own unfinished work, and this
+    // text is addressed to the client.
+    expect(text).not.toContain('Unclassified');
   });
 
   it('returns a string with no account sections when dailyImport is null', () => {

@@ -401,6 +401,15 @@ public sealed class HeartbeatLoop : ICollectorLoop
     private readonly string addonVersion;
     private readonly string ninjaTraderVersion;
     private readonly IServiceReporter reporter;
+    /* WHERE THE RELAY SECRET IS KEPT.
+     *
+     * The same DPAPI store the device token uses, at its own path: it is a
+     * credential, it belongs encrypted at rest under the ACL that folder
+     * already carries, and there was no reason to invent a second way to hold
+     * one. Optional, so every existing construction of this loop still
+     * compiles and a deployment with no relay simply never writes a file. */
+    private readonly IDeviceTokenStore relaySecretStore;
+    private readonly IAgentOptionsStore optionsStore;
     private string lastReportedCode;
 
     public HeartbeatLoop(
@@ -411,9 +420,13 @@ public sealed class HeartbeatLoop : ICollectorLoop
         string agentVersion,
         string addonVersion,
         string ninjaTraderVersion,
-        IServiceReporter reporter = null)
+        IServiceReporter reporter = null,
+        IDeviceTokenStore relaySecretStore = null,
+        IAgentOptionsStore optionsStore = null)
     {
         this.reporter = reporter;
+        this.relaySecretStore = relaySecretStore;
+        this.optionsStore = optionsStore;
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
@@ -453,6 +466,8 @@ public sealed class HeartbeatLoop : ICollectorLoop
         {
             HeartbeatResult result = await crm.SendHeartbeatAsync(payload, cancellationToken).ConfigureAwait(false);
             state.RecordHeartbeat(result);
+            await StoreRelaySecretAsync(result.ReportEmailSecret, cancellationToken).ConfigureAwait(false);
+            await StoreRelayUrlAsync(result.ReportEmailUrl, cancellationToken).ConfigureAwait(false);
             ReportChange(null, null);
         }
         catch (CrmClientException exception) when (exception.Disposition == CrmFailureDisposition.RePair)
@@ -465,6 +480,42 @@ public sealed class HeartbeatLoop : ICollectorLoop
         {
             state.RecordError(exception.Code, exception.Message);
             ReportChange(exception.Code, exception);
+        }
+    }
+
+    /* WRITTEN ONLY WHEN IT CHANGES. The heartbeat runs every minute and this
+     * value moves about once a year; rewriting config.json sixty times an hour
+     * would put the file the whole agent depends on under a lock it has no
+     * reason to be under. Same tolerance for failure as the secret below. */
+    private async Task StoreRelayUrlAsync(string url, CancellationToken cancellationToken)
+    {
+        if (optionsStore == null || string.IsNullOrWhiteSpace(url)) return;
+        try
+        {
+            AgentOptions current = (await optionsStore.LoadAsync(cancellationToken).ConfigureAwait(false)).Options;
+            if (string.Equals(current.ReportEmailUrl, url, StringComparison.Ordinal)) return;
+            await optionsStore.SaveAsync(
+                current with { ReportEmailUrl = url },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+        }
+    }
+
+    /* Kept on the day it arrives, because the day it is needed is the day the
+     * CRM cannot hand it over. A failure to write is not allowed to fail the
+     * heartbeat: the heartbeat is how the desk knows this machine is alive,
+     * and a courtesy secret is not worth taking that down. */
+    private async Task StoreRelaySecretAsync(string secret, CancellationToken cancellationToken)
+    {
+        if (relaySecretStore == null || string.IsNullOrWhiteSpace(secret)) return;
+        try
+        {
+            await relaySecretStore.SaveTokenAsync(secret, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
         }
     }
 
@@ -715,6 +766,128 @@ public sealed class QuarantineReviewLoop : ICollectorLoop, IQuarantineReviewer
     {
         return $"{date.Year:D4}-{date.Month:D2}-{date.Day:D2}";
     }
+}
+
+/* ---------------------------------------------------------------------------
+ * Mailing this machine's own close, every trading day.
+ *
+ * WHY IT IS ITS OWN LOOP AND NOT PART OF THE CAPTURE. The capture must succeed
+ * whether or not anything else does, and the upload must not be delayed by a
+ * courtesy. This reads the capture back out of the queue and leaves it exactly
+ * as it found it, so a failure here costs the day's email and nothing else.
+ *
+ * NOT CONDITIONAL ON THE UPLOAD FAILING, which was the obvious design and the
+ * wrong one. The day the CRM is unreachable is the day nobody can tell this
+ * machine anything, including that it should now start mailing. It sends every
+ * day; on an ordinary day the desk gets a copy it did not strictly need, and on
+ * the day of an outage it gets the only one that exists.
+ *
+ * ONCE A DAY. The loop runs every few minutes and records the date it mailed,
+ * the same way the quarantine review does, so a machine that restarts at 17:05
+ * does not mail the close again.
+ * ------------------------------------------------------------------------- */
+public sealed class ReportEmailLoop : ICollectorLoop
+{
+    private static readonly DateTimeZone NewYork = DateTimeZoneProviders.Tzdb["America/New_York"];
+    private readonly ICaptureReader captures;
+    private readonly ICollectorCrmClient crm;
+    private readonly IRosterStore roster;
+    private readonly IDeviceTokenStore relaySecretStore;
+    private readonly IAgentOptionsStore optionsStore;
+    private readonly ICollectorClock clock;
+    private readonly IServiceReporter reporter;
+    private readonly SemaphoreSlim gate = new(1, 1);
+    private string lastReportedCode;
+
+    public ReportEmailLoop(
+        ICaptureReader captures,
+        ICollectorCrmClient crm,
+        IRosterStore roster,
+        IDeviceTokenStore relaySecretStore,
+        IAgentOptionsStore optionsStore,
+        ICollectorClock clock,
+        IServiceReporter reporter = null)
+    {
+        this.captures = captures ?? throw new ArgumentNullException(nameof(captures));
+        this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
+        this.roster = roster ?? throw new ArgumentNullException(nameof(roster));
+        this.relaySecretStore = relaySecretStore ?? throw new ArgumentNullException(nameof(relaySecretStore));
+        this.optionsStore = optionsStore ?? throw new ArgumentNullException(nameof(optionsStore));
+        this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        this.reporter = reporter;
+    }
+
+    public string Name => "report-email";
+    public TimeSpan Interval => TimeSpan.FromMinutes(5);
+
+    public async Task RunOnceAsync(CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Instant now = clock.GetCurrentInstant();
+            string today = FormatDate(now.InZone(NewYork).LocalDateTime.Date);
+            AgentOptions options = (await optionsStore.LoadAsync(cancellationToken).ConfigureAwait(false)).Options;
+            if (string.Equals(options.LastReportEmailDate, today, StringComparison.Ordinal)) return;
+
+            /* No secret means this deployment has no relay, or this machine has
+             * not heard from the CRM since one was configured. Silent on
+             * purpose: every machine would be in this state until somebody
+             * sets the variables, and it is not a fault of theirs. */
+            string secret = await relaySecretStore.LoadTokenAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(secret)) return;
+
+            // Nothing captured yet today. Not an error: the close has not
+            // happened, or the scheduler is still inside its retry window.
+            string capture = await captures.ReadNewestAsync(today, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(capture)) return;
+
+            CachedRoster cached = await roster.LoadAsync(cancellationToken).ConfigureAwait(false);
+            bool sent = await crm.SendReportEmailAsync(
+                capture,
+                options.ClientName,
+                cached?.RegistryJson,
+                cached?.FetchedAt,
+                secret,
+                options.ReportEmailUrl,
+                cancellationToken).ConfigureAwait(false);
+
+            /* Only a message that was accepted marks the day done. A refusal
+             * leaves the date unwritten so the next pass tries again, which is
+             * what makes a deployment that gets its mail configured at 18:00
+             * still send that evening. */
+            if (!sent)
+            {
+                ReportChange("report_email_refused", null);
+                return;
+            }
+
+            await optionsStore.SaveAsync(
+                options with { LastReportEmailDate = today },
+                cancellationToken).ConfigureAwait(false);
+            ReportChange(null, null);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The day's email is worth nothing next to the day's upload, and
+            // this loop shares a process with it.
+            ReportChange("report_email_failed", exception);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private void ReportChange(string code, Exception exception)
+    {
+        if (string.Equals(lastReportedCode, code, StringComparison.Ordinal)) return;
+        lastReportedCode = code;
+        if (code != null) reporter?.LoopFailed(Name, code, exception);
+    }
+
+    private static string FormatDate(LocalDate date) =>
+        date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 }
 
 public sealed class QueueRecoveryLoop : ICollectorLoop
