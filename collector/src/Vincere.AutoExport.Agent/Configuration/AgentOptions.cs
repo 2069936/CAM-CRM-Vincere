@@ -57,5 +57,12 @@ public sealed record AgentOptions
     [JsonProperty("lastReportEmailDate")]
     public string LastReportEmailDate { get; init; }
 
+    /* Where to post the daily report, as the CRM last told this machine. Not a
+     * credential, so it sits here beside the schedule rather than in the DPAPI
+     * file next to the secret. Empty until a heartbeat supplies one, and the
+     * agent then posts to the CRM's own relay route instead. */
+    [JsonProperty("reportEmailUrl")]
+    public string ReportEmailUrl { get; init; }
+
     public static AgentOptions CreateDefault() => new();
 }

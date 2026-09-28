@@ -149,6 +149,39 @@ public sealed class ReportEmailLoopTests : IDisposable
     }
 
     [Fact]
+    public async Task PostsToTheAddressTheCrmGaveThisMachine()
+    {
+        /* The send happens in a Supabase Edge Function because the mail key
+         * cannot live on the CRM's own deployment. The machine is told where
+         * rather than having it compiled in, so moving it later costs a
+         * heartbeat instead of thirty machine visits. */
+        WriteCapture("pending", Today);
+        FakeCrm crm = new(sends: true);
+        ReportEmailLoop loop = Create(
+            crm,
+            new FakeOptions { ReportEmailUrl = "https://abc.supabase.co/functions/v1/daily-report-email/agent" },
+            secret: "s");
+
+        await loop.RunOnceAsync(default);
+
+        Assert.Equal("https://abc.supabase.co/functions/v1/daily-report-email/agent", Assert.Single(crm.Sent).Url);
+    }
+
+    [Fact]
+    public async Task FallsBackToTheCrmsOwnRouteWhenItWasGivenNoAddress()
+    {
+        // An older CRM sends no url, and the agent then posts where it always
+        // did. The client turns a null into the relative route.
+        WriteCapture("pending", Today);
+        FakeCrm crm = new(sends: true);
+        ReportEmailLoop loop = Create(crm, new FakeOptions(), secret: "s");
+
+        await loop.RunOnceAsync(default);
+
+        Assert.Null(Assert.Single(crm.Sent).Url);
+    }
+
+    [Fact]
     public async Task CarriesTheCachedRosterSoTheReportCanClassify()
     {
         WriteCapture("pending", Today);
@@ -175,7 +208,7 @@ public sealed class ReportEmailLoopTests : IDisposable
             new FixedClock(Instant.FromUtc(2026, 9, 28, 21, 30)));
     }
 
-    private sealed record SentReport(string Capture, string ClientName, string Roster, string Secret);
+    private sealed record SentReport(string Capture, string ClientName, string Roster, string Secret, string Url);
 
     private sealed class FakeCrm : ICollectorCrmClient
     {
@@ -188,9 +221,9 @@ public sealed class ReportEmailLoopTests : IDisposable
         public Task<bool> SendReportEmailAsync(
             string captureJson, string clientName, string rosterJson,
             DateTimeOffset? rosterFetchedAt, string relaySecret,
-            CancellationToken cancellationToken = default)
+            string relayUrl = null, CancellationToken cancellationToken = default)
         {
-            Sent.Add(new SentReport(captureJson, clientName, rosterJson, relaySecret));
+            Sent.Add(new SentReport(captureJson, clientName, rosterJson, relaySecret, relayUrl));
             return Task.FromResult(sends);
         }
 
@@ -214,6 +247,8 @@ public sealed class ReportEmailLoopTests : IDisposable
     {
         public string LastReportEmailDate { get; init; }
 
+        public string ReportEmailUrl { get; init; }
+
         public AgentOptions Saved { get; private set; }
 
         public Task<ConfigurationLoadResult> LoadAsync(CancellationToken cancellationToken = default)
@@ -222,6 +257,7 @@ public sealed class ReportEmailLoopTests : IDisposable
                 {
                     ClientName = "Joel Onafowokan",
                     LastReportEmailDate = LastReportEmailDate,
+                    ReportEmailUrl = ReportEmailUrl,
                 },
                 false));
 

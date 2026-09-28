@@ -125,7 +125,8 @@ builder.Services.AddSingleton<ICollectorLoop>(provider => new HeartbeatLoop(
     provider.GetRequiredService<IServiceReporter>(),
     // Writes the relay secret the response carries. Without this the loop
     // below never finds one and mails nothing, silently, forever.
-    new DpapiSecretStore(paths.RelaySecret)));
+    new DpapiSecretStore(paths.RelaySecret),
+    provider.GetRequiredService<IAgentOptionsStore>()));
 /* MAILING THIS MACHINE'S OWN CLOSE, EVERY TRADING DAY.
  *
  * Keyed on its own DPAPI file rather than the device token's: the two are

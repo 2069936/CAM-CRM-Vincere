@@ -393,7 +393,8 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             heartbeat.Throttled,
                             heartbeat.Schedule.Time,
                             heartbeat.Schedule.TimeZone,
-                            heartbeat.ReportEmailSecret);
+                            heartbeat.ReportEmailSecret,
+                            heartbeat.ReportEmailUrl);
                     }
 
                     TimeSpan? retryAfter = ParseRetryAfter(response.Headers.RetryAfter);
@@ -564,6 +565,7 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         string rosterJson,
         DateTimeOffset? rosterFetchedAt,
         string relaySecret,
+        string relayUrl = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(captureJson)) return false;
@@ -583,9 +585,12 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         };
         byte[] body = Encoding.UTF8.GetBytes(request.ToString(Formatting.None));
 
+        /* The address the CRM gave this machine, or the CRM's own relay route
+         * when it gave none. new Uri(base, absolute) answers the absolute one,
+         * so both cases go through the same send. */
         using HttpResponseMessage response = await SendAsync(
             HttpMethod.Post,
-            "api/ingest/report-email",
+            string.IsNullOrWhiteSpace(relayUrl) ? "api/ingest/report-email" : relayUrl,
             body,
             authenticated: false,
             contentEncoding: null,
@@ -1138,6 +1143,9 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
 
         [JsonProperty("reportEmailSecret")]
         public string ReportEmailSecret { get; set; }
+
+        [JsonProperty("reportEmailUrl")]
+        public string ReportEmailUrl { get; set; }
 
         [JsonProperty("throttled")]
         public bool Throttled { get; set; }

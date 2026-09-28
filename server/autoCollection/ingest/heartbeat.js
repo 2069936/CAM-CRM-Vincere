@@ -1,6 +1,6 @@
 import process from 'node:process';
 import { resolveIngestPepper } from '../../apiLib/ingestPepper.js';
-import { resolveAgentMailSecret } from './reportEmail.js';
+import { resolveAgentMailSecret, resolveAgentMailUrl } from './reportEmail.js';
 import { createServiceClient } from '../../apiLib/apiAuth.js';
 import { normalizeCollectorVersion, requiresCollectorUpdate } from '../../apiLib/collectorVersion.js';
 import { createDeviceAuthStore, requireIngestDevice } from '../../apiLib/deviceAuth.js';
@@ -220,6 +220,7 @@ export function createHandler({
   // Injected like everything else here, so a test can assert both the handed
   // out case and the deployment that has no relay configured.
   reportEmailSecret = resolveAgentMailSecret(),
+  reportEmailUrl = resolveAgentMailUrl(),
 } = {}) {
   return async function handler(req, res) {
     try {
@@ -289,6 +290,18 @@ export function createHandler({
          * configured, rather than sent empty: the agent then has nothing to
          * cache and says so, instead of posting a blank secret all year. */
         ...(reportEmailSecret ? { reportEmailSecret } : {}),
+        /* WHERE TO POST IT, WHICH IS NOT THIS DEPLOYMENT.
+         *
+         * The Brevo key cannot live on Vercel - nobody here can add an
+         * environment variable to it - so the send happens in a Supabase Edge
+         * Function, where the CAM sets the secret himself. The agent is told
+         * the address rather than having it compiled in, so moving it later
+         * costs a heartbeat instead of thirty machine visits.
+         *
+         * Derived from SUPABASE_URL, which this deployment is guaranteed to
+         * have. Absent when it is not, and the agent then falls back to this
+         * deployment's own relay route, which is where it posted first. */
+        ...(reportEmailUrl ? { reportEmailUrl } : {}),
       });
     } catch (error) {
       if (error instanceof ApiError) {

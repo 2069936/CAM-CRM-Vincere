@@ -8,3 +8,7 @@ export { runDailyEmails, usersFromRows } from './dailyEmailJob';
 export { sendViaBrevo, EmailDeliveryError } from './emailDelivery';
 export { buildDailyEmailPackage } from './dailyEmailPackage';
 export { planDailyEmails } from './dailyEmailPlan';
+/* The agent relay's half. Same function the Vercel ingest route calls, so a
+ * report mailed from a machine is byte for byte the report mailed from the
+ * desk, whichever door it came through. */
+export { AgentReportError, buildAgentReportMessage } from './agentReportMail.js';

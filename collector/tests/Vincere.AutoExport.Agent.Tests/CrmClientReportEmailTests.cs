@@ -46,6 +46,25 @@ public sealed class CrmClientReportEmailTests
     }
 
     [Fact]
+    public async Task PostsToTheAbsoluteAddressWhenTheCrmGaveOne()
+    {
+        /* The send happens in a Supabase Edge Function, because the mail key
+         * cannot live on the CRM's own deployment: nobody on this desk can add
+         * an environment variable to it, and the repository is public so a
+         * committed ciphertext would be published for good. */
+        RecordingHandler handler = new(_ => Json(HttpStatusCode.Accepted, """{"ok":true}"""));
+        CrmClient client = CreateClient(handler);
+
+        await client.SendReportEmailAsync(
+            Capture, "X", null, null, "secret",
+            "https://abc.supabase.co/functions/v1/daily-report-email/agent");
+
+        Assert.Equal(
+            "https://abc.supabase.co/functions/v1/daily-report-email/agent",
+            Assert.Single(handler.Requests).Path);
+    }
+
+    [Fact]
     public async Task SendsAnEmptyRosterRatherThanNullWhenTheMachineHasNone()
     {
         // The report then classifies nothing and totals nothing, which is the

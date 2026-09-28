@@ -18,7 +18,7 @@
  */
 
 // @ts-ignore  Deno resolves this at deploy time; the repo has no Deno types.
-import { runDailyEmails, sendViaBrevo } from './_bundle.js';
+import { AgentReportError, buildAgentReportMessage, runDailyEmails, sendViaBrevo } from './_bundle.js';
 
 declare const Deno: {
   env: { get(name: string): string | undefined };
@@ -57,7 +57,81 @@ async function rest(url: string, key: string, path: string, query: string): Prom
   return await response.json();
 }
 
+/* THE SECOND DOOR: ONE MACHINE'S OWN CLOSE, ON A DAY POSTGRES CANNOT ANSWER.
+ *
+ * Here rather than on Vercel because the Brevo key has to live somewhere, and
+ * the two obvious places are closed: nobody on this desk can add an
+ * environment variable to the Vercel deployment, and the repository is public,
+ * so a committed ciphertext would be published to the world permanently. A
+ * Supabase Edge Function secret is neither - the CAM sets and rotates it
+ * himself, it is not a row in Postgres, and it is not in git.
+ *
+ * It reads no table, which is the entire point: on 2026-09-26 the database was
+ * unreachable for three days and the desk could not send a client a report.
+ * Edge Functions run apart from the project's Postgres, so this answers when
+ * the rest does not. The machine posts the capture it already holds and the
+ * report is built here.
+ *
+ * Its own secret, not the cron's. The cron secret is known only to a scheduled
+ * job inside the database; this one is cached on about thirty client machines,
+ * and the two must be revocable apart.
+ */
+async function handleAgentReport(request: Request): Promise<Response> {
+  const secret = Deno.env.get('AGENT_MAIL_SECRET') || '';
+  const apiKey = Deno.env.get('BREVO_API_KEY') || '';
+  const to = Deno.env.get('AGENT_MAIL_TO') || '';
+  const from = Deno.env.get('DAILY_EMAIL_FROM') || '';
+  /* Refuses rather than accepting anonymously. Reachable from anywhere
+   * whatever the agent does, and a relay that sends for whoever asks is a
+   * relay that sends for whoever finds it. */
+  if (!secret || !apiKey || !to || !from) {
+    return json(503, { ok: false, error: 'mail_not_configured' });
+  }
+  if (request.headers.get('x-agent-mail-secret') !== secret) {
+    return json(401, { ok: false, error: 'unauthorized' });
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return json(400, { ok: false, error: 'bad_json' });
+  }
+
+  try {
+    /* THE DESTINATION IS NOT IN THE REQUEST. A leaked agent secret lets
+     * somebody send the desk its own reports; it does not turn this into a
+     * way to mail anyone. */
+    const message = buildAgentReportMessage({
+      capture: body?.capture,
+      roster: body?.roster,
+      rosterFetchedAt: body?.rosterFetchedAt,
+      clientName: String(body?.clientName || '').trim(),
+      from,
+      to: [{ email: to }],
+    });
+    const result = await sendViaBrevo({ apiKey, ...message });
+    return json(202, { ok: true, date: message.date, messageId: result?.messageId || null });
+  } catch (error) {
+    if (error instanceof AgentReportError) {
+      return json(400, { ok: false, error: error.code, message: error.message });
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return json(500, { ok: false, error: 'send_failed', message });
+  }
+}
+
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 async function handler(request: Request): Promise<Response> {
+  // Two doors, two credentials. The path decides which.
+  if (new URL(request.url).pathname.endsWith('/agent')) return handleAgentReport(request);
+
   const cronSecret = Deno.env.get('DAILY_EMAIL_CRON_SECRET');
   /* The function is reachable over the internet whatever the schedule does, so
    * it checks a secret of its own rather than trusting that only pg_cron knows

@@ -47,6 +47,7 @@ public interface ICollectorCrmClient
         string rosterJson,
         DateTimeOffset? rosterFetchedAt,
         string relaySecret,
+        string relayUrl = null,
         CancellationToken cancellationToken = default) => Task.FromResult(false);
 
     Task<QuarantineReportOutcome> ReportQuarantineAsync(
@@ -150,7 +151,13 @@ public sealed record HeartbeatResult(
      * It arrives here rather than at pairing because every machine in the
      * field is already paired, and it has to arrive on an ordinary day: the
      * day it is needed is the day the database cannot answer. */
-    string ReportEmailSecret = null);
+    string ReportEmailSecret = null,
+    /* Where to post it, which is not the CRM. The send happens in a Supabase
+     * Edge Function because the mail key cannot live on the CRM's deployment.
+     * Told rather than compiled in, so moving it later costs a heartbeat
+     * instead of thirty machine visits. Null on an older CRM, and the agent
+     * then posts to the CRM's own relay route as it always did. */
+    string ReportEmailUrl = null);
 
 public sealed class CrmClientException : Exception
 {

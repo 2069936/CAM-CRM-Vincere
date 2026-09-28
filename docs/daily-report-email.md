@@ -66,11 +66,24 @@ supabase functions deploy daily-report-email
 
 ### 3. The secrets
 
+Everything lives here, in Supabase, because nobody on this desk can add an
+environment variable to the Vercel deployment and the repository is public, so
+a committed ciphertext would be published to the world permanently. A Supabase
+Edge Function secret is neither: it is not a row in Postgres, it is not in git,
+and it is set and rotated from the dashboard by whoever runs the desk.
+
 ```bash
 supabase secrets set BREVO_API_KEY=...
 supabase secrets set DAILY_EMAIL_FROM=reports@vinceretrading.com
 supabase secrets set DAILY_EMAIL_FROM_NAME="Vincere CRM"
 supabase secrets set DAILY_EMAIL_CRON_SECRET="$(openssl rand -hex 32)"
+# The agents' own door. Two credentials, revocable apart: the cron secret is
+# known only to a job inside the database, this one is cached on ~30 client
+# machines. AGENT_MAIL_SECRET must match what the CRM derives; print it with
+#   node -e "import('./server/autoCollection/ingest/reportEmail.js').then(m=>console.log(m.resolveAgentMailSecret({SUPABASE_SERVICE_ROLE_KEY:process.env.K})))"
+# run with K set to the service role key, on your own machine.
+supabase secrets set AGENT_MAIL_SECRET=...
+supabase secrets set AGENT_MAIL_TO=pedro@vinceretrading.com
 ```
 
 `DAILY_EMAIL_CRON_SECRET` is generated here and never written down anywhere
@@ -170,6 +183,33 @@ run reports a clean success having sent no mail.
 A CAM with no reachable address is reported in `unreachable` rather than
 skipped: a CAM who silently stops receiving their close is worse than a job that
 fails.
+
+## The other door: one machine's own close
+
+`POST /functions/v1/daily-report-email/agent`, with `x-agent-mail-secret`.
+
+The agent posts the capture it already wrote; the report is built here. It
+**reads no table**, which is the point: Edge Functions run apart from the
+project's Postgres, so this answers on the day the database does not.
+
+The agent is told where to post by the heartbeat, which derives the address
+from `SUPABASE_URL`. Nothing is compiled into the agent, so moving it later
+costs a heartbeat rather than thirty machine visits. Told no address, the agent
+posts to the CRM's own `/api/ingest/report-email`, which works the day somebody
+does set a Brevo key on Vercel.
+
+The shared secret is **derived**, not configured: HMAC over
+`SUPABASE_SERVICE_ROLE_KEY`, exactly as `server/apiLib/ingestPepper.js` derives
+the credential pepper, and for the same reason — that file exists because
+`INGEST_TOKEN_PEPPER` was never set on this deployment and pairing therefore
+never worked at all. Anyone with the service role key can derive it, and that
+key already reads every close in the database directly; asking for one by email
+is not an escalation.
+
+**Rotating `SUPABASE_SERVICE_ROLE_KEY` changes the derived secret.** Every agent
+then presents a stale one and gets 401 until its next heartbeat re-caches. The
+same hazard `ingestPepper.js` documents for the pepper, where the cost is worse:
+there it un-pairs every machine.
 
 ## What this does NOT cover
 

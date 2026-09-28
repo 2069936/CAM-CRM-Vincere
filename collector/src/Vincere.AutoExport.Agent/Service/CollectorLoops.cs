@@ -409,6 +409,7 @@ public sealed class HeartbeatLoop : ICollectorLoop
      * one. Optional, so every existing construction of this loop still
      * compiles and a deployment with no relay simply never writes a file. */
     private readonly IDeviceTokenStore relaySecretStore;
+    private readonly IAgentOptionsStore optionsStore;
     private string lastReportedCode;
 
     public HeartbeatLoop(
@@ -420,10 +421,12 @@ public sealed class HeartbeatLoop : ICollectorLoop
         string addonVersion,
         string ninjaTraderVersion,
         IServiceReporter reporter = null,
-        IDeviceTokenStore relaySecretStore = null)
+        IDeviceTokenStore relaySecretStore = null,
+        IAgentOptionsStore optionsStore = null)
     {
         this.reporter = reporter;
         this.relaySecretStore = relaySecretStore;
+        this.optionsStore = optionsStore;
         this.queue = queue ?? throw new ArgumentNullException(nameof(queue));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
         this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
@@ -464,6 +467,7 @@ public sealed class HeartbeatLoop : ICollectorLoop
             HeartbeatResult result = await crm.SendHeartbeatAsync(payload, cancellationToken).ConfigureAwait(false);
             state.RecordHeartbeat(result);
             await StoreRelaySecretAsync(result.ReportEmailSecret, cancellationToken).ConfigureAwait(false);
+            await StoreRelayUrlAsync(result.ReportEmailUrl, cancellationToken).ConfigureAwait(false);
             ReportChange(null, null);
         }
         catch (CrmClientException exception) when (exception.Disposition == CrmFailureDisposition.RePair)
@@ -476,6 +480,26 @@ public sealed class HeartbeatLoop : ICollectorLoop
         {
             state.RecordError(exception.Code, exception.Message);
             ReportChange(exception.Code, exception);
+        }
+    }
+
+    /* WRITTEN ONLY WHEN IT CHANGES. The heartbeat runs every minute and this
+     * value moves about once a year; rewriting config.json sixty times an hour
+     * would put the file the whole agent depends on under a lock it has no
+     * reason to be under. Same tolerance for failure as the secret below. */
+    private async Task StoreRelayUrlAsync(string url, CancellationToken cancellationToken)
+    {
+        if (optionsStore == null || string.IsNullOrWhiteSpace(url)) return;
+        try
+        {
+            AgentOptions current = (await optionsStore.LoadAsync(cancellationToken).ConfigureAwait(false)).Options;
+            if (string.Equals(current.ReportEmailUrl, url, StringComparison.Ordinal)) return;
+            await optionsStore.SaveAsync(
+                current with { ReportEmailUrl = url },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
         }
     }
 
@@ -825,6 +849,7 @@ public sealed class ReportEmailLoop : ICollectorLoop
                 cached?.RegistryJson,
                 cached?.FetchedAt,
                 secret,
+                options.ReportEmailUrl,
                 cancellationToken).ConfigureAwait(false);
 
             /* Only a message that was accepted marks the day done. A refusal

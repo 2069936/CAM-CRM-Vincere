@@ -1,5 +1,235 @@
 var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod), cb = null), mod.exports);
 //#endregion
+//#region src/domain/pnlSourceSummary.js
+var PNL_SOURCES = [
+	"realized",
+	"gross_fallback",
+	"gross_missing_realized",
+	"unavailable"
+];
+function summarizePnlSources(rows = []) {
+	const summary = {
+		realized: 0,
+		gross_fallback: 0,
+		gross_missing_realized: 0,
+		unavailable: 0,
+		unknown: 0
+	};
+	for (const row of rows || []) {
+		const source = PNL_SOURCES.includes(row?.pnlSource) ? row.pnlSource : "unknown";
+		summary[source] += 1;
+	}
+	return summary;
+}
+//#endregion
+//#region src/domain/tradingDayScope.js
+/** Live states. An order in one of these is working now, whenever it was placed. */
+var LIVE_ORDER_STATES = /* @__PURE__ */ new Set([
+	"initialized",
+	"submitted",
+	"accepted",
+	"working",
+	"pending submit",
+	"pending change",
+	"pending cancel",
+	"cancel pending",
+	"partially filled",
+	"change pending",
+	"triggered"
+]);
+/**
+* NinjaTrader writes `7/13/2026 12:15:35 PM`; the CRM stores ISO. Both appear
+* depending on whether a row came from a grid export or the AddOn.
+*/
+function tradingDateOf(value) {
+	const text = String(value || "").trim();
+	if (!text) return null;
+	const us = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+	if (us) return `${us[3]}-${us[1].padStart(2, "0")}-${us[2].padStart(2, "0")}`;
+	const iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
+	return iso ? iso[1] : null;
+}
+function isLiveOrderState(state) {
+	const text = String(state || "").trim().toLowerCase();
+	if (!text) return false;
+	if (text.startsWith("rejected")) return false;
+	return LIVE_ORDER_STATES.has(text);
+}
+/**
+* Orders belonging to a trading day.
+*
+* A working order placed last Friday is still live on Monday and still that
+* client's exposure, so state outranks date. Anything filled, cancelled or
+* rejected on an earlier day is finished business and belongs to the day it
+* happened on, not to this one.
+*
+* An order with no readable timestamp is kept. Dropping rows because a format
+* was not recognised would quietly delete real trading, which is a worse
+* failure than carrying a few extra.
+*/
+function scopeOrdersToDay(orders = [], date) {
+	const day = tradingDateOf(date) || String(date || "").slice(0, 10);
+	if (!day) return orders;
+	return orders.filter((order) => {
+		const when = tradingDateOf(order?.time);
+		if (!when) return true;
+		if (when === day) return true;
+		return isLiveOrderState(order?.state);
+	});
+}
+/**
+* Executions belonging to a trading day.
+*
+* No state exception here: a fill is an event with a time. One from last week
+* happened last week, and counting it today would double it — it was already
+* counted on the day it occurred.
+*/
+function scopeExecutionsToDay(executions = [], date) {
+	const day = tradingDateOf(date) || String(date || "").slice(0, 10);
+	if (!day) return executions;
+	return executions.filter((execution) => {
+		const when = tradingDateOf(execution?.time);
+		return when === null || when === day;
+	});
+}
+//#endregion
+//#region src/domain/derivedAccountMetrics.js
+var MS_PER_DAY = 864e5;
+function toDate(value) {
+	const text = String(value || "").slice(0, 10);
+	return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+}
+/** Monday of the week containing the date. Closes are Mon-Fri, so a
+*  Sunday-start futures week would sum identically. */
+function weekStart(date) {
+	const day = toDate(date);
+	if (!day) return "";
+	const parsed = /* @__PURE__ */ new Date(`${day}T12:00:00Z`);
+	const weekday = parsed.getUTCDay();
+	const backToMonday = weekday === 0 ? 6 : weekday - 1;
+	return (/* @__PURE__ */ new Date(parsed.getTime() - backToMonday * MS_PER_DAY)).toISOString().slice(0, 10);
+}
+function numeric$1(value) {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function snapshotFor(dailyImport, accountName) {
+	const wanted = String(accountName || "").toLowerCase();
+	return (dailyImport?.snapshots || []).find((snapshot) => String(snapshot.accountName || "").toLowerCase() === wanted) || null;
+}
+/**
+* Realized PnL for the account across the trading week ending on the given date.
+* Exact — every day of the week is one of our own closes.
+*/
+function deriveWeeklyPnl(dailyImports = [], accountName, asOfDate) {
+	const day = toDate(asOfDate);
+	const start = weekStart(day);
+	if (!day || !start) return null;
+	let total = 0;
+	let days = 0;
+	for (const dailyImport of dailyImports) {
+		const date = toDate(dailyImport?.date);
+		if (!date || date < start || date > day) continue;
+		const snapshot = snapshotFor(dailyImport, accountName);
+		if (!snapshot) continue;
+		const pnl = numeric$1(snapshot.grossRealizedPnl);
+		if (pnl === null) continue;
+		total += pnl;
+		days += 1;
+	}
+	if (!days) return null;
+	return {
+		value: total,
+		source: "derived",
+		daysCounted: days,
+		weekStart: start
+	};
+}
+/**
+* How far the account has fallen from its highest recorded balance.
+*
+* Returns the same shape the Accounts grid reports (drawdown from peak, as a
+* positive number), plus the evidence behind it so a caller can judge how much
+* to trust it: the peak used, when it happened, how many closes it is based on,
+* and whether the history has holes.
+*
+* `startBalance` seeds the peak, so an account that only ever lost money still
+* measures from where it began rather than from its best bad day.
+*/
+function deriveTrailingDrawdown(dailyImports = [], accountName, asOfDate, { startBalance = null } = {}) {
+	const day = toDate(asOfDate);
+	if (!day) return null;
+	const balances = [];
+	for (const dailyImport of dailyImports) {
+		const date = toDate(dailyImport?.date);
+		if (!date || date > day) continue;
+		const snapshot = snapshotFor(dailyImport, accountName);
+		if (!snapshot) continue;
+		const balance = numeric$1(snapshot.accountBalance);
+		if (balance === null) continue;
+		balances.push({
+			date,
+			balance
+		});
+	}
+	if (!balances.length) return null;
+	balances.sort((a, b) => a.date.localeCompare(b.date));
+	const current = balances[balances.length - 1];
+	if (current.date !== day) return null;
+	let peak = Number(startBalance) > 0 ? Number(startBalance) : balances[0].balance;
+	let peakDate = balances[0].date;
+	for (const point of balances) if (point.balance > peak) {
+		peak = point.balance;
+		peakDate = point.date;
+	}
+	const firstDate = balances[0].date;
+	const spanDays = Math.round((Date.parse(`${day}T12:00:00Z`) - Date.parse(`${firstDate}T12:00:00Z`)) / MS_PER_DAY);
+	const weekdaysInSpan = countWeekdays(firstDate, day);
+	const hasGaps = balances.length < weekdaysInSpan;
+	return {
+		value: Math.max(0, peak - current.balance),
+		source: "derived",
+		peak,
+		peakDate,
+		closesUsed: balances.length,
+		spanDays,
+		hasGaps,
+		isLowerBound: true
+	};
+}
+function countWeekdays(fromDate, toDateValue) {
+	const start = Date.parse(`${fromDate}T12:00:00Z`);
+	const end = Date.parse(`${toDateValue}T12:00:00Z`);
+	if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+	let count = 0;
+	for (let time = start; time <= end; time += MS_PER_DAY) {
+		const weekday = new Date(time).getUTCDay();
+		if (weekday !== 0 && weekday !== 6) count += 1;
+	}
+	return count;
+}
+/**
+* Thresholds for acting on a drawdown number, widened when it is derived.
+*
+* A derived drawdown is a lower bound, so warning at the same level as a
+* reported one would warn too late on an account that is actually closer to its
+* limit than we can see. Doubling the margins costs a few early warnings and
+* buys not missing a real one.
+*
+* The widening exists because we do not know whether a firm trails from the
+* intraday high or from the daily close. Recording that per firm would make the
+* derivation exact where the basis is end-of-day, and honest about being
+* impossible where it is not — see docs/prop-firm-rules-catalog.md.
+*/
+function drawdownThresholds(source) {
+	return source === "derived" ? {
+		critical: 1e3,
+		warning: 2400
+	} : {
+		critical: 500,
+		warning: 1200
+	};
+}
+//#endregion
 //#region src/domain/instrumentSpecs.js
 var SPECS = {
 	NQ: {
@@ -71,6 +301,10 @@ var SPECS = {
 		tickSize: 1 / 32
 	}
 };
+function instrumentRoot(instrument) {
+	const m = String(instrument || "").trim().match(/^([A-Za-z0-9]+?)(?:\s|[FGHJKMNQUVXZ]\d{1,2}$)/);
+	return ((m ? m[1] : String(instrument || "").trim().split(/\s+/)[0]) || "").toUpperCase();
+}
 //#endregion
 //#region src/domain/deriveStrategyPnl.js
 var RESIDUAL_REASONS = {
@@ -82,8 +316,788 @@ var RESIDUAL_REASONS = {
 	UNKNOWN_INSTRUMENT: "unknown-instrument",
 	POSITION_UNREPRODUCIBLE: "position-unreproducible"
 };
-RESIDUAL_REASONS.CARRY_IN, RESIDUAL_REASONS.UNKNOWN_INSTRUMENT, RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE;
-Object.keys(SPECS).sort((a, b) => b.length - a.length);
+var BOOK_REFUSALS = {
+	CARRY_IN: RESIDUAL_REASONS.CARRY_IN,
+	UNKNOWN_INSTRUMENT: RESIDUAL_REASONS.UNKNOWN_INSTRUMENT,
+	POSITION_UNREPRODUCIBLE: RESIDUAL_REASONS.POSITION_UNREPRODUCIBLE
+};
+var DEFAULT_TOLERANCE = .005;
+var ROOTS_BY_LENGTH = Object.keys(SPECS).sort((a, b) => b.length - a.length);
+var num$1 = (value) => {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : 0;
+};
+/**
+* Point multiplier for an instrument string.
+*
+* The grid writes the same contract three ways — 'MNQ SEP26', 'MNQ 09-26',
+* 'MNQU6' — so the month-code-aware root is tried first and a longest-known-root
+* prefix match on the alphanumeric-stripped string is the fallback. Returns null
+* for an instrument with no spec; its book is refused, not valued at zero.
+*/
+function multiplierFor(instrument) {
+	const direct = SPECS[instrumentRoot(instrument)];
+	if (direct) return direct.pointValue;
+	const cleaned = String(instrument || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+	for (const root of ROOTS_BY_LENGTH) if (cleaned.startsWith(root)) return SPECS[root].pointValue;
+	return null;
+}
+/** '2 S' -> -2, '4 L' -> 4, '-' / '' -> 0. The position AFTER the fill. */
+function parsePosition(value) {
+	const text = String(value ?? "").trim();
+	if (!text || text === "-") return 0;
+	const match = text.match(/^(-?[\d.]+)\s*([LS])?/i);
+	if (!match) return null;
+	const size = Number.parseFloat(match[1]);
+	if (!Number.isFinite(size)) return null;
+	if (/^s$/i.test(match[2] || "")) return -Math.abs(size);
+	if (/^l$/i.test(match[2] || "")) return Math.abs(size);
+	return size;
+}
+/** NinjaTrader writes '8/18/2026 9:30:01 AM'; the AddOn writes ISO. */
+function parseExecutionTime(value) {
+	const text = String(value || "").trim();
+	if (!text) return null;
+	const us = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?\s*([AP]M)?/i);
+	if (us) {
+		let hour = Number(us[4]);
+		if (us[8]) {
+			const pm = /^pm$/i.test(us[8]);
+			hour = hour % 12 + (pm ? 12 : 0);
+		}
+		return Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]), hour, Number(us[5]), Number(us[6]), Number(us[7] || 0));
+	}
+	const parsed = Date.parse(text);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+function execSequence(execution) {
+	const id = String(execution?.id || "").trim();
+	const pair = id.match(/^(\d+)_(\d+)$/);
+	if (pair) return {
+		form: "pair",
+		major: Number(pair[1]),
+		minor: Number(pair[2])
+	};
+	if (/^\d+$/.test(id)) return {
+		form: "int",
+		major: Number(id),
+		minor: 0
+	};
+	return null;
+}
+var signedQty$1 = (execution) => (/^buy/i.test(String(execution?.action || "")) ? 1 : -1) * Math.abs(num$1(execution?.quantity));
+/** True when this fill's E/X column says it closed a position. */
+function isExitFill(execution) {
+	return /^exit$/i.test(String(execution?.entryExit || "").trim());
+}
+/**
+* How many fills in this ordering contradict the Position column.
+*
+* Position is the account's position in that instrument AFTER the fill, so a
+* correct ordering reproduces it exactly from Action + Quantity. Zero mismatches
+* is the signal that the fills are in the order they actually happened.
+*/
+function positionMismatches(executions) {
+	if (!executions.length) return 0;
+	const firstStated = parsePosition(executions[0]?.position);
+	let running = firstStated == null ? 0 : firstStated - signedQty$1(executions[0]);
+	let mismatches = 0;
+	for (const execution of executions) {
+		running += signedQty$1(execution);
+		const stated = parsePosition(execution?.position);
+		if (stated != null && Math.abs(running - stated) > 1e-9) mismatches += 1;
+	}
+	return mismatches;
+}
+function permutations(items) {
+	if (items.length <= 1) return [items];
+	const out = [];
+	for (let i = 0; i < items.length; i += 1) for (const rest of permutations([...items.slice(0, i), ...items.slice(i + 1)])) out.push([items[i], ...rest]);
+	return out;
+}
+/**
+* Reorder fills that share a sort key so the Position column comes out right.
+*
+* Timestamps tie: a real export had two fills on one instrument stamped the same
+* second, and the wrong one first made the leg look as though it had carried a
+* contract in overnight. That invented an unpriced lot, dropped a real pair, and
+* left the account $13.75 short of its own gross — a plausible-looking wrong
+* number, which is the exact failure this module exists to prevent.
+*
+* HOW MUCH WORK THIS ACTUALLY DOES, MEASURED. On the 2026-08-20 book 743 of
+* 3,805 timestamp-ordered books contain a same-second tie (1,014 runs, 2,128
+* fills; runs of 2 x 935, 3 x 63, 4 x 11, 5 x 5), and the column pins 727 to
+* exactly ONE admissible ordering. Eight admit several, and on all eight the
+* per-strategy split is identical — so where this function has a choice, the
+* choice is worth $0. Ties are two rows long in practice; the search is capped
+* so a pathological grid degrades to "leave it alone" rather than hanging (one
+* book on that export exceeds the cap).
+*
+* IT RETURNS ITS BEST CANDIDATE, WHICH IS NOT ALWAYS A GOOD ONE, AND THAT IS
+* DELIBERATE. When no permutation inside the tie runs reproduces the column, the
+* fills are out of sequence across DISTINCT timestamps and no tie-break can
+* repair them. This function does not decide what to do about that; it hands
+* back the least-bad ordering and rule 6 in planBooks REFUSES the book by name.
+* Silently keeping the least-bad ordering and pairing on it is what happened
+* before, and it left the money unnamed and unpriceable-but-priced.
+*/
+function resolveTiesByPosition(executions, keys) {
+	if (executions.length < 2 || positionMismatches(executions) === 0) return executions;
+	const runs = [];
+	for (let i = 0; i < executions.length;) {
+		let j = i + 1;
+		while (j < executions.length && keys[j] === keys[i]) j += 1;
+		if (j - i > 1) runs.push([i, j]);
+		i = j;
+	}
+	if (!runs.length) return executions;
+	const perRun = runs.map(([from, to]) => permutations(executions.slice(from, to)));
+	const combinations = perRun.reduce((n, list) => n * list.length, 1);
+	if (combinations > 5040) return executions;
+	let best = executions;
+	let bestScore = positionMismatches(executions);
+	for (let n = 0; n < combinations; n += 1) {
+		const candidate = [...executions];
+		let cursor = n;
+		for (let r = 0; r < runs.length; r += 1) {
+			const list = perRun[r];
+			const choice = list[cursor % list.length];
+			cursor = Math.floor(cursor / list.length);
+			for (let k = 0; k < choice.length; k += 1) candidate[runs[r][0] + k] = choice[k];
+		}
+		const score = positionMismatches(candidate);
+		if (score < bestScore) {
+			best = candidate;
+			bestScore = score;
+			if (!score) break;
+		}
+	}
+	return best;
+}
+/**
+* Chronological order for one account's fills.
+*
+* Execution id first, timestamp second, and file order only when neither is
+* readable. `basis` says which was used so a caller can see how the grid was
+* ordered — falling back to row order silently is how a reversed export produces
+* a plausible wrong number. Measured across ten client folders: six executions
+* grids were time-DESCENDING, three were grouped by the E/X column, none was
+* ascending. There is no fixed direction that works.
+*
+* Ties are then broken per instrument against the Position column, which is the
+* only witness in the file to what order the fills really happened in.
+*
+* NOTHING may read a book's "first" fill without coming through here. Reading
+* row 1 of a time-descending grid as the day's opening fill is what produced the
+* 2026-08-19 misdiagnosis recorded in the header: 25 of 31 books "started" with
+* an exit in file order, 0 of 31 did once ordered.
+*/
+function orderExecutions(executions = []) {
+	const rows = executions.map((execution, index) => ({
+		execution,
+		index,
+		seq: execSequence(execution),
+		time: parseExecutionTime(execution?.time)
+	}));
+	const forms = new Set(rows.map((row) => row.seq?.form));
+	const basis = rows.every((row) => row.seq) && forms.size === 1 ? "executionId" : rows.every((row) => row.time != null) ? "time" : "fileOrder";
+	const sorted = [...rows].sort((a, b) => {
+		if (basis === "executionId") return a.seq.major - b.seq.major || a.seq.minor - b.seq.minor || a.index - b.index;
+		if (basis === "time") return a.time - b.time || a.index - b.index;
+		return a.index - b.index;
+	});
+	const keyOf = (row) => basis === "executionId" ? `${row.seq.major}_${row.seq.minor}` : basis === "time" ? String(row.time) : `i${row.index}`;
+	const byInstrument = /* @__PURE__ */ new Map();
+	for (const row of sorted) {
+		const instrument = String(row.execution?.instrument || "").trim();
+		if (!byInstrument.has(instrument)) byInstrument.set(instrument, []);
+		byInstrument.get(instrument).push(row);
+	}
+	const resolved = /* @__PURE__ */ new Map();
+	for (const [instrument, group] of byInstrument) resolved.set(instrument, resolveTiesByPosition(group.map((row) => row.execution), group.map(keyOf)));
+	const cursors = /* @__PURE__ */ new Map();
+	return {
+		ordered: sorted.map((row) => {
+			const instrument = String(row.execution?.instrument || "").trim();
+			const index = cursors.get(instrument) || 0;
+			cursors.set(instrument, index + 1);
+			return resolved.get(instrument)[index];
+		}),
+		basis
+	};
+}
+function emptyResidual() {
+	return {
+		realized: 0,
+		pairs: 0,
+		reasons: {}
+	};
+}
+function addResidual(residual, reason, pnl) {
+	residual.pairs += 1;
+	residual.reasons[reason] = (residual.reasons[reason] || 0) + 1;
+	if (pnl != null) residual.realized += pnl;
+	return residual;
+}
+/**
+* Normalise whatever the caller knows about the previous close.
+*
+* `null` / omitted is the honest answer for a caller with no history at all, and
+* it is NOT the same as "there was nothing open": it means nobody looked. Both
+* end in the same refusal, but only one of them is a bug if it ever shows up on
+* a caller that does hold the history.
+*/
+function normalizeCarryIn(carryIn) {
+	if (!carryIn) return {
+		available: false,
+		reason: "no-history",
+		priorDate: null,
+		lotsByInstrument: /* @__PURE__ */ new Map()
+	};
+	const lotsByInstrument = /* @__PURE__ */ new Map();
+	for (const lot of carryIn.lots || []) {
+		const key = String(lot?.instrument || "").trim();
+		if (!lotsByInstrument.has(key)) lotsByInstrument.set(key, []);
+		lotsByInstrument.get(key).push(lot);
+	}
+	return {
+		available: Boolean(carryIn.available),
+		reason: String(carryIn.reason || ""),
+		priorDate: carryIn.priorDate ?? null,
+		lotsByInstrument
+	};
+}
+/**
+* Decide, before any pricing, whether each book can be priced at all.
+*
+* Returns instrument -> { multiplier, refusal, seedLots, impliedStart,
+* namedStrategies }. Every decision here is made from the ORDERED fills; see the
+* warning on orderExecutions about reading row 1 of a descending grid.
+*/
+function planBooks(orderedByInstrument, { strategyOf, carryIn }) {
+	const plans = /* @__PURE__ */ new Map();
+	for (const [instrument, fills] of orderedByInstrument) {
+		const multiplier = multiplierFor(instrument);
+		const first = fills[0];
+		const statedFirst = parsePosition(first?.position);
+		const startKnown = statedFirst != null;
+		const impliedStart = startKnown ? statedFirst - signedQty$1(first) : null;
+		const carriesIn = isExitFill(first) || startKnown && impliedStart !== 0;
+		const namedStrategies = /* @__PURE__ */ new Set();
+		for (const fill of fills) {
+			const strategyName = strategyOf(fill?.orderId);
+			if (strategyName) namedStrategies.add(strategyName);
+		}
+		const phantom = () => startKnown && impliedStart !== 0 ? [{
+			side: impliedStart > 0 ? 1 : -1,
+			qty: Math.abs(impliedStart),
+			price: null,
+			orderId: "",
+			strategyName: ""
+		}] : [];
+		let refusal = null;
+		let seedLots = [];
+		if (multiplier == null) {
+			refusal = BOOK_REFUSALS.UNKNOWN_INSTRUMENT;
+			seedLots = phantom();
+		} else if (positionMismatches(fills) > 0) {
+			refusal = BOOK_REFUSALS.POSITION_UNREPRODUCIBLE;
+			seedLots = phantom();
+		} else if (carriesIn) {
+			const lots = carryIn.available ? carryIn.lotsByInstrument.get(instrument) || [] : [];
+			const net = lots.reduce((total, lot) => total + lot.side * Math.abs(num$1(lot.qty)), 0);
+			const priced = lots.length > 0 && lots.every((lot) => Number.isFinite(Number(lot.price)));
+			if (startKnown && priced && Math.abs(net - impliedStart) < 1e-9) seedLots = lots.map((lot) => ({
+				side: lot.side,
+				qty: Math.abs(num$1(lot.qty)),
+				price: Number(lot.price),
+				orderId: "",
+				strategyName: String(lot.strategyName || "")
+			}));
+			else {
+				refusal = BOOK_REFUSALS.CARRY_IN;
+				seedLots = phantom();
+			}
+		}
+		plans.set(instrument, {
+			multiplier,
+			refusal,
+			seedLots,
+			carriesIn,
+			carriedInContracts: carriesIn && startKnown ? Math.abs(impliedStart) : 0,
+			impliedStart: startKnown ? impliedStart : 0,
+			namedStrategies
+		});
+	}
+	return plans;
+}
+/**
+* Per-strategy realized P&L for ONE account's trading day.
+*
+* @param {object[]} executions fills for a single account, as mapExecution shapes them
+* @param {object[]} orders     that account's orders (or the whole day's — joined by id)
+* @param {number|null} reportedGross the Accounts grid's 'Gross realized PnL' for this
+*        account, used only to gate the result. Pass null when the grid did not
+*        carry the column; the account is then REFUSED ('no-reported-gross')
+*        rather than compared against undefined or against the net column.
+* @param {object|null} carryIn what the caller knows about the previous close —
+*        `{ available, reason, priorDate, lots: [{ instrument, side, qty, price,
+*        strategyName }] }`, as carryForwardLots.js builds it. Omit it (or pass
+*        null) when the caller has no history; every carried-in book is then
+*        refused. Omitting it is a refusal, never a claim that nothing was open.
+*
+* Returns per-strategy rows plus everything a caller needs to decide whether it
+* may show them. `status` is the short answer:
+*   'no-trades'         the account did not trade
+*   'refused'           a book could not be priced at all — carry-in with no
+*                       basis, an instrument with no multiplier, or an ordering
+*                       the Position column contradicts. Nothing about this
+*                       account may be published.
+*   'no-reported-gross' the Accounts grid carried no 'Gross realized PnL', so
+*                       nothing could check the total. Also unpublishable.
+*   'exact'             every closed pair is attributed AND the total matches gross
+*   'partial'           the total matches gross but some pairs could not be attributed
+*   'unreconciled'      the derived total does not match gross — show nothing per-algo
+*/
+function deriveStrategyPnl({ executions = [], orders = [], reportedGross = null, carryIn = null, tolerance = DEFAULT_TOLERANCE } = {}) {
+	const orderById = /* @__PURE__ */ new Map();
+	for (const order of orders || []) {
+		const id = String(order?.id || "").trim();
+		if (id) orderById.set(id, order);
+	}
+	const strategyOf = (orderId) => String(orderById.get(String(orderId || "").trim())?.strategyName || "").trim();
+	const nameOf = (orderId) => String(orderById.get(String(orderId || "").trim())?.name || "").trim();
+	const { ordered, basis } = orderExecutions(executions);
+	if (!ordered.length) return {
+		byStrategy: [],
+		residual: emptyResidual(),
+		attributedTotal: 0,
+		derivedTotal: 0,
+		reportedGross,
+		difference: reportedGross == null ? null : -num$1(reportedGross),
+		pairs: 0,
+		unpricedPairs: 0,
+		detachedPairs: 0,
+		openContracts: 0,
+		carriedInContracts: 0,
+		refusedBooks: [],
+		unknownInstruments: [],
+		carryInBasis: carryIn?.available ? "prior-close" : carryIn?.reason || "no-history",
+		orderingBasis: basis,
+		positionAgrees: true,
+		reconciles: reportedGross == null ? false : Math.abs(num$1(reportedGross)) <= tolerance,
+		status: "no-trades"
+	};
+	const normalizedCarryIn = normalizeCarryIn(carryIn);
+	const orderedByInstrument = /* @__PURE__ */ new Map();
+	for (const execution of ordered) {
+		const instrument = String(execution?.instrument || "").trim();
+		if (!orderedByInstrument.has(instrument)) orderedByInstrument.set(instrument, []);
+		orderedByInstrument.get(instrument).push(execution);
+	}
+	const plans = planBooks(orderedByInstrument, {
+		strategyOf,
+		carryIn: normalizedCarryIn
+	});
+	const books = /* @__PURE__ */ new Map();
+	const runningPosition = /* @__PURE__ */ new Map();
+	const attributed = /* @__PURE__ */ new Map();
+	const residual = emptyResidual();
+	const unknownInstruments = /* @__PURE__ */ new Set();
+	const refusedBooks = [];
+	let pairs = 0;
+	let unpricedPairs = 0;
+	let detachedPairs = 0;
+	let carriedInContracts = 0;
+	let attributedTotal = 0;
+	let derivedTotal = 0;
+	let positionAgrees = true;
+	for (const [instrument, plan] of plans) {
+		if (plan.multiplier == null) unknownInstruments.add(instrumentRoot(instrument) || instrument);
+		carriedInContracts += plan.carriedInContracts;
+		if (plan.refusal) refusedBooks.push({
+			instrument,
+			reason: plan.refusal,
+			carriedInContracts: plan.carriedInContracts,
+			carryInReason: plan.refusal === BOOK_REFUSALS.CARRY_IN ? normalizedCarryIn.available ? "no-matching-lots" : normalizedCarryIn.reason : ""
+		});
+		books.set(instrument, plan.seedLots.map((lot) => ({ ...lot })));
+		runningPosition.set(instrument, plan.seedLots.length ? plan.seedLots.reduce((total, lot) => total + lot.side * lot.qty, 0) : plan.impliedStart);
+	}
+	for (const execution of ordered) {
+		const instrument = String(execution?.instrument || "").trim();
+		const plan = plans.get(instrument);
+		const multiplier = plan.multiplier;
+		const side = /^buy/i.test(String(execution?.action || "")) ? 1 : -1;
+		const filled = Math.abs(num$1(execution?.quantity));
+		const price = num$1(execution?.price);
+		const stated = parsePosition(execution?.position);
+		const book = books.get(instrument);
+		let remaining = filled;
+		while (remaining > 0 && book.length && book[0].side !== side) {
+			const lot = book[0];
+			const take = Math.min(remaining, lot.qty);
+			pairs += 1;
+			if (plan.refusal) {
+				unpricedPairs += 1;
+				addResidual(residual, plan.refusal, null);
+			} else {
+				const openStrategy = lot.strategyName != null && lot.strategyName !== "" ? lot.strategyName : lot.orderId ? strategyOf(lot.orderId) : "";
+				const closeStrategy = strategyOf(execution?.orderId);
+				const pnl = (price - lot.price) * take * multiplier * (lot.side === 1 ? 1 : -1);
+				derivedTotal += pnl;
+				const credit = (strategyName) => {
+					const row = attributed.get(strategyName) || {
+						realized: 0,
+						pairs: 0
+					};
+					row.realized += pnl;
+					row.pairs += 1;
+					attributed.set(strategyName, row);
+					attributedTotal += pnl;
+				};
+				if (openStrategy && closeStrategy && openStrategy === closeStrategy) credit(openStrategy);
+				else if (openStrategy && closeStrategy) addResidual(residual, RESIDUAL_REASONS.CROSS_STRATEGY, pnl);
+				else if (openStrategy || closeStrategy) {
+					const named = openStrategy || closeStrategy;
+					if (!nameOf(openStrategy ? execution?.orderId : lot.orderId)) addResidual(residual, RESIDUAL_REASONS.MANUAL_LEG, pnl);
+					else if (plan.namedStrategies.size > 1) addResidual(residual, RESIDUAL_REASONS.DETACHED_EXIT, pnl);
+					else {
+						credit(named);
+						detachedPairs += 1;
+					}
+				} else addResidual(residual, RESIDUAL_REASONS.NO_STRATEGY, pnl);
+			}
+			lot.qty -= take;
+			remaining -= take;
+			if (lot.qty <= 1e-9) book.shift();
+		}
+		if (remaining > 0) book.push({
+			side,
+			qty: remaining,
+			price,
+			orderId: execution?.orderId || "",
+			strategyName: ""
+		});
+		const nextPosition = num$1(runningPosition.get(instrument)) + side * filled;
+		runningPosition.set(instrument, nextPosition);
+		if (stated != null && Math.abs(nextPosition - stated) > 1e-9) positionAgrees = false;
+	}
+	const openContracts = [...books.values()].reduce((total, book) => total + book.reduce((n, lot) => n + lot.qty, 0), 0);
+	const byStrategy = [...attributed.entries()].map(([strategyName, row]) => ({
+		strategyName,
+		realized: Math.round(row.realized * 100) / 100,
+		pairs: row.pairs
+	})).sort((a, b) => Math.abs(b.realized) - Math.abs(a.realized) || a.strategyName.localeCompare(b.strategyName));
+	residual.realized = Math.round(residual.realized * 100) / 100;
+	attributedTotal = Math.round(attributedTotal * 100) / 100;
+	derivedTotal = Math.round(derivedTotal * 100) / 100;
+	const reconciles = reportedGross != null && Math.abs(derivedTotal - num$1(reportedGross)) <= tolerance;
+	const complete = reconciles && residual.pairs === 0 && unpricedPairs === 0 && !unknownInstruments.size && positionAgrees;
+	const status = refusedBooks.length ? "refused" : reportedGross == null ? "no-reported-gross" : complete ? "exact" : reconciles ? "partial" : "unreconciled";
+	return {
+		byStrategy,
+		residual,
+		attributedTotal,
+		derivedTotal,
+		reportedGross,
+		difference: reportedGross == null ? null : Math.round((derivedTotal - num$1(reportedGross)) * 100) / 100,
+		pairs,
+		unpricedPairs,
+		detachedPairs,
+		openContracts,
+		carriedInContracts,
+		refusedBooks,
+		unknownInstruments: [...unknownInstruments].filter(Boolean).sort(),
+		carryInBasis: normalizedCarryIn.available ? "prior-close" : normalizedCarryIn.reason || "no-history",
+		orderingBasis: basis,
+		positionAgrees,
+		reconciles,
+		status
+	};
+}
+/**
+* Same derivation, run once per account over a whole day's grids.
+*
+* Keying is (account, strategy) throughout: the returned map is per account and
+* each account's strategies are derived only from that account's own fills. A
+* single flat map keyed on strategy name would smear one account's money across
+* every row sharing the name — measured at 13 of 47 rows on the real export.
+*
+* `carryInByAccount` is what the caller knows about each account's previous
+* close, keyed by account name. A caller with no history passes nothing and
+* every carried-in book is refused — which is the correct answer for a caller
+* that cannot see yesterday, and the wrong one for a caller that can. See
+* carryForwardLots.js.
+*/
+function deriveStrategyPnlByAccount({ executions = [], orders = [], accounts = [], carryInByAccount = null, tolerance = DEFAULT_TOLERANCE } = {}) {
+	const grossByAccount = /* @__PURE__ */ new Map();
+	for (const account of accounts || []) {
+		const name = String(account?.accountName || "").trim();
+		if (!name) continue;
+		const gross = account?.grossRealizedPnlReported;
+		grossByAccount.set(name, gross === void 0 ? null : gross);
+	}
+	const execsByAccount = /* @__PURE__ */ new Map();
+	for (const execution of executions || []) {
+		const name = String(execution?.accountName || "").trim();
+		if (!name) continue;
+		if (!execsByAccount.has(name)) execsByAccount.set(name, []);
+		execsByAccount.get(name).push(execution);
+	}
+	const ordersByAccount = /* @__PURE__ */ new Map();
+	for (const order of orders || []) {
+		const name = String(order?.accountName || "").trim();
+		if (!name) continue;
+		if (!ordersByAccount.has(name)) ordersByAccount.set(name, []);
+		ordersByAccount.get(name).push(order);
+	}
+	const carryInFor = (name) => {
+		if (!carryInByAccount) return null;
+		if (typeof carryInByAccount.get === "function") return carryInByAccount.get(name) || null;
+		return carryInByAccount[name] || null;
+	};
+	const result = /* @__PURE__ */ new Map();
+	for (const name of /* @__PURE__ */ new Set([...grossByAccount.keys(), ...execsByAccount.keys()])) result.set(name, deriveStrategyPnl({
+		executions: execsByAccount.get(name) || [],
+		orders: ordersByAccount.get(name) || [],
+		reportedGross: grossByAccount.has(name) ? grossByAccount.get(name) : null,
+		carryIn: carryInFor(name),
+		tolerance
+	}));
+	return result;
+}
+//#endregion
+//#region src/domain/carryForwardLots.js
+var CARRY_IN_REASONS = {
+	NO_HISTORY: "no-history",
+	GAP: "gap"
+};
+var num = (value) => {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : 0;
+};
+var signedQty = (execution) => (/^buy/i.test(String(execution?.action || "")) ? 1 : -1) * Math.abs(num(execution?.quantity));
+/**
+* Replay one close's fills for one account onto a running per-instrument book.
+*
+* Returns the reason the account's carry-in became unusable, or '' if it stayed
+* usable. The book is mutated in place either way: the quantities stay honest
+* even when the prices stop being, so a later day's Position check still lines
+* up and reports a gap rather than a silently short book.
+*/
+function replayAccountDay(book, executions, strategyByOrderId) {
+	const { ordered } = orderExecutions(executions);
+	const byInstrument = /* @__PURE__ */ new Map();
+	for (const execution of ordered) {
+		const instrument = String(execution?.instrument || "").trim();
+		if (!byInstrument.has(instrument)) byInstrument.set(instrument, []);
+		byInstrument.get(instrument).push(execution);
+	}
+	let broken = "";
+	for (const [instrument, fills] of byInstrument) {
+		if (!book.has(instrument)) book.set(instrument, []);
+		const lots = book.get(instrument);
+		const held = lots.reduce((total, lot) => total + lot.side * lot.qty, 0);
+		const statedFirst = parsePosition(fills[0]?.position);
+		const impliedStart = statedFirst == null ? null : statedFirst - signedQty(fills[0]);
+		const needs = impliedStart == null ? isExitFill(fills[0]) ? null : 0 : impliedStart;
+		if (needs == null || Math.abs(needs - held) > 1e-9) {
+			broken = CARRY_IN_REASONS.GAP;
+			if (needs != null && needs !== held) {
+				const missing = needs - held;
+				lots.push({
+					side: missing > 0 ? 1 : -1,
+					qty: Math.abs(missing),
+					price: null,
+					strategyName: ""
+				});
+			}
+		}
+		for (const execution of fills) {
+			const side = /^buy/i.test(String(execution?.action || "")) ? 1 : -1;
+			const price = num(execution?.price);
+			let remaining = Math.abs(num(execution?.quantity));
+			while (remaining > 0 && lots.length && lots[0].side !== side) {
+				const take = Math.min(remaining, lots[0].qty);
+				lots[0].qty -= take;
+				remaining -= take;
+				if (lots[0].qty <= 1e-9) lots.shift();
+			}
+			if (remaining > 0) lots.push({
+				side,
+				qty: remaining,
+				price,
+				strategyName: strategyByOrderId.get(String(execution?.orderId || "").trim()) || ""
+			});
+		}
+	}
+	return broken;
+}
+/**
+* Open lots per account at the last stored close before `date`.
+*
+* @param {object[]} dailyImports the client's stored closes, each
+*        `{ date, executions, orders }`. Closes on or after `date` are ignored,
+*        so a re-import of the same day cannot feed itself.
+* @param {string} date the trading date being derived.
+* @returns {{ byAccount: Map<string, object>, priorDate: string|null, days: number }}
+*          Each entry is the `carryIn` shape deriveStrategyPnl accepts:
+*          `{ available, reason, priorDate, lots }`. An account with no stored
+*          close is simply absent from the map — deriveStrategyPnl reads that
+*          as 'no-history', which is what it is.
+*/
+function carryForwardLots({ dailyImports = [], date } = {}) {
+	const prior = (dailyImports || []).filter((entry) => entry && entry.date && String(entry.date) < String(date)).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+	const byAccount = /* @__PURE__ */ new Map();
+	if (!prior.length) return {
+		byAccount,
+		priorDate: null,
+		days: 0
+	};
+	const books = /* @__PURE__ */ new Map();
+	const broken = /* @__PURE__ */ new Map();
+	for (const close of prior) {
+		const strategyByOrderId = new Map((close.orders || []).map((order) => [String(order?.id || "").trim(), String(order?.strategyName || "").trim()]));
+		const byAccountExecutions = /* @__PURE__ */ new Map();
+		for (const execution of close.executions || []) {
+			const name = String(execution?.accountName || "").trim();
+			if (!name) continue;
+			if (!byAccountExecutions.has(name)) byAccountExecutions.set(name, []);
+			byAccountExecutions.get(name).push(execution);
+		}
+		for (const [name, executions] of byAccountExecutions) {
+			if (!books.has(name)) books.set(name, /* @__PURE__ */ new Map());
+			const reason = replayAccountDay(books.get(name), executions, strategyByOrderId);
+			if (reason && !broken.has(name)) broken.set(name, reason);
+		}
+	}
+	const priorDate = String(prior[prior.length - 1].date);
+	for (const [name, book] of books) {
+		const lots = [];
+		for (const [instrument, instrumentLots] of book) for (const lot of instrumentLots) {
+			if (lot.qty <= 1e-9) continue;
+			lots.push({
+				instrument,
+				side: lot.side,
+				qty: lot.qty,
+				price: lot.price,
+				strategyName: lot.strategyName
+			});
+		}
+		const reason = broken.get(name) || "";
+		byAccount.set(name, {
+			available: !reason,
+			reason,
+			priorDate,
+			lots
+		});
+	}
+	return {
+		byAccount,
+		priorDate,
+		days: prior.length
+	};
+}
+//#endregion
+//#region src/domain/joinDerivedStrategies.js
+var JOIN_STATUS = {
+	EXACT: "exact",
+	INCOMPLETE: "incomplete",
+	AMBIGUOUS: "ambiguous",
+	OFF_ROSTER: "off-roster",
+	UNBALANCED: "unbalanced",
+	UNAVAILABLE: "unavailable"
+};
+var ROW_JOIN = {
+	MATCHED: "matched",
+	NO_DERIVED_ROW: "no-derived-row",
+	AMBIGUOUS_NAME: "ambiguous-name",
+	REFUSED: "refused",
+	UNAVAILABLE: "unavailable"
+};
+var name = (value) => String(value ?? "").trim();
+var round2$1 = (value) => Math.round(Number(value) * 100) / 100;
+/**
+* Carry an account's derived per-strategy figures onto that account's grid rows.
+*
+* @param {object[]} strategies ONE account's Strategies-grid rows.
+* @param {object|null} derivation that same account's deriveStrategyPnl result.
+* @param {number} tolerance per-row rounding slack for the sum check.
+* @returns {{strategies: object[], join: object}} the rows with
+*   `derivedRealized` and `derivedRealizedJoin` set, and the join report —
+*   including any derived money that reached no row. Only `derivedRealized` is
+*   persisted; see ROW_JOIN above for why the reason is not.
+*/
+function joinDerivedStrategies({ strategies = [], derivation = null, tolerance = DEFAULT_TOLERANCE } = {}) {
+	const roster = Array.isArray(strategies) ? strategies : [];
+	const hasDerivation = derivation?.status === "exact" && Array.isArray(derivation.byStrategy);
+	const derivedRows = hasDerivation ? derivation.byStrategy : [];
+	const rosterCountByName = /* @__PURE__ */ new Map();
+	for (const strategy of roster) {
+		const key = name(strategy?.strategyName);
+		rosterCountByName.set(key, (rosterCountByName.get(key) || 0) + 1);
+	}
+	const matchedByName = /* @__PURE__ */ new Map();
+	const ambiguousNames = [];
+	const offRoster = [];
+	let joinedTotal = 0;
+	let offRosterRealized = 0;
+	for (const row of derivedRows) {
+		const key = name(row?.strategyName);
+		const count = rosterCountByName.get(key) || 0;
+		const realized = Number(row?.realized) || 0;
+		if (count > 1) ambiguousNames.push(key);
+		else if (count === 1) {
+			matchedByName.set(key, realized);
+			joinedTotal += realized;
+		} else {
+			offRoster.push({
+				strategyName: key,
+				realized
+			});
+			offRosterRealized += realized;
+		}
+	}
+	const unmatchedRoster = [...rosterCountByName.keys()].filter((key) => !matchedByName.has(key) && !ambiguousNames.includes(key));
+	const reportedGross = derivation && derivation.reportedGross != null ? Number(derivation.reportedGross) : null;
+	joinedTotal = round2$1(joinedTotal);
+	offRosterRealized = round2$1(offRosterRealized);
+	const slack = Math.max(Number(tolerance) || 0, .01 * (matchedByName.size + 1));
+	const balanced = hasDerivation && reportedGross != null && Math.abs(joinedTotal - reportedGross) <= slack;
+	const published = hasDerivation && balanced && ambiguousNames.length === 0;
+	const status = !hasDerivation ? JOIN_STATUS.UNAVAILABLE : ambiguousNames.length ? JOIN_STATUS.AMBIGUOUS : !balanced ? offRoster.length ? JOIN_STATUS.OFF_ROSTER : JOIN_STATUS.UNBALANCED : offRoster.length ? JOIN_STATUS.OFF_ROSTER : unmatchedRoster.length ? JOIN_STATUS.INCOMPLETE : JOIN_STATUS.EXACT;
+	return {
+		strategies: roster.map((strategy) => {
+			const key = name(strategy?.strategyName);
+			let rowJoin = ROW_JOIN.UNAVAILABLE;
+			if (hasDerivation) if (ambiguousNames.includes(key)) rowJoin = ROW_JOIN.AMBIGUOUS_NAME;
+			else if (!published) rowJoin = ROW_JOIN.REFUSED;
+			else if (matchedByName.has(key)) rowJoin = ROW_JOIN.MATCHED;
+			else rowJoin = ROW_JOIN.NO_DERIVED_ROW;
+			return {
+				...strategy,
+				derivedRealized: rowJoin === ROW_JOIN.MATCHED ? matchedByName.get(key) : null,
+				derivedRealizedJoin: rowJoin
+			};
+		}),
+		join: {
+			status,
+			published,
+			rosterRows: roster.length,
+			derivedRows: derivedRows.length,
+			matchedRows: published ? matchedByName.size : 0,
+			ambiguousNames: [...new Set(ambiguousNames)].sort(),
+			unmatchedRoster: unmatchedRoster.sort(),
+			offRoster: offRoster.sort((a, b) => a.strategyName.localeCompare(b.strategyName)),
+			offRosterRealized,
+			joinedTotal,
+			reportedGross,
+			difference: reportedGross == null ? null : round2$1(joinedTotal - reportedGross),
+			balanced
+		}
+	};
+}
 //#endregion
 //#region src/domain/strategyFamily.js
 /**
@@ -617,6 +1631,35 @@ License: MIT
 		}), (f.prototype = Object.create(u.prototype)).constructor = f, (l.prototype = Object.create(u.prototype)).constructor = l, (c.prototype = Object.create(c.prototype)).constructor = c, (p.prototype = Object.create(u.prototype)).constructor = p, v;
 	});
 })))();
+var KNOWN_FAMILIES = [
+	"ARPD",
+	"B2X",
+	"DJDR",
+	"FSA",
+	"IFSP",
+	"MST",
+	"OGX",
+	"PLPI",
+	"RBO",
+	"SYFY",
+	"TDC",
+	"URGO"
+];
+function normalizeStrategyFamily(strategyName) {
+	const cleaned = String(strategyName || "").replace(/^\d+\s*-\s*/, "").trim();
+	if (/bullet\s*bot/i.test(cleaned)) return "Bullet Bot";
+	const pfMatch = cleaned.match(/^([A-Z0-9]+)-PF\b/i);
+	if (pfMatch) return `${pfMatch[1].toUpperCase()}_PF`;
+	const [prefix] = cleaned.split("-");
+	const token = prefix.trim().toUpperCase();
+	if (KNOWN_FAMILIES.includes(token)) return token;
+	if (token.endsWith("PF") && KNOWN_FAMILIES.includes(token.replace(/PF$/, ""))) return `${token.replace(/PF$/, "")}_PF`;
+	return token || "Unknown";
+}
+function parseStrategyVersion(strategyName) {
+	const match = String(strategyName || "").match(/-\s*(\d+(?:\.\d+)+)\s*$/);
+	return match ? match[1] : "";
+}
 //#endregion
 //#region src/domain/strategyRan.js
 /** The four answers, strongest evidence first. */
@@ -626,6 +1669,7 @@ var RAN_BASES = [
 	"realized",
 	"none"
 ];
+var lower$2 = (value) => String(value || "").toLowerCase();
 /**
 * The family a strategy NAME belongs to, by this product's one rule.
 *
@@ -645,6 +1689,22 @@ function familyFromStrategyName(strategyName) {
 /** The family of one Strategies-grid row: what it stores, or its name. */
 function familyOfStrategyRow(strategy) {
 	return strategy?.strategyFamily || familyFromStrategyName(strategy?.strategyName) || null;
+}
+/**
+* The families named on a set of fills, as `Map(family -> version)`.
+*
+* The version travels with the family because a family named ONLY on the fills
+* (98 funded days on the book carried no strategy rows at all) has nowhere else
+* to get one.
+*/
+function familiesOnFills(executions = []) {
+	const families = /* @__PURE__ */ new Map();
+	for (const execution of executions || []) {
+		const family = familyFromStrategyName(execution?.strategyName);
+		if (!family) continue;
+		if (!families.has(family)) families.set(family, parseStrategyVersion(execution.strategyName));
+	}
+	return families;
 }
 /**
 * THE RULE. One grid row against the families its own account's fills name.
@@ -684,6 +1744,87 @@ function ranBasisOf(strategy, filledFamilies = null) {
 /** Did this strategy run on its close. The one-line question a screen asks. */
 function strategyRan(strategy, filledFamilies = null) {
 	return ranBasisOf(strategy, filledFamilies) !== "none";
+}
+/**
+* CAN THIS ROW'S "NO" BE BELIEVED WITHOUT THE CLOSE'S FILLS?
+*
+* `none` is the only answer of the four that needs evidence the caller may not
+* hold. A row that is enabled, or that carries a stored answer from step 47,
+* answers itself; a row that is none of those answers `none` only because the
+* fills were never consulted, and that is not the same statement as "the day
+* was quiet".
+*
+* It exists for Recalculate. A login carries no executions, so pressing it on a
+* close whose fills have not arrived, on a database where step 47's backfill
+* has not run, re-derived every row as `none` and wrote back the flags this
+* product just spent a commit removing: `Expected strategy missing` Critical on
+* real-money accounts that had traded all day, and `Strategy disabled` Warning
+* once per row on each of them. A positive answer never needs this; only a
+* negative one does.
+*/
+function ranAnswerIsKnown(strategy, { closeHasFills = true } = {}) {
+	if (closeHasFills) return true;
+	if (storedRanBasis(strategy) || typeof strategy?.ran === "boolean") return true;
+	return strategy?.enabled === true;
+}
+/**
+* The ingest side: every row of a close answered against that close's own fills.
+*
+* Returns a new array, row for row, each carrying `ran` and `ranBasis`. Fills
+* are matched per ACCOUNT, by name, because a family running on one account of
+* a client says nothing about the same family on another.
+*
+* A close that carries NO fills at all leaves a row's existing stored answer
+* alone. An empty executions array is not evidence of a quiet day: the browser
+* loads orders and executions after the first screen, and Recalculate runs on
+* whatever it holds at the time. Without this, one Recalculate on a close whose
+* trade history had not arrived would rewrite every `fills` row to `none` and
+* flag the day as idle.
+*
+* `evidenceComplete` IS THE OTHER HALF OF THAT, FOR A ROW WITH NO STORED ANSWER.
+*
+* The guard above protects a row that already carries one. On a database where
+* step 47 has run and `call public.backfill_strategy_ran_all();` has not yet
+* finished, every row reads back `ran: null, ranBasis: ''`, so there is nothing
+* to protect and the rule ran with no fills — which on a close exported after
+* shutdown answers `none` for nearly every row. Pass `evidenceComplete: false`
+* (which recalculateDailyImport does for a close whose fills a login did not
+* carry) and such a row is left UNANSWERED rather than answered `none`. An
+* unanswered row reads as `none` to anything that asks, which is the product's
+* behaviour either way; what it does not do is let a caller mistake it for a
+* measurement. See ranAnswerIsKnown, and reconcile.js's four flags.
+*/
+function withStrategyRan(strategies = [], executions = [], { evidenceComplete = true } = {}) {
+	const byAccount = /* @__PURE__ */ new Map();
+	for (const execution of executions || []) {
+		const name = lower$2(execution?.accountName);
+		if (!name) continue;
+		if (!byAccount.has(name)) byAccount.set(name, []);
+		byAccount.get(name).push(execution);
+	}
+	const filledByAccount = new Map([...byAccount.entries()].map(([name, rows]) => [name, familiesOnFills(rows)]));
+	const closeHasFills = (executions || []).length > 0;
+	return (strategies || []).map((strategy) => {
+		if (!closeHasFills && (storedRanBasis(strategy) || typeof strategy?.ran === "boolean")) {
+			const basis = ranBasisOf(strategy);
+			return {
+				...strategy,
+				ran: basis !== "none",
+				ranBasis: basis
+			};
+		}
+		if (!closeHasFills && !evidenceComplete && !ranAnswerIsKnown(strategy, { closeHasFills: false })) return {
+			...strategy,
+			ran: strategy?.ran ?? null,
+			ranBasis: strategy?.ranBasis || ""
+		};
+		const basis = ranBasisFromEvidence(strategy, filledByAccount.get(lower$2(strategy?.accountName)));
+		return {
+			...strategy,
+			ran: basis !== "none",
+			ranBasis: basis
+		};
+	});
 }
 //#endregion
 //#region src/domain/simulationAccounts.js
@@ -1023,6 +2164,30 @@ function splitSimulationRows(close = {}) {
 		}
 	};
 }
+/**
+* Everything that must be written to the database for one close: live rows plus
+* simulated rows plus undetermined rows.
+*
+* The split is an APPLICATION-LAYER concern. account_snapshots stores one row
+* per account per close regardless of nature, and the split is recomputed on
+* load from the account's own record — so a CAM correcting a misclassification
+* fixes every close at once instead of only the ones imported after the fix.
+*/
+function mergeSimulationRows(importResult = {}) {
+	const sim = importResult.simulation || {};
+	const und = sim.undetermined || {};
+	const join = (key) => [
+		...importResult[key] || [],
+		...sim[key] || [],
+		...und[key] || []
+	];
+	return {
+		snapshots: join("snapshots"),
+		strategies: join("strategies"),
+		orders: join("orders"),
+		executions: join("executions")
+	};
+}
 //#endregion
 //#region src/domain/reconcile.js
 var ACCOUNT_TYPES = {
@@ -1052,6 +2217,494 @@ var ACCOUNT_STATUSES = {
 	FAILED: "Failed",
 	PAYOUT_HOLD: "Payout Hold"
 };
+var PAYOUT_STATES = {
+	NOT_REQUESTED: "Not requested",
+	REQUEST_PAYOUT: "Request payout",
+	PAYOUT_REQUESTED: "Payout requested",
+	PAYOUT_APPROVED: "Payout approved",
+	CLEAR_TO_TRADE: "Clear to trade"
+};
+function nowIso() {
+	return (/* @__PURE__ */ new Date()).toISOString();
+}
+function makeAccountAlias(accountName, connection = "") {
+	const name = String(accountName || "");
+	const label = String(connection || "Account").trim() || "Account";
+	if (!name) return label;
+	if (name.length <= 8) return `${label} - ${name}`;
+	if (/\s/.test(name) && !/\d{5}/.test(name)) return `${label} - ${name}`;
+	return `${label} - ${name.slice(-4)}`;
+}
+/**
+* The type a never-before-seen account starts life with.
+*
+* Only a BRAND-NEW account can be seeded as Simulation, and only when the
+* classifier already recognises it (name matches NinjaTrader's Sim<number>, or
+* the platform said so). An account that already has a stored type keeps it —
+* `existing.accountType` wins in createDefaultAccount — so this can never
+* reclassify a row a CAM has touched, and the seeding is announced with a
+* `New simulation account` flag rather than happening silently.
+*/
+function defaultAccountTypeFor(account, existing) {
+	if (existing?.accountType) return existing.accountType;
+	return classifyAccountNature({
+		...existing,
+		accountName: account.accountName
+	}, {
+		accountName: account.accountName,
+		isSimulated: account.isSimulated
+	}).nature === ACCOUNT_NATURES.SIMULATION ? ACCOUNT_TYPES.SIMULATION : ACCOUNT_TYPES.UNASSIGNED;
+}
+function createDefaultAccount(account, existing = {}) {
+	return {
+		accountName: account.accountName,
+		alias: existing.alias || makeAccountAlias(account.accountName, account.connection),
+		connection: account.connection || existing.connection || "",
+		accountType: defaultAccountTypeFor(account, existing),
+		simulationMode: existing.simulationMode || "",
+		status: existing.status || ACCOUNT_STATUSES.ACTIVE,
+		payoutState: existing.payoutState || PAYOUT_STATES.NOT_REQUESTED,
+		startBalance: existing.startBalance ?? "",
+		targetProfit: existing.targetProfit ?? "",
+		maxDrawdownLimit: existing.maxDrawdownLimit ?? "",
+		propFirmPlan: existing.propFirmPlan || "",
+		riskLevel: existing.riskLevel || "",
+		algoStack: existing.algoStack || "",
+		dailyLossLimit: existing.dailyLossLimit || "",
+		bulletBotPassType: existing.bulletBotPassType || "",
+		bulletBotDirection: existing.bulletBotDirection || "",
+		notes: existing.notes || "",
+		dateAdded: existing.dateAdded || nowIso().slice(0, 10),
+		dateFailed: existing.dateFailed || "",
+		dateFunded: existing.dateFunded || "",
+		dateLastPayout: existing.dateLastPayout || "",
+		payoutCount: existing.payoutCount ?? 0
+	};
+}
+/**
+* Flag ids must be UUIDs.
+*
+* A flag raised here is written straight to operational_flags, whose primary key
+* is a uuid, and the same id is what the CRM later sends back to resolve it. A
+* composite key like `Strategy disabled-FTDFYL1001-za9s0gd` read fine as a React
+* key but Postgres rejected it, so closing a freshly imported flag failed: the
+* optimistic update hid it, the next load brought it back, and only after a
+* reload — once the row carried a database-generated uuid — did closing stick.
+*/
+function newFlagId() {
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+	return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+		const random = Math.floor(Math.random() * 16);
+		return (char === "x" ? random : random & 3 | 8).toString(16);
+	});
+}
+function makeFlag({ type, severity = "Warning", accountName = "", message }) {
+	return {
+		id: newFlagId(),
+		type,
+		severity,
+		accountName,
+		message,
+		status: "Open"
+	};
+}
+function groupStrategiesByAccount(strategies = []) {
+	return strategies.reduce((map, strategy) => {
+		if (!strategy.accountName) return map;
+		if (!map[strategy.accountName]) map[strategy.accountName] = [];
+		map[strategy.accountName].push(strategy);
+		return map;
+	}, {});
+}
+function shouldExpectStrategy(meta) {
+	if (!meta) return false;
+	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
+	if (meta.accountType === ACCOUNT_TYPES.SIMULATION) return false;
+	if ([
+		ACCOUNT_STATUSES.INACTIVE,
+		ACCOUNT_STATUSES.RESERVE,
+		ACCOUNT_STATUSES.FAILED,
+		ACCOUNT_STATUSES.PAYOUT_HOLD
+	].includes(meta.status)) return false;
+	return meta.accountType !== ACCOUNT_TYPES.UNASSIGNED;
+}
+function hasStrategyThatRan(strategies = []) {
+	return strategies.some((strategy) => strategyRan(strategy));
+}
+function isMissing(value) {
+	return value === void 0 || value === null;
+}
+function withoutDerivation(value) {
+	return value === void 0 ? 0 : value;
+}
+/**
+* What of a derivation is worth keeping on the snapshot — and what is not.
+*
+* deriveStrategyPnl returns twenty fields, and `reconcileDailyImport` needs all
+* of them: `byStrategy` is what the join carries onto the roster rows, and
+* `reconciles`/`positionAgrees`/`unpricedPairs`/`unknownInstruments`/
+* `refusedBooks` are what decide `status` in the first place. NONE of that has
+* to be STORED, and storing it is not free. This object is written verbatim into
+* account_snapshots.derivation (jsonb, step 37) and read back by two things that
+* select '*': supabaseStore.loadTable on every CRM state load, and
+* server/export/clientExport.js, whose own header records the busiest CAM's
+* default pull at 4.06 MB against a 4 MiB ceiling enforced as a 413. It is over
+* that line already. account_snapshots is ~322 B a row of scalars; the full
+* derivation measured 606 B a row mean on a real ten-folder export — the blob
+* was about to be two thirds of the row it hangs off.
+*
+* So this is a projection, and it is drawn on one rule: keep what cannot be
+* recovered from another stored column, drop what can.
+*
+*   status         Kept. Nothing else records the account-day's verdict, and
+*                  algoContribution refuses to show a split without seeing
+*                  'exact' here. It now also carries the two refusals —
+*                  'refused' (a book that could not be priced) and
+*                  'no-reported-gross' (no column to check the total against) —
+*                  which is why the residual's REASONS below have to be kept
+*                  whole: 'refused' says an account was declined, and only
+*                  `residual.reasons` says whether that was a carried-in
+*                  position, an instrument missing from the multiplier table, or
+*                  an ordering the Position column contradicts — and those three
+*                  have three different fixes (upload yesterday, add a
+*                  multiplier, look at the grid's Position column).
+*   reportedGross  Kept, and load-bearing: mapAccountSnapshot does NOT store
+*                  `grossRealizedPnlReported`, so this is the only surviving
+*                  copy of the raw 'Gross realized PnL' column, and it is the
+*                  basis the display re-checks the derived rows add up to.
+*   residual       Kept whole — the realized amount, the pair count and the
+*                  reasons. This is money the fills paired and could not credit
+*                  to any one strategy; nothing else stores it, and the point of
+*                  the feature is that it is surfaced rather than folded away.
+*   join           Kept, trimmed to `status`, `published`, `offRoster`,
+*                  `offRosterRealized` and — only when it is non-empty —
+*                  `ambiguousNames`. Off-roster money is derived money that
+*                  belongs to a strategy on no row of this account's grid, so no
+*                  strategy_snapshots row can carry it — exactly the money the
+*                  old one-directional join deleted in silence.
+*
+* WHY `ambiguousNames` IS HERE AND NOT PER ROW. It is the one per-row verdict
+* this blob could not otherwise answer. Step 37 originally shipped a
+* `strategy_snapshots.derived_realized_join` column carrying ROW_JOIN per roster
+* row; measured through mapStrategy on the real ten-folder export that was
+* 37.1 B on EVERY strategy row, and four of its five values are recoverable from
+* `derived_realized` plus `status`/`published` here (the table is in the ROW_JOIN
+* comment in joinDerivedStrategies.js). Only 'ambiguous-name' was not: a row
+* refused because its name matched several roster rows looks exactly like a row
+* refused for any other reason. So the names are kept ONCE per account-day, and
+* only on a day that had any — 0 of 40 account-days on that export, so 0 bytes
+* there — instead of a string on all 1,033 strategy rows of the busiest CAM's
+* pull. Same fact, same recoverable per-row answer, ~37 KiB less.
+*
+* Dropped, with where to find them instead: `byStrategy` (per row, in
+* strategy_snapshots.derived_realized — storing it here is the same figures a
+* second time); `join.unmatchedRoster` (the published rows whose
+* `derived_realized` is null), `join.matchedRows` (the published rows whose
+* `derived_realized` is not), `join.rosterRows` (count the account's
+* strategy_snapshots rows), `join.derivedRows` (`matchedRows` + `offRoster` on a
+* published day); `attributedTotal`, `derivedTotal`, `difference`,
+* `joinedTotal`, `balanced` (arithmetic over figures already stored); `pairs`,
+* `unpricedPairs`, `detachedPairs`, `openContracts`, `carriedInContracts`,
+* `unknownInstruments`, `refusedBooks`, `carryInBasis`, `orderingBasis`,
+* `positionAgrees`, `reconciles` (inputs to `status`, which is stored — and
+* re-derivable from the executions, which are stored too).
+*
+* `refusedBooks` is the one of those worth pausing on, because it names an
+* instrument and looks like information nothing else holds. It is not: the
+* instrument is on every execution row of the same close, and which KIND of
+* refusal it was is in `residual.reasons`, which is kept. Storing the array
+* would be a third copy of a fact already in two places.
+*
+* AND AN ACCOUNT THAT DID NOT TRADE STORES NOTHING AT ALL. A 'no-trades'
+* derivation is sixteen fields of zero and one string; it makes exactly the
+* claim a NULL makes, at 560 bytes a row instead of none. Nineteen of the forty
+* account-days on that export were in this state. `algoContribution` reads an
+* absent derivation and a 'no-trades' one identically — neither can produce a
+* derived day — so this is invisible to the display and worth ~10.6 KB per forty
+* snapshots stored.
+*
+* NOT A WEAKENING OF THE RECONCILIATION. Everything above is still computed, and
+* every refusal still fires on the full result: the join sees `byStrategy`, the
+* per-row columns are written from it, and `status` is decided before this
+* function is reached. This only decides what survives the trip to the database.
+*/
+function storableDerivation(derivation) {
+	if (!derivation) return null;
+	if (derivation.status === "no-trades") return null;
+	const join = derivation.join || null;
+	return {
+		status: derivation.status,
+		reportedGross: derivation.reportedGross ?? null,
+		residual: derivation.residual || {
+			realized: 0,
+			pairs: 0,
+			reasons: {}
+		},
+		...join ? { join: {
+			status: join.status,
+			published: Boolean(join.published),
+			offRoster: join.offRoster || [],
+			offRosterRealized: join.offRosterRealized || 0,
+			...join.ambiguousNames?.length ? { ambiguousNames: [...join.ambiguousNames] } : {}
+		} } : {}
+	};
+}
+function createSnapshot(account, strategies, derived = {}, derivation = null) {
+	const reportedTrailing = account.trailingMaxDrawdown;
+	const reportedWeekly = account.weeklyPnl;
+	const useDerivedTrailing = isMissing(reportedTrailing) && derived.trailing != null;
+	const useDerivedWeekly = isMissing(reportedWeekly) && derived.weekly != null;
+	return {
+		accountName: account.accountName,
+		connection: account.connection || "",
+		grossRealizedPnl: account.grossRealizedPnl === void 0 ? 0 : account.grossRealizedPnl,
+		pnlSource: account.pnlSource || null,
+		trailingMaxDrawdown: useDerivedTrailing ? derived.trailing.value : withoutDerivation(reportedTrailing),
+		trailingSource: useDerivedTrailing ? "derived" : isMissing(reportedTrailing) ? null : "reported",
+		trailingPeak: useDerivedTrailing ? derived.trailing.peak : null,
+		trailingHasGaps: useDerivedTrailing ? derived.trailing.hasGaps : false,
+		accountBalance: account.accountBalance === void 0 ? 0 : account.accountBalance,
+		weeklyPnl: useDerivedWeekly ? derived.weekly.value : withoutDerivation(reportedWeekly),
+		weeklyPnlSource: useDerivedWeekly ? "derived" : isMissing(reportedWeekly) ? null : "reported",
+		unrealizedPnl: account.unrealizedPnl === void 0 ? 0 : account.unrealizedPnl,
+		grossRealizedPnlReported: account.grossRealizedPnlReported ?? null,
+		derivation: storableDerivation(derivation),
+		strategies
+	};
+}
+function reconcileDailyImport({ clientId, date, registry = {}, parsed, history = [], priorImports = [], fillsLoaded = true }) {
+	const accountsByName = {};
+	const snapshots = [];
+	const flags = [];
+	const registryByLower = Object.fromEntries(Object.entries(registry || {}).map(([k, v]) => [k.toLowerCase(), v]));
+	const sourceAccounts = parsed.accounts || [];
+	const reportedStrategies = parsed.strategies || [];
+	const orders = scopeOrdersToDay(parsed.orders || [], date);
+	const orderStrategyById = Object.fromEntries(orders.map((order) => [order.id, order.strategyName || ""]));
+	const executions = scopeExecutionsToDay(parsed.executions || [], date).map((execution) => ({
+		...execution,
+		strategyName: orderStrategyById[execution.orderId] || ""
+	}));
+	const platformFlags = Object.fromEntries(sourceAccounts.filter((account) => typeof account.isSimulated === "boolean").map((account) => [String(account.accountName || "").toLowerCase(), account.isSimulated]));
+	const derivationByAccount = deriveStrategyPnlByAccount({
+		executions,
+		orders,
+		accounts: sourceAccounts,
+		carryInByAccount: carryForwardLots({
+			dailyImports: (priorImports || []).map((entry) => ({
+				date: entry?.date,
+				...mergeSimulationRows(entry)
+			})),
+			date
+		}).byAccount
+	});
+	const rosterByAccount = /* @__PURE__ */ new Map();
+	reportedStrategies.forEach((strategy, index) => {
+		const key = String(strategy.accountName || "").trim();
+		if (!rosterByAccount.has(key)) rosterByAccount.set(key, []);
+		rosterByAccount.get(key).push({
+			strategy,
+			index
+		});
+	});
+	const strategies = new Array(reportedStrategies.length);
+	const joinedDerivationByAccount = /* @__PURE__ */ new Map();
+	for (const key of /* @__PURE__ */ new Set([...rosterByAccount.keys(), ...derivationByAccount.keys()])) {
+		const derivation = derivationByAccount.get(key) || null;
+		const roster = rosterByAccount.get(key) || [];
+		const joined = joinDerivedStrategies({
+			strategies: roster.map((entry) => entry.strategy),
+			derivation
+		});
+		joined.strategies.forEach((strategy, position) => {
+			strategies[roster[position].index] = strategy;
+		});
+		if (derivation) joinedDerivationByAccount.set(key, {
+			...derivation,
+			join: joined.join
+		});
+	}
+	const ranStrategies = withStrategyRan(strategies, executions, { evidenceComplete: fillsLoaded });
+	const strategiesByAccount = groupStrategiesByAccount(ranStrategies);
+	const ranIsKnown = (strategy) => ranAnswerIsKnown(strategy, { closeHasFills: fillsLoaded });
+	const nothingRanIsKnown = (list) => fillsLoaded || list.length > 0 && list.every(ranIsKnown);
+	const seen = /* @__PURE__ */ new Set();
+	for (const account of sourceAccounts) {
+		const existing = registry[account.accountName] || registryByLower[account.accountName.toLowerCase()];
+		const meta = createDefaultAccount(account, existing);
+		const strategies = strategiesByAccount[account.accountName] || [];
+		const nature = classifyAccountNature({
+			...existing || {},
+			accountName: account.accountName
+		}, {
+			accountName: account.accountName,
+			isSimulated: account.isSimulated
+		});
+		const isRealMoney = nature.nature === ACCOUNT_NATURES.LIVE;
+		accountsByName[account.accountName] = meta;
+		const todayClose = {
+			date,
+			snapshots: [{
+				accountName: account.accountName,
+				accountBalance: account.accountBalance,
+				grossRealizedPnl: account.grossRealizedPnl
+			}]
+		};
+		const closes = [...history, todayClose];
+		const derived = {
+			trailing: !isRealMoney || isCashType(meta.accountType) || account.trailingMaxDrawdown !== void 0 && account.trailingMaxDrawdown !== null ? null : deriveTrailingDrawdown(closes, account.accountName, date, { startBalance: meta.startBalance }),
+			weekly: account.weeklyPnl === void 0 || account.weeklyPnl === null ? deriveWeeklyPnl(closes, account.accountName, date) : null
+		};
+		snapshots.push(createSnapshot(account, strategies, derived, joinedDerivationByAccount.get(String(account.accountName || "").trim())));
+		seen.add(account.accountName.toLowerCase());
+		if (nature.nature === ACCOUNT_NATURES.UNDETERMINED) flags.push(makeFlag({
+			type: "Account nature undetermined",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} is counted as neither real nor simulated because ${nature.reason}`
+		}));
+		else if (nature.nature === ACCOUNT_NATURES.SIMULATION && nature.heuristic) flags.push(makeFlag({
+			type: "New simulation account",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} is being reported as simulated because ${nature.reason}. Its balance and P&L are kept out of every real total. Confirm it on the account record, or mark it as live money if that is wrong.`
+		}));
+		else if (!existing) flags.push(makeFlag({
+			type: "New account",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} is new and needs manual classification.`
+		}));
+		if (isRealMoney && meta.accountType === ACCOUNT_TYPES.UNASSIGNED && meta.status !== ACCOUNT_STATUSES.RESERVE) flags.push(makeFlag({
+			type: "Unassigned account",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} needs an account type before close.`
+		}));
+		if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies) && nothingRanIsKnown(strategies)) flags.push(makeFlag({
+			type: "Expected strategy missing",
+			severity: "Critical",
+			accountName: account.accountName,
+			message: `${meta.alias} is active but no strategy ran in this close.`
+		}));
+		const ddLimit = !isRealMoney || isCashType(meta.accountType) ? NaN : Number(meta.maxDrawdownLimit);
+		const snapshot = snapshots[snapshots.length - 1];
+		const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
+		const limits = drawdownThresholds(snapshot.trailingSource);
+		const derivedNote = snapshot.trailingSource === "derived" ? " (estimated from stored closes - confirm with the prop firm)" : "";
+		if (Number.isFinite(ddLimit) && ddLimit > 0) {
+			const currentDD = Math.abs(rawDD);
+			if (currentDD > 0) {
+				const remaining = ddLimit - currentDD;
+				if (remaining <= 0) flags.push(makeFlag({
+					type: "Drawdown breached",
+					severity: "Critical",
+					accountName: account.accountName,
+					message: `${meta.alias} has exceeded its $${ddLimit.toLocaleString()} max drawdown limit. Account may be terminated.${derivedNote}`
+				}));
+				else if (remaining <= limits.critical) flags.push(makeFlag({
+					type: "Drawdown near limit",
+					severity: "Critical",
+					accountName: account.accountName,
+					message: `${meta.alias} is $${Math.round(remaining)} from its $${ddLimit.toLocaleString()} max drawdown limit. Immediate action required.${derivedNote}`
+				}));
+				else if (remaining <= limits.warning) flags.push(makeFlag({
+					type: "Drawdown approaching limit",
+					severity: "Warning",
+					accountName: account.accountName,
+					message: `${meta.alias} has $${Math.round(remaining)} remaining before its $${ddLimit.toLocaleString()} max drawdown limit.${derivedNote}`
+				}));
+			}
+		} else if (isRealMoney && rawDD !== 0 && !isCashType(meta.accountType)) {
+			if (rawDD <= 0) flags.push(makeFlag({
+				type: "Drawdown breached",
+				severity: "Critical",
+				accountName: account.accountName,
+				message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} - account limit reached or exceeded. Verify with prop firm immediately.`
+			}));
+			else if (rawDD <= limits.critical) flags.push(makeFlag({
+				type: "Drawdown near limit",
+				severity: "Critical",
+				accountName: account.accountName,
+				message: `${meta.alias} has only $${Math.round(rawDD)} of trailing drawdown buffer remaining. Immediate action required.`
+			}));
+			else if (rawDD <= limits.warning) flags.push(makeFlag({
+				type: "Drawdown approaching limit",
+				severity: "Warning",
+				accountName: account.accountName,
+				message: `${meta.alias} has $${Math.round(rawDD)} of trailing drawdown buffer remaining.`
+			}));
+		}
+		const targetProfit = isRealMoney ? Number(meta.targetProfit) : NaN;
+		if (meta.accountType === ACCOUNT_TYPES.FUNDED && Number.isFinite(targetProfit) && targetProfit > 0 && Number(account.accountBalance) >= targetProfit && meta.payoutState === PAYOUT_STATES.NOT_REQUESTED) flags.push(makeFlag({
+			type: "Payout eligible",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} reached its target profit. Balance $${Number(account.accountBalance).toLocaleString()} ≥ target $${targetProfit.toLocaleString()}. Request payout.`
+		}));
+		if ([ACCOUNT_TYPES.EVALUATION_BULLET, ACCOUNT_TYPES.EVALUATION_STANDARD].includes(meta.accountType) && meta.status === ACCOUNT_STATUSES.ACTIVE && Number.isFinite(targetProfit) && targetProfit > 0 && Number(account.accountBalance) >= targetProfit) flags.push(makeFlag({
+			type: "Evaluation target reached",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} reached its evaluation target. Balance $${Number(account.accountBalance).toLocaleString()} ≥ target $${targetProfit.toLocaleString()}. Deactivate and confirm consistency with the prop firm to activate.`
+		}));
+		if (meta.status === ACCOUNT_STATUSES.PAYOUT_HOLD && hasStrategyThatRan(strategies)) flags.push(makeFlag({
+			type: "Payout hold violation",
+			severity: "Critical",
+			accountName: account.accountName,
+			message: `${meta.alias} is in payout hold but ran a strategy.`
+		}));
+		if ([
+			ACCOUNT_STATUSES.INACTIVE,
+			ACCOUNT_STATUSES.RESERVE,
+			ACCOUNT_STATUSES.FAILED
+		].includes(meta.status) && hasStrategyThatRan(strategies)) flags.push(makeFlag({
+			type: "Unexpected strategy active",
+			severity: "Critical",
+			accountName: account.accountName,
+			message: `${meta.alias} is ${meta.status} but ran a strategy.`
+		}));
+		for (const strategy of strategies) if (!strategyRan(strategy) && ranIsKnown(strategy)) flags.push(makeFlag({
+			type: "Strategy disabled",
+			severity: "Warning",
+			accountName: account.accountName,
+			message: `${meta.alias} has ${strategy.strategyName || "a strategy"} disabled.`
+		}));
+	}
+	for (const [accountName, meta] of Object.entries(registry || {})) {
+		if (seen.has(accountName.toLowerCase())) continue;
+		accountsByName[accountName] = meta;
+		if (!(classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION) && meta.accountType !== ACCOUNT_TYPES.IGNORE && meta.status !== ACCOUNT_STATUSES.INACTIVE) flags.push(makeFlag({
+			type: "Missing account",
+			severity: "Warning",
+			accountName,
+			message: `${meta.alias || accountName} existed before but did not appear in this close.`
+		}));
+	}
+	const split = splitSimulationRows({
+		accounts: accountsByName,
+		snapshots,
+		strategies: ranStrategies,
+		orders,
+		executions,
+		platformFlags
+	});
+	return {
+		id: `${clientId}-${date}-${Date.now()}`,
+		clientId,
+		date,
+		importedAt: nowIso(),
+		status: flags.some((flag) => flag.severity === "Critical" || flag.severity === "Warning") ? "Needs review" : "Ready to close",
+		accounts: accountsByName,
+		snapshots: split.live.snapshots,
+		strategies: split.live.strategies,
+		orders: split.live.orders,
+		executions: split.live.executions,
+		simulation: split.simulation,
+		flags,
+		pnlSourceSummary: summarizePnlSources(split.live.snapshots)
+	};
+}
 //#endregion
 //#region src/domain/operationsSegments.js
 var SEGMENTS = {
@@ -3070,7 +4723,7 @@ function clientsWithCloseOn(clients, date) {
 //#endregion
 //#region src/domain/dailyEmailPackage.js
 /** The subject a CAM sees in their phone's notification, so it leads with the day. */
-function subjectFor(date, clientCount) {
+function subjectFor$1(date, clientCount) {
 	return `Daily reports · ${date} · ${`${clientCount} client${clientCount === 1 ? "" : "s"}`}`;
 }
 function packageFileNames(date) {
@@ -3172,7 +4825,7 @@ function buildDailyEmailPackage({ clients, date, generatedAt = null, camName = "
 		bytes: strToU8(`${JSON.stringify(raw, null, 2)}\n`)
 	});
 	return {
-		subject: subjectFor(date, built.length),
+		subject: subjectFor$1(date, built.length),
 		text: bodyFor({
 			built,
 			failed,
@@ -3207,17 +4860,17 @@ function bodyFor({ built, failed = [], date, camName = "" }) {
 	lines.push("Open one and print it if a client asks for a PDF.");
 	return lines.join("\n");
 }
-function fileStem(clientName, date) {
+function fileStem$1(clientName, date) {
 	return `${String(clientName || "Client").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "Client"} - ${date} daily report`;
 }
 function entryNames(built, date) {
 	const counts = /* @__PURE__ */ new Map();
 	for (const item of built) {
-		const stem = fileStem(item.client?.name, date);
+		const stem = fileStem$1(item.client?.name, date);
 		counts.set(stem, (counts.get(stem) || 0) + 1);
 	}
 	return built.map((item) => {
-		const stem = fileStem(item.client?.name, date);
+		const stem = fileStem$1(item.client?.name, date);
 		if ((counts.get(stem) || 0) < 2) return stem;
 		const id = String(item.client?.id || "").replace(/[^0-9a-zA-Z]/g, "").slice(0, 8);
 		return id ? `${stem} (${id})` : stem;
@@ -3460,4 +5113,748 @@ async function sendViaBrevo({ apiKey, from, to, subject, text, attachments = [] 
 	}
 }
 //#endregion
-export { EmailDeliveryError, buildDailyEmailPackage, planDailyEmails, runDailyEmails, sendViaBrevo, usersFromRows };
+//#region src/offline/captureRedaction.js
+var isPlainObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+/**
+* A copy of the capture with every strategy's configuration emptied.
+*
+* Returns a new object; the input is not touched, because a caller that goes on
+* to upload the same capture must upload what the machine actually reported.
+*/
+function redactCapture(capture) {
+	if (Array.isArray(capture)) return capture.map(redactCapture);
+	if (!isPlainObject(capture)) return capture;
+	const isStrategyRow = capture.parameterCaptureStatus !== void 0 || capture.parameters !== void 0;
+	const out = {};
+	for (const [key, value] of Object.entries(capture)) {
+		if (isStrategyRow && key === "parametersRaw") continue;
+		if (isStrategyRow && (key === "parameters" || key === "extraValues") && isPlainObject(value)) {
+			out[key] = {};
+			continue;
+		}
+		out[key] = redactCapture(value);
+	}
+	return out;
+}
+Object.freeze([
+	"parameters",
+	"parametersRaw",
+	"extraValues"
+]);
+//#endregion
+//#region src/domain/openPositions.js
+function numeric(value) {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+/**
+* Accounts that still had something open when the snapshot was taken.
+*
+* Unrealized PnL is the signal because it is the one every account carries and
+* the one that moves into realized when the position closes. A position at
+* exactly break even is invisible here, and that is acceptable: it moves no
+* money into the realized total, which is the number being protected.
+*/
+function accountsWithOpenPositions(accounts) {
+	return (accounts || []).filter((account) => numeric(account?.unrealizedPnl) !== 0).map((account) => ({
+		accountName: account.accountName,
+		unrealizedPnl: numeric(account.unrealizedPnl)
+	}));
+}
+/**
+* Was this snapshot taken before the day had finished closing?
+*
+* @returns {{ open: boolean, accounts: Array, unrealizedTotal: number }}
+*/
+function openPositionsAt(snapshot) {
+	const accounts = accountsWithOpenPositions(snapshot?.accounts);
+	return {
+		open: accounts.length > 0,
+		accounts,
+		unrealizedTotal: Number(accounts.reduce((sum, a) => sum + a.unrealizedPnl, 0).toFixed(2))
+	};
+}
+//#endregion
+//#region src/domain/autoExportContract.js
+var ROW_SCHEMAS = {
+	accounts: {
+		required: ["accountName"],
+		strings: [
+			"connectionName",
+			"displayName",
+			"currency",
+			"status"
+		],
+		numbers: [
+			"netLiquidation",
+			"cashValue",
+			"realizedPnl",
+			"grossRealizedPnl",
+			"unrealizedPnl",
+			"totalPnl",
+			"weeklyPnl",
+			"trailingMaxDrawdown",
+			"buyingPower",
+			"excessIntradayMargin",
+			"initialMargin",
+			"maintenanceMargin"
+		],
+		optionalBooleans: ["isSimulated"]
+	},
+	strategies: {
+		required: [
+			"strategyId",
+			"strategyName",
+			"accountName",
+			"instrument",
+			"state",
+			"parameterCaptureStatus"
+		],
+		strings: [
+			"strategyDisplayName",
+			"position",
+			"dataSeries",
+			"connectionName",
+			"parameterCaptureStatus"
+		],
+		numbers: [
+			"quantity",
+			"averagePrice",
+			"realizedPnl",
+			"unrealizedPnl"
+		],
+		booleans: ["enabled", "sync"],
+		timestamps: ["startedAt"],
+		objects: ["parameters"]
+	},
+	orders: {
+		required: [
+			"orderId",
+			"accountName",
+			"instrument",
+			"action",
+			"orderType",
+			"state"
+		],
+		strings: [
+			"strategyId",
+			"strategyName",
+			"action",
+			"orderType",
+			"state",
+			"tif",
+			"oco",
+			"name",
+			"nativeId"
+		],
+		numbers: [
+			"quantity",
+			"filled",
+			"remaining",
+			"limitPrice",
+			"stopPrice",
+			"averageFillPrice"
+		],
+		timestamps: ["time"]
+	},
+	executions: {
+		required: [
+			"executionId",
+			"accountName",
+			"instrument",
+			"action",
+			"time"
+		],
+		strings: [
+			"orderId",
+			"strategyId",
+			"strategyName",
+			"instrument",
+			"action",
+			"marketPosition",
+			"entryExit",
+			"name",
+			"connectionName",
+			"nativeId"
+		],
+		numbers: [
+			"quantity",
+			"price",
+			"commission",
+			"fee",
+			"rate",
+			"realizedPnl"
+		],
+		timestamps: ["time"]
+	}
+};
+var ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))$/;
+var DATE = /^\d{4}-\d{2}-\d{2}$/;
+function hasOwn(object, key) {
+	return Object.prototype.hasOwnProperty.call(object, key);
+}
+function isObject(value) {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isIsoTimestamp(value) {
+	if (typeof value !== "string") return false;
+	return ISO_TIMESTAMP.test(value) && isDate(value.slice(0, 10));
+}
+function isDate(value) {
+	if (typeof value !== "string" || !DATE.test(value)) return false;
+	const [year, month, day] = value.split("-").map(Number);
+	const parsed = new Date(Date.UTC(year, month - 1, day));
+	return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+}
+function tradingDateInNewYork(timestamp) {
+	const date = new Date(timestamp);
+	if (Number.isNaN(date.getTime())) return null;
+	const parts = new Intl.DateTimeFormat("en-US", {
+		timeZone: "America/New_York",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit"
+	}).formatToParts(date);
+	const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+	return `${values.year}-${values.month}-${values.day}`;
+}
+function isScalarOrNull(value) {
+	return value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value);
+}
+function validateRows(snapshot, section, errors) {
+	const rows = snapshot[section];
+	if (!Array.isArray(rows)) {
+		errors.push(`${section} must be an array`);
+		return;
+	}
+	const schema = ROW_SCHEMAS[section];
+	rows.forEach((row, index) => {
+		const path = `${section}[${index}]`;
+		if (!isObject(row)) {
+			errors.push(`${path} must be an object`);
+			return;
+		}
+		for (const key of schema.required) if (!hasOwn(row, key) || typeof row[key] !== "string" || !row[key].trim()) errors.push(`${path}.${key} is required`);
+		for (const key of schema.strings || []) if (hasOwn(row, key) && row[key] !== null && typeof row[key] !== "string") errors.push(`${path}.${key} must be a string or null`);
+		for (const key of schema.numbers || []) if (!hasOwn(row, key) || row[key] !== null && (typeof row[key] !== "number" || !Number.isFinite(row[key]))) errors.push(`${path}.${key} must be a number or null`);
+		for (const key of schema.booleans || []) if (!hasOwn(row, key) || row[key] !== null && typeof row[key] !== "boolean") errors.push(`${path}.${key} must be a boolean or null`);
+		for (const key of schema.optionalBooleans || []) if (hasOwn(row, key) && row[key] !== null && typeof row[key] !== "boolean") errors.push(`${path}.${key} must be a boolean or null when present`);
+		for (const key of schema.timestamps || []) if (!hasOwn(row, key) || row[key] !== null && !isIsoTimestamp(row[key])) errors.push(`${path}.${key} must be an ISO-8601 timestamp with an offset or null`);
+		for (const key of schema.objects || []) if (!hasOwn(row, key) || !isObject(row[key])) errors.push(`${path}.${key} must be an object`);
+		else for (const [parameter, value] of Object.entries(row[key])) if (!isScalarOrNull(value)) errors.push(`${path}.${key}.${parameter} must be a scalar or null`);
+	});
+}
+function validateAutoExportSnapshot(snapshot) {
+	const errors = [];
+	if (!isObject(snapshot)) return {
+		ok: false,
+		errors: ["snapshot must be an object"]
+	};
+	if (snapshot.schemaVersion !== 1) errors.push("schemaVersion must be 1");
+	for (const key of ["captureId", "timeZone"]) if (typeof snapshot[key] !== "string" || !snapshot[key].trim()) errors.push(`${key} is required`);
+	if (!isIsoTimestamp(snapshot.capturedAt)) errors.push("capturedAt must be an ISO-8601 timestamp with an offset");
+	if (!isDate(snapshot.tradingDate)) errors.push("tradingDate must be an ISO date");
+	if (snapshot.timeZone !== "America/New_York") errors.push("timeZone must be America/New_York");
+	if (isIsoTimestamp(snapshot.capturedAt) && isDate(snapshot.tradingDate) && tradingDateInNewYork(snapshot.capturedAt) !== snapshot.tradingDate) errors.push("tradingDate must match capturedAt in America/New_York");
+	if (!isObject(snapshot.source)) errors.push("source must be an object");
+	else for (const key of [
+		"machineId",
+		"agentVersion",
+		"addonVersion",
+		"ninjaTraderVersion"
+	]) if (typeof snapshot.source[key] !== "string" || !snapshot.source[key].trim()) errors.push(`source.${key} is required`);
+	for (const section of Object.keys(ROW_SCHEMAS)) validateRows(snapshot, section, errors);
+	return {
+		ok: errors.length === 0,
+		errors
+	};
+}
+//#endregion
+//#region src/domain/autoImport.js
+var SECTION_NAMES = [
+	"accounts",
+	"strategies",
+	"orders",
+	"executions"
+];
+var AutoImportValidationError = class extends Error {
+	constructor(code, errors) {
+		super(errors.join("; ") || code);
+		this.name = "AutoImportValidationError";
+		this.code = code;
+		this.errors = errors;
+	}
+};
+function trimText(value) {
+	return typeof value === "string" ? value.trim() : "";
+}
+function normalizeDirection(value) {
+	const text = trimText(value);
+	if (/^(long|short|both)$/i.test(text)) return `${text[0].toUpperCase()}${text.slice(1).toLowerCase()}`;
+	return text;
+}
+function parseParamNumber(value) {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value !== "string" || !value.trim()) return null;
+	const parsed = Number.parseFloat(value);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+function numberList(values) {
+	return values.map(parseParamNumber).filter((value) => value != null);
+}
+function stableJson(value) {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+	return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+}
+function mapParameters(parameters) {
+	const valuesByName = { ...parameters };
+	return {
+		parsed: true,
+		valuesByName,
+		direction: normalizeDirection(valuesByName.MyTradeDirection),
+		posSizes: numberList([
+			valuesByName.PosSize1,
+			valuesByName.PosSize2,
+			valuesByName.PosSize3,
+			valuesByName.PositionSize
+		]),
+		profitTargets: numberList([
+			valuesByName.ProfitTargetTicks1,
+			valuesByName.ProfitTargetTicks2,
+			valuesByName.ProfitTargetTicks3,
+			valuesByName.ProfitTargetTicks
+		]),
+		stopLossTicks: parseParamNumber(valuesByName.StopLossTicks),
+		tradeWindow: [valuesByName.TradeStartTime || valuesByName.TradeStart1 || "", valuesByName.TradeEndTime || valuesByName.TradeEnd1 || ""]
+	};
+}
+function selectDailyPnl({ realizedPnl, grossRealizedPnl }) {
+	if (realizedPnl === null) {
+		if (grossRealizedPnl === null) return {
+			value: null,
+			source: "unavailable"
+		};
+		return {
+			value: grossRealizedPnl,
+			source: "gross_missing_realized"
+		};
+	}
+	if (realizedPnl !== 0) return {
+		value: realizedPnl,
+		source: "realized"
+	};
+	if (grossRealizedPnl !== null && grossRealizedPnl !== 0) return {
+		value: grossRealizedPnl,
+		source: "gross_fallback"
+	};
+	return {
+		value: 0,
+		source: "realized"
+	};
+}
+function duplicateErrors(snapshot) {
+	const errors = [];
+	const duplicateBy = (section, field, comparable = (value) => value) => {
+		const firstIndex = /* @__PURE__ */ new Map();
+		snapshot[section].forEach((row, index) => {
+			const key = comparable(trimText(row[field]));
+			if (firstIndex.has(key)) errors.push(`${section}[${index}].${field} duplicates ${section}[${firstIndex.get(key)}].${field}`);
+			else firstIndex.set(key, index);
+		});
+	};
+	duplicateBy("accounts", "accountName", (value) => value.toLowerCase());
+	duplicateBy("strategies", "strategyId");
+	duplicateBy("orders", "orderId");
+	duplicateBy("executions", "executionId");
+	return errors;
+}
+var REFERENCE_ERROR_ROW_SAMPLE = 3;
+function accountReferenceErrors(snapshot) {
+	const accountsByLower = new Set(snapshot.accounts.map((account) => trimText(account.accountName).toLowerCase()));
+	const errors = [];
+	for (const section of [
+		"strategies",
+		"orders",
+		"executions"
+	]) {
+		const offending = /* @__PURE__ */ new Map();
+		snapshot[section].forEach((row, index) => {
+			const name = trimText(row.accountName);
+			if (accountsByLower.has(name.toLowerCase())) return;
+			if (!offending.has(name)) offending.set(name, []);
+			offending.get(name).push(index);
+		});
+		for (const [name, indexes] of offending) {
+			const shown = indexes.slice(0, REFERENCE_ERROR_ROW_SAMPLE).join(", ");
+			const more = indexes.length > REFERENCE_ERROR_ROW_SAMPLE ? ` and ${indexes.length - REFERENCE_ERROR_ROW_SAMPLE} more` : "";
+			errors.push(`${section}[${shown}]${more}.accountName does not reference an account (${name === "" ? "blank" : name})`);
+		}
+	}
+	return errors;
+}
+function canonicalAccountName(accountName, accountNamesByLower) {
+	return accountNamesByLower.get(trimText(accountName).toLowerCase()) || trimText(accountName);
+}
+function mapAccount(row) {
+	const pnl = selectDailyPnl(row);
+	return {
+		connectionStatus: row.status,
+		connection: trimText(row.connectionName),
+		accountName: trimText(row.accountName),
+		grossRealizedPnl: pnl.value,
+		selectedPnl: pnl.value,
+		realizedPnl: row.realizedPnl,
+		rawRealizedPnl: row.realizedPnl,
+		rawGrossRealizedPnl: row.grossRealizedPnl,
+		grossRealizedPnlReported: row.grossRealizedPnl ?? null,
+		pnlSource: pnl.source,
+		trailingMaxDrawdown: row.trailingMaxDrawdown,
+		isSimulated: typeof row.isSimulated === "boolean" ? row.isSimulated : void 0,
+		accountBalance: row.cashValue,
+		weeklyPnl: row.weeklyPnl,
+		unrealizedPnl: row.unrealizedPnl
+	};
+}
+function mapStrategy(row, connectionByAccount, accountNamesByLower) {
+	const params = mapParameters(row.parameters);
+	const accountName = canonicalAccountName(row.accountName, accountNamesByLower);
+	return {
+		id: trimText(row.strategyId),
+		strategyName: trimText(row.strategyName),
+		strategyFamily: normalizeStrategyFamily(row.strategyName),
+		strategyVersion: parseStrategyVersion(row.strategyName),
+		instrument: trimText(row.instrument),
+		accountName,
+		dataSeries: trimText(row.dataSeries),
+		parametersRaw: stableJson(row.parameters),
+		params,
+		direction: params.direction,
+		unrealized: row.unrealizedPnl,
+		realized: row.realizedPnl,
+		connection: trimText(row.connectionName) || connectionByAccount.get(accountName) || "",
+		enabled: Boolean(row.enabled),
+		sync: row.sync,
+		state: row.state,
+		position: row.position,
+		averagePrice: row.averagePrice,
+		startedAt: row.startedAt,
+		parameterCaptureStatus: row.parameterCaptureStatus
+	};
+}
+function mapOrder(row, accountNamesByLower) {
+	return {
+		instrument: trimText(row.instrument),
+		action: trimText(row.action),
+		orderType: trimText(row.orderType),
+		quantity: row.quantity,
+		limit: row.limitPrice,
+		stop: row.stopPrice,
+		state: trimText(row.state),
+		filled: row.filled,
+		avgPrice: row.averageFillPrice,
+		remaining: row.remaining,
+		name: row.name || "",
+		strategyName: row.strategyName || "",
+		strategyId: trimText(row.strategyId),
+		accountName: canonicalAccountName(row.accountName, accountNamesByLower),
+		id: trimText(row.orderId),
+		time: row.time,
+		tif: row.tif,
+		oco: row.oco,
+		nativeId: row.nativeId
+	};
+}
+function mapExecution(row, accountNamesByLower) {
+	return {
+		instrument: trimText(row.instrument),
+		action: trimText(row.action),
+		quantity: row.quantity,
+		price: row.price,
+		time: row.time,
+		id: trimText(row.executionId),
+		entryExit: trimText(row.entryExit),
+		position: row.marketPosition || "",
+		orderId: trimText(row.orderId),
+		name: row.name || "",
+		strategyId: trimText(row.strategyId),
+		strategyName: row.strategyName || "",
+		commission: row.commission,
+		fee: row.fee,
+		rate: row.rate,
+		realizedPnl: row.realizedPnl,
+		accountName: canonicalAccountName(row.accountName, accountNamesByLower),
+		connection: trimText(row.connectionName),
+		nativeId: row.nativeId
+	};
+}
+function strategyRowScore(row) {
+	const position = trimText(row.position);
+	const state = trimText(row.state).toLowerCase();
+	return (position && position.toLowerCase() !== "null" ? 2 : 0) + (/realtime|active|running/.test(state) ? 1 : 0);
+}
+function repairStrategies(snapshot) {
+	if (snapshot.accounts.length === 0 && snapshot.strategies.length > 0) return {
+		snapshot,
+		repairs: null
+	};
+	const accountsByLower = new Set(snapshot.accounts.map((account) => trimText(account.accountName).toLowerCase()));
+	const keptByStrategyId = /* @__PURE__ */ new Map();
+	const duplicateStrategyIds = /* @__PURE__ */ new Set();
+	const unknownAccounts = /* @__PURE__ */ new Set();
+	const order = [];
+	let unknownAccountRowsDropped = 0;
+	let duplicateRowsDropped = 0;
+	for (const row of snapshot.strategies) {
+		const accountName = trimText(row.accountName);
+		if (!accountsByLower.has(accountName.toLowerCase())) {
+			unknownAccounts.add(accountName === "" ? "(blank)" : accountName);
+			unknownAccountRowsDropped += 1;
+			continue;
+		}
+		const key = trimText(row.strategyId);
+		const current = keptByStrategyId.get(key);
+		if (!current) {
+			keptByStrategyId.set(key, row);
+			order.push(key);
+			continue;
+		}
+		duplicateStrategyIds.add(key);
+		duplicateRowsDropped += 1;
+		if (strategyRowScore(row) >= strategyRowScore(current)) keptByStrategyId.set(key, row);
+	}
+	const repairs = { strategies: {
+		duplicateRowsDropped,
+		duplicateStrategyIds: [...duplicateStrategyIds],
+		unknownAccountRowsDropped,
+		unknownAccounts: [...unknownAccounts]
+	} };
+	return {
+		snapshot: duplicateRowsDropped || unknownAccountRowsDropped ? {
+			...snapshot,
+			strategies: order.map((key) => keptByStrategyId.get(key))
+		} : snapshot,
+		repairs
+	};
+}
+function validationError(snapshot) {
+	const validation = validateAutoExportSnapshot(snapshot);
+	const errors = [...validation.errors];
+	if (validation.ok) errors.push(...duplicateErrors(snapshot), ...accountReferenceErrors(snapshot));
+	if (!errors.length) return null;
+	return new AutoImportValidationError(snapshot && typeof snapshot === "object" && Object.prototype.hasOwnProperty.call(snapshot, "schemaVersion") && snapshot.schemaVersion !== 1 ? "unsupported_schema_version" : "invalid_auto_import_snapshot", errors);
+}
+function normalizeAutoImportSnapshot(rawSnapshot) {
+	const structural = validateAutoExportSnapshot(rawSnapshot);
+	let snapshot = rawSnapshot;
+	let repairs = null;
+	if (structural.ok) ({snapshot, repairs} = repairStrategies(rawSnapshot));
+	const error = validationError(snapshot);
+	if (error) throw error;
+	const accountNamesByLower = new Map(snapshot.accounts.map((account) => {
+		const accountName = trimText(account.accountName);
+		return [accountName.toLowerCase(), accountName];
+	}));
+	const connectionByAccount = new Map(snapshot.accounts.map((account) => [trimText(account.accountName), trimText(account.connectionName)]));
+	const parsed = {
+		accounts: snapshot.accounts.map(mapAccount),
+		strategies: snapshot.strategies.map((row) => mapStrategy(row, connectionByAccount, accountNamesByLower)),
+		orders: snapshot.orders.map((row) => mapOrder(row, accountNamesByLower)),
+		executions: snapshot.executions.map((row) => mapExecution(row, accountNamesByLower))
+	};
+	const sectionCounts = Object.fromEntries(SECTION_NAMES.map((section) => [section, snapshot[section].length]));
+	const emptySections = SECTION_NAMES.filter((section) => sectionCounts[section] === 0);
+	const accountPnl = Object.fromEntries(parsed.accounts.map((account) => [account.accountName, {
+		realizedPnl: account.rawRealizedPnl,
+		grossRealizedPnl: account.rawGrossRealizedPnl,
+		selectedPnl: account.selectedPnl,
+		pnlSource: account.pnlSource
+	}]));
+	return {
+		date: snapshot.tradingDate,
+		parsed,
+		metadata: {
+			captureId: snapshot.captureId,
+			capturedAt: snapshot.capturedAt,
+			timeZone: snapshot.timeZone,
+			source: snapshot.source,
+			sectionCounts,
+			missingSections: [],
+			emptySections,
+			isComplete: emptySections.length === 0,
+			repairs,
+			openPositions: openPositionsAt(snapshot),
+			accountPnl
+		}
+	};
+}
+function lowerKeyed(roster = {}) {
+	const out = /* @__PURE__ */ new Map();
+	for (const [name, account] of Object.entries(roster || {})) if (name) out.set(String(name).toLowerCase(), {
+		...account,
+		accountName: name
+	});
+	return out;
+}
+function daysBetween(fromIso, toIso) {
+	const from = Date.parse(fromIso);
+	const to = Date.parse(toIso);
+	if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+	return Math.floor((to - from) / 864e5);
+}
+/**
+* The registry the report reads, with every account the capture holds.
+*
+* An account the roster explains keeps its classification. One it does not is
+* named rather than guessed at, and `report.js` keeps it out of the total.
+*/
+function registryForCapture(parsed, roster = {}) {
+	const byLower = lowerKeyed(roster);
+	const registry = {};
+	const pending = [];
+	for (const account of parsed?.accounts || []) {
+		const name = account?.accountName;
+		if (!name) continue;
+		const known = byLower.get(String(name).toLowerCase());
+		if (known && known.accountType) registry[name] = {
+			...known,
+			accountName: name
+		};
+		else {
+			registry[name] = {
+				accountName: name,
+				accountType: ACCOUNT_TYPES.PENDING_CLASSIFICATION
+			};
+			pending.push(name);
+		}
+	}
+	return {
+		registry,
+		pending
+	};
+}
+/**
+* Everything the page needs, from one capture and one cached roster.
+*
+* `warnings` are for the reader, not for the log. Each one is a sentence the
+* page prints, because a report that quietly rests on a week-old roster is
+* worse than one that says it does.
+*/
+function buildOfflineDailyReport({ capture, roster = {}, rosterFetchedAt = null, clientName = "" } = {}) {
+	if (!capture) throw new Error("No capture was given.");
+	const { date, parsed, metadata } = normalizeAutoImportSnapshot(capture);
+	if (!date) throw new Error("The capture does not say which trading day it is.");
+	const { registry, pending } = registryForCapture(parsed, roster);
+	const dailyImport = reconcileDailyImport({
+		clientId: "offline",
+		date,
+		registry,
+		parsed,
+		history: [],
+		priorImports: [],
+		fillsLoaded: true
+	});
+	const client = {
+		name: clientName || "Client",
+		accountRegistry: registry,
+		dailyImports: [{
+			...dailyImport,
+			date
+		}]
+	};
+	const warnings = [];
+	const open = metadata?.openPositions;
+	if (open?.open) {
+		const names = Array.isArray(open.accounts) ? open.accounts : [];
+		const n = names.length;
+		warnings.push(`${n || "Some"} account${n === 1 ? " had a position" : "s had positions"} still open when this capture was taken, so the day is not settled and the realized figures are short by whatever those positions closed at${names.length ? `: ${names.join(", ")}` : ""}.`);
+	}
+	if (metadata?.isComplete === false && (metadata.emptySections || []).length) warnings.push(`The capture carried nothing in: ${metadata.emptySections.join(", ")}.`);
+	if (!Object.keys(roster || {}).length) warnings.push("This machine has never received an account roster from the CRM, so no account could be classified. Every figure below is per account; there is no total.");
+	const age = rosterFetchedAt ? daysBetween(rosterFetchedAt, `${date}T00:00:00Z`) : null;
+	if (age !== null && age >= 7) warnings.push(`The account roster on this machine is ${age} days old. Accounts opened since then are listed separately and are not in the total.`);
+	if (pending.length) {
+		const verb = pending.length === 1 ? "is" : "are";
+		warnings.push(`${pending.length} account${pending.length === 1 ? "" : "s"} could not be classified from this machine and ${verb} shown separately, not in the total: ${pending.join(", ")}.`);
+	}
+	return {
+		metadata,
+		report: buildDailyReportSummary(client, {
+			...dailyImport,
+			date
+		}),
+		client,
+		dailyImport: {
+			...dailyImport,
+			date
+		},
+		pending,
+		rosterAgeDays: age,
+		warnings
+	};
+}
+//#endregion
+//#region src/domain/agentReportMail.js
+function fileStem(clientName, date) {
+	return `${String(clientName || "Client").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "Client"} - ${date} daily report`;
+}
+/** What a machine's own report is called in a mailbox, so it sorts by client. */
+function subjectFor(clientName, date) {
+	return `Daily report · ${clientName || "Client"} · ${date}`;
+}
+var AgentReportError = class extends Error {
+	constructor(code, message) {
+		super(message);
+		this.name = "AgentReportError";
+		this.code = code;
+	}
+};
+/**
+* @param capture           the machine's capture, exactly as it wrote it.
+* @param roster            the roster it had cached, or nothing.
+* @param rosterFetchedAt   ISO, or null.
+* @param clientName        whose close this is.
+* @param from,to           the addresses, which never come from the request.
+* @returns {{ date, subject, text, attachments }}
+*/
+function buildAgentReportMessage({ capture, roster = {}, rosterFetchedAt = null, clientName = "", from, to }) {
+	if (!capture) throw new AgentReportError("no_capture", "There is no capture in the request.");
+	let built;
+	try {
+		built = buildOfflineDailyReport({
+			capture: redactCapture(capture),
+			roster: roster || {},
+			rosterFetchedAt: rosterFetchedAt || null,
+			clientName
+		});
+	} catch (error) {
+		throw new AgentReportError("bad_capture", error?.message || "The capture could not be read.");
+	}
+	const date = built?.report?.date || "";
+	const html = renderOfflineReport(built);
+	const stem = fileStem(clientName, date);
+	const warnings = built.warnings || [];
+	const lines = [
+		`${clientName || "Client"} · ${date}`,
+		"",
+		"Built on the trading machine from its own captured close, without the CRM.",
+		"Account classification comes from the last roster the CRM was able to send to that machine."
+	];
+	if (warnings.length) {
+		lines.push("", "Read before sending:");
+		for (const warning of warnings) lines.push(`  • ${warning}`);
+	}
+	return {
+		date,
+		from,
+		to,
+		subject: subjectFor(clientName, date),
+		text: lines.join("\n"),
+		attachments: [{
+			name: `${stem}.zip`,
+			bytes: zipSync({ [`${stem}.html`]: strToU8(html) }, { level: 6 })
+		}]
+	};
+}
+//#endregion
+export { AgentReportError, EmailDeliveryError, buildAgentReportMessage, buildDailyEmailPackage, planDailyEmails, runDailyEmails, sendViaBrevo, usersFromRows };

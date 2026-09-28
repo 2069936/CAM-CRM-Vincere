@@ -2,7 +2,8 @@ import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
 import { unzipSync, strFromU8 } from 'fflate';
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, messageFor, resolveAgentMailSecret, subjectFor } from '../../../autoCollection/ingest/reportEmail.js';
+import { createHandler, resolveAgentMailSecret, resolveAgentMailUrl } from '../../../autoCollection/ingest/reportEmail.js';
+import { buildAgentReportMessage, subjectFor } from '../../../../src/domain/agentReportMail.js';
 
 const ENV = {
   AGENT_MAIL_SECRET: 'a-long-shared-secret',
@@ -85,21 +86,24 @@ describe('the message it builds', () => {
   });
 
   it('zips the report, because Workspace blocks .html attachments by extension', () => {
-    const message = messageFor({
-      clientName: 'Joel Onafowokan', date: '2026-09-28', html: HTML,
-      from: 'a@b.com', to: [{ email: 'c@d.com' }],
+    const message = buildAgentReportMessage({
+      capture: CAPTURE,
+      roster: { FUNDED1: { accountType: 'Funded', status: 'Active' } },
+      clientName: 'Joel Onafowokan',
+      from: 'a@b.com',
+      to: [{ email: 'c@d.com' }],
     });
     expect(message.attachments).toHaveLength(1);
     expect(message.attachments[0].name).toBe('Joel Onafowokan - 2026-09-28 daily report.zip');
     const files = unzipSync(message.attachments[0].bytes);
     expect(Object.keys(files)).toEqual(['Joel Onafowokan - 2026-09-28 daily report.html']);
-    expect(strFromU8(files['Joel Onafowokan - 2026-09-28 daily report.html'])).toBe(HTML);
+    expect(strFromU8(Object.values(files)[0])).toContain('Joel Onafowokan');
   });
 
   it('says in the body that the numbers did not come from the CRM', () => {
     // It is the one thing a reader cannot tell from the attachment alone.
-    const message = messageFor({
-      clientName: 'X', date: '2026-09-28', html: HTML, from: 'a@b.com', to: [{ email: 'c@d.com' }],
+    const message = buildAgentReportMessage({
+      capture: CAPTURE, clientName: 'X', from: 'a@b.com', to: [{ email: 'c@d.com' }],
     });
     expect(message.text).toContain('without the CRM');
     expect(message.text).toContain('last roster');
@@ -230,6 +234,33 @@ describe('the secret nobody had to set', () => {
     const env = { ...ENV, AGENT_MAIL_SECRET: '' , SUPABASE_SERVICE_ROLE_KEY: 'service-role-key' };
     const { res } = await run({ env, secret: resolveAgentMailSecret(env), body: goodBody });
     expect(res.statusCode).toBe(202);
+  });
+});
+
+describe('the address of the function that actually sends', () => {
+  /* The Brevo key cannot live on Vercel and the repository is public, so the
+   * send happens in a Supabase Edge Function where the CAM sets the secret
+   * himself. The agent is told where rather than having it compiled in. */
+  it('derives the Edge Function URL from the project this CRM already talks to', () => {
+    expect(resolveAgentMailUrl({ SUPABASE_URL: 'https://abc.supabase.co' }))
+      .toBe('https://abc.supabase.co/functions/v1/daily-report-email/agent');
+  });
+
+  it('ignores a path already on SUPABASE_URL rather than doubling it', () => {
+    expect(resolveAgentMailUrl({ SUPABASE_URL: 'https://abc.supabase.co/rest/v1/' }))
+      .toBe('https://abc.supabase.co/functions/v1/daily-report-email/agent');
+  });
+
+  it('lets an explicit value win', () => {
+    expect(resolveAgentMailUrl({
+      AGENT_MAIL_URL: 'https://elsewhere.test/send',
+      SUPABASE_URL: 'https://abc.supabase.co',
+    })).toBe('https://elsewhere.test/send');
+  });
+
+  it('answers empty when there is nothing to derive from, so the agent keeps its fallback', () => {
+    expect(resolveAgentMailUrl({})).toBe('');
+    expect(resolveAgentMailUrl({ SUPABASE_URL: 'not a url' })).toBe('');
   });
 });
 
