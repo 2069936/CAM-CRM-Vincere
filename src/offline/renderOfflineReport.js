@@ -11,8 +11,16 @@
  * differs is the paper. A client reading this gets the same money, laid out
  * more plainly, on a page that says where it came from.
  *
- * NO SCRIPT, NO FETCH, NO FONTS. The file is opened by double-clicking it on a
- * Windows VPS that may have no network at all, and printed with Ctrl+P.
+ * NO FETCH, NO FONTS. The file is opened by double-clicking it on a Windows VPS
+ * that may have no network at all.
+ *
+ * THERE IS A LITTLE SCRIPT, AND IT EARNS ITS PLACE. Ctrl+P was the whole
+ * delivery plan, and a delivery plan that depends on a person remembering a
+ * keyboard shortcut is how an .html file gets attached to a client's message
+ * instead of a PDF. That file is not the sheet: it is the raw capture in a
+ * script tag, and the capture carries every strategy parameter the sheet
+ * refuses to print. So the page asks for the PDF out loud, in a bar that
+ * carries `no-print` and never reaches the paper.
  * ------------------------------------------------------------------------- */
 
 const MONEY = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -116,7 +124,28 @@ const STYLE = `
   .warnings ul { margin: 0; padding-left: 18px; }
   .warnings li { font-size: 13px; margin: 3px 0; }
   footer { margin-top: 32px; padding-top: 14px; border-top: 1px solid #e3e7ea; font-size: 11px; color: #5a6673; }
-  @media print { body { padding: 0; } .sheet { max-width: none; } section { break-inside: avoid; } }
+  /* THE BAR IS CHROME, NOT DOCUMENT. Same contract as the CRM's report sheet:
+     .report-actions carries .no-print there (src/index.css), so none of it
+     reaches a client's PDF. */
+  .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+             background: #eff5f9; border: 1px solid #ccd9e3; border-radius: 6px;
+             padding: 10px 12px; margin: 0 0 22px; }
+  .actions button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 5px;
+                    border: 1px solid #ccd9e3; background: #fff; color: #12202b; cursor: pointer; }
+  .actions button.primary { background: #1257c3; border-color: #1257c3; color: #fff; font-weight: 600; }
+  .actions button:hover { border-color: #1257c3; }
+  .actions .hint { font-size: 12px; color: #556675; }
+  .actions textarea { width: 100%; min-height: 96px; font: 12px/1.5 ui-monospace, Consolas, monospace;
+                      border: 1px solid #ccd9e3; border-radius: 5px; padding: 8px; }
+  /* 12mm is what src/index.css sets for the CRM's report, so a page printed
+     here and a page downloaded from the CRM have the same margin. */
+  @page { margin: 12mm; }
+  @media print {
+    body { padding: 0; }
+    .sheet { max-width: none; }
+    section { break-inside: avoid; }
+    .no-print { display: none !important; }
+  }
 `;
 
 /**
@@ -129,6 +158,76 @@ const STYLE = `
 export const PROVENANCE =
   'Generated on the trading machine from its own captured close, without the CRM. '
   + 'Account classification comes from the last roster the CRM was able to send to this machine.';
+
+/* THE THREE NUMBERS, AS TEXT, FOR THE MESSAGE THAT CARRIES THE PDF.
+ *
+ * The close is not finished when the file exists. It is finished when the
+ * client has been told, and on this desk that is a Discord message with the
+ * report attached. Retyping the headline out of a printed page is where a
+ * digit changes, so the page hands over the same three numbers it displays,
+ * already written out.
+ *
+ * DELIBERATELY ONLY WHAT IS ON THE SHEET. Anything computed here and not shown
+ * above would be a second, unreviewed report travelling in the message body,
+ * and the first time the two disagree the client is reading both.
+ *
+ * Warnings come along because they are the reason a number might be wrong. A
+ * machine with no roster cannot total the day, and a message that quotes the
+ * total without saying so is worse than no message.
+ */
+export function summaryText(built) {
+  const { report, warnings = [] } = built || {};
+  if (!report) return '';
+  const accounts = (report.grouped?.funded?.length || 0)
+    + (report.grouped?.cash?.length || 0)
+    + (report.grouped?.unclassified?.length || 0);
+  const lines = [
+    `${report.clientName} · ${report.date} daily close`,
+    `Day: ${money(report.totals?.grossRealizedPnl)}`,
+    `Week: ${money(report.totals?.weeklyPnl)}`,
+    /* "Accounts in the total", not "Accounts". The headline tile counts the
+     * three groups that are money and counted: funded, cash and unclassified.
+     * Evaluations and accounts this machine could not classify are on the
+     * sheet and out of the total on purpose, so a bare "Accounts: 1" sent to a
+     * client with two accounts on the page reads as an error. The number is
+     * the tile's; the label says which number it is. */
+    `Accounts in the total: ${accounts}`,
+  ];
+  if (warnings.length) {
+    lines.push('');
+    warnings.forEach((warning) => lines.push(`Note: ${warning}`));
+  }
+  return lines.join('\n');
+}
+
+/* The copy button, written out rather than bundled.
+ *
+ * navigator.clipboard is available on file:// in Chromium, which is what opens
+ * this on a Windows VPS, but "available" is not "permitted": a page the user
+ * has not interacted with, or a browser configured otherwise, rejects it. The
+ * fallback is not another API, it is showing the person the text so they can
+ * select it themselves. Failing silently would leave a CAM pasting whatever
+ * was on the clipboard before.
+ */
+const COPY_SCRIPT = `
+  (function () {
+    var button = document.getElementById('copy-summary');
+    var box = document.getElementById('summary-box');
+    if (!button || !box) return;
+    button.addEventListener('click', function () {
+      var text = box.value;
+      var done = function () { button.textContent = 'Copied'; setTimeout(function () { button.textContent = 'Copy summary'; }, 2000); };
+      var manual = function () { box.hidden = false; box.focus(); box.select(); button.textContent = 'Copy it from here'; };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, manual);
+          return;
+        }
+      } catch (error) { /* falls through to manual */ }
+      manual();
+    });
+  })();
+`;
 
 export function renderOfflineReport(built) {
   const { report, warnings = [], metadata } = built || {};
@@ -155,6 +254,13 @@ export function renderOfflineReport(built) {
     <div class="sub">Daily close report &middot; ${esc(report.date)}</div>
   </header>
 
+  <div class="actions no-print">
+    <button type="button" class="primary" onclick="window.print()">Save as PDF</button>
+    <button type="button" id="copy-summary">Copy summary</button>
+    <span class="hint">Send the PDF. This .html file also carries the raw capture behind the page.</span>
+    <textarea id="summary-box" readonly hidden>${esc(summaryText(built))}</textarea>
+  </div>
+
   <div class="headline">${tiles}</div>
 
   ${warnings.length ? `<div class="warnings"><h3>Read before sending</h3><ul>${
@@ -173,5 +279,7 @@ export function renderOfflineReport(built) {
     ${esc(PROVENANCE)}
     ${metadata?.capturedAt ? `<br />Capture taken ${esc(metadata.capturedAt)}.` : ''}
   </footer>
-</div></body></html>`;
+</div>
+<script>${COPY_SCRIPT}</script>
+</body></html>`;
 }

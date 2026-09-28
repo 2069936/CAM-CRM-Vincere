@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ACCOUNT_TYPES } from '../domain/reconcile';
 import { buildOfflineDailyReport, registryForCapture, ROSTER_STALE_DAYS } from './offlineReport';
-import { PROVENANCE, renderOfflineReport } from './renderOfflineReport';
+import { PROVENANCE, renderOfflineReport, summaryText } from './renderOfflineReport';
 
 /* Synthetic only. The shapes are the agent's real capture contract; the numbers
  * are invented so the arithmetic is readable. */
@@ -186,6 +186,55 @@ describe('what it must never print', () => {
   });
 });
 
+describe('what the agent actually embeds', () => {
+  it('builds the report when the strategy parameters have been emptied', () => {
+    /* THE FILE ON THE DESKTOP IS NOT THE SHEET.
+     *
+     * OfflineReportWriter.BuildPayload empties every strategy's `parameters`
+     * before embedding the capture, because the raw capture travels inside the
+     * file and carries the desk's tuning. It EMPTIES rather than removes:
+     * autoExportContract.js requires the property to be an object, and the
+     * first version of that strip deleted it, so every capture with a strategy
+     * rendered "strategies[0].parameters must be an object" where the client's
+     * day should have been. This is that shape. */
+    const withEmptiedStrategy = {
+      ...capture([account('FUNDED1', { grossRealizedPnl: 120 })]),
+      strategies: [{
+        strategyId: '1',
+        strategyName: '0 - URGO-4.5',
+        strategyDisplayName: 'URGO-4.5',
+        accountName: 'FUNDED1',
+        instrument: 'MNQ DEC26',
+        state: 'Realtime',
+        quantity: 0,
+        position: 'Flat',
+        averagePrice: 0,
+        realizedPnl: null,
+        unrealizedPnl: null,
+        enabled: true,
+        sync: null,
+        dataSeries: '1 Minute',
+        connectionName: 'LegendsT',
+        startedAt: null,
+        parameters: {},
+        parameterCaptureStatus: 'partial',
+      }],
+    };
+    const built = buildOfflineDailyReport({
+      capture: withEmptiedStrategy,
+      roster: { FUNDED1: { accountType: 'Funded', status: 'Active' } },
+      rosterFetchedAt: '2026-09-25T00:00:00Z',
+      clientName: 'Someone',
+    });
+    const html = renderOfflineReport(built);
+    expect(html).not.toMatch(/could not be built/i);
+    expect(html).not.toMatch(/must be an object/i);
+    // The algorithm is still named on the page: that is the part worth keeping.
+    expect(html).toMatch(/URGO/);
+    expect(html).toMatch(/MNQ DEC26/);
+  });
+});
+
 describe('the page it prints', () => {
   const built = () => buildOfflineDailyReport({
     capture: capture([
@@ -209,11 +258,52 @@ describe('the page it prints', () => {
     expect(html).toMatch(/MYSTERY/);
   });
 
-  it('opens with no network: no script, no fetch, no remote asset', () => {
+  it('opens with no network: no fetch, no remote asset, nothing loaded from a url', () => {
     // It is double-clicked on a Windows VPS that may have no egress at all.
+    //
+    // THIS USED TO ASSERT `no <script>` AND THAT WAS THE WRONG PROPERTY. The
+    // file the agent writes has always carried a script: it is the report
+    // bundle, inlined, and it is the only interpreter on a machine with no
+    // Node. What has to be true is that nothing is FETCHED, and that is what
+    // is asserted now. The page's own script is inline, reads only what is
+    // already in the document, and touches no url.
     const html = renderOfflineReport(built());
-    expect(html).not.toMatch(/<script/i);
     expect(html).not.toMatch(/https?:\/\//);
+    expect(html).not.toMatch(/<script[^>]+src=/i);
+    expect(html).not.toMatch(/<link[^>]+href=/i);
+    expect(html).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|import\s*\(/);
+  });
+
+  it('offers the PDF, and says not to send the file itself', () => {
+    // The close ends in a message with a report attached. Left to Ctrl+P, the
+    // thing that gets attached is this .html, which carries the raw capture
+    // behind the page.
+    const html = renderOfflineReport(built());
+    expect(html).toMatch(/Save as PDF/);
+    expect(html).toMatch(/window\.print\(\)/);
+    expect(html).toMatch(/Send the PDF/);
+  });
+
+  it('keeps every control off the paper', () => {
+    // Same contract as the CRM's report sheet, where `.report-actions` carries
+    // `.no-print` (src/index.css). A button printed onto a client's PDF is a
+    // button the client tries to press.
+    const html = renderOfflineReport(built());
+    expect(html).toMatch(/class="actions no-print"/);
+    expect(html).toMatch(/\.no-print \{ display: none !important; \}/);
+  });
+
+  it('hands over the same three numbers it displays, and the warnings with them', () => {
+    const summary = summaryText(built());
+    expect(summary).toContain('Corey Krupp');
+    expect(summary).toMatch(/^Day: /m);
+    expect(summary).toMatch(/^Week: /m);
+    // FUNDED1 is in the roster and counted; MYSTERY is not, so it sits in its
+    // own section, out of the total, and the label says which number this is.
+    expect(summary).toMatch(/^Accounts in the total: 1$/m);
+    // MYSTERY is not in the roster, so the sheet warns and so must the text
+    // that travels in the message.
+    expect(summary).toMatch(/^Note: /m);
   });
 
   it('escapes what it prints', () => {

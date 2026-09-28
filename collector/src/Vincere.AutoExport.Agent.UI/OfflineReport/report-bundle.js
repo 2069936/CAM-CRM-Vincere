@@ -55,8 +55,48 @@ var VincereOfflineReport=(function(e){Object.defineProperty(e,Symbol.toStringTag
   .warnings ul { margin: 0; padding-left: 18px; }
   .warnings li { font-size: 13px; margin: 3px 0; }
   footer { margin-top: 32px; padding-top: 14px; border-top: 1px solid #e3e7ea; font-size: 11px; color: #5a6673; }
-  @media print { body { padding: 0; } .sheet { max-width: none; } section { break-inside: avoid; } }
-`,Xt=`Generated on the trading machine from its own captured close, without the CRM. Account classification comes from the last roster the CRM was able to send to this machine.`;function Zt(e){var t,n,r,i,a,o,s;let{report:c,warnings:l=[],metadata:u}=e||{};if(!c)throw Error(`There is no report to render.`);let d=c.grouped||{},f=`${c.clientName} - ${c.date} daily report`,p=[[`Accounts`,String((((t=c.grouped)==null||(t=t.funded)==null?void 0:t.length)||0)+(((n=c.grouped)==null||(n=n.cash)==null?void 0:n.length)||0)+(((r=c.grouped)==null||(r=r.unclassified)==null?void 0:r.length)||0)),``],[`Daily realized`,X((i=c.totals)==null?void 0:i.grossRealizedPnl),Q((a=c.totals)==null?void 0:a.grossRealizedPnl)],[`Weekly`,X((o=c.totals)==null?void 0:o.weeklyPnl),Q((s=c.totals)==null?void 0:s.weeklyPnl)]].map(([e,t,n])=>`
+  /* THE BAR IS CHROME, NOT DOCUMENT. Same contract as the CRM's report sheet:
+     .report-actions carries .no-print there (src/index.css), so none of it
+     reaches a client's PDF. */
+  .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+             background: #eff5f9; border: 1px solid #ccd9e3; border-radius: 6px;
+             padding: 10px 12px; margin: 0 0 22px; }
+  .actions button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 5px;
+                    border: 1px solid #ccd9e3; background: #fff; color: #12202b; cursor: pointer; }
+  .actions button.primary { background: #1257c3; border-color: #1257c3; color: #fff; font-weight: 600; }
+  .actions button:hover { border-color: #1257c3; }
+  .actions .hint { font-size: 12px; color: #556675; }
+  .actions textarea { width: 100%; min-height: 96px; font: 12px/1.5 ui-monospace, Consolas, monospace;
+                      border: 1px solid #ccd9e3; border-radius: 5px; padding: 8px; }
+  /* 12mm is what src/index.css sets for the CRM's report, so a page printed
+     here and a page downloaded from the CRM have the same margin. */
+  @page { margin: 12mm; }
+  @media print {
+    body { padding: 0; }
+    .sheet { max-width: none; }
+    section { break-inside: avoid; }
+    .no-print { display: none !important; }
+  }
+`,Xt=`Generated on the trading machine from its own captured close, without the CRM. Account classification comes from the last roster the CRM was able to send to this machine.`;function Zt(e){var t,n,r,i,a;let{report:o,warnings:s=[]}=e||{};if(!o)return``;let c=(((t=o.grouped)==null||(t=t.funded)==null?void 0:t.length)||0)+(((n=o.grouped)==null||(n=n.cash)==null?void 0:n.length)||0)+(((r=o.grouped)==null||(r=r.unclassified)==null?void 0:r.length)||0),l=[`${o.clientName} · ${o.date} daily close`,`Day: ${X((i=o.totals)==null?void 0:i.grossRealizedPnl)}`,`Week: ${X((a=o.totals)==null?void 0:a.weeklyPnl)}`,`Accounts in the total: ${c}`];return s.length&&(l.push(``),s.forEach(e=>l.push(`Note: ${e}`))),l.join(`
+`)}var Qt=`
+  (function () {
+    var button = document.getElementById('copy-summary');
+    var box = document.getElementById('summary-box');
+    if (!button || !box) return;
+    button.addEventListener('click', function () {
+      var text = box.value;
+      var done = function () { button.textContent = 'Copied'; setTimeout(function () { button.textContent = 'Copy summary'; }, 2000); };
+      var manual = function () { box.hidden = false; box.focus(); box.select(); button.textContent = 'Copy it from here'; };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, manual);
+          return;
+        }
+      } catch (error) { /* falls through to manual */ }
+      manual();
+    });
+  })();
+`;function $t(e){var t,n,r,i,a,o,s;let{report:c,warnings:l=[],metadata:u}=e||{};if(!c)throw Error(`There is no report to render.`);let d=c.grouped||{},f=`${c.clientName} - ${c.date} daily report`,p=[[`Accounts`,String((((t=c.grouped)==null||(t=t.funded)==null?void 0:t.length)||0)+(((n=c.grouped)==null||(n=n.cash)==null?void 0:n.length)||0)+(((r=c.grouped)==null||(r=r.unclassified)==null?void 0:r.length)||0)),``],[`Daily realized`,X((i=c.totals)==null?void 0:i.grossRealizedPnl),Q((a=c.totals)==null?void 0:a.grossRealizedPnl)],[`Weekly`,X((o=c.totals)==null?void 0:o.weeklyPnl),Q((s=c.totals)==null?void 0:s.weeklyPnl)]].map(([e,t,n])=>`
       <div class="tile"><div class="label">${Z(e)}</div><div class="value${n}">${Z(t)}</div></div>`).join(``);return`<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <title>${Z(f)}</title>
@@ -66,6 +106,13 @@ var VincereOfflineReport=(function(e){Object.defineProperty(e,Symbol.toStringTag
     <h1>${Z(c.clientName)}</h1>
     <div class="sub">Daily close report &middot; ${Z(c.date)}</div>
   </header>
+
+  <div class="actions no-print">
+    <button type="button" class="primary" onclick="window.print()">Save as PDF</button>
+    <button type="button" id="copy-summary">Copy summary</button>
+    <span class="hint">Send the PDF. This .html file also carries the raw capture behind the page.</span>
+    <textarea id="summary-box" readonly hidden>${Z(Zt(e))}</textarea>
+  </div>
 
   <div class="headline">${p}</div>
 
@@ -81,4 +128,6 @@ var VincereOfflineReport=(function(e){Object.defineProperty(e,Symbol.toStringTag
     ${Z(Xt)}
     ${u!=null&&u.capturedAt?`<br />Capture taken ${Z(u.capturedAt)}.`:``}
   </footer>
-</div></body></html>`}function Qt(e,t=document){let n=Gt(e),r=Zt(n);return t.open(),t.write(r),t.close(),n}var $t=`vincere-offline-data`;if(typeof document<`u`){let e=document.getElementById($t);if(e)try{Qt(JSON.parse(e.textContent))}catch(e){document.body.textContent=`This report could not be built: ${e.message}`}}return e.DATA_ELEMENT_ID=$t,e.mount=Qt,e})({});
+</div>
+<script>${Qt}<\/script>
+</body></html>`}function en(e,t=document){let n=Gt(e),r=$t(n);return t.open(),t.write(r),t.close(),n}var tn=`vincere-offline-data`;if(typeof document<`u`){let e=document.getElementById(tn);if(e)try{en(JSON.parse(e.textContent))}catch(e){document.body.textContent=`This report could not be built: ${e.message}`}}return e.DATA_ELEMENT_ID=tn,e.mount=en,e})({});
