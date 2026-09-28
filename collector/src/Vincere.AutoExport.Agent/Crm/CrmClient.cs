@@ -16,6 +16,7 @@ using Newtonsoft.Json;
 using Vincere.AutoExport.Agent.Security;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Diagnostics;
+using Newtonsoft.Json.Linq;
 
 namespace Vincere.AutoExport.Agent.Crm;
 
@@ -291,7 +292,9 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
                             uploaded.Duplicate,
                             uploaded.Status,
                             item.ContentSha256,
-                            utcNow());
+                            utcNow(),
+                            uploaded.Registry?.ToString(Formatting.None),
+                            uploaded.RegistryVersion);
                     }
 
                     TimeSpan? retryAfter = ParseRetryAfter(response.Headers.RetryAfter);
@@ -1038,6 +1041,21 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
 
         [JsonProperty("status")]
         public string Status { get; set; }
+
+        /* THE ACCOUNT CLASSIFICATION, SENT BACK WITH EVERY ACCEPTED UPLOAD.
+         *
+         * Kept as a JToken and never parsed into a model: the agent has no use
+         * for the contents, it only writes them to disk for the report bundle
+         * to read. A model here would be a third place the shape has to be
+         * kept in step, and the first one to drift silently.
+         *
+         * Absent from a server that has not deployed the change, which is why
+         * ValidateUploadResponse does not ask for it. */
+        [JsonProperty("registry")]
+        public JToken Registry { get; set; }
+
+        [JsonProperty("registryVersion")]
+        public string RegistryVersion { get; set; }
     }
 
     private sealed class HeartbeatResponse

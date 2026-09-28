@@ -4,7 +4,7 @@
          reads the service's version over the control pipe and this is only the
          answer before the pipe replies, but a fallback that is wrong by two
          releases is how the window came to report 1.0.0 forever. -->
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>WinExe</OutputType>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
@@ -12,6 +12,17 @@
     <UseWPF>true</UseWPF>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- THE CRM'S REPORT CODE, BUILT BY THE CRM'S OWN VITE.
+         scripts/build_offline_report_bundle.mjs writes this, and the Setup
+         window inlines it into every local report it produces. It ships as
+         content rather than being generated here on purpose: the machine has
+         no Node, so the bundle has to arrive already built. -->
+    <Content Include="OfflineReport/report-bundle.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />

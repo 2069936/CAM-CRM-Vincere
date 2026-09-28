@@ -87,7 +87,19 @@ public sealed record UploadAcknowledgement(
     bool Duplicate,
     string Status,
     string ContentSha256,
-    DateTimeOffset AcknowledgedAt);
+    DateTimeOffset AcknowledgedAt,
+    /* THE ACCOUNT CLASSIFICATION, WHICH THE CAPTURE CANNOT SUPPLY.
+     *
+     * NinjaTrader knows balances; it does not know an account is an evaluation,
+     * and a report that counts an evaluation's profit tells a client they made
+     * money on capital they do not own. The CRM answers every upload with a
+     * small projection of its registry so the machine can classify its own
+     * accounts on a day the CRM cannot be reached.
+     *
+     * Optional, with a default, so every existing construction site compiles
+     * unchanged and a server that has not deployed yet simply sends nothing. */
+    string RegistryJson = null,
+    string RegistryVersion = null);
 
 [JsonObject(MemberSerialization.OptIn)]
 public sealed record HeartbeatPayload(

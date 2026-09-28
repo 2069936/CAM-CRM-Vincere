@@ -67,7 +67,10 @@ cam-backup-*.json
 release-upload/
 
 # Local CRM snapshot: real client data, never committed.
-public/local-snapshot.json
+# The glob, not just the one name: rebuilding the book for offline work leaves
+# variants beside it (local-snapshot.offline.json), and one of those is the
+# desk's whole client history sitting in a folder vite copies by default.
+public/local-snapshot*.json
 *.export.json
 .report-verify/
 .print-layout-verify/

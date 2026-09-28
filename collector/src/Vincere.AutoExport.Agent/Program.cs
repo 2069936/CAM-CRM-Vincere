@@ -35,6 +35,10 @@ builder.Services.AddSingleton<ICollectorQueue>(_ => new SnapshotQueue(
     queueRoot,
     new WindowsAgentDirectorySecurity()));
 builder.Services.AddSingleton<ICaptureHistoryStore>(new CaptureHistoryStore(paths.History));
+// The last account classification the CRM was able to send. Written after every
+// accepted upload, read by the Setup window's local report when the CRM cannot
+// be reached. See RosterStore for why the machine needs it at all.
+builder.Services.AddSingleton<IRosterStore>(new RosterStore(paths.Roster, new WindowsAgentDirectorySecurity()));
 builder.Services.AddSingleton<IStrategyObservationStore>(
     new StrategyObservationStore(System.IO.Path.Combine(paths.Root, "strategies.json")));
 builder.Services.AddSingleton<INinjaTraderCaptureClient, CapturePipeClient>();

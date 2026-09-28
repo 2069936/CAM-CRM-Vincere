@@ -35,5 +35,6 @@
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AttributionExport.cs" Link="DeepExport/AttributionExport.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs" Link="DeepExport/DeepExportRunner.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/NinjaTraderFolder.cs" Link="DeepExport/NinjaTraderFolder.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/OfflineReportWriter.cs" Link="OfflineReportWriter.cs" />
   </ItemGroup>
 </Project>
