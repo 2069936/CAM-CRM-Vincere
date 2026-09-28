@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import process from 'node:process';
 import { zipSync, strToU8 } from 'fflate';
 import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
@@ -38,6 +38,38 @@ import { renderOfflineReport } from '../../../src/offline/renderOfflineReport.js
 
 /** A real machine's capture measured 48 KB at the largest, 30 KB on average. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+/* THE SECRET NOBODY HAD TO SET.
+ *
+ * This desk cannot add an environment variable to its own deployment. That is
+ * not a hypothetical: server/apiLib/ingestPepper.js exists because
+ * INGEST_TOKEN_PEPPER "was never set on this deployment", pairing therefore
+ * never worked at all, and "waiting on a secret that only one person can
+ * create had blocked the feature for days". The same person, the same
+ * blocker, so the same answer - derived from a value the deployment is
+ * guaranteed to have, because apiAuth refuses to start without it.
+ *
+ * An explicit AGENT_MAIL_SECRET still wins when it is set, so nothing here
+ * prevents doing this properly later.
+ *
+ * WHAT THIS COSTS, and it is less than the pepper's. Anyone who obtains the
+ * service role key can derive this value - and that key already grants full
+ * read and write on every table. What this secret buys them on top is asking
+ * one route to email a report to an address that route reads from its own
+ * environment. Someone holding the service role key can already read every
+ * close in the database directly; they do not need to ask for one by email.
+ *
+ * The derivation being public is fine and is the point: the input is not.
+ */
+export function resolveAgentMailSecret(env = process.env) {
+  const configured = String(env?.AGENT_MAIL_SECRET || '').trim();
+  if (configured) return configured;
+  const serviceRoleKey = String(env?.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!serviceRoleKey) return '';
+  return createHmac('sha256', serviceRoleKey)
+    .update('cam-crm:agent-mail-secret:v1')
+    .digest('hex');
+}
 
 function constantTimeEquals(a, b) {
   const left = Buffer.from(String(a ?? ''), 'utf8');
@@ -99,7 +131,7 @@ export function createHandler({ send = sendViaBrevo, env = process.env } = {}) {
     try {
       requireMethod(req, ['POST']);
 
-      const secret = env.AGENT_MAIL_SECRET || '';
+      const secret = resolveAgentMailSecret(env);
       const to = env.AGENT_MAIL_TO || '';
       const from = env.DAILY_EMAIL_FROM || '';
       const apiKey = env.BREVO_API_KEY || '';

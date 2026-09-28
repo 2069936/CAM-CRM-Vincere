@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { resolveIngestPepper } from '../../apiLib/ingestPepper.js';
+import { resolveAgentMailSecret } from './reportEmail.js';
 import { createServiceClient } from '../../apiLib/apiAuth.js';
 import { normalizeCollectorVersion, requiresCollectorUpdate } from '../../apiLib/collectorVersion.js';
 import { createDeviceAuthStore, requireIngestDevice } from '../../apiLib/deviceAuth.js';
@@ -218,7 +219,7 @@ export function createHandler({
   now = () => new Date(),
   // Injected like everything else here, so a test can assert both the handed
   // out case and the deployment that has no relay configured.
-  reportEmailSecret = process.env.AGENT_MAIL_SECRET || '',
+  reportEmailSecret = resolveAgentMailSecret(),
 } = {}) {
   return async function handler(req, res) {
     try {

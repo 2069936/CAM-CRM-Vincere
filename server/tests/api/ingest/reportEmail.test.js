@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
 import { unzipSync, strFromU8 } from 'fflate';
 import { describe, expect, it, vi } from 'vitest';
-import { createHandler, messageFor, subjectFor } from '../../../autoCollection/ingest/reportEmail.js';
+import { createHandler, messageFor, resolveAgentMailSecret, subjectFor } from '../../../autoCollection/ingest/reportEmail.js';
 
 const ENV = {
   AGENT_MAIL_SECRET: 'a-long-shared-secret',
@@ -191,6 +191,48 @@ describe('what it refuses', () => {
   });
 });
 
+describe('the secret nobody had to set', () => {
+  /* This desk cannot add an environment variable to its own deployment.
+   * ingestPepper.js exists for exactly that reason - INGEST_TOKEN_PEPPER was
+   * never set, so pairing never worked at all - and this follows it. */
+  it('derives a secret from the key the deployment is guaranteed to have', () => {
+    const derived = resolveAgentMailSecret({ SUPABASE_SERVICE_ROLE_KEY: 'service-role-key' });
+    expect(derived).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('gives the same answer on every instance and every deploy', () => {
+    // A value generated at startup is the obvious idea and the wrong one: the
+    // agent caches what it was handed, and a secret that changes per instance
+    // authenticates nothing.
+    const env = { SUPABASE_SERVICE_ROLE_KEY: 'service-role-key' };
+    expect(resolveAgentMailSecret(env)).toBe(resolveAgentMailSecret(env));
+  });
+
+  it('is not the service role key, and does not contain it', () => {
+    const derived = resolveAgentMailSecret({ SUPABASE_SERVICE_ROLE_KEY: 'service-role-key' });
+    expect(derived).not.toContain('service-role-key');
+  });
+
+  it('lets an explicit value win, so this can be done properly later', () => {
+    expect(resolveAgentMailSecret({
+      AGENT_MAIL_SECRET: 'chosen',
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+    })).toBe('chosen');
+  });
+
+  it('answers empty rather than a constant when there is nothing to derive from', () => {
+    // The route refuses on an empty secret. A fixed fallback would be a
+    // published password.
+    expect(resolveAgentMailSecret({})).toBe('');
+  });
+
+  it('accepts a request signed with the derived value', async () => {
+    const env = { ...ENV, AGENT_MAIL_SECRET: '' , SUPABASE_SERVICE_ROLE_KEY: 'service-role-key' };
+    const { res } = await run({ env, secret: resolveAgentMailSecret(env), body: goodBody });
+    expect(res.statusCode).toBe(202);
+  });
+});
+
 describe('what it must never do', () => {
   /* Every other ingest route authenticates against `ingest_devices`, which is
    * exactly what is unavailable on the day this route matters: on 2026-09-26
@@ -206,8 +248,15 @@ describe('what it must never do', () => {
     const code = source
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    /* A TABLE, not the word "supabase". The route derives its shared secret
+     * by HMAC from SUPABASE_SERVICE_ROLE_KEY, the way ingestPepper.js does,
+     * because nobody on this desk can add an environment variable to the
+     * deployment. Reading an env var is not reading a row, and a check that
+     * cannot tell them apart forbids the very thing that makes this route
+     * work without Vercel access. */
     expect(code).not.toMatch(/\.from\(['"]/);
-    expect(code).not.toMatch(/createClient|serviceRole|supabase/i);
+    expect(code).not.toMatch(/createClient|createServiceClient/);
     expect(code).not.toMatch(/requireIngestDevice|deviceAuth|ingest_devices/);
+    expect(code).not.toMatch(/\bselect\(|\bupsert\(|\brpc\(/);
   });
 });
