@@ -97,10 +97,10 @@ var VincereOfflineReport=(function(e){Object.defineProperty(e,Symbol.toStringTag
       manual();
     });
   })();
-`;function tn(e){var t,n,r,i,a,o,s;let{report:c,warnings:l=[],metadata:u}=e||{};if(!c)throw Error(`There is no report to render.`);let d=c.grouped||{},f=`${c.clientName} - ${c.date} daily report`,p=[[`Accounts`,String((((t=c.grouped)==null||(t=t.funded)==null?void 0:t.length)||0)+(((n=c.grouped)==null||(n=n.cash)==null?void 0:n.length)||0)+(((r=c.grouped)==null||(r=r.unclassified)==null?void 0:r.length)||0)),``],[`Daily realized`,X((i=c.totals)==null?void 0:i.grossRealizedPnl),Q((a=c.totals)==null?void 0:a.grossRealizedPnl)],[`Weekly`,X((o=c.totals)==null?void 0:o.weeklyPnl),Q((s=c.totals)==null?void 0:s.weeklyPnl)]].map(([e,t,n])=>`
+`;function tn(e){var t,n,r,i,a,o,s;let{report:c,warnings:l=[],metadata:u,provenance:d=Qt}=e||{};if(!c)throw Error(`There is no report to render.`);let f=c.grouped||{},p=`${c.clientName} - ${c.date} daily report`,m=[[`Accounts`,String((((t=c.grouped)==null||(t=t.funded)==null?void 0:t.length)||0)+(((n=c.grouped)==null||(n=n.cash)==null?void 0:n.length)||0)+(((r=c.grouped)==null||(r=r.unclassified)==null?void 0:r.length)||0)),``],[`Daily realized`,X((i=c.totals)==null?void 0:i.grossRealizedPnl),Q((a=c.totals)==null?void 0:a.grossRealizedPnl)],[`Weekly`,X((o=c.totals)==null?void 0:o.weeklyPnl),Q((s=c.totals)==null?void 0:s.weeklyPnl)]].map(([e,t,n])=>`
       <div class="tile"><div class="label">${Z(e)}</div><div class="value${n}">${Z(t)}</div></div>`).join(``);return`<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
-<title>${Z(f)}</title>
+<title>${Z(p)}</title>
 <style>${Zt}</style>
 </head><body><div class="sheet">
   <header>
@@ -115,18 +115,18 @@ var VincereOfflineReport=(function(e){Object.defineProperty(e,Symbol.toStringTag
     <textarea id="summary-box" readonly hidden>${Z($t(e))}</textarea>
   </div>
 
-  <div class="headline">${p}</div>
+  <div class="headline">${m}</div>
 
   ${l.length?`<div class="warnings"><h3>Read before sending</h3><ul>${l.map(e=>`<li>${Z(e)}</li>`).join(``)}</ul></div>`:``}
 
-  ${$(`Funded`,d.funded,null)}
-  ${$(`Cash`,d.cash,null)}
-  ${$(`Unclassified`,d.unclassified,null,`Real money whose pool has not been named yet. Counted in the total above.`)}
-  ${$(`Evaluations`,d.evaluations,c.evaluationTotals,`Challenge capital, not the client’s money. Shown here and never in the total above.`)}
-  ${$(`Not classified on this machine`,d.pendingClassification,c.pendingClassificationTotals,`These accounts are not in the roster this machine holds, so they could not be classified and are not in the total above.`)}
+  ${$(`Funded`,f.funded,null)}
+  ${$(`Cash`,f.cash,null)}
+  ${$(`Unclassified`,f.unclassified,null,`Real money whose pool has not been named yet. Counted in the total above.`)}
+  ${$(`Evaluations`,f.evaluations,c.evaluationTotals,`Challenge capital, not the client’s money. Shown here and never in the total above.`)}
+  ${$(`Not classified on this machine`,f.pendingClassification,c.pendingClassificationTotals,`These accounts are not in the roster this machine holds, so they could not be classified and are not in the total above.`)}
 
   <footer>
-    ${Z(Qt)}
+    ${Z(d)}
     ${u!=null&&u.capturedAt?`<br />Capture taken ${Z(u.capturedAt)}.`:``}
   </footer>
 </div>

@@ -34,5 +34,22 @@ jobs:
         run: npx vitest run server/tests/api/entrypointsLoadUnderNode.test.js
       - name: Unit and integration tests
         run: npx vitest run
+      # A COMMITTED BUILD ARTIFACT DRIFTS FROM ITS SOURCE IN SILENCE.
+      #
+      # Two bundles are built from src/ and committed: the offline report the
+      # agent inlines into every file it writes on a client machine, and the
+      # one the Supabase Edge Function imports. Both were stale at least once -
+      # the offline bundle shipped without a change to renderOfflineReport.js
+      # that its own tests were already asserting, so the tests passed and the
+      # bytes on the trading machines were a different program.
+      #
+      # Rebuilding is deterministic, so a diff here means somebody edited the
+      # source and did not rebuild. Cheaper than the alternative, which is a
+      # client's report coming out of code nobody reviewed.
+      - name: The committed bundles match their source
+        run: |
+          node scripts/build_offline_report_bundle.mjs
+          node scripts/build_daily_email_bundle.mjs
+          git diff --exit-code --             collector/src/Vincere.AutoExport.Agent.UI/OfflineReport/report-bundle.js             supabase/functions/daily-report-email/_bundle.js
       - name: Production build
         run: npm run build
