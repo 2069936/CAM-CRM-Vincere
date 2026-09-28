@@ -1,7 +1,7 @@
-import { buildClientSegments } from './clientSegments';
-import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile';
-import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts';
-import { strategyRan } from './strategyRan';
+import { buildClientSegments } from './clientSegments.js';
+import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile.js';
+import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts.js';
+import { strategyRan } from './strategyRan.js';
 
 // THE TWO MESSAGES A CLIENT ACTUALLY RECEIVES ASK "DID IT RUN", NOT "WAS IT
 // ENABLED".

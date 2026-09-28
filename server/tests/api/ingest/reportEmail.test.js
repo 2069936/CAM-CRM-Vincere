@@ -13,6 +13,36 @@ const ENV = {
 
 const HTML = '<!doctype html><html><body><h1>Joel Onafowokan</h1></body></html>';
 
+/* What the agent posts: the capture it has just written, unredacted. The
+ * licence value here is the shape a real machine's queue carried. */
+const CAPTURE = {
+  schemaVersion: 1,
+  captureId: 'c-1',
+  capturedAt: '2026-09-28T20:30:00Z',
+  tradingDate: '2026-09-28',
+  timeZone: 'America/New_York',
+  source: { machineId: 'm', agentVersion: '1.1.3', addonVersion: '1.0.0', ninjaTraderVersion: '8.1.6.0' },
+  accounts: [{
+    accountName: 'FUNDED1', connectionName: 'LegendsT', displayName: 'FUNDED1',
+    netLiquidation: 50000, cashValue: 50000, realizedPnl: 120, grossRealizedPnl: 120,
+    unrealizedPnl: 0, totalPnl: 120, weeklyPnl: 300, trailingMaxDrawdown: 1000,
+    buyingPower: 100000, excessIntradayMargin: 0, initialMargin: 0, maintenanceMargin: 0,
+    currency: 'USD', status: 'Active',
+    accountValues: { NetLiquidation: 50000 },
+  }],
+  strategies: [{
+    strategyId: '1', strategyName: '0 - URGO-4.5', strategyDisplayName: 'URGO-4.5',
+    accountName: 'FUNDED1', instrument: 'MNQ DEC26', state: 'Realtime', quantity: 0,
+    position: 'Flat', averagePrice: 0, realizedPnl: null, unrealizedPnl: null,
+    enabled: true, sync: null, dataSeries: '1 Minute', connectionName: 'LegendsT',
+    startedAt: null, parameterCaptureStatus: 'partial',
+    parameters: { URGO1: 33 },
+    extraValues: { LicenseKey: 'V-9E2B00-2613327C-F8C645W', StopLossTicks: 300 },
+  }],
+  orders: [],
+  executions: [],
+};
+
 function request({ method = 'POST', secret = ENV.AGENT_MAIL_SECRET, body = {} } = {}) {
   const payload = Buffer.from(JSON.stringify(body), 'utf8');
   const stream = Readable.from([payload]);
@@ -35,7 +65,12 @@ function response() {
   };
 }
 
-const goodBody = { clientName: 'Joel Onafowokan', date: '2026-09-28', html: HTML };
+const goodBody = {
+  clientName: 'Joel Onafowokan',
+  capture: CAPTURE,
+  roster: { FUNDED1: { accountType: 'Funded', status: 'Active' } },
+  rosterFetchedAt: '2026-09-28T00:00:00Z',
+};
 
 async function run({ send = vi.fn(async () => ({ messageId: '<id>' })), env = ENV, ...options } = {}) {
   const res = response();
@@ -72,12 +107,33 @@ describe('the message it builds', () => {
 });
 
 describe('what it sends', () => {
-  it('accepts a report and hands it to the provider', async () => {
+  it('builds the report from the capture and hands it to the provider', async () => {
     const { res, send } = await run({ body: goodBody });
     expect(res.statusCode).toBe(202);
-    expect(res.body).toMatchObject({ ok: true });
+    expect(res.body).toMatchObject({ ok: true, date: '2026-09-28' });
     expect(send).toHaveBeenCalledTimes(1);
+    // The date is the capture's own, not one the caller asserted.
     expect(send.mock.calls[0][0].subject).toBe('Daily report · Joel Onafowokan · 2026-09-28');
+  });
+
+  /* The redaction happens here, on the desk's own server, rather than on
+   * thirty client machines each being trusted to have done it. */
+  it('strips the licence key and the tuning before the report is built', async () => {
+    const { send } = await run({ body: goodBody });
+    const zip = unzipSync(send.mock.calls[0][0].attachments[0].bytes);
+    const html = strFromU8(Object.values(zip)[0]);
+    expect(html).not.toContain('V-9E2B00-2613327C-F8C645W');
+    expect(html).not.toMatch(/LicenseKey|StopLossTicks|URGO1/);
+    // And it still says what ran, which is what the report is for.
+    expect(html).toMatch(/URGO/);
+    expect(html).toContain('MNQ DEC26');
+  });
+
+  it('carries the warnings into the body, not only onto the page', async () => {
+    // A machine with no roster cannot total the day, and a reader skimming a
+    // notification must not have to open the attachment to find that out.
+    const { send } = await run({ body: { ...goodBody, roster: {}, rosterFetchedAt: null } });
+    expect(send.mock.calls[0][0].text).toContain('Read before sending:');
   });
 
   /* THE DESTINATION IS NOT IN THE REQUEST, and that is the security of the
@@ -122,16 +178,16 @@ describe('what it refuses', () => {
     expect(res.statusCode).toBe(405);
   });
 
-  it('refuses a body with no report in it', async () => {
-    const { res } = await run({ body: { clientName: 'X', date: '2026-09-28' } });
+  it('refuses a body with no capture in it', async () => {
+    const { res } = await run({ body: { clientName: 'X' } });
     expect(res.statusCode).toBe(400);
-    expect(res.body).toMatchObject({ error: 'no_report' });
+    expect(res.body).toMatchObject({ error: 'no_capture' });
   });
 
-  it('refuses a date that is not a trading date', async () => {
-    const { res } = await run({ body: { ...goodBody, date: 'yesterday' } });
+  it('says what is wrong with a capture it cannot read, rather than answering 500', async () => {
+    const { res } = await run({ body: { ...goodBody, capture: { schemaVersion: 1 } } });
     expect(res.statusCode).toBe(400);
-    expect(res.body).toMatchObject({ error: 'bad_date' });
+    expect(res.body).toMatchObject({ error: 'bad_capture' });
   });
 });
 
