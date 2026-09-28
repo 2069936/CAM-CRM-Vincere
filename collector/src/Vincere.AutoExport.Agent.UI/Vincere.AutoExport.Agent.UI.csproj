@@ -14,6 +14,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- THE CRM'S REPORT CODE, BUILT BY THE CRM'S OWN VITE.
+         scripts/build_offline_report_bundle.mjs writes this, and the Setup
+         window inlines it into every local report it produces. It ships as
+         content rather than being generated here on purpose: the machine has
+         no Node, so the bundle has to arrive already built. -->
+    <Content Include="OfflineReport/report-bundle.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
     <!-- The attribution engine: which algorithm placed a trade, from the shape
          of the trade. netstandard2.0, and deliberately free of any SQLite or

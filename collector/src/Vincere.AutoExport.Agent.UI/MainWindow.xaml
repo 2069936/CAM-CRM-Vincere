@@ -402,6 +402,39 @@
                                 </StackPanel>
                             </StackPanel>
                         </Border>
+
+                        <!-- GENERATE REPORT LOCALLY. For the day the CRM cannot be
+                             reached: the captures are already on this machine, and
+                             this turns the newest one into the client's daily report
+                             without asking anyone for anything. The arithmetic is the
+                             CRM's own, bundled into the file; the browser that opens
+                             it does the work. -->
+                        <Border Background="{StaticResource RaisedBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,22,0,0">
+                            <StackPanel>
+                                <TextBlock Text="Generate report locally" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                                <TextBlock Text="Builds this client's daily report from the closes already captured on this machine, with no CRM and no network. The file lands on the Desktop; open it and print to PDF. Accounts the CRM has not classified on this machine are listed separately and left out of the total."
+                                           Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                                    <Button Content="Generate report locally"
+                                            Command="{Binding GenerateLocalReportCommand}"
+                                            Background="{StaticResource PrimaryBrush}"
+                                            Foreground="{StaticResource TextBrush}"
+                                            AutomationProperties.Name="Build this client's daily report on this machine without the CRM" />
+                                    <Button Content="Open report"
+                                            Command="{Binding OpenLocalReportCommand}"
+                                            Background="{StaticResource RaisedBrush}"
+                                            Foreground="{StaticResource TextBrush}"
+                                            Margin="10,0,0,0"
+                                            Visibility="{Binding HasLocalReport, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Open the report that was just written" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding LocalReportMessage}" Foreground="{StaticResource TextBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                                <TextBox Text="{Binding LocalReportPath, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontFamily="Consolas"
+                                         Visibility="{Binding HasLocalReport, Converter={StaticResource BoolToVisibility}}"
+                                         Background="Transparent" BorderThickness="0" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0"
+                                         AutomationProperties.Name="Where the report was written" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                   </ScrollViewer>
                 </TabItem>

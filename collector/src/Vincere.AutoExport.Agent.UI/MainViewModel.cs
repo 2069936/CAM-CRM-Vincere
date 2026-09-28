@@ -69,6 +69,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         this.copyToClipboard = copyToClipboard;
         this.deepExport = deepExport ?? RunDeepExportOnThisMachineAsync;
         DeepExportCommand = new AsyncCommand(DeepExportAsync, () => !IsBusy);
+        GenerateLocalReportCommand = new AsyncCommand(GenerateLocalReportAsync, () => !IsBusy);
+        OpenLocalReportCommand = new AsyncCommand(OpenLocalReportAsync, () => HasLocalReport);
         OpenDeepExportFolderCommand = new AsyncCommand(OpenDeepExportFolderAsync, () => HasDeepExport);
         CopyDeepExportShaCommand = new AsyncCommand(CopyDeepExportShaAsync, () => HasDeepExport);
         PairCommand = new AsyncCommand(PairAsync, () => !IsBusy);
@@ -189,6 +191,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand CopyInstallCommandCommand { get; }
     public ICommand InstallUpdateCommand { get; }
     public ICommand DeepExportCommand { get; }
+    public ICommand GenerateLocalReportCommand { get; }
+    public ICommand OpenLocalReportCommand { get; }
     public ICommand OpenDeepExportFolderCommand { get; }
     public ICommand CopyDeepExportShaCommand { get; }
 
@@ -204,6 +208,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
      * runs as LocalSystem and NinjaTrader's files belong to the logged-in user.
      * Nothing is uploaded. Nothing that authenticates goes in. See
      * DeepExport/DeepExportRunner.cs for what is and is not included. */
+    private string localReportPath;
+    private string localReportMessage;
+
+    public string LocalReportPath
+    {
+        get => localReportPath;
+        private set
+        {
+            Set(ref localReportPath, value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasLocalReport)));
+        }
+    }
+
+    public string LocalReportMessage { get => localReportMessage; private set => Set(ref localReportMessage, value); }
+
+    public bool HasLocalReport => !string.IsNullOrWhiteSpace(LocalReportPath);
+
     private string deepExportProgressText = string.Empty;
     private int deepExportPercent;
     private string deepExportPath;
@@ -327,6 +348,91 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             IsBusy = false;
         }
+    }
+
+    /* WRITE A CLIENT'S DAILY REPORT WITHOUT THE CRM.
+     *
+     * On 2026-09-25 the database stopped answering at 16:30 and did not come
+     * back for three days. Six of eleven client reports had been sent; five had
+     * not. The captures were on disk the whole time.
+     *
+     * Nothing here computes a figure. It picks the newest capture, reads the
+     * roster the service cached from the CRM, and writes one HTML file holding
+     * both plus the CRM's own report code. The browser that opens it does the
+     * arithmetic, with the same functions the CRM uses, so the numbers cannot
+     * disagree with the desk's.
+     */
+    internal async Task GenerateLocalReportAsync()
+    {
+        if (IsBusy) return;
+        IsBusy = true;
+        LocalReportPath = null;
+        LocalReportMessage = null;
+        try
+        {
+            await Task.Run(() =>
+            {
+                string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                string agentRoot = Path.Combine(programData, "Vincere", "AutoExport");
+                string queue = Path.Combine(agentRoot, "queue");
+
+                IReadOnlyList<CaptureFile> captures = OfflineReportWriter.FindCaptures(new[]
+                {
+                    Path.Combine(queue, "pending"),
+                    Path.Combine(queue, "uploading"),
+                    Path.Combine(queue, "sent"),
+                });
+                CaptureFile capture = OfflineReportWriter.Newest(captures);
+                if (capture == null)
+                {
+                    throw new InvalidOperationException(
+                        "This machine has no captured close yet, so there is nothing to report on.");
+                }
+
+                (string rosterJson, DateTimeOffset? fetchedAt) =
+                    OfflineReportWriter.ReadRoster(Path.Combine(agentRoot, "roster.json"));
+
+                string bundlePath = Path.Combine(
+                    Path.GetDirectoryName(typeof(OfflineReportWriter).Assembly.Location) ?? ".",
+                    "OfflineReport",
+                    "report-bundle.js");
+                string bundle = File.Exists(bundlePath) ? File.ReadAllText(bundlePath) : null;
+
+                string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                string written = OfflineReportWriter.Write(
+                    capture, rosterJson, fetchedAt, ClientName, bundle,
+                    string.IsNullOrWhiteSpace(desktop) ? agentRoot : desktop);
+
+                LocalReportPath = written;
+                LocalReportMessage = rosterJson == null
+                    // Said here as well as on the page: a CAM who never opens it
+                    // should still know the totals are missing before sending it.
+                    ? $"Report written for {capture.TradingDate}. This machine has no account roster from the"
+                      + " CRM, so every account is listed separately and there is no daily total."
+                    : $"Report written for {capture.TradingDate}. Open it and print to PDF.";
+            }).ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            // The reason goes on screen. This runs on the day the CRM is down,
+            // which is the worst possible day to be told only that it failed.
+            LocalReportMessage = exception.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task OpenLocalReportAsync()
+    {
+        string path = LocalReportPath;
+        if (string.IsNullOrWhiteSpace(path)) return;
+        await Task.Run(() =>
+        {
+            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+            catch (Exception exception) { LocalReportMessage = exception.Message; }
+        }).ConfigureAwait(true);
     }
 
     /// <summary>The default: NinjaTrader's Documents folder, the agent's ProgramData folder, the package under NinjaTrader 8\AutoExport\deep.</summary>
