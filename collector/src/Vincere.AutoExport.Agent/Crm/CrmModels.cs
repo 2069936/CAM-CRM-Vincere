@@ -120,7 +120,20 @@ public sealed record HeartbeatResult(
     bool UpdateRequired,
     bool Throttled,
     string ScheduleTime,
-    string TimeZone);
+    string TimeZone,
+    /* THE SECRET THAT LETS THIS MACHINE MAIL ITS OWN REPORT.
+     *
+     * Null on every deployment that has no relay configured, and null on every
+     * older CRM, which is why it is last and why nothing reads it without
+     * checking. It buys one thing: asking api/ingest/report-email to send this
+     * machine's report to an address that route reads from its own
+     * environment and never from the request. It is not a mail credential and
+     * it grants nothing in the database.
+     *
+     * It arrives here rather than at pairing because every machine in the
+     * field is already paired, and it has to arrive on an ordinary day: the
+     * day it is needed is the day the database cannot answer. */
+    string ReportEmailSecret = null);
 
 public sealed class CrmClientException : Exception
 {

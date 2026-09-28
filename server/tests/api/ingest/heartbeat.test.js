@@ -48,6 +48,7 @@ function setup({
   recordImpl,
   minIntervalSeconds = 30,
   now = () => REFERENCE_NOW,
+  reportEmailSecret = '',
 } = {}) {
   const calls = { authenticate: [], record: [], createClient: 0 };
   const admin = {};
@@ -85,6 +86,7 @@ function setup({
     minimumAgentVersion,
     minIntervalSeconds,
     now,
+    reportEmailSecret,
   });
   return { handler, calls };
 }
@@ -392,6 +394,43 @@ describe('public ingest heartbeat', () => {
     expect(res).toMatchObject({ statusCode: 405, body: { error: 'Method not allowed.' } });
     expect(res.headers.Allow).toBe('POST');
     expect(calls.createClient).toBe(0);
+  });
+});
+
+describe('the relay secret the agent caches', () => {
+  /* The agent needs it to ask /api/ingest/report-email to send its local
+   * report on a day the database is down. It cannot be fetched on that day,
+   * because fetching it is what is broken, so it arrives on every ordinary day
+   * and the agent keeps the last one it was given.
+   *
+   * Pairing would have been the other place and it is the wrong one: every
+   * machine in the field is already paired, and re-pairing thirty VPSs is a
+   * person opening thirty VPSs to fix an outage that has not happened yet. */
+  it('hands the agent the secret on an ordinary heartbeat', async () => {
+    const { handler } = setup({ reportEmailSecret: 'a-long-shared-secret' });
+    const res = await heartbeat(handler);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.reportEmailSecret).toBe('a-long-shared-secret');
+  });
+
+  it('leaves the field out when the deployment has no relay configured', async () => {
+    // Not sent empty: the agent then has nothing to cache and says so,
+    // instead of posting a blank secret all year.
+    const { handler } = setup();
+    const res = await heartbeat(handler);
+    expect(res.body).not.toHaveProperty('reportEmailSecret');
+  });
+
+  it('does not change anything else about the response', async () => {
+    const { handler } = setup({ reportEmailSecret: 's' });
+    const res = await heartbeat(handler);
+    expect(res.body).toMatchObject({
+      ok: true,
+      status: expect.any(String),
+      updateRequired: expect.any(Boolean),
+      throttled: false,
+      schedule: { time: '16:45', timeZone: 'America/New_York' },
+    });
   });
 });
 

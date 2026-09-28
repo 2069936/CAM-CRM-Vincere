@@ -216,6 +216,9 @@ export function createHandler({
     process.env.AUTO_COLLECTION_HEARTBEAT_MIN_INTERVAL_SECONDS,
   ),
   now = () => new Date(),
+  // Injected like everything else here, so a test can assert both the handed
+  // out case and the deployment that has no relay configured.
+  reportEmailSecret = process.env.AGENT_MAIL_SECRET || '',
 } = {}) {
   return async function handler(req, res) {
     try {
@@ -262,6 +265,29 @@ export function createHandler({
           time: recorded.scheduleTime.slice(0, 5),
           timeZone: recorded.scheduleTimezone,
         },
+        /* HANDED OUT HERE SO NOBODY HAS TO RE-PAIR THIRTY MACHINES.
+         *
+         * The agent needs this to ask /api/ingest/report-email to send its
+         * local report on a day the database is down. It cannot be fetched on
+         * that day, because fetching it is what is broken, so it arrives on
+         * every ordinary day and the agent keeps the last one it was given.
+         *
+         * Pairing would have been the other place, and it is the wrong one:
+         * every machine in the field is already paired, and re-pairing them is
+         * a person opening thirty VPSs to fix an outage that has not happened
+         * yet.
+         *
+         * WHAT IT IS WORTH TO AN ATTACKER, stated plainly. It buys one thing:
+         * asking that route to email a report to an address the route reads
+         * from its own environment and never from the request. It is not a
+         * mail credential, it grants nothing in this database, and it cannot
+         * redirect a message. That is why it can travel to thirty client
+         * machines at all, and the bound is enforced in the route, not here.
+         *
+         * Absent from the response when the deployment has no relay
+         * configured, rather than sent empty: the agent then has nothing to
+         * cache and says so, instead of posting a blank secret all year. */
+        ...(reportEmailSecret ? { reportEmailSecret } : {}),
       });
     } catch (error) {
       if (error instanceof ApiError) {
