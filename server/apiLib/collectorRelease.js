@@ -228,8 +228,8 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * while handing them 1.0.8, and the "agent needs updating" flag could never
  * fire because every machine looked newer than the release.
  */
-const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/release-manifest-1.0.9.json';
-const DEFAULT_RELEASE_MANIFEST_SHA256 = '7e87a83aaf2bbcf75c7de4fd363f96703cd5535de1671223e53e1ff8e5ec4012';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.1.0/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = 'cad2c5c5a31251843c0121002204d91e7d5599c2e6cdc311b8f6c391eb9be04b';
 
 export async function resolveInstallerRelease(env = process.env, {
   production = env.NODE_ENV === 'production',
