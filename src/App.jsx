@@ -119,6 +119,7 @@ import {
   isCashType,
 } from "./domain/reconcile";
 import { stampAccountOutcome } from "./domain/accountOutcomeStamp";
+import { ACCOUNT_NATURES, classifyAccountNature } from "./domain/simulationAccounts";
 import { createRoot } from "react-dom/client";
 import { zipSync } from "fflate";
 import {
@@ -566,11 +567,31 @@ export function buildTodayActions(client, dailyImport) {
   return actions;
 }
 
+/* NOT LIVE MONEY: SIMULATED, OR SIGNALS THAT DISAGREE.
+ *
+ * `isSimulationAccount` answers false for an undetermined account, which is
+ * correct where it is used - an account nobody has resolved must not be counted
+ * as simulated any more than as real. It is the wrong question for a tab.
+ * splitSimulationRows takes BOTH natures out of the live rows, so a tab keyed
+ * on "is simulated" would list the simulated accounts and silently drop the
+ * conflicted ones, which are exactly the accounts a CAM most needs to see.
+ *
+ * Keyed on the classifier and on the registry key, because only rows
+ * accountMetaFromRow built carry `accountName` and dailyImport.accounts is
+ * built elsewhere.
+ */
+function notLiveMoney(name, meta) {
+  const nature = classifyAccountNature(meta, {
+    accountName: meta?.accountName || name,
+  }).nature;
+  return nature !== ACCOUNT_NATURES.LIVE;
+}
+
 export function filteredAccountsForTab(client, dailyImport, tab) {
   const regCi = mergeRegistryCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
   const entriesCi = Object.fromEntries(
-    Object.entries(regCi).filter(([, account]) => {
+    Object.entries(regCi).filter(([name, account]) => {
       if (tab === "Review")
         return (
           account.accountType === "Unassigned" ||
@@ -580,6 +601,7 @@ export function filteredAccountsForTab(client, dailyImport, tab) {
         return account.accountType?.startsWith("Evaluation");
       if (tab === "Funded") return account.accountType === "Funded";
       if (tab === "Cash") return isCashType(account.accountType);
+      if (tab === "Simulation") return notLiveMoney(name, account);
       return true;
     }),
   );
@@ -591,9 +613,28 @@ export function filteredAccountsForTab(client, dailyImport, tab) {
   const entries = Object.fromEntries(
     Object.entries(allMerged).filter(([k]) => entriesCi[k.toLowerCase()]),
   );
+  /* THE SIMULATED ROWS ARE NOT IN `snapshots`, AND THAT IS THE POINT.
+   *
+   * reconcileDailyImport splits the close once, at the boundary: `snapshots`
+   * holds live-money rows only and everything simulated travels in
+   * `simulation`, which no money total reads. A Simulation tab that filtered
+   * `snapshots` would therefore always be empty, which is how you ship a tab
+   * that looks broken. It reads the other side of the same split.
+   *
+   * `undetermined` comes along. Those are accounts whose signals disagree - the
+   * record says one thing and the name or the platform says another - and their
+   * rows are in neither the live list nor the simulated one. Today there are
+   * none in production, measured, but an account that lands there is otherwise
+   * invisible in every tab, which is the failure this whole change is about. */
+  const source = tab === "Simulation"
+    ? [
+      ...(dailyImport?.simulation?.snapshots || []),
+      ...(dailyImport?.simulation?.undetermined?.snapshots || []),
+    ]
+    : snapshots;
   return {
     accounts: entries,
-    snapshots: snapshots
+    snapshots: source
       .filter((snapshot) => entriesCi[snapshot.accountName?.toLowerCase()])
       .map((snapshot) => ({
         ...snapshot,
@@ -607,7 +648,8 @@ export function buildVisibleTabs(client, dailyImport) {
     ...(dailyImport?.accounts || {}),
     ...(client?.accountRegistry || {}),
   };
-  const values = Object.values(accounts);
+  const entries = Object.entries(accounts);
+  const values = entries.map(([, account]) => account);
   const tabs = [];
   if (
     values.some(
@@ -623,6 +665,20 @@ export function buildVisibleTabs(client, dailyImport) {
     tabs.push("Funded");
   if (values.some((account) => isCashType(account.accountType)))
     tabs.push("Cash");
+  /* SIMULATION HAD NO TAB, SO 126 ACCOUNTS ON 124 CLIENTS WERE IN NONE.
+   *
+   * `Simulation` became a real account type on 2026-08-13 and by 2026-09-28
+   * production held 126 of them, all Active, spread across 124 of the book's
+   * clients. Review, Evaluations, Funded and Cash each test for their own type
+   * and nothing tested for this one, so an account typed Simulation appeared
+   * in no tab at all: the CAM could see it in the registry list and nowhere a
+   * close is read.
+   *
+   * Asked of the classifier rather than of the string, so this tab and the
+   * split that moves the rows agree by construction. A Sim101 the desk never
+   * retyped is caught by its name, exactly as it is when the close is split. */
+  if (entries.some(([name, account]) => notLiveMoney(name, account)))
+    tabs.push("Simulation");
   return ["Overview", ...tabs, ...STATIC_TABS];
 }
 
@@ -16817,7 +16873,7 @@ export default function App() {
                         logAlgoHistory={logAlgoHistory}
                       />
                     ) : null}
-                    {["Review", "Evaluations", "Funded", "Cash"].includes(
+                    {["Review", "Evaluations", "Funded", "Cash", "Simulation"].includes(
                       effectiveActiveTab,
                     ) ? (
                       <>
@@ -16845,6 +16901,19 @@ export default function App() {
                             >
                               Try again
                             </button>
+                          </p>
+                        ) : null}
+                        {/* SIMULATED DOLLARS ARE NOT MONEY, AND THIS TAB
+                            SHOWS DOLLARS. Every total elsewhere in the app is
+                            built from the live side of the split and none of
+                            these figures reach it. Said on the tab because a
+                            metric tile reading "Daily/Gross PnL" looks the
+                            same here as it does on Funded. */}
+                        {effectiveActiveTab === "Simulation" ? (
+                          <p className="muted chart-empty">
+                            Simulated accounts. These figures are not client money and are
+                            in no total on any other tab, in the client&rsquo;s report, or on
+                            the Operations page.
                           </p>
                         ) : null}
                         <Dashboard

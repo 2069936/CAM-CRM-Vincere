@@ -13,13 +13,24 @@ const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.IGNORE,
 ];
 
-// Accounts classified before the IRA/Straight split still hold the legacy 'Cash'
-// value. Offer it only on those rows, so the dropdown shows their real value
-// instead of silently snapping to another type, and the CAM can reclassify.
+/* Accounts classified before the IRA/Straight split still hold the legacy 'Cash'
+ * value. Offer it only on those rows, so the dropdown shows their real value
+ * instead of silently snapping to another type, and the CAM can reclassify.
+ *
+ * 'Simulation' is here for the same reason and is NOT legacy. It is a live type
+ * on 126 accounts across 124 clients, and it is deliberately absent from the
+ * list everyone else gets: a CAM classifying a new account is answering "what
+ * is this client's money doing", and Simulation is not an answer to that. It is
+ * what the account already is. Until the Simulation tab existed these rows were
+ * drawn nowhere, so the omission cost nothing; now that they render, a select
+ * whose options do not include the row's own value shows the wrong type and
+ * writes it on the first change. Offered on exactly the rows that hold it, so
+ * the value is shown truthfully and the CAM can move it off simulation when the
+ * account turns out to be real. */
 function typeOptionsFor(accountType) {
-  return accountType === ACCOUNT_TYPES.CASH
-    ? [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.CASH]
-    : ACCOUNT_TYPE_OPTIONS;
+  if (accountType === ACCOUNT_TYPES.CASH) return [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.CASH];
+  if (accountType === ACCOUNT_TYPES.SIMULATION) return [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.SIMULATION];
+  return ACCOUNT_TYPE_OPTIONS;
 }
 
 const STATUS_OPTIONS = Object.values(ACCOUNT_STATUSES);
