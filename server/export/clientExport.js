@@ -319,11 +319,74 @@ const STRATEGY_PARAMETER_REF = 'parameters_ref';
  * Rows are copied, never mutated: `series` is built from the same row objects
  * and a mutation here would reach into a block that has nothing to do with this.
  */
+/* WHAT A STRATEGY'S CONFIGURATION MAY NOT CARRY OUT OF THE CRM.
+ *
+ * `parameters_raw` is a serialised NinjaScript input map, and on this book it
+ * holds a live licence. Measured on production 2026-09-29: 16,273 of 16,916
+ * strategy rows carry a `LicenseKey`, and 12,239 of those carry a real value.
+ * Deduplicating the column into the dictionary below made the payload smaller,
+ * not safer - 5,669 distinct values travel, 1,144 of them with a licence in
+ * them - and this payload is built expressly to be handed outside the CRM.
+ *
+ * A DENYLIST, WHERE THE REPORT PATHS USE AN ALLOWLIST, and the difference is
+ * forced rather than chosen. The agent's report and the daily email name the
+ * four fields they print and drop the rest, which they can because they display
+ * an algorithm's NAME. This payload's consumer compares whole configurations:
+ * src/domain/setFileMatch.js parses parameters_raw to decide which set file a
+ * strategy was run from, so emptying it answers "this strategy had no
+ * configuration", which is a wrong answer arriving quietly.
+ *
+ * THE KEY IS REMOVED, NOT BLANKED. A licence is not part of a set file's
+ * identity - it differs per client for the same configuration - so dropping it
+ * makes two clients running the same set file compare equal, which is what the
+ * matcher wants anyway. Blanking it to "" would instead read as "this strategy
+ * was licensed to nobody".
+ */
+const SECRET_PARAMETER_KEY = /licen[sc]e|password|passwd|secret|token|credential|api_?key/i;
+
+/** The same map without the keys that may not leave. Returns null unchanged. */
+function withoutSecrets(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (SECRET_PARAMETER_KEY.test(key)) continue;
+    out[key] = inner;
+  }
+  return out;
+}
+
+/**
+ * One dictionary value, cleaned. `params_parsed` arrives as an object and
+ * `parameters_raw` as the JSON text of one, so both are handled and anything
+ * that does not parse is passed through: a value this cannot read is a value it
+ * must not silently replace.
+ */
+export function redactStrategyParameterValue(column, value) {
+  if (value == null) return value;
+  if (column === 'params_parsed') return withoutSecrets(value);
+  if (typeof value !== 'string' || !value.trim()) return value;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    /* Not JSON. Left exactly as it is rather than guessed at - and asserted by
+     * a test, so a future format change fails loudly here instead of quietly
+     * shipping a licence in a shape this did not expect. */
+    return value;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return value;
+  return JSON.stringify(withoutSecrets(parsed));
+}
+
 export function hoistStrategyParameters(rows = []) {
   const refByValue = new Map();
   const entries = [];
   const hoisted = rows.map((row) => {
-    const values = STRATEGY_PARAMETER_COLUMNS.map((column) => row[column] ?? null);
+    /* Cleaned BEFORE the dedup key is computed, so two rows that differ only
+     * by a licence collapse to one entry instead of two. */
+    const values = STRATEGY_PARAMETER_COLUMNS.map(
+      (column) => redactStrategyParameterValue(column, row[column] ?? null),
+    );
     const key = JSON.stringify(values);
     let ref = refByValue.get(key);
     if (ref === undefined) {

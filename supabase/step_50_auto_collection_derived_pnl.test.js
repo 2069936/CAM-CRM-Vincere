@@ -48,7 +48,12 @@ describe('step 50 stores the per-algo split the collector already computes', () 
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 50)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(50);
+    /* "I am the highest number" belonged here until step 51 arrived, and it
+     * hands that claim over rather than fighting for it: the newest step is
+     * the one that can assert it truthfully, and two files asserting it means
+     * one of them is wrong the moment a third is written. 51's test carries it
+     * now. What stays here is what is still this step's own business - that 50
+     * exists and that nobody else took the number. */
     // 40 stays retired. It held the heartbeat ordering rule and was removed on
     // 2026-08-31 in bb35ff3; the run order has read 39 → 41 ever since, and
     // reusing the slot would make the runbook disagree with the history.
@@ -57,7 +62,8 @@ describe('step 50 stores the per-algo split the collector already computes', () 
 
   it('is in the runbook table and in the run order', () => {
     expect(runbook).toMatch(/^\| 50 \| `step_50_auto_collection_derived_pnl\.sql` \|.*\|$/m);
-    expect(runbook).toContain('→ 49 → 50.');
+    // No trailing period: the order line continues past this step now.
+    expect(runbook).toContain('→ 49 → 50 →');
   });
 
   it('says in the runbook that it is not independent', () => {

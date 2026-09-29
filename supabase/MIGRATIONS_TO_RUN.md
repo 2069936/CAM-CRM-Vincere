@@ -28,6 +28,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 48 | `step_48_close_summaries.sql` | `close_summaries`: the desk money of one close per segment, written at ingest by `buildSegmentTotals`, plus `replace_close_summaries` and the Node backfill beside it | The manager's first screen reading about two rows a close instead of downloading 12,778 account rows and 14,514 strategy rows on every login |
 | 49 | `step_49_strategy_templates.sql` | `strategy_templates`: the desk's own set files, keyed by family and version, and the catalogue the attribution engine reads | Naming the algorithm behind an order from the shape of the trade |
 | 50 | `step_50_auto_collection_derived_pnl.sql` | `persist_auto_daily_import` replaced again so the COLLECTOR stores `strategy_snapshots.derived_realized` and `account_snapshots.derivation`, which step 37 added and only the manual path has ever written | A per-algorithm P&L on the 99% of the book that arrives automatically |
+| 51 | `step_51_app_users_write_lockdown.sql` | `revoke insert, update, delete on app_users` from `authenticated` and `anon`; SELECT stays | Closing a CAM's ability to promote themselves to Manager by talking to PostgREST directly |
 
 ## These three groups behave differently
 
@@ -101,7 +102,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -116,6 +117,12 @@ lists. A draft of this change written against a checkout that stopped at PR 15
 carried step 28's body instead: applying that would have dropped `ran` and
 `ran_basis` from every close written afterwards, silently, with no error. The
 test beside it asserts both columns survive.
+
+**51 is a revoke and nothing else, and it is safe to run at any time.** It
+removes privileges the application never uses: the browser reads `app_users`
+twice to sign in and writes it never, and every write goes through
+`api/admin/users.js` on the service role, which grants do not constrain. SELECT
+is deliberately untouched - revoking it locks every user out of the CRM.
 
 **47 is easier to run before the deploy, and no longer has to be.** It was
 written as a must: the strategy insert named `ran` and `ran_basis`
