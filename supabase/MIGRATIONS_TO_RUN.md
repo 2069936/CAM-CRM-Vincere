@@ -26,6 +26,8 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 46 | `step_46_ingest_quarantine_reports.sql` | `ingest_quarantine_reports`: what each VPS holds in `queue\quarantine`, one row per capture with the code, the attempt count and whether the agent will retry it, plus `record_ingest_quarantine_report`, which replaces a device's inventory whole | The quarantine count and dates on the client card, the Quarantine state and chip on the Auto Collection fleet view, and the `POST /api/ingest/quarantine` report agent 1.0.7 sends after its daily review |
 | 47 | `step_47_strategy_ran.sql` | `ran` and `ran_basis` on `strategy_snapshots`, the one close backfill behind `call public.backfill_strategy_ran_all();`, and `persist_auto_daily_import` replaced so the collector stores both | Whether an algorithm RAN that day, on every screen that used to ask the export time checkbox |
 | 48 | `step_48_close_summaries.sql` | `close_summaries`: the desk money of one close per segment, written at ingest by `buildSegmentTotals`, plus `replace_close_summaries` and the Node backfill beside it | The manager's first screen reading about two rows a close instead of downloading 12,778 account rows and 14,514 strategy rows on every login |
+| 49 | `step_49_strategy_templates.sql` | `strategy_templates`: the desk's own set files, keyed by family and version, and the catalogue the attribution engine reads | Naming the algorithm behind an order from the shape of the trade |
+| 50 | `step_50_auto_collection_derived_pnl.sql` | `persist_auto_daily_import` replaced again so the COLLECTOR stores `strategy_snapshots.derived_realized` and `account_snapshots.derivation`, which step 37 added and only the manual path has ever written | A per-algorithm P&L on the 99% of the book that arrives automatically |
 
 ## These three groups behave differently
 
@@ -99,12 +101,21 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
 everything above them; 38 touches only `operational_flags` and 39 only
 `clients`.
+
+**50 is not independent, and the order is not a formality for it.** It replaces
+`persist_auto_daily_import` and writes the two columns 37 added, so it must run
+after 37 for the columns to exist and after 47 for the function it replaces to
+be the current one. Its body is 47's, copied verbatim except for the two INSERT
+lists. A draft of this change written against a checkout that stopped at PR 15
+carried step 28's body instead: applying that would have dropped `ran` and
+`ran_basis` from every close written afterwards, silently, with no error. The
+test beside it asserts both columns survive.
 
 **47 is easier to run before the deploy, and no longer has to be.** It was
 written as a must: the strategy insert named `ran` and `ran_basis`
