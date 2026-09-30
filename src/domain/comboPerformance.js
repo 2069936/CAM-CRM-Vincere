@@ -92,6 +92,19 @@ const elementOf = (family, version, level) => (
   level === 'family' || !version ? family : `${family} ${version}`
 );
 
+/**
+ * The row key one algorithm contributes at a given level: `OGX_PF 2.4` at the
+ * default `version` level, `OGX_PF` at `family`.
+ *
+ * Exported because a caller that needs a per-algorithm FIGURE has to read the
+ * grid rows itself: `comboKeyFromDay` hands out strings and carries no money.
+ * Such a caller must key those rows exactly the way `elements` was keyed or the
+ * two sets stop lining up, and a row that lines up with nothing silently
+ * disappears from one side of an attribution. A second copy of this one-liner is
+ * the same class of bug as a second copy of the identity rule, one level down.
+ */
+export { elementOf as elementKeyOf };
+
 function joinKey(elements) {
   const unique = [...new Set(elements)].sort();
   return unique.length ? unique.join(' + ') : UNKNOWN_KEY;
@@ -124,13 +137,22 @@ function resolveDayAlgos(snapshot, executionsForThisAccount, basis) {
   const filledFamilies = traded ? familiesOnFills(executionsForThisAccount) : new Map();
 
   const byElement = new Map();
-  const add = (family, version, reason) => {
+  // `strategies` on an entry is the grid rows that evidenced it, in grid order,
+  // and it is empty on a family named only by the fills. It exists so a caller
+  // needing a per-algorithm FIGURE reads the same rows this resolution accepted
+  // instead of re-deciding which rows ran; see `dayAlgoRows`.
+  const add = (family, version, reason, strategy = null) => {
     // `|` separates the two halves of the id because neither a family nor a
     // version can contain one: families are grid identifiers (IFSP_PF, B2X) and
     // versions are dotted numbers.
     const id = `${family}|${version}`;
     const existing = byElement.get(id);
-    if (!existing || RANK[reason] < RANK[existing.reason]) byElement.set(id, { family, version, reason });
+    if (!existing) {
+      byElement.set(id, { family, version, reason, strategies: strategy ? [strategy] : [] });
+      return;
+    }
+    if (RANK[reason] < RANK[existing.reason]) existing.reason = reason;
+    if (strategy) existing.strategies.push(strategy);
   };
 
   const rowFamilies = new Set();
@@ -142,7 +164,7 @@ function resolveDayAlgos(snapshot, executionsForThisAccount, basis) {
     // `basis: 'enabled'` is the old attribution, kept for the comparison label
     // on the Stack Playbook: the checkbox alone, stored answer or not.
     const reason = traded ? ranBasisOf(strategy, filledFamilies) : (strategy.enabled === true ? 'enabled' : 'none');
-    if (reason !== 'none') add(family, version, reason);
+    if (reason !== 'none') add(family, version, reason, strategy);
   }
   // A family named on the fills with no grid row at all (98 funded days on the
   // book carried no strategy rows): the fill name is the only evidence and it
@@ -181,6 +203,59 @@ function dayKeys(snapshot, executionsForThisAccount, basis, level) {
 export function comboKeyFromDay(snapshot, executionsForThisAccount = [], { basis = DEFAULT_OPTIONS.basis, level = DEFAULT_OPTIONS.level } = {}) {
   const { key, elements, reason } = dayKeys(snapshot, executionsForThisAccount, basis, level);
   return { key, elements, reason };
+}
+
+/**
+ * THE SAME ANSWER AS `comboKeyFromDay`, WITH THE GRID ROWS STILL ATTACHED.
+ *
+ * Returns one entry per element of that day's combo, sorted by key:
+ * `{ key, family, versions, reason, strategies }`. `key` is what `elements`
+ * holds at the requested level, `strategies` is the grid rows this resolution
+ * accepted for it, and `strategies` is EMPTY on a family the fills name with no
+ * grid row at all (98 funded days on the book carry no strategy rows).
+ *
+ * It exists because `comboKeyFromDay` hands out strings, so a caller that needs
+ * a per-algorithm figure — `strategy.derivedRealized ?? strategy.realized` — has
+ * no way back to the row that produced an element. The only alternatives were
+ * both worse: re-walk `snapshot.strategies` with a second copy of the ran rule
+ * and hope the fills-only families stay in step with `elements`, or divide the
+ * account day between the elements, which is the fabrication algorithmRanking.js
+ * removed. `dayAlgoRows(...).map(e => e.key)` equals
+ * `comboKeyFromDay(...).elements` by construction, from one resolve, and
+ * it is pinned in both halves of the temperature suite: on a fixture in
+ * algorithmTemperature.test.js ('one door to the identity rule'), which runs on
+ * every clone, and over all 896 funded account days of the stored book in
+ * algorithmTemperature.book.test.js, which does not.
+ *
+ * `versions` is a list because two versions of one family fold into one element
+ * at `level: 'family'`, and a row spanning versions should say so rather than
+ * report whichever one was read first.
+ */
+export function dayAlgoRows(snapshot, executionsForThisAccount = [], { basis = DEFAULT_OPTIONS.basis, level = DEFAULT_OPTIONS.level } = {}) {
+  const algos = resolveDayAlgos(snapshot, executionsForThisAccount, basis);
+  const byKey = new Map();
+  for (const algo of algos) {
+    const key = elementOf(algo.family, algo.version, level);
+    const entry = byKey.get(key);
+    if (!entry) {
+      byKey.set(key, {
+        key,
+        family: algo.family,
+        versions: algo.version ? [algo.version] : [],
+        reason: algo.reason,
+        strategies: [...algo.strategies],
+      });
+      continue;
+    }
+    if (RANK[algo.reason] < RANK[entry.reason]) entry.reason = algo.reason;
+    if (algo.version && !entry.versions.includes(algo.version)) entry.versions.push(algo.version);
+    entry.strategies.push(...algo.strategies);
+  }
+  for (const entry of byKey.values()) entry.versions.sort();
+  // Plain `<`/`>` on the key, not localeCompare: `dayKeys` sorts `elements` with
+  // a bare `.sort()`, and locale collation ignores the punctuation that tells
+  // `OGX 2.4` from `OGX_PF 2.4`. The two orders have to be the same order.
+  return [...byKey.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
 /** Today's rule for who is in the population, kept for the comparison label. */
@@ -257,6 +332,83 @@ function firstCloseInWindow(clients, from, to) {
     }
   }
   return first;
+}
+
+// The account's own alive range: first close to the later of its last close and
+// the date it was marked Failed. What its status is TODAY says nothing about the
+// days it traded.
+//
+// While the range is derived from the same snapshots the walk below reads, the
+// check on it excludes nothing: a day that reaches it was itself one of the days
+// that widened the range. It is the shape the population rule is meant to have,
+// and it goes live the moment the range comes from the registry (dateFunded,
+// dateFailed) instead. What does the work today is `includeFailed`, which skips
+// the status test in isFundedPopulation.
+function aliveRanges(imports = []) {
+  const alive = {};
+  for (const di of imports) {
+    for (const snap of di.snapshots || []) {
+      const name = lower(snap.accountName);
+      const range = alive[name] || (alive[name] = { first: di.date || '', last: di.date || '' });
+      if (di.date && (!range.first || di.date < range.first)) range.first = di.date;
+      if (di.date && di.date > range.last) range.last = di.date;
+    }
+  }
+  return alive;
+}
+
+/**
+ * EVERY FUNDED ACCOUNT DAY INSIDE A WINDOW, ONCE, IN ONE ORDER.
+ *
+ * Yields `{ client, dailyImport, snapshot, meta, date, accountName, accountId,
+ * pnl, isFailed }` in client, then close, then snapshot order. It owns five
+ * rules and `buildComboPerformance` below is its first caller:
+ *
+ *   * the window, `inWindow`, inclusive at both ends on a YYYY-MM-DD compare,
+ *   * who is in the population, `isFundedPopulation`,
+ *   * the account's own alive range, `aliveRanges` above,
+ *   * the account-day figure, `Number(snapshot.grossRealizedPnl || 0)`, whose
+ *     name lies about its basis (see csvImport.js: it holds the commission-netted
+ *     'Realized PnL' whenever the grid exported both),
+ *   * the account identity `${client.id}::${lowercased name}`, which is what
+ *     every `accounts` count in this file is a set of.
+ *
+ * It is a generator because a second panel on the same screen
+ * (algorithmTemperature.js) needs exactly these days in exactly this order with
+ * a different accumulator on them. Two copies of this walk is how one caption
+ * ends up naming 180 funded accounts beside a table built over 149, which this
+ * file has already paid for once: see `fundedAccounts` in the population below.
+ */
+export function* fundedAccountDays(clients = [], { from = '', to = '', includeFailed = DEFAULT_OPTIONS.includeFailed } = {}) {
+  for (const client of clients || []) {
+    const registry = registryOf(client);
+    const imports = client.dailyImports || [];
+    const alive = aliveRanges(imports);
+
+    for (const dailyImport of imports) {
+      if (!inWindow(dailyImport.date, from, to)) continue;
+      for (const snapshot of dailyImport.snapshots || []) {
+        const name = lower(snapshot.accountName);
+        const meta = registry[name] || {};
+        if (!isFundedPopulation(meta, { includeFailed })) continue;
+        const range = alive[name] || { first: '', last: '' };
+        const aliveTo = range.last > (meta.dateFailed || '') ? range.last : (meta.dateFailed || '');
+        if (!inWindow(dailyImport.date, range.first, aliveTo)) continue;
+
+        yield {
+          client,
+          dailyImport,
+          snapshot,
+          meta,
+          date: dailyImport.date,
+          accountName: snapshot.accountName,
+          accountId: `${client.id}::${name}`,
+          pnl: Number(snapshot.grossRealizedPnl || 0),
+          isFailed: meta.status === ACCOUNT_STATUSES.FAILED,
+        };
+      }
+    }
+  }
 }
 
 function newRow(key, level, elements, familyKey) {
@@ -362,76 +514,39 @@ export function buildComboPerformance(clients = [], options = {}) {
     fundedClients: new Set(),
   };
 
-  for (const client of clients || []) {
-    const registry = registryOf(client);
-    const imports = client.dailyImports || [];
+  for (const funded of fundedAccountDays(clients, { from, to, includeFailed })) {
+    const { client, dailyImport: di, snapshot: snap, pnl, accountId, isFailed } = funded;
+    population.fundedDays += 1;
+    population.fundedPnl += pnl;
+    population.fundedAccounts.add(accountId);
+    population.fundedClients.add(client.id);
 
-    // The account's own alive range: first close to the later of its last
-    // close and the date it was marked Failed. What its status is TODAY says
-    // nothing about the days it traded.
-    //
-    // While the range is derived from the same snapshots the loop below walks,
-    // the check on it excludes nothing: a day that reaches it was itself one of
-    // the days that widened the range. It is the shape the population rule is
-    // meant to have, and it goes live the moment the range comes from the
-    // registry (dateFunded, dateFailed) instead. What does the work today is
-    // `includeFailed`, which skips the status test in isFundedPopulation.
-    const alive = {};
-    for (const di of imports) {
-      for (const snap of di.snapshots || []) {
-        const name = lower(snap.accountName);
-        const range = alive[name] || (alive[name] = { first: di.date || '', last: di.date || '' });
-        if (di.date && (!range.first || di.date < range.first)) range.first = di.date;
-        if (di.date && di.date > range.last) range.last = di.date;
-      }
+    const day = dayKeys(snap, executionsForAccount(di, snap.accountName), basis, level);
+    if (day.key === UNKNOWN_KEY) {
+      population.unknownDays += 1;
+      population.unknownPnl += pnl;
+      continue;
     }
 
-    for (const di of imports) {
-      if (!inWindow(di.date, from, to)) continue;
-      for (const snap of di.snapshots || []) {
-        const name = lower(snap.accountName);
-        const meta = registry[name] || {};
-        if (!isFundedPopulation(meta, { includeFailed })) continue;
-        const range = alive[name] || { first: '', last: '' };
-        const aliveTo = range.last > (meta.dateFailed || '') ? range.last : (meta.dateFailed || '');
-        if (!inWindow(di.date, range.first, aliveTo)) continue;
+    population.includedDays += 1;
+    population.includedPnl += pnl;
+    population.accounts.add(accountId);
+    population.clients.add(client.id);
+    if (isFailed) population.failedAccountDays += 1;
 
-        const pnl = Number(snap.grossRealizedPnl || 0);
-        const accountId = `${client.id}::${name}`;
-        population.fundedDays += 1;
-        population.fundedPnl += pnl;
-        population.fundedAccounts.add(accountId);
-        population.fundedClients.add(client.id);
-
-        const day = dayKeys(snap, executionsForAccount(di, snap.accountName), basis, level);
-        if (day.key === UNKNOWN_KEY) {
-          population.unknownDays += 1;
-          population.unknownPnl += pnl;
-          continue;
-        }
-
-        const isFailed = meta.status === ACCOUNT_STATUSES.FAILED;
-        population.includedDays += 1;
-        population.includedPnl += pnl;
-        population.accounts.add(accountId);
-        population.clients.add(client.id);
-        if (isFailed) population.failedAccountDays += 1;
-
-        const row = rows[day.key] || (rows[day.key] = newRow(day.key, level, day.elements, day.familyKey));
-        row.totalPnl += pnl;
-        row.days += 1;
-        if (pnl > 0) { row.winDays += 1; row.tradedDays += 1; }
-        else if (pnl < 0) { row.lossDays += 1; row.tradedDays += 1; }
-        else row.flatDays += 1;
-        row.accountSet.add(accountId);
-        row.clientSet.add(client.id);
-        if (isFailed) row.failedSet.add(accountId);
-        if (!row.firstDate || di.date < row.firstDate) row.firstDate = di.date;
-        if (di.date > row.lastDate) row.lastDate = di.date;
-        if (mid && di.date >= mid) { row.recentPnl += pnl; row.recentDays += 1; }
-        else { row.priorPnl += pnl; row.priorDays += 1; }
-      }
-    }
+    const row = rows[day.key] || (rows[day.key] = newRow(day.key, level, day.elements, day.familyKey));
+    row.totalPnl += pnl;
+    row.days += 1;
+    if (pnl > 0) { row.winDays += 1; row.tradedDays += 1; }
+    else if (pnl < 0) { row.lossDays += 1; row.tradedDays += 1; }
+    else row.flatDays += 1;
+    row.accountSet.add(accountId);
+    row.clientSet.add(client.id);
+    if (isFailed) row.failedSet.add(accountId);
+    if (!row.firstDate || di.date < row.firstDate) row.firstDate = di.date;
+    if (di.date > row.lastDate) row.lastDate = di.date;
+    if (mid && di.date >= mid) { row.recentPnl += pnl; row.recentDays += 1; }
+    else { row.priorPnl += pnl; row.priorDays += 1; }
   }
 
   const gate = { minDays, minAccounts };

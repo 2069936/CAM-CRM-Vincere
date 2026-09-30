@@ -106,12 +106,35 @@ const money = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 // distinction and carry 0 for both.
 const reportedOrNull = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
-// A day reconciles when the strategies' reported realized adds up to the
-// account's realized. Zero-vs-zero is not evidence of anything, so a flat day
-// with nothing reported counts as unreported rather than as agreement.
-function reconcilesOn(dayPnl, reportedSum, anyReported) {
+/**
+ * The dollar this product allows between a reported per-algo split and the
+ * account day it claims to add up to.
+ *
+ * A flat dollar, not a cent per row: the basis it is checked against is
+ * `snapshot.grossRealizedPnl`, which holds the commission-netted 'Realized PnL'
+ * on most traded accounts (csvImport.js), so the gap being allowed for is
+ * commission-shaped rather than rounding-shaped. The cent-per-row tolerance
+ * below belongs to the DERIVED check, whose basis is the raw gross column, and
+ * the two must not be averaged into a third number.
+ */
+export const REPORTED_TOLERANCE = 1;
+
+/**
+ * A day reconciles when the strategies' reported realized adds up to the
+ * account's realized.
+ *
+ * Zero-vs-zero is not evidence of anything, so a flat day with nothing reported
+ * counts as unreported rather than as agreement. `anyReported` is the caller's
+ * answer to "did anything actually report a figure": dropping the `!== 0` from it
+ * broke four tests, every one of them in a gated file, so on CI the guard was not
+ * pinned at all.
+ *
+ * Exported so algorithmTemperature.js decides whether an account day's figures
+ * PARTITION it on this rule and this tolerance rather than a fourth copy of both.
+ */
+export function reconcilesOn(dayPnl, reportedSum, anyReported) {
   if (!anyReported) return false;
-  return Math.abs(reportedSum - dayPnl) < 1;
+  return Math.abs(reportedSum - dayPnl) < REPORTED_TOLERANCE;
 }
 
 /**

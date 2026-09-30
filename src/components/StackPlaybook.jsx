@@ -17,10 +17,12 @@ import {
   MIN_DAYS,
   NOTE_NO_GATE,
 } from '../domain/comboPerformance';
+import { buildAlgorithmTemperature } from '../domain/algorithmTemperature';
 import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 import AlgoContributionPanel from './AlgoContributionPanel';
+import AlgorithmTemperaturePanel from './AlgorithmTemperaturePanel';
 import { fillsLoadedAcross } from '../domain/closeLoadState';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
@@ -262,6 +264,32 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     [teamClients, basis, level, windowPreset, windowFrom, windowTo, hiddenClientCount],
   );
   const comboPerf = perf.rows;
+  // The per algorithm panel above the combo table, fed from the SAME
+  // teamClients, the same window, the same grouping and the same attribution
+  // as `perf`. Not its own copy of any of them: one screen carrying two window
+  // pickers is how a reader ends up comparing a 7 day panel against a 30 day
+  // one and calling the difference a result. `resolveWindow` is the same
+  // function behind both, so identical inputs resolve to identical from/to.
+  //
+  // `level` is passed through rather than left at this module's own default of
+  // 'family'. The default is the right one for a cold open, but the toggle is
+  // the user saying which grouping this screen is on, and a panel that ignores
+  // it would print `OGX 2.4` rows in the table below while printing `OGX` rows
+  // above it under one heading.
+  //
+  // Memoized, and for the reason `perf` is: this component re-renders on every
+  // keystroke of a change note and every income figure, and this build walks
+  // the same account days that one does.
+  const algoTemperature = useMemo(
+    () => buildAlgorithmTemperature(teamClients, {
+      basis,
+      level,
+      window: windowPreset === 'custom'
+        ? { preset: 'custom', from: windowFrom || null, to: windowTo || null }
+        : { preset: windowPreset },
+    }),
+    [teamClients, basis, level, windowPreset, windowFrom, windowTo],
+  );
   const clientInsights = useMemo(
     () => buildClientComboInsights(client, dailyImport, perf, { basis, level }),
     [client, dailyImport, perf, basis, level],
@@ -337,6 +365,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     }
     setWindowPreset(preset);
   }
+
+  // The control labels, read off the same arrays the buttons are rendered from,
+  // so the sentence the temperature panel prints about the window and grouping
+  // it is on cannot drift from the controls that set them.
+  const levelLabel = (LEVELS.find(([value]) => value === level) || ['', level])[1];
+  const basisLabel = (BASES.find(([value]) => value === basis) || ['', basis])[1];
 
   return (
     <div className="stack-playbook">
@@ -629,6 +663,45 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
         </section>
       ) : null}
 
+      {/* ── Algorithm temperature ──────────────────────────── */}
+      {/*
+        First on this screen, and above the combo table, because "which
+        algorithm is hot right now" is the question the desk actually asks out
+        loud. The combo table answers a different one and keeps its place
+        below.
+
+        Rendered `bare` inside this section so the sentence naming the shared
+        controls sits in the same panel frame as the table it applies to. The
+        panel owns its own selection: nothing else on this screen reads which
+        algorithms are drawn, so lifting that state would be state for its own
+        sake.
+
+        `fillsLoaded` is gated on the basis, exactly the way the combo table
+        below gates its own copy of the same sentence. Under "Enabled at
+        export" nothing reads a fill, so "these figures move when trade history
+        finishes loading" would be false there, and a false caveat costs more
+        than a missing one.
+      */}
+      <section className="panel algo-temperature-section">
+        <AlgorithmTemperaturePanel
+          bare
+          result={algoTemperature}
+          fillsLoaded={basis !== 'traded' || fillsLoaded}
+        />
+        {/* No count in this sentence on purpose. The panel above prints its own
+            account and client counts off its own build, and the combo table
+            below prints its own off `perf`; the two are counted over different
+            acceptance rules and a third number here, sourced from one of them
+            and sitting under the other, is how a reader gets handed a
+            contradiction. What is genuinely shared is the three controls, so
+            that is all this says. */}
+        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          Window {perfWindow.from} to {perfWindow.to}. Grouping: {levelLabel}. Attribution: {basisLabel}.
+          All three are the Team Algo Performance controls below, and this panel reads them over the
+          same clients, so the two panels are never measuring two different books.
+        </p>
+      </section>
+
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
         <div className="panel-heading playbook-heading">
@@ -677,6 +750,14 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
         </div>
         <p className="muted playbook-basis" style={{ fontSize: 13, marginBottom: 8 }}>
           Client account results while the combo was running. Not the algorithm's own track record. Not comparable to My Futures Book.
+        </p>
+        {/* Two panels, two questions, and a reader with both open has to know
+            which is which. This row measures a whole account day once, keyed by
+            the stack that ran on it; the panel above measures one algorithm at
+            a time and credits no account day to two of them. Neither figure is
+            derivable from the other. */}
+        <p className="muted playbook-basis" style={{ fontSize: 13, marginBottom: 8 }}>
+          A row here is a COMBINATION: what a whole client account day was worth while that stack was running, which is the question the Algorithm temperature panel above does not answer.
         </p>
         {comboPerf.length === 0 ? (
           <p className="muted" style={{ padding: '12px 0' }}>No funded account day in this window carries an attributable algo. Widen the window or upload daily closes to populate.</p>

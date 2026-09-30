@@ -208,3 +208,227 @@ describe('the rendered team panel', () => {
     expect(accountDaysOf('URGO 4.5')).toBe('3');
   });
 });
+
+/* ── The algorithm temperature panel, wired into this screen ────────────────
+ *
+ * The panel's own behaviour is pinned by AlgorithmTemperaturePanel.test.jsx and
+ * the measurement by algorithmTemperature.test.js. What can only go wrong HERE
+ * is the wiring, and there are exactly three ways it can:
+ *
+ *   * the panel is not on the screen, or is below the combo table it was added
+ *     to lead;
+ *   * it is fed a build of its own and drifts off the window control, so one
+ *     screen shows a 7 day panel above a 30 day table and the reader compares
+ *     them;
+ *   * the combo table loses the sentence that says which question IT answers,
+ *     leaving two tables of algorithm money under one heading with nothing
+ *     distinguishing them.
+ *
+ * The fixture is synthetic, like the two at the top of this file and for the
+ * same reason: this suite is NOT on `localSnapshotTests`, so it has to run on a
+ * clone that does not hold the book.
+ */
+
+// One client, two funded accounts, ten closes each, each account running ONE
+// algorithm on every close. Single algorithm days are the SOLE case, so both
+// rows are credited their account's whole day and no day lands unsplit: the
+// heat ordering is then a fact about the fixture and not about the partition.
+// URGO makes +$300 a day and G4M loses $300, so heat over the last three
+// credited dates is +$900 against -$900: Hot above Cold, which is the order
+// the panel must print and must not re-derive.
+//
+// The hot row is the one that sorts LAST alphabetically and is built SECOND, on
+// purpose. Both rows carry the same ten credited days and the same one account,
+// so nothing but signed heat separates them, and the three orders a component
+// re-sort would plausibly produce are all different from the right one: by key
+// and by insertion both put G4M on top, and by MAGNITUDE the two tie at $900 and
+// fall back to the key, which puts G4M on top as well.
+function twoAlgoClient() {
+  const algos = [
+    ['G4M1', 'G4M', '1.0', -300],
+    ['URGO1', 'URGO', '4.5', 300],
+  ];
+  return {
+    id: 'c-two-algo',
+    name: 'Two algos',
+    accountRegistry: Object.fromEntries(algos.map(([accountName]) => [
+      accountName, { accountName, accountType: 'Funded', status: 'Active', dateFailed: '' },
+    ])),
+    dailyImports: Array.from({ length: 10 }, (_, i) => ({
+      id: `di-${i}`,
+      date: `2026-06-${String(i + 1).padStart(2, '0')}`,
+      accounts: {},
+      flags: [],
+      executions: [],
+      snapshots: algos.map(([accountName, family, version, pnl]) => ({
+        accountName,
+        grossRealizedPnl: pnl,
+        accountBalance: 50000,
+        trailingMaxDrawdown: -500,
+        strategies: [{
+          strategyName: `0 - ${family}-${version}`,
+          strategyFamily: family,
+          strategyVersion: version,
+          enabled: true,
+          realized: pnl,
+        }],
+      })),
+    })),
+  };
+}
+
+// The temperature panel, found by the heading only it carries.
+function tempPanel() {
+  return screen.getByText('Algorithm temperature').closest('section');
+}
+
+// Its table, found by the column the combo table deliberately does not share:
+// the combo table's is "Account days", and a second element with that text
+// would break `teamTable()` above for every test in this file.
+function tempTable() {
+  return within(tempPanel()).getByText('Credited days').closest('table');
+}
+
+function tempRowKeys() {
+  return [...tempTable().querySelectorAll('tbody tr')]
+    .map((tr) => tr.querySelector('th strong').textContent);
+}
+
+// The first text node of a cell, not its textContent: these cells carry a
+// figure followed by <small> notes, and "10" plus "10 sole, 0 measured" reads
+// as "1010" when concatenated.
+function tempCell(key, header) {
+  const table = tempTable();
+  const headers = [...table.querySelectorAll('thead th')].map((th) => th.textContent);
+  // The row's own first cell is a <th scope="row">, so the <td> list starts one
+  // column later than the header list.
+  const column = headers.indexOf(header) - 1;
+  const tr = [...table.querySelectorAll('tbody tr')]
+    .find((r) => r.querySelector('th strong')?.textContent === key);
+  return tr.querySelectorAll('td')[column].childNodes[0].textContent;
+}
+
+describe('the algorithm temperature panel on the playbook', () => {
+  it('29. leads the screen with one row per algorithm, hottest first, above the combo table', () => {
+    renderPlaybook(twoAlgoClient());
+
+    // Present, and the reader meets it BEFORE the combo table: that placement
+    // is the whole ask, and a panel appended to the end of the screen would
+    // satisfy every other assertion here.
+    const temperature = tempPanel();
+    const combo = teamTable().closest('section');
+    expect(temperature).toBeTruthy();
+    expect(temperature).not.toBe(combo);
+    expect(temperature.compareDocumentPosition(combo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Rows are REAL ALGORITHMS, not combinations, in the domain's heat order.
+    // Sorting in the component is the mutation this pins: both rows carry the
+    // same ten days and the same account count, so any order but this one is a
+    // re-sort.
+    expect(tempRowKeys()).toEqual(['URGO 4.5', 'G4M 1.0']);
+    expect(tempCell('URGO 4.5', 'Heat')).toBe('+$900');
+    expect(tempCell('G4M 1.0', 'Heat')).toBe('-$900');
+    expect(tempCell('URGO 4.5', 'Temperature')).toBe('Hot');
+    expect(tempCell('G4M 1.0', 'Temperature')).toBe('Cold');
+
+    // No dash of any kind, the rule the combo section below is already held to.
+    expect(temperature.textContent).not.toMatch(/[–—]/);
+    expect(temperature.textContent).not.toMatch(/\s-\s/);
+  });
+
+  it('30. keeps the combo table, and says which question it is the one that answers', () => {
+    const { container } = renderPlaybook(twoAlgoClient());
+
+    // Not deleted: deskPeriodReport.js and buildClientComboInsights still read
+    // buildComboPerformance, and a combination is a question the panel above
+    // cannot answer.
+    expect(teamTable()).toBeTruthy();
+    const combo = teamTable().closest('section');
+    expect(combo.textContent).toContain(
+      'A row here is a COMBINATION: what a whole client account day was worth while that stack was running, '
+      + 'which is the question the Algorithm temperature panel above does not answer.',
+    );
+    // And the panel above states the rule that makes the two non interchangeable.
+    expect(container.textContent).toContain('It is never divided equally.');
+  });
+
+  it('31. reads the combo table\'s window control, and moves with it', () => {
+    renderPlaybook(twoAlgoClient());
+    const select = screen.getByLabelText('Window');
+
+    // One window picker on the screen, not two. A second select would let the
+    // two panels disagree while both printed a window.
+    expect(screen.getAllByLabelText('Window')).toHaveLength(1);
+    // The shared controls, named in the panel's own words. The 30 day preset
+    // resolves to 2026-05-12 over a book whose first close is 2026-06-01, which
+    // is the resolved window and not the book's range: both builds go through
+    // comboPerformance.resolveWindow, so both get that one.
+    expect(tempPanel().textContent).toContain(
+      'Window 2026-05-12 to 2026-06-10. Grouping: By version. Attribution: Traded (enabled or filled).',
+    );
+    expect(tempCell('G4M 1.0', 'Credited days')).toBe('10');
+    expect(accountDaysOf('G4M 1.0')).toBe('10');
+
+    fireEvent.change(select, { target: { value: '7' } });
+    expect(tempCell('G4M 1.0', 'Credited days')).toBe('7');
+    expect(accountDaysOf('G4M 1.0')).toBe('7');
+    expect(tempPanel().textContent).toContain('Window 2026-06-04 to 2026-06-10.');
+
+    // Including the custom range, which resolves through the same
+    // comboPerformance.resolveWindow for both builds.
+    fireEvent.change(select, { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-06-05' } });
+    expect(tempCell('G4M 1.0', 'Credited days')).toBe('6');
+    expect(accountDaysOf('G4M 1.0')).toBe('6');
+    expect(tempPanel().textContent).toContain('Window 2026-06-05 to 2026-06-10.');
+  });
+
+  it('32. regroups with the combo table\'s grouping toggle rather than holding a level of its own', () => {
+    renderPlaybook(twoAlgoClient());
+    expect(tempRowKeys()).toEqual(['URGO 4.5', 'G4M 1.0']);
+
+    // buildAlgorithmTemperature defaults to 'family'; the toggle is the user
+    // saying otherwise, and a panel printing family rows above a table of
+    // version rows under one heading is the drift this pins.
+    const byFamily = [...teamTable().closest('section').querySelectorAll('.playbook-toggles button')]
+      .find((b) => b.textContent === 'By family');
+    fireEvent.click(byFamily);
+    expect(tempRowKeys()).toEqual(['URGO', 'G4M']);
+  });
+
+  it('34. carries the fills caveat only under the attribution that reads fills', () => {
+    // These closes carry no executions and no `detailLoaded`, so
+    // fillsLoadedAcross is false and traded attribution is reading the strategy
+    // grid alone. Both panels say so, in their own words.
+    renderPlaybook(twoAlgoClient());
+    const combo = teamTable().closest('section');
+    expect(tempPanel().textContent).toContain(
+      'Fills are not loaded for every close in this window, so attribution is reading the strategy '
+      + 'grid alone and these figures move when trade history finishes loading.',
+    );
+    expect(combo.textContent).toContain('No fills are loaded for these closes');
+
+    // Under "Enabled at export" nothing reads a fill, so the sentence would be
+    // false rather than merely absent: these figures do NOT move when trade
+    // history lands. The combo table has always gated it on the basis; the
+    // panel above is gated the same way and not left saying it always.
+    const enabled = [...combo.querySelectorAll('.playbook-toggles button')]
+      .find((b) => b.textContent === 'Enabled at export');
+    fireEvent.click(enabled);
+    expect(tempPanel().textContent).not.toMatch(/Fills are not loaded/);
+    expect(teamTable().closest('section').textContent).not.toMatch(/No fills are loaded/);
+  });
+
+  it('33. draws the selected algorithm underneath, live on this screen', () => {
+    renderPlaybook(twoAlgoClient());
+    const panel = tempPanel();
+    expect(panel.textContent).toContain('Select one or more algorithms above to draw their combined curve');
+
+    fireEvent.click(within(tempTable()).getByRole('button', { name: 'URGO 4.5' }));
+    expect(panel.querySelector('svg')).toBeTruthy();
+    expect(panel.textContent).toContain('Combined credited P&L of 1 algorithm');
+    expect(panel.textContent).toContain('Deepest dip inside this window');
+    // And never the word the CAM reads as a prop firm breach.
+    expect(panel.textContent).not.toMatch(/drawdown/i);
+  });
+});
