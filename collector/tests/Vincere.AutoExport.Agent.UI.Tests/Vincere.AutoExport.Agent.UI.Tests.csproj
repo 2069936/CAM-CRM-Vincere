@@ -30,6 +30,7 @@
          which is how CI caught this one. -->
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ReleaseCheck.cs" Link="ReleaseCheck.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SecretRedactor.cs" Link="DeepExport/SecretRedactor.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/TraceRedactor.cs" Link="DeepExport/TraceRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportSources.cs" Link="DeepExport/DeepExportSources.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SqliteSnapshot.cs" Link="DeepExport/SqliteSnapshot.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AttributionExport.cs" Link="DeepExport/AttributionExport.cs" />

@@ -26,7 +26,10 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     backup API and everything else is a file copy at BelowNormal priority.
  *   - A source that fails is a warning in the manifest, not an abort. The only
  *     abort is being unable to write the ZIP itself.
- *   - Nothing that authenticates leaves the machine. See SecretRedactor.
+ *   - Nothing that authenticates leaves the machine. Two rules, because there
+ *     are two kinds of file: SecretRedactor for the JSON config, by key name,
+ *     and TraceRedactor for the trace and log text, by measured line shape.
+ *     TraceRedactor's header says why one could not do both jobs.
  *   - Two runs produce two independent packages. Nothing is modified.
  *
  * WHAT IT DOES NOT DO. It does not analyse. The package is raw material plus a
@@ -171,10 +174,19 @@ public sealed class DeepExportRunner
             Report("attribution");
 
             // 2. Every file source. A missing folder is a warning and nothing more.
+            //
+            // THE TRACE AND THE LOGS ARE REDACTED HERE, IN THE COPY ITSELF, and
+            // not in a tidying pass afterwards. The broker login appears 2,179
+            // times across those two folders, and a staged file that holds it
+            // even briefly is a file that ships with it the day somebody moves
+            // the pass or returns early. Redaction is part of how the bytes
+            // arrive or it is not a guarantee. It also has to precede step 4,
+            // which hashes whatever is on disk into the manifest.
             foreach (DeepExportSource source in DeepExportSources.All)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 int copied = 0;
+                bool redacted = TraceRedactor.AppliesTo(source);
                 try
                 {
                     foreach ((string fullPath, string zipRelative) in DeepExportSources.Enumerate(ninjaTraderRoot, agentRoot, source))
@@ -184,7 +196,10 @@ public sealed class DeepExportRunner
                         using (FileStream input = new(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                         using (FileStream output = File.Create(target))
                         {
-                            await input.CopyToAsync(output, 81920, cancellationToken).ConfigureAwait(false);
+                            if (redacted)
+                                await TraceRedactor.RedactTextStreamAsync(input, output, cancellationToken).ConfigureAwait(false);
+                            else
+                                await input.CopyToAsync(output, 81920, cancellationToken).ConfigureAwait(false);
                         }
                         copied++;
                     }

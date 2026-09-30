@@ -20,6 +20,13 @@ namespace Vincere.AutoExport.Agent.UI.Tests;
  * database copy opens clean, secrets gone, checksum matches, second run works. */
 public sealed class DeepExportTests : IDisposable
 {
+    /// <summary>
+    /// The platform login the fixture's trace and logs carry. INVENTED for this
+    /// file, and shaped like what NinjaTrader writes - a mail address with its @
+    /// and . flattened to underscores. No value from a real export is in here.
+    /// </summary>
+    private const string TestLogin = "someoperator_example_org";
+
     private readonly string root = Path.Combine(Path.GetTempPath(), "vincere-deep-" + Guid.NewGuid().ToString("N"));
     private readonly string nt;
     private readonly string agent;
@@ -38,8 +45,21 @@ public sealed class DeepExportTests : IDisposable
         Directory.CreateDirectory(Path.Combine(agent, "queue", "sent"));
         Directory.CreateDirectory(Path.Combine(nt, "bin", "Custom"));
 
-        File.WriteAllText(Path.Combine(nt, "log", "log.20260915.txt"), "log line");
-        File.WriteAllText(Path.Combine(nt, "trace", "trace.20260915.txt"), "trace line");
+        // THE FIXTURE CARRIES THE LOGIN, IN BOTH SHAPES IT REALLY TAKES, because
+        // an export the tests run over without one cannot show that it is gone.
+        // Measured on a real export: the keyed shape appears 1,816 times in
+        // trace/ and never in logs/, and the prose sentence appears 121 times in
+        // trace/ and 242 times in logs/, where it is the whole exposure. CRLF
+        // because a Windows VPS writes CRLF. Login is invented; see TestLogin.
+        File.WriteAllText(
+            Path.Combine(nt, "log", "log.20260915.txt"),
+            $"2026-09-15 09:30:00:100|3|2|There was a problem authenticating account {TestLogin} online. Please try again.\r\n"
+            + "2026-09-15 09:30:01:200|3|2|account='LTATAGREH509159302022' connected\r\n");
+        File.WriteAllText(
+            Path.Combine(nt, "trace", "trace.20260915.txt"),
+            $"2026-09-15 09:30:00:100 (Continuum) Cbi.Auth.RenewToken: renew requested user='{TestLogin}'\r\n"
+            + $"2026-09-15 09:30:00:150 ERROR: There was a problem authenticating account {TestLogin} online. Please try again.\r\n"
+            + "2026-09-15 09:30:01:200 (Continuum) Cbi.Order: account='LTATAGREH509159302022' orderId='12345678901' user=''\r\n");
         File.WriteAllText(Path.Combine(nt, "workspaces", "Main.xml"), "<Workspace/>");
         File.WriteAllText(Path.Combine(nt, "templates", "Strategy", "Sub", "G4M.xml"), "<Strategy/>");
         File.WriteAllText(Path.Combine(agent, "queue", "sent", "2026-09-15_abc.json"), "{}");
@@ -219,15 +239,109 @@ public sealed class DeepExportTests : IDisposable
         Assert.Equal("", (string)parsed["emptySecret"]);
 
         var secretPattern = new Regex("(password|apikey|token|secret)\\s*\"?\\s*:\\s*\"([^\"]*)\"", RegexOptions.IgnoreCase);
+
+        // THE SWEEP ABOVE COULD NEVER HAVE SEEN THE TRACE, which is why the
+        // login travelled 2,179 times in a real export while this test was
+        // green. It wants a JSON `key: "value"` in double quotes, and it lists
+        // no key called `user`; the trace writes `user='value'` with single
+        // quotes and an equals sign. So the same promise is now asserted in the
+        // trace's own syntax as well.
+        var keyedIdentityPattern = new Regex("\\buser\\s*=\\s*'([^']*)'", RegexOptions.IgnoreCase);
+        var prosePattern = new Regex("\\bauthenticating\\s+(?:account|user)\\s+(\\S+)", RegexOptions.IgnoreCase);
         foreach (string file in Directory.EnumerateFiles(extracted, "*", SearchOption.AllDirectories))
         {
+            // The raw database is still exempt, and that exemption is still a
+            // hole: nothing here can see what rides along inside it. Closing it
+            // is the other half of this review, not this test's to claim.
             if (file.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase)) continue;
-            foreach (Match match in secretPattern.Matches(File.ReadAllText(file)))
+            string text = File.ReadAllText(file);
+            foreach (Match match in secretPattern.Matches(text))
             {
                 Assert.True(match.Groups[2].Value == "***" || match.Groups[2].Value == "",
                     $"{Path.GetFileName(file)} leaks a secret: {match.Value}");
             }
+            foreach (Match match in keyedIdentityPattern.Matches(text))
+            {
+                Assert.True(match.Groups[1].Value == "***" || match.Groups[1].Value == "",
+                    $"{Path.GetFileName(file)} leaks a login: {match.Value}");
+            }
+            foreach (Match match in prosePattern.Matches(text))
+            {
+                Assert.True(match.Groups[1].Value == "***",
+                    $"{Path.GetFileName(file)} leaks a login in prose: {match.Value}");
+            }
+            // And the one the fixture actually planted, by value, in every file
+            // of the package. This is the assertion that fails without the
+            // redactor rather than merely describing a shape.
+            Assert.DoesNotContain(TestLogin, text);
         }
+    }
+
+    [Fact]
+    public async Task TheTraceAndTheLogsAreRedactedOnTheWayIntoThePackage()
+    {
+        // The login is in the trace and the logs in two shapes, and both have to
+        // go while the rest of the line stays: mask the value, keep the key, so a
+        // reader still sees that a login happened and when. The trading data on
+        // the same lines is the export's reason to exist and is not touched.
+        DeepExportResult result = await Runner().RunAsync();
+        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
+
+        string trace = ReadEntry(zip, "trace/trace.20260915.txt");
+        Assert.DoesNotContain(TestLogin, trace);
+        Assert.Contains("user='***'", trace);
+        Assert.Contains("authenticating account ***", trace);
+        Assert.Contains("Cbi.Auth.RenewToken", trace);
+        Assert.Contains("2026-09-15 09:30:00:100", trace);
+        Assert.Contains("account='LTATAGREH509159302022'", trace);
+        Assert.Contains("orderId='12345678901'", trace);
+        // An empty value stays empty, so "no login recorded" and "a login
+        // recorded and not named" stay distinguishable, as they do in the JSON.
+        Assert.Contains("user=''", trace);
+        // The CRLF a Windows VPS wrote is the CRLF that ships.
+        Assert.Contains("\r\n", trace);
+        Assert.DoesNotContain("\n\n", trace);
+
+        // logs/ was not named by the review and carries the login in PROSE ONLY.
+        // A fix scoped to trace/, or to the keyed shape, leaves it fully exposed.
+        string log = ReadEntry(zip, "logs/log.20260915.txt");
+        Assert.DoesNotContain(TestLogin, log);
+        Assert.Contains("authenticating account ***", log);
+        Assert.Contains("Please try again.", log);
+        Assert.Contains("account='LTATAGREH509159302022'", log);
+    }
+
+    [Fact]
+    public async Task TheManifestDigestsDescribeTheRedactedBytes()
+    {
+        // Redaction happens in the copy, so the manifest hashes what actually
+        // ships. A pass bolted on after step 4 would leave every trace and log
+        // digest describing bytes that no longer exist in the package.
+        DeepExportResult result = await Runner().RunAsync();
+        string extracted = Path.Combine(root, "z");
+        ZipFile.ExtractToDirectory(result.ZipPath, extracted);
+        JObject manifest = ReadManifest(result.ZipPath);
+
+        foreach (string relative in new[] { "trace/trace.20260915.txt", "logs/log.20260915.txt" })
+        {
+            JToken entry = manifest["files"].First(f => (string)f["path"] == relative);
+            string onDisk = Path.Combine(extracted, relative.Replace('/', Path.DirectorySeparatorChar));
+            // The file that shipped is the redacted one AND the digest beside it
+            // is that file's digest. Together these two rule out both ways of
+            // getting the order wrong: no redaction at all, and redaction done
+            // after step 4 hashed the originals.
+            Assert.Contains(TraceRedactor.Mask, File.ReadAllText(onDisk));
+            Assert.Equal(DeepExportRunner.HashFile(onDisk), (string)entry["sha256"]);
+            Assert.Equal(new FileInfo(onDisk).Length, (long)entry["sizeBytes"]);
+        }
+    }
+
+    private static string ReadEntry(ZipArchive zip, string name)
+    {
+        ZipArchiveEntry entry = zip.GetEntry(name);
+        Assert.NotNull(entry);
+        using var reader = new StreamReader(entry.Open());
+        return reader.ReadToEnd();
     }
 
     [Fact]
