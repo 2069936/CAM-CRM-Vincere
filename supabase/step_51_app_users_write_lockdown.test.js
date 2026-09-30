@@ -29,19 +29,19 @@ const sql = raw
 const runbook = readFileSync(runbookUrl, 'utf8');
 
 describe('step 51 takes the write away', () => {
-  it('is the next free number after 50 and remains unique', () => {
+  it('is unique, and 52 now carries the highest-number claim', () => {
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 51)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(51);
   });
 
   it('is in the runbook table and in the run order', () => {
     expect(runbook).toMatch(/^\| 51 \| `step_51_app_users_write_lockdown\.sql` \|.*\|$/m);
-    expect(runbook).toContain('→ 50 → 51.');
+    // Not '51.' - the run order grows, and this step only claims its own place in it.
+    expect(runbook).toContain('→ 50 → 51');
   });
 
   it('revokes every write from authenticated', () => {
