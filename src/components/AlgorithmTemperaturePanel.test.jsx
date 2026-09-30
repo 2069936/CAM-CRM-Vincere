@@ -39,7 +39,12 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import AlgorithmTemperaturePanel from './AlgorithmTemperaturePanel';
-import { buildAlgorithmTemperature } from '../domain/algorithmTemperature';
+import {
+  REDUCTION_REFUSALS,
+  buildAlgorithmComposite,
+  buildAlgorithmTemperature,
+} from '../domain/algorithmTemperature';
+import { formatCurrency } from '../domain/report';
 
 afterEach(cleanup);
 
@@ -115,8 +120,74 @@ const unsplitClient = client({
   ],
 });
 
+// Rank 1 on the real book is ARPD_PF: ONE credited account day, seventeen days
+// before the window closes, and the only row of fourteen with positive heat.
+// Heat is the last three CREDITED dates, so a sparse row can be arbitrarily
+// stale and still sort to the top of a table a CAM reads as "hottest right now".
+// This is that row.
+const staleTopClient = client({
+  id: 'arpd1',
+  accountName: 'ARPD1',
+  days: [{ date: june(5), pnl: 430, strategies: solo('ARPD_PF') }],
+});
+
+// Two algorithms on one close, each carrying its own figure, and the two add up
+// to the account day, so both are credited MEASURED. The winner is larger than
+// the loser, so the COMBINED curve never falls while one of the parts did.
+//
+// This is the defect reproduced on the real book two clicks from a cold open:
+// ARPD_PF and DJDR are rank 1 and rank 2 of the default view, both credited only
+// on 2026-07-13, and the panel printed "Combined $0 against -$26 for the sum of
+// the parts, 100.00% lower" off a $25.50 denominator. `thinClient` cannot catch
+// it: one selected algorithm is a different refusal entirely.
+const neverFellClient = client({
+  id: 'nf1',
+  accountName: 'NF1',
+  days: [{
+    date: june(3),
+    pnl: 404.5,
+    strategies: [
+      strategy('ARPD_PF', '1.0', { realized: 430 }),
+      strategy('DJDR', '1.0', { realized: -25.5 }),
+    ],
+  }],
+});
+
+// Two algorithms never credited on the same date. Each falls on its own and
+// neither ever offset anything the other did, so a ratio between the two curves
+// is arithmetic about unrelated curves.
+const apartClients = [
+  client({ id: 'ap1', accountName: 'AP1', days: [{ date: june(2), pnl: -100, strategies: solo('B2X') }] }),
+  client({ id: 'ap2', accountName: 'AP2', days: [{ date: june(8), pnl: -150, strategies: solo('RBO_PF') }] }),
+];
+
+// G4M over ten dates plus an algorithm credited on only the first two of them,
+// so the dates the comparison SPANS (10) and the dates on which more than one
+// algorithm was credited (2) are different numbers. The G4M/URGO fixture cannot
+// catch a basis sentence that names the wrong one, because those two run on all
+// ten of the same dates and the two counts coincide: that is exactly why the
+// committed panel shipped printing the overlap count as the basis.
+const shortOverlapClient = client({
+  id: 'ogxpf1',
+  accountName: 'OGXPF1',
+  days: [
+    { date: june(1), pnl: -100, strategies: solo('OGX_PF') },
+    { date: june(2), pnl: 50, strategies: solo('OGX_PF') },
+  ],
+});
+
 const ALL = { window: { preset: 'all' } };
 const build = (clients) => buildAlgorithmTemperature(clients, ALL);
+
+// The panel's own `money()`, rebuilt here so the money assertions read the
+// rendered string rather than a number the test formatted its own way.
+const dollars = (value) => `${value < 0 ? '-' : ''}${formatCurrency(Math.abs(value))}`;
+
+// A published measurement, which is the thing a refusal must not print. Asserted
+// on the shape the panel states a figure in and never on the character '%',
+// because one of the refusals says in words that the figure would be 0% by
+// construction.
+const FIGURE = /% lower/;
 
 // The whole book: Hot, Stable and low sample, Cold, and two unmeasured rows.
 const book = () => build([...hotClients, ...coldClients, thinClient, unsplitClient]);
@@ -299,14 +370,6 @@ describe('the comparison a client will be shown', () => {
     expect(sentence).toContain('26.32%');
   });
 
-  it('refuses the comparison rather than calling it 100% when nothing fell', async () => {
-    const user = userEvent.setup();
-    // One account, one credited day, a gain: a curve that never falls.
-    render(<AlgorithmTemperaturePanel result={build([thinClient])} />);
-    await user.click(algoButton('OGX'));
-    expect(screen.getByText(/it is no comparison/)).toBeTruthy();
-  });
-
   it('calls the fall a dip and never a drawdown, which on these screens means a breach', async () => {
     const user = userEvent.setup();
     const result = book();
@@ -315,6 +378,209 @@ describe('the comparison a client will be shown', () => {
     const panelNode = screen.getByText('Algorithm temperature').closest('section');
     expect(panelNode.textContent).toContain(result.dipLabel);
     expect(panelNode.textContent).not.toMatch(/drawdown/i);
+  });
+});
+
+/* ---------------------------------------------------------------- */
+/* The five refusals, each printed as ITS OWN reason.                 */
+/*                                                                    */
+/* The domain publishes `reductionRefusal` and `reductionNote` and    */
+/* guarantees that exactly one of the two sides is populated, so the  */
+/* panel can neither fall through to a number nor print a percentage  */
+/* and a refusal at once. What is still available to the panel is     */
+/* printing ONE sentence for all five, which is what the committed    */
+/* version did: on every refusal it said "No algorithm in this        */
+/* selection fell below where it opened", which is false in three of  */
+/* the five cases and false on the exact selection a CAM reaches from */
+/* a cold open. Each test below pins the rendered reason, not merely  */
+/* the absence of a figure.                                           */
+
+describe('a refusal prints the reason the domain gave, never a percentage', () => {
+  it('refuses a one algorithm selection instead of measuring a curve against itself', async () => {
+    const user = userEvent.setup();
+    const result = book();
+    panel({ result });
+    await user.click(algoButton('G4M'));
+
+    const composite = buildAlgorithmComposite(result, new Set(['G4M']));
+    expect(composite.reduction).toBeNull();
+    expect(composite.reductionRefusal).toBe('singleAlgorithm');
+
+    expect(screen.queryByText(FIGURE)).toBeNull();
+    expect(screen.getByText(REDUCTION_REFUSALS.singleAlgorithm)).toBeTruthy();
+    // And not the one sentence the panel used to print for every refusal. G4M
+    // fell -$420 inside this window, so "nothing fell" is a false statement
+    // about the selection on the screen.
+    expect(screen.queryByText(/No algorithm in this selection fell below where it opened/)).toBeNull();
+  });
+
+  it('refuses when the combined curve never fell, though one of the parts did', async () => {
+    const user = userEvent.setup();
+    const result = build([neverFellClient]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('ARPD_PF'));
+    await user.click(algoButton('DJDR'));
+
+    const composite = buildAlgorithmComposite(result, new Set(['ARPD_PF', 'DJDR']));
+    expect(composite.reductionRefusal).toBe('compositeNeverFell');
+    // A part DID fall, which is what made this case print a number: the
+    // denominator is real and only the numerator is zero.
+    expect(composite.sumOfPartDips).toBeCloseTo(-25.5, 2);
+    expect(composite.deepestDip).toBe(0);
+
+    expect(screen.queryByText(/100\.00% lower/)).toBeNull();
+    expect(screen.queryByText(FIGURE)).toBeNull();
+    expect(screen.getByText(REDUCTION_REFUSALS.compositeNeverFell)).toBeTruthy();
+  });
+
+  it('refuses algorithms that were never credited on the same date', async () => {
+    const user = userEvent.setup();
+    const result = build(apartClients);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('B2X'));
+    await user.click(algoButton('RBO_PF'));
+
+    const composite = buildAlgorithmComposite(result, new Set(['B2X', 'RBO_PF']));
+    expect(composite.reductionRefusal).toBe('noSharedDate');
+    expect(composite.overlapDays).toBe(0);
+
+    expect(screen.queryByText(FIGURE)).toBeNull();
+    expect(screen.getByText(REDUCTION_REFUSALS.noSharedDate)).toBeTruthy();
+    // Both of them fell, so here too the old single sentence was false.
+    expect(screen.queryByText(/No algorithm in this selection fell below where it opened/)).toBeNull();
+  });
+
+  it('still refuses a selection nothing measured, in the words that case has', async () => {
+    const user = userEvent.setup();
+    panel();
+    await user.click(algoButton('SYFY'));
+    expect(screen.queryByText(FIGURE)).toBeNull();
+    expect(screen.getByText(/Nothing in this selection was measured/)).toBeTruthy();
+  });
+});
+
+describe('the basis sentence names the dates the figure was measured over', () => {
+  it('names every credited date, not only the dates more than one algorithm was credited on', async () => {
+    const user = userEvent.setup();
+    const result = build([...hotClients, shortOverlapClient]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('G4M'));
+    await user.click(algoButton('OGX_PF'));
+
+    // Both counts derived from the data rather than read off the copy: the
+    // comparison spans every date either row was credited on, and the overlap
+    // is the strictly smaller subset on which both were.
+    const seriesOf = (key) => result.rows.find((row) => row.key === key).series.map((p) => p.date);
+    const spanned = new Set([...seriesOf('G4M'), ...seriesOf('OGX_PF')]);
+    const composite = buildAlgorithmComposite(result, new Set(['G4M', 'OGX_PF']));
+    expect(spanned.size).toBe(10);
+    expect(composite.overlapDays).toBe(2);
+    expect(composite.reduction).not.toBeNull();
+
+    // The figure and the sentence stating its basis are one paragraph, so the
+    // basis cannot be quoted away from the number it belongs to.
+    const sentence = screen.getByText(FIGURE).closest('p').textContent;
+    expect(sentence).toContain(`Measured over ${spanned.size} dates`);
+    expect(sentence).toContain(`not only the ${composite.overlapDays} dates`);
+    // The committed panel printed the overlap count as the basis of the figure,
+    // which on the real book claimed 18.16% was measured over 4 dates when it
+    // was measured over 12.
+    expect(sentence).not.toMatch(/Measured over 2 dates on which more than one/);
+  });
+
+  it('says the same thing on a selection whose two counts happen to coincide', async () => {
+    const user = userEvent.setup();
+    const result = build([...hotClients, ...coldClients]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('G4M'));
+    await user.click(algoButton('URGO'));
+
+    const composite = buildAlgorithmComposite(result, new Set(['G4M', 'URGO']));
+    expect(composite.reductionDateCount).toBe(composite.overlapDays);
+    const sentence = screen.getByText(FIGURE).closest('p').textContent;
+    expect(sentence).toContain(`Measured over ${composite.reductionDateCount} dates`);
+  });
+});
+
+describe('the heading badge counts the population it walked', () => {
+  it('names the funded accounts and clients, with the credited counts as a share of them', () => {
+    const result = book();
+    panel({ result });
+
+    // The fixture holds an account whose only days could not be partitioned, so
+    // the credited counts are genuinely short of the funded population, exactly
+    // as they are on the real book at 113 of 180 accounts and 37 of 48 clients.
+    expect(result.population.accounts).toBeLessThan(result.population.fundedAccounts);
+    expect(result.population.clients).toBeLessThan(result.population.fundedClients);
+
+    const badge = document.querySelector('.panel-heading .badge');
+    expect(badge.textContent).toContain(
+      `${result.population.accounts} of ${result.population.fundedAccounts} accounts`,
+    );
+    expect(badge.textContent).toContain(
+      `${result.population.clients} of ${result.population.fundedClients} clients`,
+    );
+    // And never the credited count standing alone as though it were the
+    // population, which is what this badge shipped printing and what
+    // DeskPeriodReportSheet.jsx records having fixed one panel down.
+    expect(badge.textContent).not.toContain(`${result.population.accounts} accounts`);
+    expect(badge.textContent).not.toContain(`${result.population.clients} clients`);
+  });
+});
+
+describe('the caption sizes the money, not only the days', () => {
+  it('prints the money share wherever it prints the day share', () => {
+    for (const result of [book(), cleanBook()]) {
+      cleanup();
+      render(<AlgorithmTemperaturePanel result={result} />);
+      const caption = screen.getByText(/funded account days in this window/);
+      expect(caption.textContent).toContain(
+        `${result.population.includedDays} of ${result.population.fundedDays} funded account days`,
+      );
+      // -$53,417 of unsplit money has nothing to be a fraction of while the
+      // funded total is off the screen. Both halves are published and both are
+      // printed, in the sentence that carries the day counts.
+      expect(caption.textContent).toContain(dollars(result.population.includedPnl));
+      expect(caption.textContent).toContain(dollars(result.population.fundedPnl));
+    }
+  });
+});
+
+describe('a sparse row cannot read as the desk\'s best algorithm without saying so', () => {
+  it('badges the one day row that sorts to the top and names the date behind its heat', () => {
+    const result = build([...coldClients, staleTopClient]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+
+    // Rank 1 is one credited account day, which is the shape of ARPD_PF on the
+    // real book: the only row with positive heat, credited once.
+    expect(rowNames()[0]).toBe('ARPD_PF');
+    const top = rowFor('ARPD_PF');
+    expect(within(top).getByText('Hot')).toBeTruthy();
+    expect(within(top).getByText('Low sample')).toBeTruthy();
+    expect(top.textContent).toContain(june(5));
+
+    // And every row names the dates its own heat figure was summed over, so
+    // "hottest" is never read as "hottest right now".
+    for (const row of result.rows) {
+      expect(rowFor(row.key).textContent).toContain(row.heatDates.join(', '));
+    }
+  });
+
+  it('carries the Low sample badge onto the plot of a selected thin row', async () => {
+    const user = userEvent.setup();
+    const result = build([...coldClients, staleTopClient]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('ARPD_PF'));
+    await user.click(algoButton('URGO'));
+
+    // The curve and the reduction sentence are where a CAM lingers, and the
+    // qualifier that a part rests on one account day has to be there too, not
+    // only in the table the reader has scrolled past.
+    const figures = [...document.querySelectorAll('figure.period-benchmark-curve')];
+    const arpd = figures.find((figure) => figure.textContent.includes('ARPD_PF'));
+    const urgo = figures.find((figure) => figure.textContent.includes('URGO'));
+    expect(within(arpd).getByText('Low sample')).toBeTruthy();
+    expect(within(urgo).queryByText('Low sample')).toBeNull();
   });
 });
 

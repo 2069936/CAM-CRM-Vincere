@@ -114,12 +114,13 @@ function tenCloseClient() {
   };
 }
 
-function renderPlaybook(client = tenCloseClient()) {
+function renderPlaybook(client = tenCloseClient(), extra = {}) {
   return render(createElement(StackPlaybook, {
     client,
     dailyImport: client.dailyImports[client.dailyImports.length - 1],
     allClients: [client],
     hiddenClientCount: 3,
+    ...extra,
   }));
 }
 
@@ -178,11 +179,13 @@ describe('the rendered team panel', () => {
     const select = screen.getByLabelText('Window');
     expect(select.value).toBe('30');
     expect(within(select).getByText('Last 30 days')).toBeTruthy();
-    expect(accountDaysOf('URGO 4.5')).toBe('10');
+    // 'URGO', not 'URGO 4.5': this screen opens at family level now. See the
+    // grouping test below for why the default moved and what still moves it.
+    expect(accountDaysOf('URGO')).toBe('10');
 
     fireEvent.change(select, { target: { value: '7' } });
     expect(select.value).toBe('7');
-    expect(accountDaysOf('URGO 4.5')).toBe('7');
+    expect(accountDaysOf('URGO')).toBe('7');
   });
 
   it('28. prefills the custom range from the book and measures the range it is given', () => {
@@ -200,12 +203,12 @@ describe('the rendered team panel', () => {
     expect(from.getAttribute('min')).toBe('2026-06-01');
     expect(from.getAttribute('max')).toBe('2026-06-10');
     expect(to.getAttribute('max')).toBe('2026-06-10');
-    expect(accountDaysOf('URGO 4.5')).toBe('10');
+    expect(accountDaysOf('URGO')).toBe('10');
 
     fireEvent.change(from, { target: { value: '2026-06-05' } });
-    expect(accountDaysOf('URGO 4.5')).toBe('6');
+    expect(accountDaysOf('URGO')).toBe('6');
     fireEvent.change(to, { target: { value: '2026-06-07' } });
-    expect(accountDaysOf('URGO 4.5')).toBe('3');
+    expect(accountDaysOf('URGO')).toBe('3');
   });
 });
 
@@ -325,11 +328,11 @@ describe('the algorithm temperature panel on the playbook', () => {
     // Sorting in the component is the mutation this pins: both rows carry the
     // same ten days and the same account count, so any order but this one is a
     // re-sort.
-    expect(tempRowKeys()).toEqual(['URGO 4.5', 'G4M 1.0']);
-    expect(tempCell('URGO 4.5', 'Heat')).toBe('+$900');
-    expect(tempCell('G4M 1.0', 'Heat')).toBe('-$900');
-    expect(tempCell('URGO 4.5', 'Temperature')).toBe('Hot');
-    expect(tempCell('G4M 1.0', 'Temperature')).toBe('Cold');
+    expect(tempRowKeys()).toEqual(['URGO', 'G4M']);
+    expect(tempCell('URGO', 'Heat')).toBe('+$900');
+    expect(tempCell('G4M', 'Heat')).toBe('-$900');
+    expect(tempCell('URGO', 'Temperature')).toBe('Hot');
+    expect(tempCell('G4M', 'Temperature')).toBe('Cold');
 
     // No dash of any kind, the rule the combo section below is already held to.
     expect(temperature.textContent).not.toMatch(/[–—]/);
@@ -364,35 +367,52 @@ describe('the algorithm temperature panel on the playbook', () => {
     // is the resolved window and not the book's range: both builds go through
     // comboPerformance.resolveWindow, so both get that one.
     expect(tempPanel().textContent).toContain(
-      'Window 2026-05-12 to 2026-06-10. Grouping: By version. Attribution: Traded (enabled or filled).',
+      'Window 2026-05-12 to 2026-06-10. Grouping: By family. Attribution: Traded (enabled or filled).',
     );
-    expect(tempCell('G4M 1.0', 'Credited days')).toBe('10');
-    expect(accountDaysOf('G4M 1.0')).toBe('10');
+    expect(tempCell('G4M', 'Credited days')).toBe('10');
+    expect(accountDaysOf('G4M')).toBe('10');
 
     fireEvent.change(select, { target: { value: '7' } });
-    expect(tempCell('G4M 1.0', 'Credited days')).toBe('7');
-    expect(accountDaysOf('G4M 1.0')).toBe('7');
+    expect(tempCell('G4M', 'Credited days')).toBe('7');
+    expect(accountDaysOf('G4M')).toBe('7');
     expect(tempPanel().textContent).toContain('Window 2026-06-04 to 2026-06-10.');
 
     // Including the custom range, which resolves through the same
     // comboPerformance.resolveWindow for both builds.
     fireEvent.change(select, { target: { value: 'custom' } });
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-06-05' } });
-    expect(tempCell('G4M 1.0', 'Credited days')).toBe('6');
-    expect(accountDaysOf('G4M 1.0')).toBe('6');
+    expect(tempCell('G4M', 'Credited days')).toBe('6');
+    expect(accountDaysOf('G4M')).toBe('6');
     expect(tempPanel().textContent).toContain('Window 2026-06-05 to 2026-06-10.');
   });
 
-  it('32. regroups with the combo table\'s grouping toggle rather than holding a level of its own', () => {
+  it('32. opens at family, and regroups with the combo table\'s toggle rather than holding a level of its own', () => {
     renderPlaybook(twoAlgoClient());
-    expect(tempRowKeys()).toEqual(['URGO 4.5', 'G4M 1.0']);
 
-    // buildAlgorithmTemperature defaults to 'family'; the toggle is the user
-    // saying otherwise, and a panel printing family rows above a table of
-    // version rows under one heading is the drift this pins.
-    const byFamily = [...teamTable().closest('section').querySelectorAll('.playbook-toggles button')]
-      .find((b) => b.textContent === 'By family');
-    fireEvent.click(byFamily);
+    /* THE COLD OPEN IS FAMILY, ON BOTH PANELS.
+     *
+     * This screen held `useState('version')`, so the first rows a user met read
+     * `URGO 4.5` and `G4M 1.0`: the fragmentation the whole panel exists to
+     * undo, under a new heading. `algorithmTemperature.DEFAULT_OPTIONS` says
+     * family and its comment says why. On this fixture each family carries one
+     * version, so the two levels give the same two rows and only the KEYS move;
+     * that is what makes this assertion the whole test.
+     */
+    expect(tempRowKeys()).toEqual(['URGO', 'G4M']);
+    expect(accountDaysOf('URGO')).toBe('10');
+    expect(tempPanel().textContent).toContain('Grouping: By family.');
+
+    // One toggle, both panels. The state is shared on purpose: two grouping
+    // controls on one screen is how a reader ends up comparing family rows
+    // above against version rows below and calling the difference a result.
+    const toggle = (label) => [...teamTable().closest('section').querySelectorAll('.playbook-toggles button')]
+      .find((b) => b.textContent === label);
+    fireEvent.click(toggle('By version'));
+    expect(tempRowKeys()).toEqual(['URGO 4.5', 'G4M 1.0']);
+    expect(accountDaysOf('URGO 4.5')).toBe('10');
+    expect(tempPanel().textContent).toContain('Grouping: By version.');
+
+    fireEvent.click(toggle('By family'));
     expect(tempRowKeys()).toEqual(['URGO', 'G4M']);
   });
 
@@ -419,12 +439,153 @@ describe('the algorithm temperature panel on the playbook', () => {
     expect(teamTable().closest('section').textContent).not.toMatch(/No fills are loaded/);
   });
 
+  /* One client, two funded accounts, ten closes, and the two acceptance rules
+   * deliberately disagreeing on one of the accounts.
+   *
+   *   M-1 runs URGO alone: exactly one algorithm ran, so the temperature panel
+   *        credits the whole day to it (SOLE) and the combo table names the
+   *        stack `URGO`.
+   *   M-2 runs URGO and G4M, each reporting $100 against a close worth $500.
+   *        Two ran and their figures do not reconcile with the account day, so
+   *        the temperature panel credits NOBODY (UNSPLIT) while the combo table
+   *        still has a nameable stack and takes the day.
+   *
+   * That is the whole of the gap between the two badges, reproduced small: one
+   * funded population, two rules, two different subsets credited. */
+  function mixedBookClient() {
+    const accounts = ['M-1', 'M-2'];
+    return {
+      id: 'c-mixed',
+      name: 'Mixed book',
+      accountRegistry: Object.fromEntries(accounts.map((accountName) => [
+        accountName, { accountName, accountType: 'Funded', status: 'Active', dateFailed: '' },
+      ])),
+      dailyImports: Array.from({ length: 10 }, (_, i) => ({
+        id: `dm-${i}`,
+        date: `2026-06-${String(i + 1).padStart(2, '0')}`,
+        accounts: {},
+        flags: [],
+        executions: [],
+        snapshots: [
+          {
+            accountName: 'M-1',
+            grossRealizedPnl: 200,
+            accountBalance: 50000,
+            trailingMaxDrawdown: -500,
+            strategies: [{
+              strategyName: '0 - URGO-4.5', strategyFamily: 'URGO', strategyVersion: '4.5', enabled: true, realized: 200,
+            }],
+          },
+          {
+            accountName: 'M-2',
+            grossRealizedPnl: 500,
+            accountBalance: 50000,
+            trailingMaxDrawdown: -500,
+            strategies: [
+              { strategyName: '0 - URGO-4.5', strategyFamily: 'URGO', strategyVersion: '4.5', enabled: true, realized: 100 },
+              { strategyName: '0 - G4M-1.0', strategyFamily: 'G4M', strategyVersion: '1.0', enabled: true, realized: 100 },
+            ],
+          },
+        ],
+      })),
+    };
+  }
+
+  // The badge in a panel heading, by the heading it sits beside.
+  const badgesOf = (section) => [...section.querySelectorAll('.panel-heading .badge')]
+    .map((b) => b.textContent.replace(/\s+/g, ' ').trim());
+
+  it('35. names the population under both badges, so the gap between them is the rule and not a loss', () => {
+    /* THE CONTRADICTION THIS SCREEN USED TO MANUFACTURE.
+     *
+     * On the stored book the temperature badge read "113 accounts · 37 clients"
+     * and the combo badge 40 lines below read "149 accounts · 44 clients", with
+     * a sentence between them promising the two panels "are never measuring two
+     * different books". Neither badge said which population it counted, so 36
+     * accounts and 7 clients vanished across one screen with nothing accounting
+     * for them, and the likeliest reading was that the new panel had dropped
+     * data. It had not: it had refused to attribute it.
+     */
+    renderPlaybook(mixedBookClient());
+
+    // Both badges in the `N of M` shape, against the SAME funded population.
+    expect(badgesOf(tempPanel())).toContain('2 algorithms · 1 of 2 accounts · 1 of 1 client credited');
+    const combo = teamTable().closest('section');
+    expect(badgesOf(combo)).toContain('2 combos · 2 of 2 accounts · 1 of 1 clients attributed');
+
+    // And the sentence between them no longer claims the two cannot differ. It
+    // names the shared denominator once and both acceptance rules beside it.
+    expect(tempPanel().textContent).not.toMatch(/never measuring two different books/);
+    expect(tempPanel().textContent).toContain(
+      'Both walk the same funded population, 2 accounts and 1 client in this window, and credit '
+      + 'different parts of it: this panel takes an account day only when the day can be given to '
+      + 'a single algorithm (1 account, 1 client), and the table below takes it whenever the '
+      + 'whole stack that ran is nameable (2 accounts, 1 client). The gap between the two badges '
+      + 'is that rule and nothing else. No client and no account day is in one build and absent '
+      + 'from the other.',
+    );
+  });
+
+  it('36. discloses the clients neither build loaded, on the panel that sits first', () => {
+    /* `hiddenClientCount` was passed to buildComboPerformance and not to
+     * buildAlgorithmTemperature, so `population.hiddenClients` was a hardcoded
+     * 0 on the panel a reader meets FIRST while the caption 80 lines below
+     * disclosed 40 excluded clients on the stored book. One screen, one
+     * population, one panel disclosing the exclusion and one silently taking
+     * it.
+     *
+     * `failedAccountDays` is printed as TWO figures rather than one because the
+     * two builds count it over the days each of them credited: on the stored
+     * book that is 14 here against 26 below. One number under a caption reading
+     * "in both" would be the same defect this test exists to close, one field
+     * over. */
+    renderPlaybook(twoAlgoClient());
+    expect(tempPanel().textContent).toContain(
+      '3 inactive clients are loaded into neither panel. Accounts now marked Failed are kept in '
+      + 'both, and they carry 0 of the account days credited here against 0 of the account days '
+      + 'the table below attributes.',
+    );
+    // The same two figures the combo caption prints, off the same inputs.
+    expect(teamTable().closest('section').textContent).toContain('3 inactive clients are not loaded');
+  });
+
+  it('37. says whose book it is, in both roles, in the heading and in the caption', () => {
+    /* `allClients` is `state.clients`, scoped by camScopeFor(session) in the
+     * browser and by row level security in the database since step 52, which
+     * measured a CAM named Peter seeing 36 clients of 212. Nothing on this
+     * screen said so, under a heading reading "Team Algo Performance". */
+    const client = twoAlgoClient();
+    renderPlaybook(client, { scope: { kind: 'cam', camName: 'Peter' } });
+
+    // The heading of BOTH panels carries it, not a paragraph three below.
+    expect(badgesOf(tempPanel())).toContain('Your book · 1 client');
+    expect(badgesOf(teamTable().closest('section'))).toContain('Your book · 1 client');
+    // And the caption says what cannot be rescued by a hidden-client count:
+    // RLS removes the rest before this browser counts anything.
+    expect(tempPanel().textContent).toContain(
+      "Your book, not the desk: the 1 client assigned to Peter. Another CAM's clients are removed "
+      + 'by the database before this browser counts anything, so the rest of the desk is not '
+      + 'missing from these figures, it was never in them, and nothing on this screen can say how '
+      + 'large it is.',
+    );
+    expect(teamTable().closest('section').textContent).toContain('Your book, not the desk:');
+
+    cleanup();
+    renderPlaybook(client, { scope: { kind: 'desk', camName: '' } });
+    expect(badgesOf(tempPanel())).toContain('Every client loaded · 1');
+    expect(tempPanel().textContent).toContain(
+      'This login is not scoped to one CAM: it loads every client the database will hand it, '
+      + '1 client here, so these are desk figures.',
+    );
+    expect(tempPanel().textContent).not.toMatch(/Your book, not the desk/);
+  });
+
   it('33. draws the selected algorithm underneath, live on this screen', () => {
     renderPlaybook(twoAlgoClient());
     const panel = tempPanel();
     expect(panel.textContent).toContain('Select one or more algorithms above to draw their combined curve');
 
-    fireEvent.click(within(tempTable()).getByRole('button', { name: 'URGO 4.5' }));
+    fireEvent.click(within(tempTable()).getByRole('button', { name: 'URGO' }));
     expect(panel.querySelector('svg')).toBeTruthy();
     expect(panel.textContent).toContain('Combined credited P&L of 1 algorithm');
     expect(panel.textContent).toContain('Deepest dip inside this window');

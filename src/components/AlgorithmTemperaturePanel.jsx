@@ -9,6 +9,19 @@
  * no reported number is derived from it: every value drawn is also printed in
  * the DOM beside the mark, off the domain result.
  *
+ * AND THE SENTENCES ABOUT A FIGURE ARE READ OFF IT TOO, which is not the same
+ * rule and had to be learned separately. Three strings here used to be written
+ * in this file ABOUT numbers measured elsewhere, and all three said something
+ * the numbers did not: the reduction's basis named the overlap count when the
+ * ratio spans every credited date, the refusal said nothing fell when a part
+ * had fallen, and the heading badge named credited accounts where the sentence
+ * around it meant the funded population. A figure and the claim about how it
+ * was measured travel together or they drift, so the basis is
+ * `composite.reductionBasis`, the refusal is `composite.reductionNote`, and the
+ * badge prints the credited count AND the funded one with the verb between
+ * them. What is left to this file is layout, order and the copy that describes
+ * the SCREEN rather than the measurement.
+ *
  * THE HOUSE RULES THIS FOLLOWS, all of them from `DeskPeriodReportCharts.jsx:1`:
  *
  * 1. Hand rolled inline SVG, theme tokens only, no literal hex, no chart
@@ -165,6 +178,7 @@ export default function AlgorithmTemperaturePanel({
   onToggleAlgorithm = null,
   fillsLoaded = true,
   bare = false,
+  scopeNote = '',
 }) {
   // Uncontrolled by default, controlled when the parent passes `selected`. The
   // immutable Set toggle is the idiom already at App.jsx:9833, copied rather
@@ -224,11 +238,35 @@ export default function AlgorithmTemperaturePanel({
     <Frame className={bare ? 'algo-temperature-panel' : 'panel algo-temperature-panel'}>
       <div className="panel-heading playbook-heading">
         <h3>Algorithm temperature</h3>
+        {/* BOTH PAIRS, and the word that says which is which. This badge used to
+            print `population.accounts` and `population.clients`, which count
+            only the accounts and clients a day was CREDITED on, with nothing
+            naming them: on the stored book that read "113 accounts · 37 clients"
+            while the funded population the panel walked is 180 and 48. That is
+            the same defect DeskPeriodReportSheet.jsx:982 records having fixed
+            one panel down, where the caption was "31 accounts and 4 clients
+            short" of the population its own sentence claimed to describe, and it
+            is worse here because a badge carries no sentence at all. The
+            "N of M" shape and the trailing verb are that caption's, so the two
+            screens say it the same way. */}
         <span className="badge muted">
           {`${plural(rows.length, 'algorithm', 'algorithms')}`}
-          {population ? ` · ${plural(population.accounts, 'account', 'accounts')}` : ''}
-          {population ? ` · ${plural(population.clients, 'client', 'clients')}` : ''}
+          {population
+            ? ` · ${population.accounts} of ${plural(population.fundedAccounts, 'account', 'accounts')}`
+            : ''}
+          {population
+            ? ` · ${population.clients} of ${plural(population.fundedClients, 'client', 'clients')} credited`
+            : ''}
         </span>
+        {/* WHOSE BOOK THE HEADING IS OVER. Every count in this panel is a count
+            of whatever clients the caller was handed, and on this product that
+            is one CAM's book on most logins: `state.clients` is scoped by
+            `camScopeFor(session)` in the browser and by row level security in
+            the database since step 52. The panel cannot work that out for
+            itself, so the embedder says it; absent, the panel claims nothing,
+            which is what every other caller gets. The sentence that sizes the
+            scope sits under the panel in StackPlaybook.jsx. */}
+        {scopeNote ? <span className="badge muted">{scopeNote}</span> : null}
       </div>
 
       <p className="muted board-note">
@@ -243,10 +281,23 @@ export default function AlgorithmTemperaturePanel({
         sole, or when every algorithm that ran carries its own figure and those figures add up to
         the close, counted in the row as measured. A day that cannot be partitioned is credited to
         nobody and is counted below. It is never divided equally.
+        {/* THE MONEY SHARE TRAVELS WITH THE DAY SHARE. This sentence used to
+            state the day counts alone, so the unsplit total below it, which on
+            the stored book is -$53,417, had nothing on the screen to be a
+            fraction of, and a reader adding the visible rows to -$70,575 had no
+            way to see that it is barely half the funded book. Both halves are
+            published as `population.includedPnl` and `population.fundedPnl`; the
+            share between them is not computed here, because this file prints
+            figures the domain measured and makes none of its own. The three
+            dollar figures below are the whole of the funded money:
+            `fundedPnl === includedPnl + unknownPnl + unsplit.pnl` is an identity
+            the domain pins, so "the rest" names the unsplit bucket exactly. */}
         {population
           ? ` ${population.includedDays} of ${population.fundedDays} funded account days in this `
-            + `window are credited here, and ${population.unknownDays} carry no algorithm at all `
-            + `(${money(population.unknownPnl)}).`
+            + `window are credited here and carry ${money(population.includedPnl)} of the `
+            + `${money(population.fundedPnl)} those funded days made. ${population.unknownDays} of `
+            + `them carry no algorithm at all (${money(population.unknownPnl)}), and the rest is `
+            + 'the unsplit money, credited to nobody.'
           : ''}
       </p>
       {result ? (
@@ -429,12 +480,20 @@ export default function AlgorithmTemperaturePanel({
                   <div className="period-benchmark-curves algo-temperature-parts">
                     {partRows.map((row) => (
                       <figure className="period-benchmark-curve" key={row.key}>
+                        {/* The sample qualifier follows the row onto its own
+                            plot. The curve and the reduction sentence under it
+                            are where a CAM lingers, and on the real book the
+                            selection two clicks from a cold open is two rows
+                            that are each one account day: a badge that lives
+                            only in a table the reader has scrolled past is not
+                            on the screen the figure is read from. */}
                         <figcaption>
                           <strong>{row.key}</strong>
                           <span className={moneyClass(row.totalPnl)}>{` ${money(row.totalPnl)}`}</span>
                           <span className="muted">
                             {` over ${plural(row.days, 'credited day', 'credited days')}`}
                           </span>
+                          {row.lowSample ? <span className="badge warning">Low sample</span> : null}
                         </figcaption>
                         <Curve
                           equity={row.equity}
@@ -479,12 +538,40 @@ export default function AlgorithmTemperaturePanel({
                     ))}
                   </ol>
 
-                  {/* ---- the comparison, and the sentence it may never travel without ---- */}
+                  {/* ---- the comparison, and the two sentences it may never travel without ----
+
+                      ONE REFUSAL, ONE REASON. This branch used to print a single
+                      sentence for every null reduction: "No algorithm in this
+                      selection fell below where it opened". That is false in
+                      three of the five cases the domain refuses, including both
+                      reachable from a cold open on the real book. Selecting
+                      rank 1 and rank 2 gives a composite that never fell while
+                      DJDR fell -$25.50, and selecting one row gives a curve
+                      compared against itself while it fell the whole time. So
+                      the reason is read off `reductionNote`, which the domain
+                      publishes per refusal, and this file writes none of its
+                      own: two branches of one screen writing their own wording
+                      for the same refusal is how they end up disagreeing about
+                      what was refused. The domain pins that exactly one side of
+                      the pair is populated, so `reduction === null` always has a
+                      note and this branch can never fall through to a number.
+
+                      THE BASIS IS THE DOMAIN'S TOO, and for a harder reason: the
+                      sentence assembled here was wrong. It printed
+                      `composite.overlapDays` as the basis of the figure, but
+                      both halves of the ratio are measured over every date any
+                      selected algorithm was credited on. Rendered against the
+                      stored book with ARPD_PF, OGX_PF and ARPD selected, the
+                      figure is 20.69% over 12 credited dates and this sentence
+                      called it 4, which is the overlap count. False in the
+                      direction that makes the figure sound more carefully
+                      scoped than it is, which is the reading that survives being
+                      questioned. `reductionBasis` states both counts and names
+                      the overlap as the subset it is, and
+                      `algorithmTemperature.book.test.js` is where the 12 and the
+                      4 are pinned to the book. */}
                   {composite.reduction === null ? (
-                    <p className="muted board-note">
-                      No algorithm in this selection fell below where it opened, so there is no
-                      deepest fall to compare. That is not a reduction of 100%, it is no comparison.
-                    </p>
+                    <p className="muted board-note">{composite.reductionNote}</p>
                   ) : (
                     <p className="board-note">
                       <strong>
@@ -492,8 +579,7 @@ export default function AlgorithmTemperaturePanel({
                         {`${money(composite.sumOfPartDips)} for the sum of the parts, `}
                         {`${percent(composite.reduction)} lower.`}
                       </strong>
-                      {` Measured over ${plural(composite.overlapDays, 'date', 'dates')} `}
-                      on which more than one of the selected algorithms was credited.
+                      {` ${composite.reductionBasis}`}
                       {' '}
                       <span className="muted">{composite.caveat}</span>
                     </p>
