@@ -35,6 +35,8 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     copy is made OUTSIDE the staging folder that becomes the ZIP so the
  *     unfiltered file is never in the package for a single step. See
  *     SqliteSnapshot's header for what that costs and what it buys.
+ *   - It is the ONLY copy of those tables in the package. db/ holds the
+ *     database and the schema, and each allowlisted table appears in it once.
  *   - Two runs produce two independent packages. Nothing is modified.
  *
  * WHAT IT DOES NOT DO. It does not analyse. The package is raw material plus a
@@ -167,21 +169,16 @@ public sealed class DeepExportRunner
                     // database learns exactly which 9 were withheld. The manifest
                     // names them outright so nobody has to.
                     await File.WriteAllTextAsync(Path.Combine(staging, "db", "schema.sql"), SqliteSnapshot.ReadSchema(workingCopy), cancellationToken).ConfigureAwait(false);
-                    if (filter != null)
-                    {
-                        Directory.CreateDirectory(Path.Combine(staging, "db", "tables"));
-                        // Dumped from the shipped file, so the JSONL and the
-                        // database beside it cannot describe different rows.
-                        foreach (string table in SqliteSnapshot.TablesToDump(copyPath))
-                        {
-                            using FileStream output = File.Create(Path.Combine(staging, "db", "tables", table + ".jsonl"));
-                            SqliteSnapshot.DumpTable(copyPath, table, output);
-                        }
-                    }
+                    // AND NOTHING ELSE. db/tables/*.jsonl used to be written here,
+                    // one file per allowlisted table, dumped from copyPath - the
+                    // same file that is already in the package. So db/ carried the
+                    // same 12 tables twice and the JSONL was the lossy half of the
+                    // pair. It is gone; SqliteSnapshot's header has the numbers and
+                    // the argument for one artefact rather than two.
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
-                    warnings.Add($"table dump incomplete: {exception.GetType().Name}");
+                    warnings.Add($"schema could not be written: {exception.GetType().Name}");
                 }
             }
             else
