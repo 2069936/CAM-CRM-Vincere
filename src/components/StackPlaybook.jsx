@@ -817,8 +817,13 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
             + 'it whenever the whole stack that ran is nameable '
             + `(${plural(population.accounts, 'account', 'accounts')}, `
             + `${plural(population.clients, 'client', 'clients')}). The gap between the two badges `
-            + 'is that rule and nothing else. No client and no account day is in one build and '
-            + 'absent from the other.'
+            + 'is that rule and nothing else: the same book goes into both, and the second '
+            + 'rule accepts more of it, '
+            + `${plural(population.includedDays, 'account day', 'account days')} against `
+            + `${plural(tempPopulation.includedDays, 'account day', 'account days')}. `
+            + 'Every account day this panel credits is credited by the table too. The days '
+            + 'the table has and this panel does not are the ones named above as credited '
+            + 'to nobody.'
           ) : ''}
           {tempPopulation ? (
             ` ${plural(tempPopulation.hiddenClients, 'inactive client is', 'inactive clients are')} `

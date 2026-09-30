@@ -8,7 +8,7 @@
 // -$53,417.10 with counted figures from this book, and a sentence of it was WRONG
 // for 72 of the 115 days it described while every test in the repository passed;
 // a second sentence promised that the reduction "drifts upward as the selection
-// grows", and this book walks it downward at 3 of 13 steps. A prose paragraph
+// grows", and this book walks it downward at 6 of the 12 steps it has. A prose paragraph
 // about a book nothing re-measures is a claim, not a measurement.
 //
 // TWO LAYERS, AND THE DIFFERENCE MATTERS WHEN THE BOOK IS RE-EXPORTED.
@@ -46,6 +46,7 @@ import {
   temperatureOf,
 } from './algorithmTemperature';
 import {
+  buildComboPerformance,
   comboKeyFromDay,
   dayAlgoRows,
   executionsForAccount,
@@ -406,6 +407,49 @@ describe('the reduction the header quotes, on the selections it quotes it for', 
     expect(composite.parts.filter((p) => Math.abs(p.deepestDip - p.totalPnl) < 35)).toHaveLength(7);
     expect(composite.deepestDip)
       .toBeCloseTo(composite.parts.reduce((total, p) => total + p.totalPnl, 0), 2);
+
+    // MIRROR of the basis sentence ON THIS SELECTION, which is the one the module
+    // header quotes as the reduction this checkout can reproduce. Every credited
+    // date is also an overlap date here, so the sentence states the count ONCE.
+    // It used to read "Measured over 14 dates [...] not only the 14 dates [...]",
+    // which denies itself, and it landed on the headline figure of the change.
+    expect(composite.reductionDateCount).toBe(composite.overlapDays);
+    expect(composite.reductionBasis).toBe(
+      'Measured over 14 dates on which at least one selected algorithm was credited, '
+      + 'and more than one of them was credited on every one of those dates.',
+    );
+    expect(composite.reductionBasis).not.toContain('not only');
+  });
+
+  it('publishes 0.00% and never "-0.00%" where the two dips are one summation apart', () => {
+    // THE LAST MEMBER OF THE "100.00% lower" FAMILY, on the book rather than on a
+    // fixture. IFSP + RBO are two ordinary gated rows two clicks apart, both
+    // falling monotonically, so the composite's dip and the sum of the parts'
+    // dips are the same money added up in two orders. Unclamped the ratio is
+    // -2.220446049250313e-16 and the panel renders it in bold as "-0.00% lower."
+    const composite = buildAlgorithmComposite(result, ['IFSP', 'RBO']);
+    expect(composite.deepestDip).toBeCloseTo(-20642.2, 2);
+    expect(composite.sumOfPartDips).toBeCloseTo(-20642.2, 2);
+    // The two doubles really do differ, so this book still reaches the case.
+    expect(composite.deepestDip).not.toBe(composite.sumOfPartDips);
+    expect(1 - (composite.deepestDip / composite.sumOfPartDips)).toBeLessThan(0);
+    expect(composite.reduction).toBe(0);
+    expect(`${(composite.reduction * 100).toFixed(2)}%`).toBe('0.00%');
+
+    // INVARIANT over every selection this book can reach, not just the six that
+    // used to go negative: a reduction below 0 would say the combined curve fell
+    // FURTHER than its parts did apart, which the subadditivity above forbids.
+    const keys = result.rows.map((r) => r.key);
+    let published = 0;
+    for (let mask = 1; mask < (1 << keys.length); mask += 1) {
+      const selection = keys.filter((_, i) => mask & (1 << i));
+      const step = buildAlgorithmComposite(result, selection);
+      if (step.reduction === null) continue;
+      published += 1;
+      expect(step.reduction).toBeGreaterThanOrEqual(0);
+      expect(step.reduction).toBeLessThanOrEqual(1);
+    }
+    expect(published).toBe(16365);
   });
 
   it('is nothing at all on a plausible three algorithm selection', () => {
@@ -550,6 +594,94 @@ describe('the reduction the header quotes, on the selections it quotes it for', 
     expect(after.sumOfPartDips).toBeCloseTo(before.sumOfPartDips, 6);
     expect(after.deepestDip).toBeGreaterThan(before.deepestDip);
     expect(after.reduction).toBeGreaterThan(before.reduction);
+  });
+});
+
+describe('the per close share, which is the header figure nothing used to mirror', () => {
+  it('reproduces the range the header quotes, floor included', () => {
+    // WHY THIS TEST EXISTS. Every other figure in that header has a mirror in
+    // this file. This one did not, and it was wrong: it read "ranges from 27.7%
+    // (2026-07-20) to 129.9%". 27.7% is not the minimum, it is only the smallest
+    // share that happens to be POSITIVE, and naming it as the floor hid the end
+    // of the range a reader needs to know about. The true floor is -4.2%.
+    const fundedByDate = new Map();
+    for (const day of accountDays) {
+      fundedByDate.set(day.date, (fundedByDate.get(day.date) || 0) + day.pnl);
+    }
+    const attrByDate = new Map();
+    for (const r of result.rows) {
+      for (const point of r.series) attrByDate.set(point.date, (attrByDate.get(point.date) || 0) + point.pnl);
+    }
+    // The walk is the module's own: its attributable column sums to includedPnl.
+    let attrTotal = 0;
+    for (const value of attrByDate.values()) attrTotal += value;
+    expect(attrTotal).toBeCloseTo(result.population.includedPnl, 6);
+
+    const shares = [...fundedByDate.entries()]
+      .filter(([, funded]) => funded !== 0)
+      .map(([date, funded]) => ({ date, funded, attr: attrByDate.get(date) || 0, share: 100 * (attrByDate.get(date) || 0) / funded }));
+    const min = shares.reduce((a, b) => (b.share < a.share ? b : a));
+    const max = shares.reduce((a, b) => (b.share > a.share ? b : a));
+
+    // MIRROR: "Per close the attributable share of the desk's funded P&L ranges
+    // from -4.2% (2026-07-14) to 129.9% (2026-07-21, where the attributable
+    // accounts were up $1,409.30 while the rest of the desk gave back $324.50)".
+    expect(min.date).toBe('2026-07-14');
+    expect(min.share).toBeCloseTo(-4.2, 1);
+    expect(max.date).toBe('2026-07-21');
+    expect(max.share).toBeCloseTo(129.9, 1);
+
+    // MIRROR: "the desk's funded accounts lost $2,059.00 while the accounts this
+    // panel can attribute MADE $87.00". The sign inversion is the whole point of
+    // naming this close, so pin both signs and not only the ratio.
+    expect(min.funded).toBeCloseTo(-2059, 2);
+    expect(min.attr).toBeCloseTo(87, 2);
+    expect(min.funded).toBeLessThan(0);
+    expect(min.attr).toBeGreaterThan(0);
+    expect(max.attr).toBeCloseTo(1409.3, 2);
+    expect(max.funded - max.attr).toBeCloseTo(-324.5, 2);
+
+    // INVARIANT: 27.7% on 2026-07-20 is a real figure and the header was only
+    // wrong to call it the floor, so it stays reproducible and stays above it.
+    const jul20 = shares.find((entry) => entry.date === '2026-07-20');
+    expect(jul20.share).toBeCloseTo(27.7, 1);
+    expect(jul20.share).toBeGreaterThan(min.share);
+  });
+});
+
+describe('what the two panels on one screen each credit out of the same book', () => {
+  it('credits a subset, which is the claim the Stack Playbook caption makes', () => {
+    // StackPlaybook.jsx's caption tells a reader the gap between its two badges
+    // "is that rule and nothing else", that "every account day this panel
+    // credits is credited by the table too", and that the difference is the days
+    // "credited to nobody". That sentence replaced one which said no account day
+    // was in one build and absent from the other, which was false for exactly
+    // these 214 days. So the replacement gets a measurement rather than a claim.
+    const combo = buildComboPerformance(clients, OPTIONS);
+
+    // Both builds walk the SAME funded population, so the badges share a
+    // denominator and the caption may say so.
+    expect(combo.population.fundedDays).toBe(result.population.fundedDays);
+    expect(combo.population.fundedPnl).toBeCloseTo(result.population.fundedPnl, 6);
+
+    // The bucket neither build credits is identical in days AND in money, which
+    // is what makes the remainder a partition rather than two similar totals.
+    expect(combo.population.unknownDays).toBe(result.population.unknownDays);
+    expect(combo.population.unknownPnl).toBeCloseTo(result.population.unknownPnl, 6);
+
+    // MIRROR of the caption: 599 against 385, and the 214 between them are the
+    // unsplit days the panel prints above it as credited to nobody.
+    expect(result.population.includedDays).toBe(385);
+    expect(combo.population.includedDays).toBe(599);
+    expect(result.unsplit.days).toBe(214);
+    expect(combo.population.includedDays).toBe(result.population.includedDays + result.unsplit.days);
+    expect(combo.population.includedPnl)
+      .toBeCloseTo(result.population.includedPnl + result.unsplit.pnl, 6);
+
+    // And the table's credited population is a superset on both counts, so the
+    // caption's "accepts more of it" is true of accounts and clients as well.
+    expect(combo.population.accounts).toBeGreaterThanOrEqual(result.population.accounts);
+    expect(combo.population.clients).toBeGreaterThanOrEqual(result.population.clients);
   });
 });
 

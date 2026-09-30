@@ -220,6 +220,11 @@ export default function AlgorithmTemperaturePanel({
   const partKeys = new Set(composite.parts.map((part) => part.key));
   const partRows = rows.filter((row) => partKeys.has(row.key));
 
+  // The parts of THIS selection that did not clear the sample gate, so the
+  // reduction sentence can carry the qualifier instead of leaving it to a badge
+  // in a table the reader has scrolled past.
+  const thinParts = partRows.filter((row) => row.lowSample);
+
   // Shared scale across the composite and every part, so the small multiples
   // are comparable with each other and with the curve above them. One scale per
   // plot would make a part that fell $200 look like one that fell $20,000.
@@ -295,9 +300,10 @@ export default function AlgorithmTemperaturePanel({
         {population
           ? ` ${population.includedDays} of ${population.fundedDays} funded account days in this `
             + `window are credited here and carry ${money(population.includedPnl)} of the `
-            + `${money(population.fundedPnl)} those funded days made. ${population.unknownDays} of `
-            + `them carry no algorithm at all (${money(population.unknownPnl)}), and the rest is `
-            + 'the unsplit money, credited to nobody.'
+            + `${money(population.fundedPnl)} those funded days made. Of the rest, `
+            + `${population.unknownDays} carry no algorithm at all `
+            + `(${money(population.unknownPnl)}), and the remainder is the unsplit money, `
+            + 'credited to nobody.'
           : ''}
       </p>
       {result ? (
@@ -580,6 +586,29 @@ export default function AlgorithmTemperaturePanel({
                         {`${percent(composite.reduction)} lower.`}
                       </strong>
                       {` ${composite.reductionBasis}`}
+                      {/* THE SAMPLE QUALIFIER BELONGS IN THIS SENTENCE, not two
+                          lines above it. The Low sample badge travels with the
+                          row and with the row's own plot, but the percentage is
+                          what gets read aloud and quoted, and on the real book
+                          the largest three algorithm figure on the whole book,
+                          ARPD_PF + OGX_PF + ARPD at 20.69%, rests on a row with
+                          ONE credited account day. A reader who carries the
+                          number away without the badge is carrying the number
+                          the badge was about. Named rather than counted: which
+                          rows are thin is the thing a CAM has to be able to
+                          answer when asked. */}
+                      {thinParts.length ? (
+                        <>
+                          {' '}
+                          <span className="badge warning">Low sample</span>
+                          {` ${plural(thinParts.length, 'row', 'rows')} in this selection `
+                            + `${thinParts.length === 1 ? 'is' : 'are'} below the sample gate `
+                            + `(${thinParts.map((row) => `${row.key}, `
+                              + `${plural(row.days, 'credited day', 'credited days')}`).join('; ')}), `
+                            + `so this figure leans on ${thinParts.length === 1 ? 'it' : 'them'} `
+                            + 'as heavily as on the rest.'}
+                        </>
+                      ) : null}
                       {' '}
                       <span className="muted">{composite.caveat}</span>
                     </p>

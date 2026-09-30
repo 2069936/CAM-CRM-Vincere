@@ -499,6 +499,123 @@ describe('the basis sentence names the dates the figure was measured over', () =
     expect(composite.reductionDateCount).toBe(composite.overlapDays);
     const sentence = screen.getByText(FIGURE).closest('p').textContent;
     expect(sentence).toContain(`Measured over ${composite.reductionDateCount} dates`);
+
+    // AND IT DOES NOT CONTRAST THAT COUNT WITH ITSELF. The one shape sentence
+    // ended "not only the N dates on which more than one of them was" whatever N
+    // was, so on a selection whose two counts coincide it named a number and
+    // then denied the same number. This test used to pass under that wording,
+    // because it only checked the first half; the clause is what a CAM reads
+    // aloud, and on the real book this shape carries BOTH figures the domain
+    // module quotes, the 4.44% over the ten gated rows and the 5.52% over all
+    // fourteen.
+    expect(sentence).not.toContain('not only');
+    expect(sentence).toContain(
+      `Measured over ${composite.reductionDateCount} dates on which at least one selected `
+      + 'algorithm was credited, and more than one of them was credited on every one of those dates.',
+    );
+  });
+
+  it('never prints a reduction as "-0.00% lower", which a float residue used to reach', async () => {
+    /* THE LAST MEMBER OF THE "100.00% lower" FAMILY. `percent` here is
+     * `(ratio * 100).toFixed(2)`, which renders a ratio of -2.22e-16 as
+     * "-0.00", and the panel prints the figure in <strong>. The domain's
+     * `FELL_AT_ALL` floor guards the two INPUTS of the ratio against a residue;
+     * it does not guard the ratio between two inputs that are both large and
+     * equal, which is what two monotonically falling curves produce when the
+     * same money is summed in two different orders.
+     *
+     * On the stored book six selections reached it, the smallest being IFSP +
+     * RBO, two ordinary gated rows two clicks apart, at a dip of
+     * -$20,642.200000000008 against a sum of -$20,642.200000000004. The domain
+     * clamps the published figure at 0 now; this pins the SCREEN, because the
+     * defect was only ever visible as a rendered string. */
+    const user = userEvent.setup();
+    // Two accounts, two dates, both curves only ever falling. The composite
+    // accumulates -(0.1+0.2) then -(0.1+0.3) to -0.7000000000000001 while the
+    // parts' dips are -(0.1+0.1) + -(0.2+0.3) = -0.7. Same money, two doubles.
+    const falling = [
+      client({
+        id: 'fa',
+        accountName: 'FA1',
+        days: [
+          { date: june(1), pnl: -0.1, strategies: [strategy('G4M', '1.2')] },
+          { date: june(2), pnl: -0.1, strategies: [strategy('G4M', '1.2')] },
+        ],
+      }),
+      client({
+        id: 'fb',
+        accountName: 'FB1',
+        days: [
+          { date: june(1), pnl: -0.2, strategies: [strategy('OGX', '2.4')] },
+          { date: june(2), pnl: -0.3, strategies: [strategy('OGX', '2.4')] },
+        ],
+      }),
+    ];
+    const result = build(falling);
+    const composite = buildAlgorithmComposite(result, new Set(['G4M', 'OGX']));
+    // The fixture really does reach the case: unclamped the ratio is negative.
+    expect(1 - (composite.deepestDip / composite.sumOfPartDips)).toBeLessThan(0);
+    expect(composite.reduction).toBe(0);
+
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('G4M'));
+    await user.click(algoButton('OGX'));
+
+    expect(document.body.textContent).not.toContain('-0.00%');
+    expect(document.body.textContent).toContain('0.00% lower.');
+  });
+});
+
+describe('the reduction sentence carries its own sample qualifier', () => {
+  it('names the thin rows a published figure leans on, in the sentence itself', async () => {
+    /* DEFECT 1 asked for this and only half of it was done: the Low sample badge
+     * was carried onto the selected row's own plot, which is right, but the
+     * PERCENTAGE is what gets read aloud and pasted into a client document, and
+     * it sat two lines from the badge with nothing joining them.
+     *
+     * On the stored book the largest three algorithm reduction anywhere, ARPD_PF
+     * + OGX_PF + ARPD at 20.69%, leans on ARPD_PF, whose whole contribution is
+     * ONE credited account day. A reader who carries the number away without the
+     * badge is carrying the number the badge was about.
+     *
+     * Named rather than counted, because "which rows are thin" is the question a
+     * CAM has to answer when the figure is questioned. */
+    const user = userEvent.setup();
+    const result = build([...hotClients, ...coldClients, client({
+      id: 'thin',
+      accountName: 'THIN1',
+      days: [{ date: june(2), pnl: -400, strategies: [strategy('SYFY', '1.4')] }],
+    })]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('G4M'));
+    await user.click(algoButton('SYFY'));
+
+    const thin = result.rows.find((row) => row.key === 'SYFY');
+    expect(thin.lowSample).toBe(true);
+    expect(result.rows.find((row) => row.key === 'G4M').lowSample).toBe(false);
+
+    const sentence = screen.getByText(FIGURE).closest('p').textContent;
+    expect(sentence).toContain('1 row in this selection is below the sample gate');
+    expect(sentence).toContain('SYFY, 1 credited day');
+    expect(sentence).toContain('leans on it as heavily as on the rest');
+    // The qualifier lives in the SAME paragraph as the figure, so it cannot be
+    // quoted away from the percentage it qualifies.
+    expect(sentence).toContain('lower.');
+    // The Stack Playbook section is asserted against dashes of every kind.
+    expect(sentence).not.toMatch(/[–—]/);
+    expect(sentence).not.toMatch(/\s-\s/);
+  });
+
+  it('says nothing when every selected row cleared the gate', async () => {
+    const user = userEvent.setup();
+    const result = build([...hotClients, ...coldClients]);
+    render(<AlgorithmTemperaturePanel result={result} />);
+    await user.click(algoButton('G4M'));
+    await user.click(algoButton('URGO'));
+
+    expect(result.rows.filter((row) => row.lowSample)).toHaveLength(0);
+    const sentence = screen.getByText(FIGURE).closest('p').textContent;
+    expect(sentence).not.toContain('below the sample gate');
   });
 });
 

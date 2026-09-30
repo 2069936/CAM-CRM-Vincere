@@ -74,10 +74,23 @@
 // -$70,574.75 of -$132,506.55, 53.3%. The unsplit bucket is 23.9% of the days
 // and 40.3% of the money; the unknown bucket, where nothing names an algorithm
 // at all, is another 33.1% of the days but only 6.4% of the money. Per close the
-// attributable share of the desk's funded P&L ranges from 27.7% (2026-07-20) to
+// attributable share of the desk's funded P&L ranges from -4.2% (2026-07-14) to
 // 129.9% (2026-07-21, where the attributable accounts were up $1,409.30 while the
 // rest of the desk gave back $324.50), which is why `population` publishes the
 // counts and the dollars per bucket and the caption has to print them.
+//
+// BOTH ENDS OF THAT RANGE ARE SIGN INVERSIONS AND THE FLOOR IS THE WORSE ONE.
+// This sentence used to read "from 27.7% (2026-07-20)", which is not the
+// minimum: it is merely the smallest share that happens to be positive, and
+// naming it as the floor hid the end that a reader needs. On 2026-07-14 the
+// desk's funded accounts lost $2,059.00 while the accounts this panel can
+// attribute MADE $87.00, so the share is -4.2% and the panel's rows point the
+// opposite way to the book they are a part of. A share outside [0%, 100%] is
+// not a defect in the partition, which reconciles to the cent; it is what a
+// SHARE does when the numerator and the denominator have different signs, and a
+// CAM who reads a green panel on a red day has to be able to find that out.
+// Mirrored by algorithmTemperature.book.test.js so it cannot rot: this was the
+// one figure in this header with no assertion behind it, and it was wrong.
 //
 // AND THE PARTITION EVERYONE ARGUED ABOUT DECIDES 3.9% OF THE BOOK. 350 of the
 // 385 credited days are SOLE, where crediting is exact and no division happens;
@@ -216,8 +229,20 @@
 // three" is the last three (snapshot, strategy) PAIRS it walked, so for a client
 // running one family on four accounts it spans four accounts inside one close and
 // not three closes at all. Here the unit is the last three TRADING DATES the
-// algorithm was credited on, desk wide, and `heatDates` publishes exactly which
-// three so the screen can say it out loud.
+// algorithm was credited on, across every client the CALLER hands this module,
+// and `heatDates` publishes exactly which three so the screen can say it out
+// loud.
+//
+// "ACROSS EVERY CLIENT THE CALLER HANDS THIS MODULE" IS NOT "DESK WIDE", and
+// this sentence used to say desk wide. It is wrong for most logins and it is
+// the sentence a developer reads before wiring a second caller. The Stack
+// Playbook passes `state.clients`, which is scoped by `camScopeFor(session)` in
+// the browser and by row level security in the database, so for a CAM these
+// rows are that CAM's assigned clients and nothing else: step 52 measured one
+// at 36 clients of 212. The module cannot detect this and must not guess at it,
+// which is why `scopeNote` is the CALLER's to pass and StackPlaybook.jsx prints
+// "Your book · N clients" over both headings. Read heat as hot across what was
+// handed in, never as hot across the desk.
 //
 // ORDERING IS SIGNED AND IT IS NOT NEGOTIABLE. `heat` descending, ties by key.
 // Sorting by magnitude was a live bug on the client screen until the commit
@@ -453,7 +478,7 @@ export const UNSPLIT_REASONS = {
  * grows with it", and this book falsifies both halves of that: the denominator is
  * a sum of non positive dips, so its MAGNITUDE never shrinks, but it does not
  * always grow, because a real row can have a dip of exactly 0; and walking the 14
- * rows of the stored book one at a time the reduction FALLS at 6 of the 13 steps.
+ * rows of the stored book one at a time the reduction FALLS at 6 of the 12 steps.
  * A client facing sentence cannot promise a direction the arithmetic does not
  * have, so it now says what is true: the figure belongs to the selection.
  *
@@ -884,9 +909,27 @@ const FELL_AT_ALL = 0.005;
  * over 4 dates when it was measured over 12. Both halves of the ratio are
  * computed over every date any selected algorithm was credited on, so that is
  * what this says, with the overlap named as the subset it is.
+ *
+ * AND WHEN THE TWO COUNTS COINCIDE THE CONTRAST HAS TO GO, which is the second
+ * thing this sentence got wrong. The "not only the N dates" clause exists to
+ * stop a reader shrinking the basis to the overlap, and it only does that while
+ * the overlap is SMALLER. When every credited date is also an overlap date the
+ * one-shape sentence read "Measured over 14 dates [...] not only the 14 dates
+ * [...]", which denies itself out loud and invites exactly the question it was
+ * written to close. That is not an edge case on this book: 7,520 of the 16,365
+ * selections that publish a figure have `overlapCount === dateCount`, including
+ * BOTH figures this module quotes to a reader, the 4.44% over the ten gated rows
+ * and the 5.52% over all fourteen. So the counts are stated once and the
+ * stronger fact, that every date in the basis carries more than one of the
+ * selected algorithms, is stated instead of the contrast.
  */
 function basisOf(dateCount, overlapCount) {
-  return `Measured over ${plural(dateCount, 'date', 'dates')} on which at least one selected `
+  const dates = plural(dateCount, 'date', 'dates');
+  if (overlapCount === dateCount) {
+    return `Measured over ${dates} on which at least one selected algorithm was credited, `
+      + `and more than one of them was credited on every one of ${dateCount === 1 ? 'them' : 'those dates'}.`;
+  }
+  return `Measured over ${dates} on which at least one selected `
     + `algorithm was credited, not only the ${plural(overlapCount, 'date', 'dates')} on which more `
     + 'than one of them was.';
 }
@@ -999,7 +1042,21 @@ export function buildAlgorithmComposite(result, selectedKeys = []) {
   // Both figures are negative or zero, so the ratio is positive and the sign
   // cancels. Reached only when neither is zero and the comparison has two curves
   // and a shared date to be a comparison between.
-  const reduction = reductionRefusal ? null : 1 - (deepestDip / sumOfPartDips);
+  //
+  // CLAMPED AT 0, AND THIS IS THE LAST MEMBER OF THE "100.00% lower" FAMILY.
+  // `FELL_AT_ALL` guards the two INPUTS against a float residue; it does not
+  // guard the RATIO between two inputs that are both large and equal. When the
+  // composite's dip and the sum of the parts' dips are the same money summed in
+  // two different orders, the division lands one ulp on the wrong side of 1 and
+  // the reduction comes back -2.220446049250313e-16, which `toFixed(2)` renders
+  // "-0.00%" and the panel prints in bold as "-0.00% lower". Six selections of
+  // this book do it, the smallest being IFSP + RBO, two ordinary gated rows two
+  // clicks apart, at a dip of -$20,642.200000000008 against a sum of
+  // -$20,642.200000000004. A reduction below 0 would mean the combined curve
+  // fell FURTHER than its parts did separately, which the arithmetic forbids:
+  // the composite's dip is bounded by the sum of the parts' dips. So a negative
+  // here is never a finding, only a summation order, and 0 is the true figure.
+  const reduction = reductionRefusal ? null : Math.max(0, 1 - (deepestDip / sumOfPartDips));
 
   return {
     series,

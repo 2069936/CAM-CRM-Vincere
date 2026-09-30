@@ -509,7 +509,7 @@ describe('the composite against the sum of its parts', () => {
     //
     // The sentence used to end "the sum grows with every algorithm added and this
     // reduction grows with it", and the book falsifies both halves: a real row can
-    // have a dip of exactly 0, and the reduction falls at 6 of the 13 nesting
+    // have a dip of exactly 0, and the reduction falls at 6 of the 12 nesting
     // steps over the stored book. What is asserted here is the half that holds,
     // and the two tests below pin the arithmetic behind it.
     const composite = buildAlgorithmComposite(build(hedged), ['G4M', 'OGX']);
@@ -831,10 +831,111 @@ describe('when there is no comparison to make, and the panel has to say which', 
       client({ id: 'b', accountName: 'B1', days: [{ date: june(1), pnl: -200, strategies: [strategy('OGX', '2.4')] }] }),
     ]), ['G4M', 'OGX']);
     expect(oneDate.reductionDateCount).toBe(1);
+    // Every credited date is an overlap date here, so the sentence states the
+    // count once. Singular all the way through, including the pronoun.
     expect(oneDate.reductionBasis).toBe(
       'Measured over 1 date on which at least one selected algorithm was credited, '
-      + 'not only the 1 date on which more than one of them was.',
+      + 'and more than one of them was credited on every one of them.',
     );
+  });
+
+  it('does not contrast a count with itself when every credited date is an overlap date', () => {
+    // THE DEFECT. The one shape sentence ended "not only the N dates on which
+    // more than one of them was" whatever N was, so when the overlap and the
+    // basis coincide it named a number and then denied the same number:
+    // "Measured over 3 dates [...] not only the 3 dates [...]". A CAM reading
+    // that aloud is asking what the other dates were, and there are none.
+    //
+    // This is not a rare shape. It is what two algorithms that trade together
+    // every day look like, and on the stored book it is 7,520 of the 16,365
+    // selections that publish a figure, including BOTH figures this module
+    // quotes: the 4.44% over the ten gated rows and the 5.52% over all fourteen.
+    const together = build([
+      client({ id: 'a', accountName: 'A1', days: [
+        { date: june(1), pnl: -100, strategies: [strategy('G4M', '1.2')] },
+        { date: june(2), pnl: -200, strategies: [strategy('G4M', '1.2')] },
+        { date: june(3), pnl: 400, strategies: [strategy('G4M', '1.2')] },
+      ] }),
+      client({ id: 'b', accountName: 'B1', days: [
+        { date: june(1), pnl: -50, strategies: [strategy('OGX', '2.4')] },
+        { date: june(2), pnl: 300, strategies: [strategy('OGX', '2.4')] },
+        { date: june(3), pnl: -80, strategies: [strategy('OGX', '2.4')] },
+      ] }),
+    ]);
+    const composite = buildAlgorithmComposite(together, ['G4M', 'OGX']);
+    expect(composite.reduction).not.toBeNull();
+    expect(composite.reductionDateCount).toBe(3);
+    expect(composite.overlapDays).toBe(3);
+    expect(composite.reductionBasis).toBe(
+      'Measured over 3 dates on which at least one selected algorithm was credited, '
+      + 'and more than one of them was credited on every one of those dates.',
+    );
+    // The contrast clause is the thing being removed, so assert its absence
+    // rather than only the presence of the replacement.
+    expect(composite.reductionBasis).not.toContain('not only');
+    expect(composite.reductionBasis).not.toMatch(/[–—]/);
+    expect(composite.reductionBasis).not.toMatch(/\s-\s/);
+
+    // And the contrast survives where it still says something: one date short of
+    // coinciding and the sentence goes back to naming the subset.
+    const staggered = buildAlgorithmComposite(build([
+      client({ id: 'a', accountName: 'A1', days: [
+        { date: june(1), pnl: -100, strategies: [strategy('G4M', '1.2')] },
+        { date: june(2), pnl: -200, strategies: [strategy('G4M', '1.2')] },
+      ] }),
+      client({ id: 'b', accountName: 'B1', days: [
+        { date: june(2), pnl: 300, strategies: [strategy('OGX', '2.4')] },
+      ] }),
+    ]), ['G4M', 'OGX']);
+    expect(staggered.reductionDateCount).toBe(2);
+    expect(staggered.overlapDays).toBe(1);
+    expect(staggered.reductionBasis).toContain('not only the 1 date');
+  });
+
+  it('never publishes a reduction below 0, because a float residue prints as "-0.00%"', () => {
+    // THE LAST MEMBER OF THE "100.00% lower" FAMILY, and the one FELL_AT_ALL
+    // does not catch: that floor guards the two INPUTS against a residue, not
+    // the RATIO between two inputs that are both large and equal.
+    //
+    // When the composite's deepest dip and the sum of the parts' dips are the
+    // same money summed in two different orders, the division lands one ulp on
+    // the wrong side of 1 and the reduction comes back -2.22e-16. The panel's
+    // `percent` is `(ratio * 100).toFixed(2)`, which renders that "-0.00", and
+    // the panel prints it in bold as "-0.00% lower." On the stored book six
+    // selections do it, the smallest being IFSP + RBO, two ordinary gated rows.
+    //
+    // Two monotonically falling curves over the SAME two dates reproduce it. Both
+    // only ever fall, so the composite's deepest dip is the whole fall and the
+    // sum of the parts' dips is that same fall added up in the other order:
+    // -(0.1+0.2) then -(0.1+0.3) accumulates to -0.7000000000000001, while
+    // -(0.1+0.1) + -(0.2+0.3) is -0.7. The money is identical and the two
+    // doubles are not.
+    const residue = build([
+      client({ id: 'a', accountName: 'A1', days: [
+        { date: june(1), pnl: -0.1, strategies: [strategy('G4M', '1.2')] },
+        { date: june(2), pnl: -0.1, strategies: [strategy('G4M', '1.2')] },
+      ] }),
+      client({ id: 'b', accountName: 'B1', days: [
+        { date: june(1), pnl: -0.2, strategies: [strategy('OGX', '2.4')] },
+        { date: june(2), pnl: -0.3, strategies: [strategy('OGX', '2.4')] },
+      ] }),
+    ]);
+    const composite = buildAlgorithmComposite(residue, ['G4M', 'OGX']);
+    // The unclamped ratio is what this test exists to describe, so state it.
+    const unclamped = 1 - (composite.deepestDip / composite.sumOfPartDips);
+    expect(unclamped).toBeLessThan(0);
+    expect(composite.deepestDip).not.toBe(composite.sumOfPartDips);
+    expect(composite.reduction).toBe(0);
+    expect(`${(composite.reduction * 100).toFixed(2)}%`).toBe('0.00%');
+    expect(`${(composite.reduction * 100).toFixed(2)}%`).not.toBe('-0.00%');
+
+    // THE INVARIANT behind the clamp, not just the one fixture: a reduction
+    // below 0 would say the combined curve fell FURTHER than its parts did
+    // separately, and the composite's dip is bounded by the sum of the parts'.
+    for (const keys of [['G4M'], ['OGX'], ['G4M', 'OGX']]) {
+      const c = buildAlgorithmComposite(residue, keys);
+      if (c.reduction !== null) expect(c.reduction).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 

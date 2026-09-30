@@ -521,9 +521,22 @@ describe('the algorithm temperature panel on the playbook', () => {
       + 'different parts of it: this panel takes an account day only when the day can be given to '
       + 'a single algorithm (1 account, 1 client), and the table below takes it whenever the '
       + 'whole stack that ran is nameable (2 accounts, 1 client). The gap between the two badges '
-      + 'is that rule and nothing else. No client and no account day is in one build and absent '
-      + 'from the other.',
+      + 'is that rule and nothing else: the same book goes into both, and the second rule accepts '
+      + 'more of it, 20 account days against 10 account days. Every account day this panel '
+      + 'credits is credited by the table too. The days the table has and this panel does '
+      + 'not are the ones named above as credited to nobody.',
     );
+
+    /* AND THE REASSURANCE THAT REPLACED THE FIRST ONE IS GONE TOO. The fix for
+     * the badges swapped "never measuring two different books" for "No client
+     * and no account day is in one build and absent from the other", which is
+     * the same shape one clause further down and false for the same reason: the
+     * sentence before it uses "build" to mean what each panel CREDITS, and on
+     * the stored book 214 account days and 7 clients are credited by the table
+     * and not by the panel. Both falsifying counts are printed on this screen.
+     * The caption now states the direction, which is true and is a subset
+     * claim mirrored on the real book in algorithmTemperature.book.test.js. */
+    expect(tempPanel().textContent).not.toMatch(/in one build and absent from the other/);
   });
 
   it('36. discloses the clients neither build loaded, on the panel that sits first', () => {
