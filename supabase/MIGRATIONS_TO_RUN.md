@@ -29,6 +29,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 49 | `step_49_strategy_templates.sql` | `strategy_templates`: the desk's own set files, keyed by family and version, and the catalogue the attribution engine reads | Naming the algorithm behind an order from the shape of the trade |
 | 50 | `step_50_auto_collection_derived_pnl.sql` | `persist_auto_daily_import` replaced again so the COLLECTOR stores `strategy_snapshots.derived_realized` and `account_snapshots.derivation`, which step 37 added and only the manual path has ever written | A per-algorithm P&L on the 99% of the book that arrives automatically |
 | 51 | `step_51_app_users_write_lockdown.sql` | `revoke insert, update, delete on app_users` from `authenticated` and `anon`; SELECT stays | Closing a CAM's ability to promote themselves to Manager by talking to PostgREST directly |
+| 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 
 ## These three groups behave differently
 
@@ -102,7 +103,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of

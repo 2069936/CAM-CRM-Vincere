@@ -109,6 +109,13 @@ export default defineConfig({
     // weakening those assertions when the local fixture is present.
     exclude: [
       ...configDefaults.exclude,
+      // A git worktree lives inside the repo, so vitest walks into it and runs
+      // a SECOND copy of every suite - one whose `localSnapshotTests` gate was
+      // resolved against a different checkout, so the .book suites load a
+      // fixture that is not there and fail. Any spawned task that opens a
+      // worktree would otherwise turn a green suite red for reasons that have
+      // nothing to do with the change under test.
+      "**/.claude/worktrees/**",
       ...(hasLocalSnapshot ? [] : localSnapshotTests),
     ],
   },
