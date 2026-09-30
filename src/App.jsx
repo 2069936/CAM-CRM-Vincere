@@ -833,7 +833,13 @@ export function buildClientOverview(client, dailyImport) {
           recentTotal > 250 ? "Hot" : recentTotal < -250 ? "Cold" : "Stable",
       };
     })
-    .sort((a, b) => Math.abs(b.recentTotal) - Math.abs(a.recentTotal));
+    // Hottest first, and hottest means WARMEST, not loudest. Sorting by
+    // |recentTotal| put the biggest mover on top whichever way it moved, so a
+    // Cold row outranked a Hot one the moment it lost more than the winner won:
+    // on 2026-09-29 this listed OGX at -$405 Cold above G4M at +$360 Hot. A
+    // reader scanning a column headed "temperature" top-down was reading a list
+    // of the most extreme, labelled as the most alive.
+    .sort((a, b) => b.recentTotal - a.recentTotal || a.name.localeCompare(b.name));
 
   const passProgress = latestSnapshots
     .map((snapshot) => {
