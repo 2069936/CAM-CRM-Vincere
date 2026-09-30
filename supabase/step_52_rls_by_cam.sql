@@ -73,6 +73,13 @@
 -- behaves exactly as it does today. This reaches the browser's own path, which
 -- is the path that had no rule at all.
 --
+-- SUPERSEDED IN PART BY STEP 53. The `clients` select and update policies and
+-- the `client_assignments` policy below are replaced there, each gaining a
+-- third arm for the client a CAM has just created. This file left a CAM unable
+-- to create a client at all: the browser's insert ends in RETURNING, RETURNING
+-- applies the SELECT policy, and a brand new client is assigned to nobody. The
+-- rest of this file stands.
+--
 -- Idempotent.
 
 -- ---------------------------------------------------------------------------

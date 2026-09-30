@@ -30,19 +30,18 @@ const flat = sql.toLowerCase().replace(/\s+/g, ' ');
 const runbook = readFileSync(runbookUrl, 'utf8');
 
 describe('step 52 exists and is the one that runs last', () => {
-  it('is the highest number and appears once', () => {
+  it('appears once, and 53 now carries the highest-number claim', () => {
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 52)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(52);
   });
 
   it('is in the runbook table and at the end of the run order', () => {
     expect(runbook).toMatch(/^\| 52 \| `step_52_rls_by_cam\.sql` \|.*\|$/m);
-    expect(runbook).toContain('→ 51 → 52.');
+    expect(runbook).toContain('→ 51 → 52');
   });
 });
 
