@@ -9,7 +9,10 @@ import {
   buildClientComboInsights,
   buildComboPerformance,
   comboKeyFromDay,
+  dayAlgoRows,
   DEFAULT_OPTIONS,
+  elementKeyOf,
+  fundedAccountDays,
   MIN_ACCOUNTS,
   MIN_DAYS,
 } from './comboPerformance';
@@ -273,6 +276,77 @@ describe('buildClientComboInsights', () => {
     expect(fire(30).note).toBe('No change suggested');
     expect(fire(60).suggestion).toBe('OGX 2.4');
     expect(fire(60).best.key).toBe('OGX 2.4');
+  });
+});
+
+// The two exports a per-algorithm panel needs, and the reason they live here
+// rather than in that panel: one resolve of "which algos ran" and one spelling of
+// an element key, shared, so the two tables on one screen cannot part company.
+describe('dayAlgoRows', () => {
+  it('returns the same elements comboKeyFromDay does, with the grid rows attached', () => {
+    const g4m = strategy('G4M', '1.2', { realized: 500 });
+    const urgo = strategy('URGO', '4.5', { realized: -200 });
+    const snap = { strategies: [g4m, urgo] };
+    for (const level of ['version', 'family']) {
+      const rows = dayAlgoRows(snap, [], { basis: 'traded', level });
+      expect(rows.map((r) => r.key)).toEqual(comboKeyFromDay(snap, [], { basis: 'traded', level }).elements);
+    }
+    const [first, second] = dayAlgoRows(snap, [], { basis: 'traded', level: 'family' });
+    expect(first).toMatchObject({ key: 'G4M', family: 'G4M', versions: ['1.2'], reason: 'enabled' });
+    expect(first.strategies).toEqual([g4m]);
+    expect(second.strategies).toEqual([urgo]);
+  });
+
+  it('folds two versions of one family into one entry that names both', () => {
+    const snap = { strategies: [strategy('URGO', '4.5'), strategy('URGO', '2.0')] };
+    const [only] = dayAlgoRows(snap, [], { basis: 'traded', level: 'family' });
+    expect(only).toMatchObject({ key: 'URGO', family: 'URGO', versions: ['2.0', '4.5'] });
+    expect(only.strategies).toHaveLength(2);
+    expect(dayAlgoRows(snap, [], { basis: 'traded', level: 'version' }).map((r) => r.key)).toEqual(['URGO 2.0', 'URGO 4.5']);
+  });
+
+  it('carries no grid row for a family only the fills name, so no caller can invent a figure for it', () => {
+    // 98 funded days on the book carry no strategy rows at all. The fills say the
+    // algorithm ran; nothing says what it made, and an empty `strategies` is how a
+    // caller finds that out rather than reading a zero.
+    const rows = dayAlgoRows({ strategies: [] }, [execution('ACC1', '0 - OGX-PF-2.4')], { basis: 'traded', level: 'family' });
+    expect(rows).toEqual([{ key: 'OGX_PF', family: 'OGX_PF', versions: ['2.4'], reason: 'fills', strategies: [] }]);
+  });
+
+  it('is empty exactly when the combo key is Unknown', () => {
+    const quiet = { strategies: [strategy('URGO', '4.5', { enabled: false, realized: 0 })] };
+    expect(comboKeyFromDay(quiet, [], { basis: 'traded' }).key).toBe('Unknown');
+    expect(dayAlgoRows(quiet, [], { basis: 'traded' })).toEqual([]);
+  });
+
+  it('spells an element key the one way, so a row read from the grid lines up with it', () => {
+    expect(elementKeyOf('OGX_PF', '2.4', 'version')).toBe('OGX_PF 2.4');
+    expect(elementKeyOf('OGX_PF', '2.4', 'family')).toBe('OGX_PF');
+    expect(elementKeyOf('OGX_PF', '', 'version')).toBe('OGX_PF');
+  });
+});
+
+describe('fundedAccountDays', () => {
+  it('yields the population the combo table counts, in the window, with the day figure and the account id', () => {
+    const mine = client({ days: [{ date: june(1), pnl: 100 }, { date: june(2), pnl: -50 }, { date: june(3), pnl: 0 }] });
+    const perf = buildComboPerformance([mine], { window: { from: june(1), to: june(2) } });
+    const walked = [...fundedAccountDays([mine], { from: june(1), to: june(2) })];
+    expect(walked.map((d) => d.date)).toEqual([june(1), june(2)]);
+    expect(walked.map((d) => d.pnl)).toEqual([100, -50]);
+    expect(walked[0].accountId).toBe('c1::acc1');
+    expect(walked[0].isFailed).toBe(false);
+    // The walk and the table it feeds agree on the count by construction.
+    expect(walked).toHaveLength(perf.population.fundedDays);
+  });
+
+  it('leaves out an account that is not funded, and a Failed one only when asked', () => {
+    const evaluation = client({ accountType: 'Evaluation - Standard', days: [{ date: june(1), pnl: 10 }] });
+    expect([...fundedAccountDays([evaluation], {})]).toEqual([]);
+
+    const failed = client({ status: 'Failed', days: [{ date: june(1), pnl: -10 }] });
+    expect([...fundedAccountDays([failed], {})]).toHaveLength(1);
+    expect([...fundedAccountDays([failed], {})][0].isFailed).toBe(true);
+    expect([...fundedAccountDays([failed], { includeFailed: false })]).toEqual([]);
   });
 });
 

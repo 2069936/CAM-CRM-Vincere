@@ -313,6 +313,37 @@ export function measuredPnl(strategy) {
 }
 
 /**
+ * WHAT A SWITCHED-OFF ROW'S ZERO MEANS, AND IT IS NOT "MADE NOTHING".
+ *
+ * 455 of the 456 all-disabled account-days on this book carry `realized = 0` on
+ * every row while the account itself moved on 271 of them
+ * (`docs/stack-playbook-spec.md` §2.1). The grid zeroes a row it has switched
+ * off; it does not measure it. Folding that 0 in as a measurement would put
+ * hundreds of false flat days into the denominator of every mean and drag every
+ * algorithm toward zero under a column headed "measured P&L".
+ *
+ * So a row attributed only because the fills name it is MEASURED only when
+ * something actually measured it: a derived figure (which comes from those
+ * fills), or a non-zero realized the grid reported anyway. An enabled row is
+ * believed on its own zero, because the grid was still watching it.
+ *
+ * Returns the figure, or null for "nothing measured this row", which is a
+ * different statement from $0 and must never be rounded into one.
+ *
+ * Exported because algorithmTemperature.js decides whether an account day can be
+ * PARTITIONED on exactly this question, and the answer has to be the same one
+ * this ranking already gives or the two panels disagree about which days are
+ * measured while both print the phrase.
+ */
+export function measuredOnAccountDay(strategy) {
+  const reported = measuredPnl(strategy);
+  if (strategy?.enabled === true) return reported;
+  if (measuredSource(strategy) === 'derived') return reported;
+  if (reported != null && reported !== 0) return reported;
+  return null;
+}
+
+/**
  * The configuration a strategy row is running, as this desk identifies one.
  *
  * VERSION PLUS THE PARAMETER IDENTITY, AND SIZING IS NOT IN IT.
@@ -633,26 +664,13 @@ function collectObservations(clients, { throughDate, fromDate = '', basis = 'tra
             if (!strategyRan(strategy, filledFamilies)) continue;
           } else if (!enabledHere) continue;
           const algo = strategy.strategyFamily || strategy.strategyName || 'Unknown';
-          const reported = measuredPnl(strategy);
-          // WHAT A SWITCHED-OFF ROW'S ZERO MEANS, and it is not "made nothing".
-          //
-          // 455 of the 456 all-disabled account-days on this book carry
-          // `realized = 0` on every row while the account itself moved on 271 of
-          // them (`docs/stack-playbook-spec.md` §2.1). The grid zeroes a row it
-          // has switched off; it does not measure it. Folding that 0 in as a
-          // measurement would put hundreds of false flat days into the
-          // denominator of every mean and drag every algorithm toward zero
-          // under a column headed "measured P&L" — the same mislabel one layer
-          // down. So a row attributed only because the fills name it is
-          // MEASURED only when something actually measured it: a derived figure
-          // (which comes from those fills), or a non-zero realized the grid
-          // reported anyway. Otherwise it is an account-day it ran on and no
-          // money, which `finishStats` counts in `unmeasuredAccountDays`.
-          const pnl = (enabledHere
-            || measuredSource(strategy) === 'derived'
-            || (reported != null && reported !== 0))
-            ? reported
-            : null;
+          // A row attributed only because the fills name it is MEASURED only
+          // when something actually measured it; a switched-off row's zero is
+          // not a measurement. `measuredOnAccountDay` owns that rule and states
+          // the count behind it. Otherwise it is an account-day the algorithm
+          // ran on and no money, which `finishStats` counts in
+          // `unmeasuredAccountDays`.
+          const pnl = measuredOnAccountDay(strategy);
           const config = configurationOf(strategy);
           const familyEntry = perFamily.get(algo) || emptyEntry();
           foldStrategy(familyEntry, strategy, pnl);

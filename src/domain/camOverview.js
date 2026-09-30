@@ -119,7 +119,35 @@ export function buildCamOverview(clients = []) {
         avgAccountWeeklyPnl: average(weeklyValues),
       };
     })
-    .sort((a, b) => Math.abs(b.totalRealized) - Math.abs(a.totalRealized));
+    /* THE THIRD COPY OF THE ORDERING DEFECT, ON THE SCREEN A CAM LANDS ON.
+     *
+     * This sorted by `Math.abs(totalRealized)`: the size of the move with its
+     * direction thrown away, so the biggest mover took the top row whichever
+     * way it moved. It is the same comparator the commit under this one
+     * replaced in `buildClientOverview` (App.jsx), and the worst of the three
+     * places it lived, because `setPlatformView("cam")` opens on this screen:
+     * the "Algorithm rollup" table is the FIRST algorithm list a CAM sees on
+     * login, not one behind a tab.
+     *
+     * On the stored book it read, top to bottom:
+     *
+     *   Bullet Bot  -$18,590
+     *   RBO          -$7,856
+     *   SYFY         -$3,890
+     *   B2X          -$2,372
+     *   OGX_PF         -$848
+     *   ARPD_PF        +$434
+     *
+     * Both of the book's winning rows sat under five losers, and the reader
+     * scanning a ranking top-down met the worst of the desk first.
+     *
+     * Now descending by the figure the "Total daily" column prints, ties broken
+     * by key so two flat algorithms cannot swap places between renders: a list
+     * read as a ranking is one where jitter reads as a change. The key rather
+     * than the name because these rows are `algorithm + version`, so two
+     * versions of one family tie on the name and would still be unordered.
+     */
+    .sort((a, b) => b.totalRealized - a.totalRealized || a.key.localeCompare(b.key));
 
   const deviationFlags = algorithms.flatMap((group) => {
     if (group.instances < 3) return [];

@@ -8903,7 +8903,30 @@ function ClientOverview({
         <div className="panel">
           <div className="panel-heading">
             <h3>Algorithm temperature</h3>
-            <span className="badge muted">Last 3 closes</span>
+            {/* THE UNIT THIS FIGURE IS ACTUALLY IN.
+
+                The badge said "Last 3 closes". `buildClientOverview` builds
+                `lastThree` by pushing one contribution per (snapshot, strategy)
+                PAIR as it walks the client's whole history, so an element is one
+                algorithm on one account on one close - an account row, not a
+                close. A client running one family across four accounts fills all
+                three slots inside a SINGLE close, and the badge called that
+                three closes.
+
+                Only the label moves here. The arithmetic is untouched and pinned
+                by src/algorithmTemperatureOrder.test.js; the unit is pinned by
+                src/clientAlgorithmTemperatureUnit.test.js, which renders three
+                account rows inside one close and reads the figure back.
+
+                The desk-wide panel in the Stack Playbook answers the same
+                question in the unit this one cannot: `algorithmTemperature.js`
+                sums the last three TRADING DATES an algorithm was credited on
+                and prints those dates in the row. The two panels disagree for
+                that reason, and a CAM comparing them now has both units on
+                screen instead of one wrong one. */}
+            <span className="badge muted">
+              Last 3 account rows per algorithm, not 3 closes
+            </span>
           </div>
           <div className="strategy-rank-list">
             {overview.algorithms.map((algorithm) => (
@@ -16877,6 +16900,27 @@ export default function App() {
                         classifications={strategyClassifications}
                         onClassify={handleClassifyStrategy}
                         logAlgoHistory={logAlgoHistory}
+                        /* WHOSE BOOK `allClients` IS. `state.clients` is
+                           scoped by camScopeFor(session) here and by row level
+                           security in the database since step 52 (fde9a46),
+                           which measured a CAM named Peter seeing 36 clients
+                           of 212. Every count on that screen is a count of
+                           whatever survived both, under a heading reading
+                           "Team Algo Performance", and the component had no
+                           way to know it. `camScopeFor` is the same test the
+                           loaders use, so a CAM whose session names no profile
+                           reads as the wider book on the screen exactly as it
+                           does in the queries. No desk total travels with it:
+                           RLS removes the other clients before this browser
+                           counts anything, so there is none to send. */
+                        scope={{
+                          kind: camScopeFor(session) ? "cam" : "desk",
+                          camName:
+                            currentCamProfile?.name ||
+                            session?.displayName ||
+                            session?.username ||
+                            "",
+                        }}
                       />
                     ) : null}
                     {["Review", "Evaluations", "Funded", "Cash", "Simulation"].includes(

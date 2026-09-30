@@ -48,6 +48,7 @@ export const localSnapshotTests = [
   "src/domain/accountTypeAlgorithm.book.test.js",
   "src/domain/algoContribution.book.test.js",
   "src/domain/algorithmRanking.book.test.js",
+  "src/domain/algorithmTemperature.book.test.js",
   "src/domain/camFlagQueue.book.test.js",
   "src/domain/camOverview.book.test.js",
   "src/domain/clientExportPlan.book.test.js",

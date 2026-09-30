@@ -17,10 +17,12 @@ import {
   MIN_DAYS,
   NOTE_NO_GATE,
 } from '../domain/comboPerformance';
+import { buildAlgorithmTemperature } from '../domain/algorithmTemperature';
 import BulletBotDeskPanel from './BulletBotDeskPanel';
 import { buildRiskScalingCurve, estimateMaxSafeMultiplier, parseComboRisk } from '../domain/riskScaling';
 import AccountHistoryChart from './AccountHistoryChart';
 import AlgoContributionPanel from './AlgoContributionPanel';
+import AlgorithmTemperaturePanel from './AlgorithmTemperaturePanel';
 import { fillsLoadedAcross } from '../domain/closeLoadState';
 
 const ALGO_STACKS = ['', 'URGO', 'IFSP', 'URGO + IFSP', 'URGO x2', 'IFSP x2', 'Custom'];
@@ -43,6 +45,10 @@ function fmt(n) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(n || 0));
 }
 const signed = (n) => `${Number(n || 0) >= 0 ? '+' : ''}${fmt(n)}`;
+// "1 accounts" is the kind of thing a client-facing caption cannot print, and
+// every count below runs through it. Same helper, same signature, as
+// AlgorithmTemperaturePanel.jsx's.
+const plural = (n, one, many) => `${Number(n || 0)} ${Number(n || 0) === 1 ? one : many}`;
 const pct = (ratio) => (ratio == null ? 'n/a' : `${Math.round(ratio * 100)}%`);
 
 function mergeRegCi(importAccounts, clientRegistry) {
@@ -185,7 +191,45 @@ function IncomeProjection({ currentFunded, bookMonthly }) {
   );
 }
 
-export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], hiddenClientCount = 0, classifications = [], onClassify, logAlgoHistory = [] }) {
+/* WHOSE BOOK THIS SCREEN IS, IN WORDS THAT ARE TRUE FOR BOTH ROLES.
+ *
+ * `allClients` is `state.clients`, which is scoped twice over: by
+ * `camScopeFor(session)` in the browser, and since step 52 (fde9a46) by row
+ * level security in the database. That commit measured a CAM named Peter
+ * seeing 36 clients of 212 and 240 accounts of 1,557. Every count on this
+ * screen is therefore a count of ONE CAM's book on seven of ten logins, under
+ * a heading reading "Team Algo Performance" and a module that calls its own
+ * figures desk wide.
+ *
+ * `hiddenClientCount` cannot rescue it. RLS drops the other clients before the
+ * browser counts anything, so the shortfall is not merely undisclosed, it is
+ * unmeasurable here: this component can say how many clients it HAS and who
+ * they belong to, and it must not claim a desk total it was never sent.
+ *
+ * `scope` carries the two facts App.jsx can answer from `session`: the role
+ * (`camScopeFor` is the same test, so a CAM with no profile reads as the wider
+ * book, exactly as the loaders treat it) and the name to put on it. Shaped like
+ * `buildDeskPeriodReport`'s scope block so the two screens say it the same way,
+ * minus `deskClientCount`, which that report is handed and this one is not.
+ */
+function scopeWordsFor(scope, clientCount) {
+  const clients = `${clientCount} client${clientCount === 1 ? '' : 's'}`;
+  if (scope?.kind !== 'cam') {
+    // Not "a Manager sees everything": this branch is also the login whose
+    // session names no CAM profile and the local snapshot shell, and both of
+    // those load whatever the database hands them too. What is true of all
+    // three is that nothing narrowed the list to one CAM.
+    return `This login is not scoped to one CAM: it loads every client the database will hand `
+      + `it, ${clients} here, so these are desk figures.`;
+  }
+  const owner = scope.camName || 'you';
+  return `Your book, not the desk: the ${clients} assigned to ${owner}. Another CAM's clients are `
+    + 'removed by the database before this browser counts anything, so the rest of the desk is '
+    + 'not missing from these figures, it was never in them, and nothing on this screen can say '
+    + 'how large it is.';
+}
+
+export default function StackPlaybook({ client, dailyImport, onUpdateAccount, allClients = [], hiddenClientCount = 0, classifications = [], onClassify, logAlgoHistory = [], scope = null }) {
   const registryCi = mergeRegCi(dailyImport?.accounts, client?.accountRegistry);
   const snapshots = dailyImport?.snapshots || [];
 
@@ -210,7 +254,29 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
   const [windowPreset, setWindowPreset] = useState(30);
   const [windowFrom, setWindowFrom] = useState('');
   const [windowTo, setWindowTo] = useState('');
-  const [level, setLevel] = useState('version');
+  /* FAMILY ON A COLD OPEN, AND ONE TOGGLE THAT MOVES BOTH PANELS.
+   *
+   * This opened at 'version', so the first rows of the screen read `URGO 4.5`,
+   * `OGX_PF 2.4`, `G4M 3.4` — the fragmentation Pedro asked to be rid of ("lo
+   * separa por esas combinaciones raras, eso no funciona asi"), under a new
+   * heading. `algorithmTemperature.DEFAULT_OPTIONS` says family and its comment
+   * says why: this panel's subject is the algorithm the CAM names out loud.
+   *
+   * The state stays SHARED rather than split in two. A second grouping control
+   * on one screen is how a reader ends up comparing family rows above against
+   * version rows below and calling the difference a result, which is the same
+   * reason there is one window picker and not two. So the temperature panel
+   * wins the default — it leads the screen and family is the grouping it exists
+   * to provide — and the combo table opens at family with it. `comboPerformance`
+   * keeps its own 'version' default for every other caller; what changed is
+   * this screen's opening position, not that module's.
+   *
+   * On the stored book the two levels give the same 14 rows, because each
+   * family carries one version. It stops being cosmetic the first time two
+   * versions of URGO run in one window, which is exactly when the old default
+   * would have split them again.
+   */
+  const [level, setLevel] = useState('family');
   const [basis, setBasis] = useState('traded');
   const keying = { basis, level };
 
@@ -262,6 +328,40 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     [teamClients, basis, level, windowPreset, windowFrom, windowTo, hiddenClientCount],
   );
   const comboPerf = perf.rows;
+  // The per algorithm panel above the combo table, fed from the SAME
+  // teamClients, the same window, the same grouping and the same attribution
+  // as `perf`. Not its own copy of any of them: one screen carrying two window
+  // pickers is how a reader ends up comparing a 7 day panel against a 30 day
+  // one and calling the difference a result. `resolveWindow` is the same
+  // function behind both, so identical inputs resolve to identical from/to.
+  //
+  // `level` is passed through rather than left at this module's own default of
+  // 'family'. The default is the right one for a cold open, but the toggle is
+  // the user saying which grouping this screen is on, and a panel that ignores
+  // it would print `OGX 2.4` rows in the table below while printing `OGX` rows
+  // above it under one heading.
+  //
+  // Memoized, and for the reason `perf` is: this component re-renders on every
+  // keystroke of a change note and every income figure, and this build walks
+  // the same account days that one does.
+  //
+  // `hiddenClientCount` travels with the build, exactly as it does for `perf`
+  // eleven lines above. It was omitted, so `population.hiddenClients` was a
+  // hardcoded 0 on the panel that sits FIRST on the screen while the combo
+  // caption eighty lines below disclosed 40 inactive clients excluded from the
+  // very same walk. One screen, two panels over one population, one of them
+  // disclosing the exclusion and the other silently taking it.
+  const algoTemperature = useMemo(
+    () => buildAlgorithmTemperature(teamClients, {
+      basis,
+      level,
+      window: windowPreset === 'custom'
+        ? { preset: 'custom', from: windowFrom || null, to: windowTo || null }
+        : { preset: windowPreset },
+      hiddenClientCount,
+    }),
+    [teamClients, basis, level, windowPreset, windowFrom, windowTo, hiddenClientCount],
+  );
   const clientInsights = useMemo(
     () => buildClientComboInsights(client, dailyImport, perf, { basis, level }),
     [client, dailyImport, perf, basis, level],
@@ -337,6 +437,25 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     }
     setWindowPreset(preset);
   }
+
+  // The control labels, read off the same arrays the buttons are rendered from,
+  // so the sentence the temperature panel prints about the window and grouping
+  // it is on cannot drift from the controls that set them.
+  const levelLabel = (LEVELS.find(([value]) => value === level) || ['', level])[1];
+  const basisLabel = (BASES.find(([value]) => value === basis) || ['', basis])[1];
+  // The temperature panel's own population, read off its own build. Both builds
+  // walk the SAME funded account days, so `fundedAccounts` and `fundedClients`
+  // agree between them by construction and the caption below says so with one
+  // pair of numbers rather than two.
+  const tempPopulation = algoTemperature?.population || null;
+  const scopeWords = scopeWordsFor(scope, teamClients.length);
+  // The same fact in four words, for the two headings. A heading reading "Team
+  // Algo Performance" over one CAM's 36 clients is the word `team` doing work
+  // it has no right to, and the sentence that corrects it is three paragraphs
+  // away; this sits in the heading itself.
+  const scopeBadge = scope?.kind === 'cam'
+    ? `Your book · ${teamClients.length} client${teamClients.length === 1 ? '' : 's'}`
+    : `Every client loaded · ${teamClients.length}`;
 
   return (
     <div className="stack-playbook">
@@ -629,11 +748,113 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
         </section>
       ) : null}
 
+      {/* ── Algorithm temperature ──────────────────────────── */}
+      {/*
+        First on this screen, and above the combo table, because "which
+        algorithm is hot right now" is the question the desk actually asks out
+        loud. The combo table answers a different one and keeps its place
+        below.
+
+        Rendered `bare` inside this section so the sentence naming the shared
+        controls sits in the same panel frame as the table it applies to. The
+        panel owns its own selection: nothing else on this screen reads which
+        algorithms are drawn, so lifting that state would be state for its own
+        sake.
+
+        `fillsLoaded` is gated on the basis, exactly the way the combo table
+        below gates its own copy of the same sentence. Under "Enabled at
+        export" nothing reads a fill, so "these figures move when trade history
+        finishes loading" would be false there, and a false caveat costs more
+        than a missing one.
+      */}
+      <section className="panel algo-temperature-section">
+        <AlgorithmTemperaturePanel
+          bare
+          result={algoTemperature}
+          fillsLoaded={basis !== 'traded' || fillsLoaded}
+          scopeNote={scopeBadge}
+        />
+        {/* WHOSE BOOK, WHICH CONTROLS, AND WHY THE TWO BADGES DIFFER.
+
+            This used to carry no count at all, on the reasoning that a third
+            number sourced from one build and sitting under the other is how a
+            reader gets handed a contradiction. The contradiction arrived
+            anyway, because the two badges carry counts of their own: on the
+            stored book the panel above read 113 accounts and 37 clients while
+            the combo badge below read 149 and 44, with this sentence between
+            them saying the two panels "are never measuring two different
+            books". Thirty six accounts and seven clients vanished across one
+            screen with nothing accounting for them, and the likeliest reading
+            was that the new panel had dropped data. It had not; it had refused
+            to attribute it.
+
+            The fix is not to remove the numbers, it is to name the one figure
+            both builds agree on. They walk the SAME funded account days, so
+            `fundedAccounts` and `fundedClients` are identical between them by
+            construction; what differs is which of those days each one will
+            credit. Stating the shared denominator once and both acceptance
+            rules beside it turns the gap from an unexplained loss into the
+            measurement it is.
+
+            `hiddenClients` and `failedAccountDays` are read off the temperature
+            build now that `hiddenClientCount` reaches it, and they are the same
+            two figures the combo caption below prints, off the same inputs. */}
+        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          {scopeWords}
+        </p>
+        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          Window {perfWindow.from} to {perfWindow.to}. Grouping: {levelLabel}. Attribution: {basisLabel}.
+          All three are the Team Algo Performance controls below, and both panels read them over the
+          same clients and the same closes.
+          {tempPopulation ? (
+            ' Both walk the same funded population, '
+            + `${plural(tempPopulation.fundedAccounts, 'account', 'accounts')} and `
+            + `${plural(tempPopulation.fundedClients, 'client', 'clients')} in this window, and `
+            + 'credit different parts of it: this panel takes an account day only when the day '
+            + 'can be given to a single algorithm '
+            + `(${plural(tempPopulation.accounts, 'account', 'accounts')}, `
+            + `${plural(tempPopulation.clients, 'client', 'clients')}), and the table below takes `
+            + 'it whenever the whole stack that ran is nameable '
+            + `(${plural(population.accounts, 'account', 'accounts')}, `
+            + `${plural(population.clients, 'client', 'clients')}). The gap between the two badges `
+            + 'is that rule and nothing else: the same book goes into both, and the second '
+            + 'rule accepts more of it, '
+            + `${plural(population.includedDays, 'account day', 'account days')} against `
+            + `${plural(tempPopulation.includedDays, 'account day', 'account days')}. `
+            + 'Every account day this panel credits is credited by the table too. The days '
+            + 'the table has and this panel does not are the ones named above as credited '
+            + 'to nobody.'
+          ) : ''}
+          {tempPopulation ? (
+            ` ${plural(tempPopulation.hiddenClients, 'inactive client is', 'inactive clients are')} `
+            + 'loaded into neither panel. Accounts now marked Failed are kept in both, and they '
+            + `carry ${tempPopulation.failedAccountDays} of the account days credited here against `
+            + `${population.failedAccountDays} of the account days the table below attributes.`
+          ) : ''}
+        </p>
+      </section>
+
       {/* ── Team Intel ─────────────────────────────────────── */}
       <section className="panel">
         <div className="panel-heading playbook-heading">
           <h3>Team Algo Performance</h3>
-          <span className="badge muted">{comboPerf.length} combos · {population.accounts} accounts · {population.clients} clients</span>
+          {/* The heading is a proper noun on this screen and in three modules'
+              headers, so it stays; what it cannot go on doing is implying a
+              desk. For a CAM this table is their own clients and nothing else,
+              and the badge says so beside the word `Team` rather than four
+              paragraphs down. */}
+          <span className="badge muted">{scopeBadge}</span>
+          {/* The same `N of M` shape the temperature badge above carries, and
+              for the same reason: these two counted only the accounts and
+              clients that ATTRIBUTED, with nothing naming them, so a reader
+              comparing the two badges was comparing two subsets of one
+              population against each other with neither population on screen.
+              `fundedAccounts` and `fundedClients` are the same pair the panel
+              above prints, because both builds walk the same funded days. */}
+          <span className="badge muted">
+            {comboPerf.length} combos · {population.accounts} of {population.fundedAccounts} accounts
+            {' · '}{population.clients} of {population.fundedClients} clients attributed
+          </span>
           <select
             className="window-select"
             value={String(windowPreset)}
@@ -678,13 +899,21 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
         <p className="muted playbook-basis" style={{ fontSize: 13, marginBottom: 8 }}>
           Client account results while the combo was running. Not the algorithm's own track record. Not comparable to My Futures Book.
         </p>
+        {/* Two panels, two questions, and a reader with both open has to know
+            which is which. This row measures a whole account day once, keyed by
+            the stack that ran on it; the panel above measures one algorithm at
+            a time and credits no account day to two of them. Neither figure is
+            derivable from the other. */}
+        <p className="muted playbook-basis" style={{ fontSize: 13, marginBottom: 8 }}>
+          A row here is a COMBINATION: what a whole client account day was worth while that stack was running, which is the question the Algorithm temperature panel above does not answer.
+        </p>
         {comboPerf.length === 0 ? (
           <p className="muted" style={{ padding: '12px 0' }}>No funded account day in this window carries an attributable algo. Widen the window or upload daily closes to populate.</p>
         ) : (
           <>
             <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
               <Info size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-              Client account results while the combo was running. {population.includedDays} of {population.fundedDays} funded account days in range; {population.unknownDays} days with no algo attributable ({fmt(population.unknownPnl)}); {population.failedAccountDays} days from accounts now marked Failed are included; {population.hiddenClients} inactive clients are not loaded. P&amp;L is realized net of commission where the grid reported it, gross otherwise. One account day is one observation, unweighted. Not the algorithm's own track record. Not comparable to My Futures Book.
+              Client account results while the combo was running. {population.includedDays} of {population.fundedDays} funded account days in range; {population.unknownDays} days with no algo attributable ({fmt(population.unknownPnl)}); {population.failedAccountDays} days from accounts now marked Failed are included; {population.hiddenClients} inactive clients are not loaded. P&amp;L is realized net of commission where the grid reported it, gross otherwise. One account day is one observation, unweighted. Not the algorithm's own track record. Not comparable to My Futures Book. {scopeWords}
             </p>
             <p className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
               A row is marked Low sample under {MIN_DAYS} account days or under {MIN_ACCOUNTS} accounts, and a Low sample row is never marked Best.

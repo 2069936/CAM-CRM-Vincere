@@ -114,4 +114,38 @@ describe('the real book (public/local-snapshot.json, closes 2026-07-13 → 2026-
     // desk-wide list and no CAM's page is a substitute for it.
     expect(new Set(desk.deviationFlags.map((flag) => byClient[flag.clientId])).size).toBe(8);
   });
+
+  it('ranks the rollup by the figure it prints, which on this book buried both winners', () => {
+    /* The "Algorithm rollup" table renders `overview.algorithms` in order, and
+     * `setPlatformView("cam")` opens on that screen: it is the first algorithm
+     * list of a CAM's session. Sorted by `Math.abs(totalRealized)` this book
+     * read Bullet Bot -$18,590, RBO -$7,856, SYFY -$3,890, B2X -$2,372,
+     * OGX_PF -$848 and only then ARPD_PF at +$434, with RBO_PF at +$294 in
+     * eighth: every winning row under five losers, on a list a reader takes
+     * top-down.
+     *
+     * The synthetic pins are in src/camOverviewAlgorithmOrder.test.js. This one
+     * exists because the magnitude order and the signed order agree on most
+     * fixtures and disagree on every row of the real book. */
+    expect(desk.algorithms.map((group) => group.key)).toEqual([
+      'ARPD_PF 1.1', 'RBO_PF 1.8', 'IFSP_PF 1.1', 'URGO 4.5',
+      'DJDR 1.1', 'FSA 2.2', 'G4M 3.4', 'MST 3.3',
+      'ARPD 1.1', 'OGX 2.4', 'IFSP 1.1', 'OGX_PF 2.4',
+      'B2X 2.5', 'SYFY 1.4', 'RBO 1.8', 'Bullet Bot 1.1',
+    ]);
+
+    // The four rows the old comparator put on top, and where they actually
+    // belong: last, in the order they lost.
+    expect(desk.algorithms.slice(-4).map((group) => Math.round(group.totalRealized)))
+      .toEqual([-2372, -3890, -7856, -18590]);
+    // Both of the book's winners are above every loser, and the top row is the
+    // one the temperature panel also ranks first.
+    expect(Math.round(desk.algorithms[0].totalRealized)).toBe(434);
+    const totals = desk.algorithms.map((group) => group.totalRealized);
+    expect(totals).toEqual([...totals].sort((x, y) => y - x));
+    // The four flat rows are ordered by key, not by arrival: nothing on this
+    // book may move between renders.
+    expect(desk.algorithms.filter((group) => group.totalRealized === 0).map((group) => group.key))
+      .toEqual(['DJDR 1.1', 'FSA 2.2', 'G4M 3.4', 'MST 3.3']);
+  });
 });
