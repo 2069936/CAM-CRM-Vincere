@@ -71,6 +71,33 @@ export function readCatalog(file) {
   return rows;
 }
 
+const text = (value) => {
+  const trimmed = String(value ?? '').trim();
+  return trimmed ? trimmed : null;
+};
+
+/**
+ * Where the export says it came from.
+ *
+ * These are DeepExportRunner's own names, and the nesting is its own too:
+ * `createdAt` sits at the top level of the manifest, `machineId` under
+ * `source`. This read used to ask for `manifest.machineId` and
+ * `manifest.createdAtUtc`. No agent has ever written either - `machineId`
+ * has been under `source` since the Deep Export landed in agent 1.0.5, and
+ * `createdAtUtc` was never a field at all - so both came back undefined,
+ * every imported row stored null for its machine and its export time, and
+ * nothing on screen said so.
+ *
+ * scripts/import_strategy_catalog.test.js builds its manifest out of the names
+ * it reads from DeepExportRunner.cs, so renaming a field on either side of
+ * this fails there rather than going quiet again.
+ */
+export function manifestSource(manifest) {
+  const root = manifest && typeof manifest === 'object' ? manifest : {};
+  const source = root.source && typeof root.source === 'object' ? root.source : {};
+  return { machineId: text(source.machineId), exportedAt: text(root.createdAt) };
+}
+
 /**
  * A catalogue line as a database row.
  *
@@ -81,10 +108,6 @@ export function readCatalog(file) {
 export function toRow(line, machineId, exportedAt) {
   const sizes = Array.isArray(line.sizes) ? line.sizes : [];
   const targets = Array.isArray(line.targetTicks) ? line.targetTicks : [];
-  const text = (value) => {
-    const trimmed = String(value ?? '').trim();
-    return trimmed ? trimmed : null;
-  };
   const count = (value) => Math.max(0, Math.round(Number(value) || 0));
   return {
     family: String(line.family || '').trim(),
@@ -140,12 +163,17 @@ async function main() {
   const manifestFile = path.join(options.exportDir, 'manifest.json');
   if (fs.existsSync(manifestFile)) {
     try {
-      const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-      machineId = manifest.machineId || manifest.machine_id || null;
-      exportedAt = manifest.createdAtUtc || manifest.created_at || null;
+      ({ machineId, exportedAt } = manifestSource(JSON.parse(fs.readFileSync(manifestFile, 'utf8'))));
     } catch {
       console.warn('manifest.json is unreadable; importing without a source machine.');
     }
+  }
+  if (!machineId || !exportedAt) {
+    // Said out loud, because the silence is the whole reason this went unseen:
+    // the rows import fine either way, and a null source looks like every
+    // other null until somebody needs to know which machine disagreed.
+    const absent = [!machineId && 'source.machineId', !exportedAt && 'createdAt'].filter(Boolean).join(' and no ');
+    console.warn(`WARNING: no ${absent} in the manifest; these rows will not record where they came from.`);
   }
 
   const lines = readCatalog(catalogFile);
