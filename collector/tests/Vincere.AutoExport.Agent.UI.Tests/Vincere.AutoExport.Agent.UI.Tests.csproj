@@ -30,6 +30,11 @@
          which is how CI caught this one. -->
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ReleaseCheck.cs" Link="ReleaseCheck.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SecretRedactor.cs" Link="DeepExport/SecretRedactor.cs" />
+    <!-- The identity rule for the exported config. Compiled rather than
+         referenced so its internal ProjectWith is reachable: there is no
+         secret-named field on its keep list, so the only way to watch that guard
+         fire is to hand the same code path a policy that has one. -->
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AgentConfigProjection.cs" Link="DeepExport/AgentConfigProjection.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/TraceRedactor.cs" Link="DeepExport/TraceRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportSources.cs" Link="DeepExport/DeepExportSources.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/StrategyUserdataRedactor.cs" Link="DeepExport/StrategyUserdataRedactor.cs" />

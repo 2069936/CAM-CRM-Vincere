@@ -26,10 +26,27 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     backup API and everything else is a file copy at BelowNormal priority.
  *   - A source that fails is a warning in the manifest, not an abort. The only
  *     abort is being unable to write the ZIP itself.
- *   - Nothing that authenticates leaves the machine. FOUR rules, because there
- *     are four kinds of file, and each one is a single definition applied in the
- *     copy itself rather than in a tidying pass:
- *       SecretRedactor                  the agent's JSON config, by key name.
+ *   - Nothing that authenticates leaves the machine, and nothing says WHO it is
+ *     about. Those are TWO QUESTIONS, and the second one is new here: it was
+ *     never asked, so config/agent.config.redacted.json carried the client's
+ *     name on both real exports with the word redacted in its filename. FIVE
+ *     rules now, each a single definition applied in the copy itself rather than
+ *     in a tidying pass:
+ *       AgentConfigProjection           the agent's JSON config - an ALLOWLIST,
+ *                                       emitting only the keys it names, and
+ *                                       naming in the file whatever it did not.
+ *                                       It answers the identity question; its
+ *                                       header says why widening the secret
+ *                                       list instead would have been this
+ *                                       repository's third go at conflating the
+ *                                       two.
+ *       SecretRedactor                  "named like a credential", by key name.
+ *                                       Now a PREDICATE with three callers
+ *                                       rather than a pass of its own: the
+ *                                       config copy it used to perform is the
+ *                                       allowlist's job, and an allowlist that
+ *                                       emits ten vetted keys has nothing left
+ *                                       for a denylist to catch.
  *       TraceRedactor                   the trace and log text, by measured
  *                                       line shape. Its header says why one
  *                                       rule could not do both jobs.
@@ -41,8 +58,10 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *                                       or BLOB cell of the shipped database,
  *                                       in UTF-16LE or UTF-8, escaped or not.
  *                                       Applied by SqliteSnapshot.CopyRows.
- *     All four mask the value and keep the key, and leave an empty value empty,
+ *     All five mask the value and keep the key, and leave an empty value empty,
  *     so "never configured" and "configured and hidden" stay different facts.
+ *     The allowlist has one extra duty the other four do not: a key it does not
+ *     name is not in the file at all, so it says which keys those were.
  *   - THE PACKAGE IS NOT THEREBY "CLEAN", and no commit here should say so. It
  *     still carries the desk's declared geometry in attribution/catalog.jsonl
  *     and the live geometry in the Strategies blobs, both deliberately. It also
@@ -311,16 +330,28 @@ public sealed class DeepExportRunner
                 Report(source.Name);
             }
 
-            // 3. The agent's own configuration, with nothing that authenticates.
+            // 3. The agent's own configuration: nothing that authenticates, and
+            //    nothing that says WHO. Those are two questions and this is the
+            //    second of them, which is why it is a projection and not a wider
+            //    secret list. The file used to be copied through SecretRedactor,
+            //    a denylist over key names, so clientName - a person - walked
+            //    through it on both real exports while the filename said
+            //    redacted. AgentConfigProjection emits only keys it names, and
+            //    names in the file itself whatever it did not emit.
             if (!string.IsNullOrEmpty(agentConfigPath) && File.Exists(agentConfigPath))
             {
                 try
                 {
                     string raw = await File.ReadAllTextAsync(agentConfigPath, cancellationToken).ConfigureAwait(false);
+                    AgentConfigProjectionResult projected = AgentConfigProjection.Project(raw);
+                    // A configuration that would not parse is refused rather than
+                    // shipped, and the refusal is a warning so it reaches the
+                    // manifest instead of only the reader who opens the file.
+                    warnings.AddRange(projected.Warnings);
                     Directory.CreateDirectory(Path.Combine(staging, "config"));
                     await File.WriteAllTextAsync(
                         Path.Combine(staging, "config", "agent.config.redacted.json"),
-                        SecretRedactor.RedactJsonText(raw), cancellationToken).ConfigureAwait(false);
+                        projected.Json, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {

@@ -1,26 +1,30 @@
-using System;
 using System.Text.RegularExpressions;
-using Newtonsoft.Json.Linq;
 
 namespace Vincere.AutoExport.Agent.UI.DeepExport;
 
 /* ---------------------------------------------------------------------------
  * Nothing that opens a door leaves the machine.
  *
- * The export copies the agent's own configuration so an analyst can see how the
- * machine was set up: schedule, paths, versions. It must not copy what the
- * configuration uses to authenticate, because the ZIP is handed around over
- * Drive and Discord and read by people who have no business holding a device
- * credential.
- *
- * Keys are matched by NAME, case-insensitively, anywhere in the tree. A field
- * called "deviceToken" and one called "api_key" are both caught. The value is
- * replaced, never removed, so the analyst can still see that a credential was
- * configured, which is itself a fact worth knowing.
+ * Keys are matched by NAME, case-insensitively. A field called "deviceToken" and
+ * one called "api_key" are both caught. Every caller replaces the value and
+ * keeps the key, so the analyst can still see that a credential was configured,
+ * which is itself a fact worth knowing.
  *
  * The acceptance test is a grep over the unpacked ZIP for password|apikey|
  * token|secret that finds only "***". This is the code that has to make that
  * test pass, so the pattern here is deliberately broader than the test.
+ *
+ * THIS ANSWERS ONE QUESTION AND IT IS NOT THE ONLY ONE THE EXPORT HAS TO ASK.
+ * It used to perform the copy of the agent's config.json itself, and that was
+ * the wrong shape for that file: a denylist asks "is this key named like a
+ * credential?", clientName is not, so a person's name travelled in a file whose
+ * name says redacted. Widening the list to cover names would have been this
+ * repository's THIRD go at making one rule answer two questions - the trace
+ * already needed its own redactor for the same reason. The config file is now
+ * governed by AgentConfigProjection, an allowlist, which calls IsSecretKey
+ * about every key it is about to emit; see its header. So the JSON pass that
+ * used to live here is gone rather than kept as a second statement of a rule
+ * that no longer governs anything.
  *
  * `licen[sc]e` IS IN THE LIST NOW, AND ITS ABSENCE IS WHY A KEY TRAVELLED.
  * NinjaTrader's licence key is a device credential and it is named LicenseKey,
@@ -33,9 +37,10 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  * British one appears in prose and nothing stops a field using it.
  *
  * THIS PREDICATE IS THE SINGLE DEFINITION OF "NAMED LIKE A SECRET" and it now
- * has two callers: RedactJsonText below, for the agent's own config.json, and
- * StrategyUserdataRedactor, for a secret-named XML element inside a database
- * blob. Do not restate the list; add to it here.
+ * has three callers, none of which is a pass of its own: StrategyUserdataRedactor
+ * for a secret-named XML element inside a database blob, AgentConfigProjection
+ * for every key it is about to emit, and the suite. Do not restate the list; add
+ * to it here.
  * ------------------------------------------------------------------------- */
 public static class SecretRedactor
 {
@@ -46,51 +51,4 @@ public static class SecretRedactor
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool IsSecretKey(string key) => !string.IsNullOrEmpty(key) && SecretKey.IsMatch(key);
-
-    /// <summary>Redact every secret-named field in a JSON document, in place.</summary>
-    public static JToken Redact(JToken token)
-    {
-        if (token is JObject obj)
-        {
-            foreach (JProperty property in obj.Properties())
-            {
-                if (IsSecretKey(property.Name))
-                {
-                    // Only a value that was actually there is masked. A null or
-                    // empty credential stays as it was, so "never configured"
-                    // and "configured and hidden" remain distinguishable.
-                    if (property.Value.Type != JTokenType.Null
-                        && !(property.Value.Type == JTokenType.String && string.IsNullOrEmpty(property.Value.ToString())))
-                    {
-                        property.Value = Mask;
-                    }
-                }
-                else
-                {
-                    Redact(property.Value);
-                }
-            }
-        }
-        else if (token is JArray array)
-        {
-            foreach (JToken item in array) Redact(item);
-        }
-        return token;
-    }
-
-    /// <summary>Redact a JSON text. Text that is not JSON is returned masked whole rather than leaked.</summary>
-    public static string RedactJsonText(string json)
-    {
-        try
-        {
-            return Redact(JToken.Parse(json ?? string.Empty)).ToString(Newtonsoft.Json.Formatting.Indented);
-        }
-        catch (Newtonsoft.Json.JsonException)
-        {
-            // A configuration file that does not parse cannot be inspected for
-            // secrets, so none of it is exported. Losing the analyst a config
-            // dump is better than losing the desk a credential.
-            return "{ \"redacted\": \"configuration was not valid JSON and was withheld\" }";
-        }
-    }
 }
