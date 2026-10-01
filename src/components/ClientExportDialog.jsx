@@ -21,7 +21,10 @@ import { buildClientExportPlan, formatBytes, planExportBatches } from "../domain
  *
  * It is also where a pull too big for one response is split into parts. The
  * split is by measured bytes and it is shown BEFORE the download, because "this
- * arrives as three files" is a thing to agree to, not to discover.
+ * is read in three requests" is a thing to agree to, not to discover. The parts
+ * are a fact about the REQUESTS, not about the download: they come back as one
+ * zip (src/domain/clientExportPackage.js), so what is being agreed to here is a
+ * wait and a shape, not a pile of files to reassemble by hand.
  */
 
 const DEFAULT_RANGE_DAYS = 30;
@@ -298,8 +301,9 @@ export default function ClientExportDialog({
           {batchPlan && batchPlan.deliverable ? (
             <div className="export-dialog-preview">
               <strong>
-                Too big for one file. Arrives as {batchPlan.batchCount} parts of up to{" "}
-                {formatBytes(batchPlan.budgetBytes + batchPlan.fixedBytes)} each.
+                Too big for one request. Read in {batchPlan.batchCount} parts of up to{" "}
+                {formatBytes(batchPlan.budgetBytes + batchPlan.fixedBytes)} each, and
+                downloaded as one zip.
               </strong>
               <div className="export-dialog-rows">
                 {batchPlan.batches.map((part) => (
@@ -310,8 +314,8 @@ export default function ClientExportDialog({
                 ))}
               </div>
               <p className="muted">
-                Each file says which part it is and which clients are in it. An
-                analysis needs all {batchPlan.batchCount}.
+                Inside the zip each file says which part it is and which clients
+                are in it. An analysis needs all {batchPlan.batchCount}.
               </p>
             </div>
           ) : null}
@@ -355,7 +359,7 @@ export default function ClientExportDialog({
                 {downloaded.reduce((sum, payload) => sum + payload.totalRows, 0).toLocaleString()} rows for{" "}
                 {downloaded.reduce((sum, payload) => sum + payload.scope.includedClientCount, 0)} client
                 {downloaded.reduce((sum, payload) => sum + payload.scope.includedClientCount, 0) === 1 ? "" : "s"}
-                {downloaded.length > 1 ? ` in ${downloaded.length} files` : ""}
+                {downloaded.length > 1 ? ` in one zip of ${downloaded.length} parts` : ""}
               </strong>
               <div className="export-dialog-rows">
                 <span>
@@ -387,7 +391,8 @@ export default function ClientExportDialog({
               {result?.expectedParts && downloaded.length < result.expectedParts ? (
                 <p className="export-dialog-warning">
                   <TriangleAlert size={14} /> Only {downloaded.length} of {result.expectedParts} parts
-                  downloaded. What you have is incomplete — do not read it as the whole range.
+                  downloaded. The zip is named INCOMPLETE and says so inside — do not
+                  read it as the whole range.
                 </p>
               ) : null}
               {downloaded.some((payload) => payload.truncated) ? (
@@ -419,7 +424,7 @@ export default function ClientExportDialog({
                 ? `Exporting part ${progress.done + 1} of ${progress.total}...`
                 : "Exporting...")
               : (batchPlan && batchPlan.deliverable
-                ? `Download ${batchPlan.batchCount} files`
+                ? `Download zip (${batchPlan.batchCount} parts)`
                 : "Download JSON")}
           </button>
         </DialogFooter>
