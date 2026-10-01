@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- PLAIN net8.0, NOT net8.0-windows, AND THAT IS THE POINT OF THE PROJECT.
+         These ten files held the deep export inside the WPF Setup window, and
+         the service could not see them: Vincere.AutoExport.Agent references one
+         project, Contracts. A service asked to produce the package on request
+         needs the code one layer down, and this is that layer.
+
+         Nothing in here touches WPF. The only type in 2,540 lines that reads
+         like a UI dependency is IProgress<DeepExportProgress> on
+         DeepExportRunner.RunAsync, which is System.IProgress<T> in
+         System.Runtime; the UI-thread-capturing Progress<T> is constructed by
+         MainViewModel, outside this project, and a service passes its own or
+         null. The proof is older than this project: the test suite has been
+         compiling all ten files at net8.0 and running them off Windows since
+         they were written, by naming them one at a time in its csproj.
+
+         net8.0 rather than net8.0-windows because the suite is net8.0 and a
+         net8.0 project cannot reference a net8.0-windows one (NU1201). Had this
+         code moved into the service instead, those file-by-file links could
+         never have become a reference. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- NO <Version> HERE, LIKE NinjaTrader.Core AND Contracts. The two
+         executables declare one because they report it to the CRM; a library
+         that declared one would write that number into the lock files of every
+         project downstream of it, so a release bump would churn four files for
+         no reader. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AgentConfigProjection.ProjectWith is internal on purpose: the policy is
+         the Keep and Masked lists beside it and a caller does not get to supply
+         its own. The suite reaches it to prove the keep path really does consult
+         SecretRedactor - there is no secret-named field on Keep today, so the
+         only way to watch that guard fire is to hand the same code path a policy
+         that has one. It used to reach it by compiling the file; now that the
+         file is in an assembly, this is how. -->
+    <InternalsVisibleTo Include="Vincere.AutoExport.Agent.UI.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The attribution engine: which algorithm placed a trade, from the shape
+         of the trade. netstandard2.0, and deliberately free of any SQLite or
+         file dependency so it can be tested off Windows - this project is the
+         only place that touches the database and the template folder. -->
+    <ProjectReference Include="../Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
+    <!-- The deep export copies NinjaTrader's database through the SQLite
+         Online Backup API. Copying the file by hand while the platform holds
+         it open produces a snapshot whose pages disagree with each other. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Newtonsoft.Json" />
+  </ItemGroup>
+</Project>

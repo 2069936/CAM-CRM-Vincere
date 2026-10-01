@@ -161,6 +161,14 @@
           "Newtonsoft.Json": "[13.0.3, )"
         }
       },
+      "vincere.autoexport.deepexport": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Data.Sqlite": "[8.0.8, )",
+          "Newtonsoft.Json": "[13.0.3, )",
+          "Vincere.AutoExport.NinjaTrader.Core": "[1.0.0, )"
+        }
+      },
       "vincere.autoexport.ninjatrader.core": {
         "type": "Project",
         "dependencies": {

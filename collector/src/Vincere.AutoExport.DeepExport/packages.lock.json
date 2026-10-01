@@ -1,7 +1,17 @@
 {
   "version": 2,
   "dependencies": {
-    "net8.0-windows7.0": {
+    "net8.0": {
+      "Microsoft.Data.Sqlite": {
+        "type": "Direct",
+        "requested": "[8.0.8, )",
+        "resolved": "8.0.8",
+        "contentHash": "Ao+kD9lZpZvvvfLHMR4/UviFGXaWhQ9AVT4fYMl62XWgIPuVIhZqLysmDNiXbsz6Pb87iyyElX2xSfigzKNZNg==",
+        "dependencies": {
+          "Microsoft.Data.Sqlite.Core": "8.0.8",
+          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.6"
+        }
+      },
       "Newtonsoft.Json": {
         "type": "Direct",
         "requested": "[13.0.3, )",
@@ -57,37 +67,12 @@
           "Newtonsoft.Json": "[13.0.3, )"
         }
       },
-      "vincere.autoexport.deepexport": {
-        "type": "Project",
-        "dependencies": {
-          "Microsoft.Data.Sqlite": "[8.0.8, )",
-          "Newtonsoft.Json": "[13.0.3, )",
-          "Vincere.AutoExport.NinjaTrader.Core": "[1.0.0, )"
-        }
-      },
       "vincere.autoexport.ninjatrader.core": {
         "type": "Project",
         "dependencies": {
           "Newtonsoft.Json": "[13.0.3, )",
           "Vincere.AutoExport.Contracts": "[1.0.0, )"
         }
-      },
-      "Microsoft.Data.Sqlite": {
-        "type": "CentralTransitive",
-        "requested": "[8.0.8, )",
-        "resolved": "8.0.8",
-        "contentHash": "Ao+kD9lZpZvvvfLHMR4/UviFGXaWhQ9AVT4fYMl62XWgIPuVIhZqLysmDNiXbsz6Pb87iyyElX2xSfigzKNZNg==",
-        "dependencies": {
-          "Microsoft.Data.Sqlite.Core": "8.0.8",
-          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.6"
-        }
-      }
-    },
-    "net8.0-windows7.0/win-x64": {
-      "SQLitePCLRaw.lib.e_sqlite3": {
-        "type": "Transitive",
-        "resolved": "2.1.6",
-        "contentHash": "2ObJJLkIUIxRpOUlZNGuD4rICpBnrBR5anjyfUFQep4hMOIeqW+XGQYzrNmHSVz5xSWZ3klSbh7sFR6UyDj68Q=="
       }
     }
   }

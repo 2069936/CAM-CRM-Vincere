@@ -13,7 +13,11 @@ import { identityOf, manifestSource, readCatalog, sameGeometry, toRow, usable } 
 // which is not an export either.
 
 const SCRIPT = fileURLToPath(new URL('./import_strategy_catalog.mjs', import.meta.url));
-const RUNNER = fileURLToPath(new URL('../collector/src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs', import.meta.url));
+// The runner moved out of the WPF Setup project into its own library, so that
+// the Windows service could reach it. This was the only reference to the old
+// folder outside collector/, and nothing in the .NET build would have caught it:
+// `vitest run` did, with ENOENT.
+const RUNNER = fileURLToPath(new URL('../collector/src/Vincere.AutoExport.DeepExport/DeepExportRunner.cs', import.meta.url));
 
 const line = (over = {}) => ({
   family: 'G4M', version: 'v1', risk: 'Low', propFirm: false, instrument: 'MES',

@@ -6,10 +6,16 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <!-- The attribution engine AttributionExport calls. Referenced as a project
-         rather than listed file by file below: it is netstandard2.0, builds
-         everywhere, and has its own suite. -->
-    <ProjectReference Include="../../src/Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
+    <!-- THE DEEP EXPORT, AS A REFERENCE AT LAST.
+         These ten files used to be named one at a time below, because they lived
+         in the WPF project and that project does not build everywhere this suite
+         runs. They are now their own net8.0 library, which is the whole reason
+         the suite can say this in one line instead of ten paths that drift. It
+         brings NinjaTrader.Core - the attribution engine AttributionExport calls
+         - with it, so that reference is gone from here too. -->
+    <ProjectReference Include="../../src/Vincere.AutoExport.DeepExport/Vincere.AutoExport.DeepExport.csproj" />
+    <!-- The tests build their own fixture database and read the shipped copy
+         back, so this one is theirs and not inherited. -->
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Newtonsoft.Json" />
     <PackageReference Include="xunit" />
@@ -29,43 +35,43 @@
          the view model uses has to be added here or the tests stop compiling,
          which is how CI caught this one. -->
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ReleaseCheck.cs" Link="ReleaseCheck.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SecretRedactor.cs" Link="DeepExport/SecretRedactor.cs" />
-    <!-- The identity rule for the exported config. Compiled rather than
-         referenced so its internal ProjectWith is reachable: there is no
-         secret-named field on its keep list, so the only way to watch that guard
-         fire is to hand the same code path a policy that has one. -->
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AgentConfigProjection.cs" Link="DeepExport/AgentConfigProjection.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/TraceRedactor.cs" Link="DeepExport/TraceRedactor.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportSources.cs" Link="DeepExport/DeepExportSources.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/StrategyUserdataRedactor.cs" Link="DeepExport/StrategyUserdataRedactor.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SqliteSnapshot.cs" Link="DeepExport/SqliteSnapshot.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AttributionExport.cs" Link="DeepExport/AttributionExport.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs" Link="DeepExport/DeepExportRunner.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/NinjaTraderFolder.cs" Link="DeepExport/NinjaTraderFolder.cs" />
+    <!-- Stays a link: it anchors the report bundle to its own assembly's folder
+         (typeof(OfflineReportWriter).Assembly.Location + /OfflineReport), and
+         that bundle is Content in the WPF csproj. It is a Desktop-report
+         concern, not an export one, and it did not move. -->
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/OfflineReportWriter.cs" Link="OfflineReportWriter.cs" />
-    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/StrategyConfigurationRedactor.cs" Link="StrategyConfigurationRedactor.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The DeepExport sources as TEXT beside the test binary, so
+    <!-- The deep export sources as TEXT beside the test binary, so
          TheAllowlistIsStatedInExactlyOnePlace can count the table allowlist
          instead of trusting that there is still only one of it. A WILDCARD on
-         purpose: a new file here must be scanned without anybody remembering to
+         purpose: a new file there must be scanned without anybody remembering to
          add it, because a hand-maintained list would be the same drift the test
-         exists to catch. These files are also compiled above; being in both
-         Compile and None is fine. -->
-    <None Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/*.cs"
+         exists to catch. These files are also compiled into the referenced
+         project; being in both is fine.
+
+         THE GLOB NOW COVERS StrategyConfigurationRedactor.cs TOO, because that
+         file moved into the deep export project along with the nine it is a
+         dependency of. It used to be named separately below, as a file outside
+         the scanned folder. The scan's subject is now a project rather than a
+         folder, which is a better fit for what the rule is about: a second
+         statement of what ships, anywhere in the code that decides it.
+
+         DeepExportSourceFiles names every file it expects to find here, and that
+         is not belt and braces. Measured: with the old count floor, an item list
+         that stops reaching exactly one source leaves all 155 tests green, and
+         the single-statement tests then count their rules over a smaller set and
+         still see one of each. Nothing in the build notices either. -->
+    <None Include="../../src/Vincere.AutoExport.DeepExport/*.cs"
           Link="allowlist-scan/%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
-    <!-- AND THE TWO FILES OUTSIDE DeepExport/ THAT COULD RESTATE A RULE, for
+    <!-- AND THE ONE FILE OUTSIDE THAT PROJECT THAT COULD RESTATE A RULE, for
          EveryRuleAboutWhatShipsIsStatedOnce. The strategy-configuration rule has
          two callers - the Desktop report and the Deep Export - and it lived as a
          private method in the first of them until the second appeared. Named
-         rather than wildcarded because this project's root is not the scan's
-         subject; a third caller must be added here deliberately. -->
-    <None Include="../../src/Vincere.AutoExport.Agent.UI/StrategyConfigurationRedactor.cs"
-          Link="allowlist-scan/%(Filename)%(Extension)"
-          CopyToOutputDirectory="PreserveNewest" />
+         rather than wildcarded because the WPF project is not the scan's subject;
+         a third caller there must be added here deliberately. -->
     <None Include="../../src/Vincere.AutoExport.Agent.UI/OfflineReportWriter.cs"
           Link="allowlist-scan/%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />

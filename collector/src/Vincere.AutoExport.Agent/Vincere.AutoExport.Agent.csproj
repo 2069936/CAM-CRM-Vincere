@@ -19,6 +19,16 @@
 
   <ItemGroup>
     <ProjectReference Include="../Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
+    <!-- THE DEEP EXPORT, WHICH THIS SERVICE COULD NOT SEE.
+         Until now this csproj referenced exactly one project, Contracts, and the
+         export lived in the WPF Setup window - so the only way to produce a
+         package was a person at the VPS clicking a button. Nothing in this
+         service calls it yet; this reference is what makes calling it possible,
+         and it is deliberately the whole of the change rather than half of a
+         feature. It brings Microsoft.Data.Sqlite and the native e_sqlite3 with
+         it, which is why the restore lock below grew; Package.wxs harvests the
+         publish directory by wildcard, so the installer needed no edit. -->
+    <ProjectReference Include="../Vincere.AutoExport.DeepExport/Vincere.AutoExport.DeepExport.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
     <PackageReference Include="Newtonsoft.Json" />

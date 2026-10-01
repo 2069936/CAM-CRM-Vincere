@@ -1001,13 +1001,43 @@ public sealed class DeepExportTests : IDisposable
         Assert.Contains(warnings, w => w.Contains("no database is in this package", StringComparison.Ordinal));
     }
 
-    /// <summary>The DeepExport sources as text, copied beside the test binary by the csproj.</summary>
+    /// <summary>
+    /// The deep export sources as text, copied beside the test binary by the
+    /// csproj.
+    ///
+    /// EVERY FILE IS NAMED, NOT COUNTED AGAINST A FLOOR. This used to assert
+    /// files.Length >= 6, and that is vacuous in the one way that matters.
+    /// Measured on a clean build: make the csproj's item list stop reaching
+    /// exactly one of these sources - TraceRedactor.cs - and the floor is still
+    /// satisfied, the single-statement tests above count their rules over the
+    /// smaller set and still see one of each, and all 155 tests pass. The
+    /// allowlist could then be stated in two places while
+    /// TheAllowlistIsStatedInExactlyOnePlace reported one. Nothing in the build
+    /// catches it either: the file still compiles, it just stops being read.
+    ///
+    /// The floor is kept as well as the names, deliberately: the glob exists so
+    /// that a new source is scanned without anybody remembering, and a new one
+    /// must not have to be added here. Only a missing one is an error.
+    /// </summary>
     private static string[] DeepExportSourceFiles()
     {
         string folder = Path.Combine(AppContext.BaseDirectory, "allowlist-scan");
-        Assert.True(Directory.Exists(folder), $"the DeepExport sources were not copied to {folder}; see the csproj");
+        Assert.True(Directory.Exists(folder), $"the deep export sources were not copied to {folder}; see the csproj");
         string[] files = Directory.GetFiles(folder, "*.cs");
-        Assert.True(files.Length >= 6, $"expected every DeepExport source, found {files.Length}");
+        string[] expected =
+        {
+            "AgentConfigProjection.cs", "AttributionExport.cs", "DeepExportRunner.cs", "DeepExportSources.cs",
+            "NinjaTraderFolder.cs", "SecretRedactor.cs", "SqliteSnapshot.cs", "StrategyConfigurationRedactor.cs",
+            "StrategyUserdataRedactor.cs", "TraceRedactor.cs", "OfflineReportWriter.cs",
+        };
+        string[] present = files.Select(Path.GetFileName).ToArray();
+        foreach (string name in expected)
+        {
+            Assert.True(
+                present.Contains(name, StringComparer.Ordinal),
+                $"{name} was not scanned; the csproj's allowlist-scan items no longer reach it. Found: {string.Join(", ", present.OrderBy(n => n, StringComparer.Ordinal))}");
+        }
+        Assert.True(files.Length >= expected.Length, $"expected every deep export source, found {files.Length}");
         return files;
     }
 
