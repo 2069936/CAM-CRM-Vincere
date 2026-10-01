@@ -32,11 +32,13 @@
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SecretRedactor.cs" Link="DeepExport/SecretRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/TraceRedactor.cs" Link="DeepExport/TraceRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportSources.cs" Link="DeepExport/DeepExportSources.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/StrategyUserdataRedactor.cs" Link="DeepExport/StrategyUserdataRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SqliteSnapshot.cs" Link="DeepExport/SqliteSnapshot.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AttributionExport.cs" Link="DeepExport/AttributionExport.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs" Link="DeepExport/DeepExportRunner.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/NinjaTraderFolder.cs" Link="DeepExport/NinjaTraderFolder.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/OfflineReportWriter.cs" Link="OfflineReportWriter.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/StrategyConfigurationRedactor.cs" Link="StrategyConfigurationRedactor.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -48,6 +50,18 @@
          exists to catch. These files are also compiled above; being in both
          Compile and None is fine. -->
     <None Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/*.cs"
+          Link="allowlist-scan/%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+    <!-- AND THE TWO FILES OUTSIDE DeepExport/ THAT COULD RESTATE A RULE, for
+         EveryRuleAboutWhatShipsIsStatedOnce. The strategy-configuration rule has
+         two callers - the Desktop report and the Deep Export - and it lived as a
+         private method in the first of them until the second appeared. Named
+         rather than wildcarded because this project's root is not the scan's
+         subject; a third caller must be added here deliberately. -->
+    <None Include="../../src/Vincere.AutoExport.Agent.UI/StrategyConfigurationRedactor.cs"
+          Link="allowlist-scan/%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../src/Vincere.AutoExport.Agent.UI/OfflineReportWriter.cs"
           Link="allowlist-scan/%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

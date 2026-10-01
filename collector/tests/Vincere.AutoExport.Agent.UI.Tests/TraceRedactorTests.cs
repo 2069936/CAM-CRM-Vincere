@@ -195,12 +195,22 @@ public sealed class TraceRedactorTests
     public void TheTraceAndTheLogsAreWhatThisAppliesTo()
     {
         // The two plain-text NinjaTrader sources, and only those. workspaces/
-        // and templates/ carry no login (measured: 0 occurrences); the queue
-        // snapshots are JSON the config rule already covers.
+        // carries no login (measured: 0 occurrences).
+        //
+        // THIS COMMENT USED TO SAY "the queue snapshots are JSON the config rule
+        // already covers", AND IT WAS FALSE TWICE - which mattered, because it sat
+        // in a test file and therefore read as verified. SecretRedactor is applied
+        // to exactly ONE file, the agent's config.json, and nothing applies it to
+        // autoexport/; and its key list had no licence term, so LicenseKey would
+        // not have matched even if it had been applied. Measured on a real export
+        // while that sentence was in the repo: 12 plain-ASCII occurrences of a
+        // live licence key in autoexport/sent/*.json. The queue snapshots now have
+        // the rule that is actually theirs - StrategyConfigurationRedactor, which
+        // is this class's sibling and not this class - and the assertion below
+        // pins which rule owns which folder.
         Assert.True(TraceRedactor.AppliesTo(Source("trace", "trace")));
         Assert.True(TraceRedactor.AppliesTo(Source("logs", "logs")));
         Assert.False(TraceRedactor.AppliesTo(Source("workspaces", "workspaces")));
-        Assert.False(TraceRedactor.AppliesTo(Source("strategy templates", "templates/Strategy")));
         Assert.False(TraceRedactor.AppliesTo(Source("sent snapshots", "autoexport/sent")));
         Assert.False(TraceRedactor.AppliesTo(null));
 
@@ -209,6 +219,22 @@ public sealed class TraceRedactorTests
         Assert.Equal(
             new[] { "logs", "trace" },
             DeepExportSources.All.Where(TraceRedactor.AppliesTo).Select(s => s.Name).OrderBy(n => n).ToArray());
+
+        // THE TWO RULES ARE DISJOINT AND BETWEEN THEM NOTHING IS UNCLAIMED BY
+        // ACCIDENT. Every queue .json gets the capture rule, no trace or log file
+        // does, and the files in the queue that are not captures get neither -
+        // a .receipt is not JSON and withholding it would be a loss for nothing.
+        Assert.True(StrategyConfigurationRedactor.AppliesTo("autoexport/sent/2026-09-15_abc.json"));
+        Assert.True(StrategyConfigurationRedactor.AppliesTo("autoexport/pending/x.json"));
+        Assert.True(StrategyConfigurationRedactor.AppliesTo("autoexport/quarantine/x.json"));
+        Assert.False(StrategyConfigurationRedactor.AppliesTo("autoexport/sent/x.json.receipt"));
+        Assert.False(StrategyConfigurationRedactor.AppliesTo("autoexport/quarantine/x.reason"));
+        Assert.False(StrategyConfigurationRedactor.AppliesTo("trace/trace.20260915.txt"));
+        Assert.False(StrategyConfigurationRedactor.AppliesTo("workspaces/Main.xml"));
+        Assert.False(StrategyConfigurationRedactor.AppliesTo(null));
+        Assert.All(
+            DeepExportSources.All.Where(TraceRedactor.AppliesTo),
+            s => Assert.False(StrategyConfigurationRedactor.AppliesTo(s.ZipFolder + "/any.json")));
     }
 
     private static DeepExportSource Source(string name, string zipFolder)

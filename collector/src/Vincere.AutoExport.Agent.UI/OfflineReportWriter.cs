@@ -130,7 +130,7 @@ public sealed class OfflineReportWriter
         string clientName)
     {
         JToken capture = JToken.Parse(captureJson);
-        StripStrategyConfiguration(capture);
+        StrategyConfigurationRedactor.Strip(capture);
 
         JObject payload = new()
         {
@@ -157,50 +157,19 @@ public sealed class OfflineReportWriter
      * so everything the sheet refused to print was still sitting in the bytes
      * a CAM attaches to a message.
      *
-     * MEASURED ON A REAL MACHINE'S QUEUE, not imagined. A strategy row there
-     * carries 149 entries in `extraValues`, among them a LicenseKey with a
-     * live value, URGO1 through URGO4, the stop and the three profit targets,
-     * the day filters, the trade window times and EdgeLeverage. That is the
-     * desk's tuning and a working licence, in a file addressed to a client.
-     *
-     * EMPTIED, NOT REMOVED. The first version of this deleted the properties
-     * and every capture with a strategy then rendered "strategies[0]
-     * .parameters must be an object" where the client's day should have been:
-     * src/domain/autoExportContract.js validates the snapshot before anything
-     * reads it. An empty object satisfies the contract and carries nothing.
-     *
-     * STRATEGY ROWS ONLY. `accounts[].accountValues` is the other big map in a
-     * capture and it stays: BuyingPower, NetLiquidation, the drawdown limits.
-     * That is the client's own account, which is the whole subject of the
-     * report. A strategy row is recognised by `parameterCaptureStatus`, which
-     * nothing else in a capture carries, or by having `parameters` at all.
-     *
      * Nothing downstream needs either map. src/domain/autoImport.js turns
      * `parameters` into `parametersRaw` for algorithmRanking.js in the CRM,
      * which this file never reaches, and `extraValues` has no reader in src/
      * at all. So they come out here, where the bytes are written, rather than
      * being trusted not to be displayed.
+     *
+     * THE RULE ITSELF MOVED AND DID NOT CHANGE. It was a private method here
+     * until the Deep Export turned out to copy the same queue snapshots into a
+     * package that travels over Drive and Discord. One rule for both doors, and
+     * the single definition - with the measurements and the reason it empties
+     * rather than removes - is StrategyConfigurationRedactor. Do not restate it
+     * here.
      */
-    private static void StripStrategyConfiguration(JToken token)
-    {
-        switch (token)
-        {
-            case JArray array:
-                foreach (JToken item in array) StripStrategyConfiguration(item);
-                break;
-            case JObject o:
-                bool isStrategyRow = o["parameterCaptureStatus"] != null || o["parameters"] != null;
-                if (isStrategyRow)
-                {
-                    if (o["parameters"] is JObject) o["parameters"] = new JObject();
-                    if (o["extraValues"] is JObject) o["extraValues"] = new JObject();
-                    o.Remove("parametersRaw");
-                }
-                foreach (JProperty property in o.Properties().ToList())
-                    StripStrategyConfiguration(property.Value);
-                break;
-        }
-    }
 
     /// <summary>
     /// The roster the service cached, read straight off disk.
