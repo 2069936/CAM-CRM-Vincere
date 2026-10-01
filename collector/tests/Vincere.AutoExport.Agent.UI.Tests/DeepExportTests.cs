@@ -100,6 +100,13 @@ public sealed class DeepExportTests : IDisposable
         //
         // Accounts.Data is a BLOB. The JSONL can only say "<blob 4 bytes>", so it
         // is what proves the shipped database is not a lossy restatement of it.
+        //
+        // AND IT CARRIES THE SHAPE THE CONSOLIDATION WAS ASKED ABOUT: the
+        // per-order history, the link table, the account items and the
+        // open-position table, because the decision not to fold them is only
+        // testable against a database that has them. Column names and the
+        // composite primary keys are NinjaTrader's, taken off the two real
+        // exports; the rows are invented.
         command.CommandText = @"
             CREATE TABLE Accounts (Id INTEGER PRIMARY KEY, Name TEXT, Data BLOB);
             CREATE TABLE Executions (Id INTEGER PRIMARY KEY, Account TEXT, Time TEXT, Price REAL);
@@ -109,14 +116,48 @@ public sealed class DeepExportTests : IDisposable
             CREATE TABLE Instruments (Id INTEGER PRIMARY KEY, Name TEXT);
             CREATE TABLE Users (Id INTEGER PRIMARY KEY, Name TEXT, Password TEXT, Salt TEXT);
             CREATE TABLE JournalEntries (Id INTEGER PRIMARY KEY, Text TEXT);
+            CREATE TABLE OrderUpdates (
+                [Order] INTEGER NOT NULL REFERENCES Orders(Id), Nr INTEGER NOT NULL,
+                OrderId TEXT, OrderState INTEGER, StatementDate INTEGER, StopPrice REAL, Time INTEGER,
+                PRIMARY KEY ([Order], Nr));
+            CREATE TABLE AccountItems (
+                Account INTEGER NOT NULL REFERENCES Accounts(Id), Currency INTEGER, ItemType INTEGER,
+                Value REAL, TimeUtc INTEGER, PRIMARY KEY (Account, ItemType, Currency));
+            CREATE TABLE Positions (
+                Account INTEGER NOT NULL, Instrument INTEGER NOT NULL, AvgPrice REAL,
+                MarketPosition INTEGER, Quantity INTEGER, StatementDate INTEGER);
+            CREATE INDEX Positions_i0 ON Positions (Account);
+            CREATE TABLE Strategies (Id INTEGER PRIMARY KEY, Name TEXT, Template TEXT, Userdata BLOB);
+            CREATE TABLE Strategy2Order ([Order] INTEGER NOT NULL, Strategy INTEGER NOT NULL);
             INSERT INTO Accounts VALUES (1, 'LTATAGREH509159302022', X'01020304');
             INSERT INTO Executions VALUES (1, 'LTATAGREH509159302022', '2026-08-01 09:30:00', 7675.25);
             INSERT INTO Executions VALUES (2, 'LTATAGREH509159302022', '2026-09-15 10:21:00', 7680.00);
             INSERT INTO Instruments VALUES (1, 'MNQ 12-26');
             INSERT INTO Orders VALUES (1, 'LTATAGREH509159302022', 1);
+            INSERT INTO Orders VALUES (2, 'LTATAGREH509159302022', 1);
             INSERT INTO JournalEntries VALUES (1, '" + WithheldLive + @" a note about a client');
-            INSERT INTO Users VALUES (1, '" + WithheldLive + @"', 'hunter2', 'salt');";
+            INSERT INTO Users VALUES (1, '" + WithheldLive + @"', 'hunter2', 'salt');
+            INSERT INTO AccountItems VALUES (1, 1, 1, 50000.0, 638000000000000001);
+            INSERT INTO AccountItems VALUES (1, 1, 2, 1250.5, 638000000000000002);
+            INSERT INTO Strategies VALUES (1, 'G4M', '', X'0A0B0C');
+            INSERT INTO Strategies VALUES (2, 'Unlinked', '', NULL);
+            INSERT INTO Strategy2Order VALUES (1, 1);";
         command.ExecuteNonQuery();
+
+        // THE HISTORY, INSERTED OUT OF ORDER ON PURPOSE. Nr is the sequence and
+        // the rows arrive in 3, 1, 2. Nothing may depend on insertion order, and
+        // the two distinct OrderId values are the measured shape of a real
+        // order's life: 18,610 of 18,827 orders on the big export carry exactly
+        // two, because the broker reassigns the id. Order 2 has no updates at
+        // all. Times are 18-digit .NET ticks, above 2^53, as the real ones are.
+        using (SqliteCommand history = connection.CreateCommand())
+        {
+            history.CommandText = @"
+                INSERT INTO OrderUpdates VALUES (1, 3, 'BROKER-SECOND', 6, 638000000000000000, 7650.25, 638000000000000123);
+                INSERT INTO OrderUpdates VALUES (1, 1, 'BROKER-FIRST', 1, 638000000000000000, 7640.75, 638000000000000121);
+                INSERT INTO OrderUpdates VALUES (1, 2, 'BROKER-FIRST', 2, 638000000000000000, 7645.50, 638000000000000122);";
+            history.ExecuteNonQuery();
+        }
 
         // ROWS THAT WERE DELETED, so no SELECT can see them and the bytes are
         // still in the file. Enough of them to occupy pages SQLite then frees:
@@ -221,20 +262,38 @@ public sealed class DeepExportTests : IDisposable
     }
 
     [Fact]
-    public async Task DumpsTheTradingTablesAsJsonLinesWithColumnsUntouched()
+    public async Task EachTableTravelsExactlyOnceAndTheJsonLinesCopyIsGone()
     {
-        // Acceptance 4. Every column as SQLite returns it, nothing renamed.
+        // THE CONSOLIDATION, ASSERTED AS A COUNT. db/ used to carry the same 12
+        // tables twice - once in the database and once as tables/<T>.jsonl - and
+        // the desk asked for fewer tables in what travels. So the property is not
+        // "the JSONL is absent", it is "each allowlisted table is stated once".
         DeepExportResult result = await Runner().RunAsync();
         using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
-        using var reader = new StreamReader(zip.GetEntry("db/tables/Executions.jsonl").Open());
-        string[] lines = reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        Assert.Equal(2, lines.Length);
-        JObject second = JObject.Parse(lines[1]);
-        Assert.Equal("LTATAGREH509159302022", (string)second["Account"]);
-        Assert.Equal(7680.0, (double)second["Price"]);
-        Assert.NotNull(zip.GetEntry("db/schema.sql"));
-        // A table whose name does not say trading is not dumped.
-        Assert.Null(zip.GetEntry("db/tables/MarketDataCache.jsonl"));
+        string[] db = zip.Entries
+            .Select(e => e.FullName)
+            .Where(n => n.StartsWith("db/", StringComparison.Ordinal))
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(new[] { "db/NinjaTrader.sqlite", "db/schema.sql" }, db);
+
+        // Not one entry under db/tables/, whatever it might be called, and no
+        // JSON Lines file anywhere in the package restating a database table.
+        Assert.DoesNotContain(zip.Entries, e => e.FullName.StartsWith("db/tables", StringComparison.Ordinal));
+        string extracted = Path.Combine(root, "once");
+        ZipFile.ExtractToDirectory(result.ZipPath, extracted);
+        string[] shippedTables = TablesIn(Path.Combine(extracted, "db", "NinjaTrader.sqlite"));
+        foreach (string table in shippedTables)
+        {
+            Assert.DoesNotContain(zip.Entries, e =>
+                e.FullName.EndsWith("/" + table + ".jsonl", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // And the manifest agrees, because it is the thing an analyst reads
+        // first: it names the tables once each and lists no dump beside them.
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.DoesNotContain(manifest["files"].Select(f => (string)f["path"]), p => p.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase) && p.StartsWith("db/", StringComparison.Ordinal));
+        Assert.Equal(shippedTables.Length, ((JObject)manifest["db"]["rowCounts"]).Count);
     }
 
     [Fact]
@@ -296,13 +355,18 @@ public sealed class DeepExportTests : IDisposable
         ZipFile.ExtractToDirectory(result.ZipPath, extracted);
         string shipped = Path.Combine(extracted, "db", "NinjaTrader.sqlite");
 
-        // Not as a table, not as a dump, and not as a byte.
+        // Not as a table, not as a file of its own anywhere in the package, and
+        // not as a byte. The per-table dump that used to be the second place to
+        // check is gone, so the check is now "no entry names it" rather than
+        // "that one entry is absent", which cannot pass for the wrong reason.
         Assert.DoesNotContain("Users", TablesIn(shipped));
         Assert.DoesNotContain("JournalEntries", TablesIn(shipped));
         using (ZipArchive zip = ZipFile.OpenRead(result.ZipPath))
         {
-            Assert.Null(zip.GetEntry("db/tables/Users.jsonl"));
-            Assert.Null(zip.GetEntry("db/tables/JournalEntries.jsonl"));
+            Assert.DoesNotContain(zip.Entries, e =>
+                e.FullName.StartsWith("db/", StringComparison.Ordinal)
+                && (e.FullName.Contains("Users", StringComparison.OrdinalIgnoreCase)
+                    || e.FullName.Contains("JournalEntries", StringComparison.OrdinalIgnoreCase)));
         }
         string after = Latin1(shipped);
         Assert.DoesNotContain(WithheldLive, after);
@@ -320,7 +384,9 @@ public sealed class DeepExportTests : IDisposable
         Assert.Contains("Instruments", withheld);
         Assert.Contains("MarketDataCache", withheld);
         string[] shippedNames = manifest["db"]["tablesShipped"].Select(t => (string)t).ToArray();
-        Assert.Equal(new[] { "Accounts", "Executions", "Orders" }, shippedNames.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(
+            new[] { "AccountItems", "Accounts", "Executions", "OrderUpdates", "Orders", "Positions", "Strategies", "Strategy2Order" },
+            shippedNames.OrderBy(n => n, StringComparer.Ordinal).ToArray());
     }
 
     [Fact]
@@ -342,19 +408,21 @@ public sealed class DeepExportTests : IDisposable
         }
 
         string[] tables = TablesIn(shipped);
-        Assert.Equal(new[] { "Accounts", "Executions", "Orders" }, tables);
+        Assert.Equal(
+            new[] { "AccountItems", "Accounts", "Executions", "OrderUpdates", "Orders", "Positions", "Strategies", "Strategy2Order" },
+            tables);
         Assert.All(tables, t => Assert.True(SqliteSnapshot.IsAllowedTable(t), $"{t} is in the shipped database and the allowlist does not allow it"));
 
-        // One predicate decides both, so the JSONL set is the same set. If these
-        // two ever differ, the allowlist has been restated somewhere.
-        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
-        string[] dumped = zip.Entries
-            .Where(e => e.FullName.StartsWith("db/tables/", StringComparison.Ordinal))
-            .Select(e => Path.GetFileNameWithoutExtension(e.FullName))
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToArray();
-        Assert.Equal(tables, dumped);
+        // ONE PREDICATE, AND NOW ONLY ONE SHAPE FOR IT TO GOVERN. This used to
+        // assert the database's table set equalled the db/tables/*.jsonl
+        // basenames, which was the tripwire proving one rule fed both artefacts.
+        // There is one artefact, so the tripwire becomes the stronger statement:
+        // the manifest's row counts are keyed by exactly the tables in the file.
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.Equal(tables, ((JObject)manifest["db"]["rowCounts"]).Properties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+        Assert.Equal(tables, manifest["db"]["tablesShipped"].Select(t => (string)t).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
+        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
         // A new file, built by us, so there is no journal beside it to lose - and
         // no longer any dependence on the copy's journal_mode having been folded.
         Assert.Null(zip.GetEntry("db/NinjaTrader.sqlite-wal"));
@@ -402,10 +470,303 @@ public sealed class DeepExportTests : IDisposable
             Assert.Equal(1L, (long)index.ExecuteScalar());
         }
 
-        // And the JSONL is unchanged, placeholder and all, so the two artifacts
-        // say the same thing about the rows and differ only in fidelity.
-        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
-        Assert.Contains("<blob 4 bytes>", ReadEntry(zip, "db/tables/Accounts.jsonl"));
+        // AND NO PLACEHOLDER SHIPS ANY MORE. This used to assert that
+        // db/tables/Accounts.jsonl said "<blob 4 bytes>", on the argument that
+        // the two artefacts differed only in fidelity. That argument is retired:
+        // there is one artefact and it is the high-fidelity one, so the
+        // placeholder text must appear nowhere in the package at all.
+        string[] textFiles = Directory.EnumerateFiles(extracted, "*", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert.All(textFiles, f => Assert.DoesNotContain("<blob ", File.ReadAllText(f)));
+    }
+
+    [Fact]
+    public async Task NothingTheJsonLinesCarriedLeftThePackageWithIt()
+    {
+        // THE RULE: nothing that was in the package may silently leave it. The
+        // per-table JSONL dump left it, so this is the proof that it took nothing
+        // with it, and it is the reason this consolidation is free.
+        //
+        // The dump was written FROM the staged database - the runner handed
+        // DumpTable copyPath, the file that ships, not the working copy - so it
+        // was a projection of the file that stays: the same rows in the same
+        // order, the same columns under the names SQLite gives them, with each
+        // blob reduced to "<blob N bytes>". JsonLinesProjection below reproduces
+        // that projection exactly. Generating it from the LIVE database and from
+        // the SHIPPED one and finding them identical asserts both halves at once:
+        // the rebuild loses no row, column, name, order or value, and the dump
+        // held nothing the database does not still hold.
+        DeepExportResult result = await Runner().RunAsync();
+        string extracted = Path.Combine(root, "superset");
+        ZipFile.ExtractToDirectory(result.ZipPath, extracted);
+        string shipped = Path.Combine(extracted, "db", "NinjaTrader.sqlite");
+        string live = Path.Combine(nt, "db", "NinjaTrader.sqlite");
+
+        string[] tables = TablesIn(shipped);
+        Assert.NotEmpty(tables);
+        foreach (string table in tables)
+        {
+            Assert.Equal(JsonLinesProjection(live, table), JsonLinesProjection(shipped, table));
+        }
+
+        // And the one cell the projection could not carry is still in the file as
+        // a blob, with its length recoverable - so the placeholder was strictly
+        // less than what ships, never something else.
+        using var connection = new SqliteConnection(Read(shipped));
+        connection.Open();
+        using SqliteCommand blob = connection.CreateCommand();
+        blob.CommandText = "SELECT length(Data), typeof(Data) FROM Accounts WHERE Id = 1";
+        using SqliteDataReader reader = blob.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(4L, reader.GetInt64(0));
+        Assert.Equal("blob", reader.GetString(1));
+    }
+
+    [Fact]
+    public void AnOrphanChildIsKeptBecauseTheRebuildNeverJoins()
+    {
+        // THE DECISION THIS TEST NAMES: an orphan child row SHIPS, unchanged.
+        //
+        // Measured on both real exports there are none - 0 orphan OrderUpdates
+        // against 18,827 and 229 orders, 0 orphan AccountItems, 0 orphans on all
+        // three Strategy2 link tables, in both directions. So this is not a case
+        // the data has shown us. It is the case the FOLD would have had to
+        // decide, and having no good answer to it is part of why the fold was
+        // refused: nesting an orphan under a parent means either dropping the row
+        // or inventing a parent for it, and both are the silent loss this package
+        // exists to prevent. Copying tables rather than joining them has no such
+        // choice to make - foreign keys are off and every row is copied as it
+        // stands - so the orphan arrives and an analyst can see that it is one.
+        (string _, string shipped) = Rebuild(@"
+            CREATE TABLE Orders (Id INTEGER PRIMARY KEY, Account INTEGER);
+            CREATE TABLE OrderUpdates ([Order] INTEGER NOT NULL, Nr INTEGER NOT NULL, OrderId TEXT, PRIMARY KEY ([Order], Nr));
+            CREATE TABLE Accounts (Id INTEGER PRIMARY KEY, Name TEXT);
+            CREATE TABLE AccountItems (Account INTEGER NOT NULL, ItemType INTEGER, Value REAL);
+            INSERT INTO Orders VALUES (1, 1);
+            INSERT INTO Accounts VALUES (1, 'A');
+            INSERT INTO OrderUpdates VALUES (1, 1, 'HAS-A-PARENT');
+            INSERT INTO OrderUpdates VALUES (99, 1, 'ORPHANED');
+            INSERT INTO AccountItems VALUES (1, 1, 10.0);
+            INSERT INTO AccountItems VALUES (77, 1, 20.0);");
+
+        using var connection = new SqliteConnection(Read(shipped));
+        connection.Open();
+        Assert.Equal(2L, Count(connection, "OrderUpdates"));
+        Assert.Equal(2L, Count(connection, "AccountItems"));
+        // The orphan is there AND it is still identifiable as an orphan, which is
+        // the whole value of keeping it: the dangling key is preserved, not
+        // repointed at something that exists.
+        using SqliteCommand orphan = connection.CreateCommand();
+        orphan.CommandText = "SELECT count(*) FROM OrderUpdates u LEFT JOIN \"Orders\" o ON o.Id = u.[Order] WHERE o.Id IS NULL";
+        Assert.Equal(1L, (long)orphan.ExecuteScalar());
+        using SqliteCommand item = connection.CreateCommand();
+        item.CommandText = "SELECT count(*) FROM AccountItems i LEFT JOIN Accounts a ON a.Id = i.Account WHERE a.Id IS NULL";
+        Assert.Equal(1L, (long)item.ExecuteScalar());
+    }
+
+    [Fact]
+    public void AnEmptyParentWithChildrenAndAParentWithNoChildrenBothSurvive()
+    {
+        // BOTH ENDS OF THE RELATION, because a fold gets each of them wrong in a
+        // different way: an empty parent table loses its children entirely, and a
+        // childless parent gains an empty list that costs bytes on every row.
+        // Measured on the real exports both cases are the common one, not the
+        // edge - the small machine has 0 strategies while its link tables would
+        // have had to hang off them, and 132 of 135 accounts on the big machine
+        // have no AccountItems at all, which is why folding those two COSTS 582
+        // bytes rather than saving any.
+        (string _, string shipped) = Rebuild(@"
+            CREATE TABLE Strategies (Id INTEGER PRIMARY KEY, Name TEXT);
+            CREATE TABLE Strategy2Order ([Order] INTEGER NOT NULL, Strategy INTEGER NOT NULL);
+            CREATE TABLE Orders (Id INTEGER PRIMARY KEY, Account INTEGER);
+            CREATE TABLE OrderUpdates ([Order] INTEGER NOT NULL, Nr INTEGER NOT NULL, PRIMARY KEY ([Order], Nr));
+            INSERT INTO Strategy2Order VALUES (1, 5);
+            INSERT INTO Strategy2Order VALUES (2, 5);
+            INSERT INTO Orders VALUES (1, 1);
+            INSERT INTO Orders VALUES (2, 1);
+            INSERT INTO OrderUpdates VALUES (1, 1);
+            INSERT INTO OrderUpdates VALUES (1, 2);");
+
+        using var connection = new SqliteConnection(Read(shipped));
+        connection.Open();
+        // The empty parent ships as an empty table and its children all arrive.
+        Assert.Contains("Strategies", TablesIn(shipped));
+        Assert.Equal(0L, Count(connection, "Strategies"));
+        Assert.Equal(2L, Count(connection, "Strategy2Order"));
+        // The childless parent ships with nothing added to it.
+        Assert.Equal(2L, Count(connection, "Orders"));
+        Assert.Equal(2L, Count(connection, "OrderUpdates"));
+        using SqliteCommand childless = connection.CreateCommand();
+        childless.CommandText = "SELECT count(*) FROM \"Orders\" o WHERE NOT EXISTS (SELECT 1 FROM OrderUpdates u WHERE u.[Order] = o.Id)";
+        Assert.Equal(1L, (long)childless.ExecuteScalar());
+        // And the childless one has no column and no value it did not have.
+        using SqliteCommand columns = connection.CreateCommand();
+        columns.CommandText = "SELECT * FROM \"Orders\"";
+        using SqliteDataReader reader = columns.ExecuteReader();
+        Assert.Equal(new[] { "Id", "Account" }, Enumerable.Range(0, reader.FieldCount).Select(reader.GetName).ToArray());
+    }
+
+    [Fact]
+    public async Task TheHistoryOrderIsCarriedByItsPrimaryKeyNotByRowOrder()
+    {
+        // THE ORDER OF A PER-ORDER HISTORY IS Nr ASCENDING WITHIN Order, and it is
+        // declared, not incidental: OrderUpdates is PRIMARY KEY ([Order], Nr), so
+        // the ordering is in the DDL and in the index that arrives with it. The
+        // fixture inserts Nr 3, 1, 2 in that sequence precisely so that nothing
+        // here can be passing because the rows happen to sit in a helpful order.
+        //
+        // This is the ordering question the fold raised, and the reason the
+        // relation answers it better: a nested JSON history has an order and
+        // nothing enforces it, so somebody has to choose one and write it down,
+        // and every reader has to trust that they did. A primary key is the same
+        // answer for every reader, checkable with one query.
+        DeepExportResult result = await Runner().RunAsync();
+        string extracted = Path.Combine(root, "history");
+        ZipFile.ExtractToDirectory(result.ZipPath, extracted);
+        string shipped = Path.Combine(extracted, "db", "NinjaTrader.sqlite");
+
+        using var connection = new SqliteConnection(Read(shipped));
+        connection.Open();
+        using (SqliteCommand ordered = connection.CreateCommand())
+        {
+            ordered.CommandText = "SELECT Nr, OrderId FROM OrderUpdates WHERE [Order] = 1 ORDER BY Nr";
+            using SqliteDataReader reader = ordered.ExecuteReader();
+            var sequence = new System.Collections.Generic.List<(long, string)>();
+            while (reader.Read()) sequence.Add((reader.GetInt64(0), reader.GetString(1)));
+            Assert.Equal(new[] { 1L, 2L, 3L }, sequence.Select(s => s.Item1).ToArray());
+            // AND THE SECOND BROKER ID SURVIVED. This is the assertion the fold
+            // the request asked for would have failed: hoisting OrderId to the
+            // parent as "the column every row repeats" deletes the later id, and
+            // on the big export 18,610 of 18,827 orders (98.8%) carry exactly two.
+            Assert.Equal(new[] { "BROKER-FIRST", "BROKER-FIRST", "BROKER-SECOND" }, sequence.Select(s => s.Item2).ToArray());
+            Assert.Equal(2, sequence.Select(s => s.Item2).Distinct().Count());
+        }
+        // The ordering is a property of the schema that shipped, not of this run.
+        using (SqliteCommand key = connection.CreateCommand())
+        {
+            key.CommandText = "PRAGMA table_info(OrderUpdates)";
+            using SqliteDataReader reader = key.ExecuteReader();
+            var primary = new System.Collections.Generic.List<string>();
+            while (reader.Read())
+            {
+                if (reader.GetInt32(5) > 0) primary.Add(reader.GetString(1) + ":" + reader.GetInt32(5));
+            }
+            Assert.Equal(new[] { "Order:1", "Nr:2" }, primary.ToArray());
+        }
+        // StopPrice is in the file. The column list the fold was specified from
+        // omitted it, and AttributionExport reads it for the stop price before the
+        // trail moved it, so a fold built from that list would have broken the one
+        // part of the package anything automated consumes - silently, because the
+        // SqliteException is swallowed and the ZIP still ships.
+        using (SqliteCommand stop = connection.CreateCommand())
+        {
+            stop.CommandText = "SELECT count(StopPrice) FROM OrderUpdates";
+            Assert.Equal(3L, (long)stop.ExecuteScalar());
+        }
+    }
+
+    [Fact]
+    public async Task TheEmptyAllowlistedTablesStillShipAsTables()
+    {
+        // THE DECISION THIS TEST NAMES: a table the allowlist allows ships even
+        // with 0 rows, and Positions is the one that matters.
+        //
+        // Positions, Strategy2Execution and User2Account hold 0 rows on both real
+        // exports, and dropping them was the tidiest-looking part of the request.
+        // It saves ZERO bytes - an empty table is a page of DDL, and their JSONL
+        // files were already 0 bytes. Positions is a live open-position snapshot
+        // and both exports were taken near the open with the desk flat, at 10:31
+        // and 07:15; the first export taken mid-session has rows in it. So the
+        // table has to be there, with its index, for those rows to arrive in.
+        DeepExportResult result = await Runner().RunAsync();
+        string extracted = Path.Combine(root, "empty");
+        ZipFile.ExtractToDirectory(result.ZipPath, extracted);
+        string shipped = Path.Combine(extracted, "db", "NinjaTrader.sqlite");
+
+        Assert.Contains("Positions", TablesIn(shipped));
+        using var connection = new SqliteConnection(Read(shipped));
+        connection.Open();
+        Assert.Equal(0L, Count(connection, "Positions"));
+        using (SqliteCommand columns = connection.CreateCommand())
+        {
+            columns.CommandText = "SELECT * FROM Positions";
+            using SqliteDataReader reader = columns.ExecuteReader();
+            Assert.Equal(
+                new[] { "Account", "Instrument", "AvgPrice", "MarketPosition", "Quantity", "StatementDate" },
+                Enumerable.Range(0, reader.FieldCount).Select(reader.GetName).ToArray());
+        }
+        using (SqliteCommand index = connection.CreateCommand())
+        {
+            // The index of an EMPTY table comes across too, so the first
+            // mid-session export lands in a table that is already queryable.
+            index.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'Positions_i0'";
+            Assert.Equal(1L, (long)index.ExecuteScalar());
+        }
+        // And the manifest counts it, so a reader sees 0 rather than a gap where
+        // the table might or might not have been considered.
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.Equal(0, (int)manifest["db"]["rowCounts"]["Positions"]);
+    }
+
+    /// <summary>
+    /// A real temporary SQLite database built by hand, and the real filtered file
+    /// CopyAllowedTables writes from it. Not a mock: the source is opened
+    /// read-only and a second file is written beside it, exactly as in a run.
+    /// </summary>
+    private (string Source, string Shipped) Rebuild(string schemaAndRows)
+    {
+        Directory.CreateDirectory(root);
+        string id = Guid.NewGuid().ToString("N");
+        string source = Path.Combine(root, "shape-" + id + ".sqlite");
+        using (var build = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = source, Pooling = false }.ConnectionString))
+        {
+            build.Open();
+            using SqliteCommand command = build.CreateCommand();
+            command.CommandText = schemaAndRows;
+            command.ExecuteNonQuery();
+        }
+        string shipped = Path.Combine(root, "shape-out-" + id + ".sqlite");
+        var warnings = new System.Collections.Generic.List<string>();
+        Assert.NotNull(SqliteSnapshot.CopyAllowedTables(source, shipped, warnings));
+        return (source, shipped);
+    }
+
+    private static long Count(SqliteConnection connection, string table)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"SELECT count(*) FROM \"{table}\"";
+        return (long)command.ExecuteScalar();
+    }
+
+    /// <summary>
+    /// Exactly what the removed DumpTable used to write for one table: SELECT *
+    /// in the file's own order, one JSON object per row, every column under the
+    /// name SQLite gives it, a blob reduced to its length. It lives here, in the
+    /// test, because the promise being checked is about a file that no longer
+    /// exists - generating it from two databases and comparing is how "the
+    /// database still holds everything the dump did" becomes an assertion.
+    /// </summary>
+    private static string[] JsonLinesProjection(string databasePath, string table)
+    {
+        using var connection = new SqliteConnection(Read(databasePath));
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"SELECT * FROM \"{table}\"";
+        using SqliteDataReader reader = command.ExecuteReader();
+        var lines = new System.Collections.Generic.List<string>();
+        while (reader.Read())
+        {
+            var row = new JObject();
+            for (int i = 0; i < reader.FieldCount; i++)
+            {
+                object value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                if (value is byte[] bytes) value = $"<blob {bytes.Length} bytes>";
+                row[reader.GetName(i)] = value == null ? JValue.CreateNull() : JToken.FromObject(value);
+            }
+            lines.Add(row.ToString(Newtonsoft.Json.Formatting.None));
+        }
+        return lines.ToArray();
     }
 
     [Fact]
