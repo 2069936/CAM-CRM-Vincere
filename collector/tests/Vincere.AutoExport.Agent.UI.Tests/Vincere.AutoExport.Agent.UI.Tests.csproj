@@ -30,11 +30,25 @@
          which is how CI caught this one. -->
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/ReleaseCheck.cs" Link="ReleaseCheck.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SecretRedactor.cs" Link="DeepExport/SecretRedactor.cs" />
+    <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/TraceRedactor.cs" Link="DeepExport/TraceRedactor.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportSources.cs" Link="DeepExport/DeepExportSources.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/SqliteSnapshot.cs" Link="DeepExport/SqliteSnapshot.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/AttributionExport.cs" Link="DeepExport/AttributionExport.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs" Link="DeepExport/DeepExportRunner.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/NinjaTraderFolder.cs" Link="DeepExport/NinjaTraderFolder.cs" />
     <Compile Include="../../src/Vincere.AutoExport.Agent.UI/OfflineReportWriter.cs" Link="OfflineReportWriter.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The DeepExport sources as TEXT beside the test binary, so
+         TheAllowlistIsStatedInExactlyOnePlace can count the table allowlist
+         instead of trusting that there is still only one of it. A WILDCARD on
+         purpose: a new file here must be scanned without anybody remembering to
+         add it, because a hand-maintained list would be the same drift the test
+         exists to catch. These files are also compiled above; being in both
+         Compile and None is fine. -->
+    <None Include="../../src/Vincere.AutoExport.Agent.UI/DeepExport/*.cs"
+          Link="allowlist-scan/%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

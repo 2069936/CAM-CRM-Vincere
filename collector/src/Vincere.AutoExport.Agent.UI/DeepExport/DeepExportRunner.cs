@@ -26,7 +26,15 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     backup API and everything else is a file copy at BelowNormal priority.
  *   - A source that fails is a warning in the manifest, not an abort. The only
  *     abort is being unable to write the ZIP itself.
- *   - Nothing that authenticates leaves the machine. See SecretRedactor.
+ *   - Nothing that authenticates leaves the machine. Two rules, because there
+ *     are two kinds of file: SecretRedactor for the JSON config, by key name,
+ *     and TraceRedactor for the trace and log text, by measured line shape.
+ *     TraceRedactor's header says why one could not do both jobs.
+ *   - The database in the package holds only the allowlisted tables. It is a
+ *     new file built from the consistent copy, not the copy itself, and the
+ *     copy is made OUTSIDE the staging folder that becomes the ZIP so the
+ *     unfiltered file is never in the package for a single step. See
+ *     SqliteSnapshot's header for what that costs and what it buys.
  *   - Two runs produce two independent packages. Nothing is modified.
  *
  * WHAT IT DOES NOT DO. It does not analyse. The package is raw material plus a
@@ -98,7 +106,13 @@ public sealed class DeepExportRunner
         Directory.CreateDirectory(outputRoot);
         string zipPath = Path.Combine(outputRoot, $"deep_{machine8}_{stamp}.zip");
         string staging = Path.Combine(outputRoot, $".staging_{stamp}");
+        // A SIBLING OF STAGING, NOT A CHILD. The consistent copy of the database
+        // holds every table NinjaTrader has; only the filtered one belongs in the
+        // package. staging is what gets zipped, so the unfiltered copy is kept
+        // out of it entirely rather than put there and tidied up afterwards.
+        string working = Path.Combine(outputRoot, $".work_{stamp}");
         Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(working);
         ProcessPriorityClass? previousPriority = null;
 
         try
@@ -123,22 +137,46 @@ public sealed class DeepExportRunner
             }
             log.Add($"{started:o} deep export started; NinjaTrader at {ninjaTraderRoot}; agent data at {agentRoot ?? "(none)"}");
 
-            // 1. The database, consistently.
+            // 1. The database: one consistent copy to work from, and a filtered
+            //    one to ship. workingCopy holds every table and never enters the
+            //    package; copyPath is built from it by the allowlist.
             SqliteSnapshotResult database = null;
+            SqliteFilterResult filter = null;
             string livePath = Path.GetFullPath(Path.Combine(ninjaTraderRoot, DeepExportSources.DatabaseRelativePath));
+            string workingCopy = Path.Combine(working, "NinjaTrader.sqlite");
             string copyPath = Path.Combine(staging, "db", "NinjaTrader.sqlite");
             if (File.Exists(livePath))
             {
-                string method = SqliteSnapshot.Copy(livePath, copyPath, warnings);
-                database = SqliteSnapshot.Describe(copyPath, method, warnings);
+                string method = SqliteSnapshot.Copy(livePath, workingCopy, warnings);
+                filter = SqliteSnapshot.CopyAllowedTables(workingCopy, copyPath, warnings);
+                // DESCRIBED FROM THE FILE THAT SHIPS. Row counts, size and the
+                // executions range are read off the filtered database, so the
+                // manifest cannot describe a file the reader does not have.
+                if (filter != null) database = SqliteSnapshot.Describe(copyPath, method, warnings);
                 try
                 {
-                    await File.WriteAllTextAsync(Path.Combine(staging, "db", "schema.sql"), SqliteSnapshot.ReadSchema(copyPath), cancellationToken).ConfigureAwait(false);
-                    Directory.CreateDirectory(Path.Combine(staging, "db", "tables"));
-                    foreach (string table in SqliteSnapshot.TablesToDump(copyPath))
+                    Directory.CreateDirectory(Path.Combine(staging, "db"));
+                    // THE SCHEMA OF ALL OF IT, from the working copy, and that is
+                    // deliberate. It is DDL and nothing else - measured on a real
+                    // export: 21 CREATE TABLE and 24 CREATE INDEX statements, no
+                    // views, no triggers, not one quoted literal and not one
+                    // DEFAULT clause, so there is no value in it to leak. What it
+                    // does carry is the record that 21 tables existed, which is
+                    // the only evidence in the package that the allowlist did
+                    // anything; a reader who diffs it against the shipped
+                    // database learns exactly which 9 were withheld. The manifest
+                    // names them outright so nobody has to.
+                    await File.WriteAllTextAsync(Path.Combine(staging, "db", "schema.sql"), SqliteSnapshot.ReadSchema(workingCopy), cancellationToken).ConfigureAwait(false);
+                    if (filter != null)
                     {
-                        using FileStream output = File.Create(Path.Combine(staging, "db", "tables", table + ".jsonl"));
-                        SqliteSnapshot.DumpTable(copyPath, table, output);
+                        Directory.CreateDirectory(Path.Combine(staging, "db", "tables"));
+                        // Dumped from the shipped file, so the JSONL and the
+                        // database beside it cannot describe different rows.
+                        foreach (string table in SqliteSnapshot.TablesToDump(copyPath))
+                        {
+                            using FileStream output = File.Create(Path.Combine(staging, "db", "tables", table + ".jsonl"));
+                            SqliteSnapshot.DumpTable(copyPath, table, output);
+                        }
                     }
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
@@ -160,21 +198,37 @@ public sealed class DeepExportRunner
             // catalogue, reconstructs the trades, and writes the answer, and it
             // accumulates every link the platform has ever shown us so the
             // cascade cannot take back what we have already seen.
-            AttributionSummary attribution = database == null
+            //
+            // IT READS THE WORKING COPY, NOT THE SHIPPED ONE, and it has to: the
+            // join goes through Instruments and MasterInstruments to turn an
+            // order's integer instrument id into a symbol, and both are withheld
+            // from the package. That is a need during the run, not a reason to
+            // ship them - this step resolves the symbols so the reader does not
+            // have to. It therefore has to run before the working copy is gone.
+            AttributionSummary attribution = !File.Exists(workingCopy)
                 ? null
                 : AttributionExport.Write(
                     staging,
                     ninjaTraderRoot,
-                    copyPath,
+                    workingCopy,
                     agentRoot == null ? null : Path.Combine(agentRoot, "attribution-ledger.jsonl"),
                     warnings);
             Report("attribution");
 
             // 2. Every file source. A missing folder is a warning and nothing more.
+            //
+            // THE TRACE AND THE LOGS ARE REDACTED HERE, IN THE COPY ITSELF, and
+            // not in a tidying pass afterwards. The broker login appears 2,179
+            // times across those two folders, and a staged file that holds it
+            // even briefly is a file that ships with it the day somebody moves
+            // the pass or returns early. Redaction is part of how the bytes
+            // arrive or it is not a guarantee. It also has to precede step 4,
+            // which hashes whatever is on disk into the manifest.
             foreach (DeepExportSource source in DeepExportSources.All)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 int copied = 0;
+                bool redacted = TraceRedactor.AppliesTo(source);
                 try
                 {
                     foreach ((string fullPath, string zipRelative) in DeepExportSources.Enumerate(ninjaTraderRoot, agentRoot, source))
@@ -184,7 +238,10 @@ public sealed class DeepExportRunner
                         using (FileStream input = new(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                         using (FileStream output = File.Create(target))
                         {
-                            await input.CopyToAsync(output, 81920, cancellationToken).ConfigureAwait(false);
+                            if (redacted)
+                                await TraceRedactor.RedactTextStreamAsync(input, output, cancellationToken).ConfigureAwait(false);
+                            else
+                                await input.CopyToAsync(output, 81920, cancellationToken).ConfigureAwait(false);
                         }
                         copied++;
                     }
@@ -248,6 +305,14 @@ public sealed class DeepExportRunner
                     sha256 = File.Exists(copyPath) ? HashFile(copyPath) : null,
                     rowCounts = database.RowCounts,
                     executionsRange = new { min = database.ExecutionsMin, max = database.ExecutionsMax },
+                    // WHAT IS NOT IN THE FILE, BY NAME. rowCounts only ever
+                    // listed the allowed tables, so for as long as the whole
+                    // database shipped, the manifest described 12 tables while
+                    // the file beside it held 21 and nothing said so. An analyst
+                    // reads this before anything else; it has to account for the
+                    // gap rather than leave it to be discovered.
+                    tablesShipped = filter.TablesShipped,
+                    tablesWithheld = filter.TablesWithheld,
                 },
                 attribution = attribution == null ? null : new
                 {
@@ -307,6 +372,11 @@ public sealed class DeepExportRunner
                 try { Process.GetCurrentProcess().PriorityClass = previousPriority.Value; } catch (Exception) { }
             }
             try { Directory.Delete(staging, recursive: true); } catch (Exception) { }
+            // The unfiltered copy was never in the package and does not stay on
+            // the disk either. Deleted on the failure path too, which is the one
+            // that matters: an aborted run must not leave 21 tables in a folder
+            // beside the packages somebody zips by hand.
+            try { Directory.Delete(working, recursive: true); } catch (Exception) { }
             // The run's own account of itself, beside the package. Warnings
             // are the part worth reading when something looks thin.
             foreach (string warning in warnings) log.Add("warning: " + warning);
