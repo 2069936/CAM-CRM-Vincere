@@ -1,15 +1,19 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { identityOf, readCatalog, sameGeometry, toRow, usable } from './import_strategy_catalog.mjs';
+import { manifestFrom, manifestShapeOf, pathsOf } from './deepExportManifestShape.js';
+import { identityOf, manifestSource, readCatalog, sameGeometry, toRow, usable } from './import_strategy_catalog.mjs';
 
-// Synthetic only. Nothing here reads a real export.
+// Synthetic only. Nothing here reads a real export. The manifest suite reads
+// the agent's SOURCE - DeepExportRunner.cs - for the field names it writes,
+// which is not an export either.
 
 const SCRIPT = fileURLToPath(new URL('./import_strategy_catalog.mjs', import.meta.url));
+const RUNNER = fileURLToPath(new URL('../collector/src/Vincere.AutoExport.Agent.UI/DeepExport/DeepExportRunner.cs', import.meta.url));
 
 const line = (over = {}) => ({
   family: 'G4M', version: 'v1', risk: 'Low', propFirm: false, instrument: 'MES',
@@ -97,5 +101,84 @@ describe('the file on disk', () => {
     expect(out).toMatch(/1 skipped/);
     expect(out).toMatch(/2 distinct template identities/);
     expect(out).toMatch(/nothing was compared/);
+  });
+});
+
+/**
+ * The reader against the writer, with nothing hand-written in between.
+ *
+ * The bug these cover: the import asked for `manifest.machineId` and
+ * `manifest.createdAtUtc`; DeepExportRunner writes `source.machineId` and
+ * `createdAt`. Both reads came back undefined on every real export and the
+ * import said nothing, so every row landed with a null machine and a null
+ * date. A fixture typed out by hand would have been typed from the same wrong
+ * reading and would still be green, so the manifest here is built from the
+ * names found in DeepExportRunner.cs instead.
+ */
+describe('the manifest, read the way the agent writes it', () => {
+  const shape = manifestShapeOf(readFileSync(RUNNER, 'utf8'));
+  const sample = (path) => `written-at-${path}`;
+
+  it('actually found the agent\'s manifest, rather than nothing at all', () => {
+    // The guard on the guard. A parser that quietly returned {} would build an
+    // empty manifest, and every assertion below would be about nothing.
+    const paths = pathsOf(shape);
+    expect(paths).toContain('kind');
+    expect(paths).toContain('exportId');
+    expect(paths).toContain('timeZone');
+    expect(paths.length).toBeGreaterThan(20);
+    expect(Object.keys(shape.source)).toHaveLength(8);
+  });
+
+  it('takes the machine and the export time from where the agent puts them', () => {
+    // Rename either side of this - the field in DeepExportRunner.cs, or the
+    // key manifestSource asks for - and the two stop meeting here.
+    expect(manifestSource(manifestFrom(shape, sample))).toEqual({
+      machineId: 'written-at-source.machineId',
+      exportedAt: 'written-at-createdAt',
+    });
+  });
+
+  it('reads nothing from the shape the import used to assume', () => {
+    // The old reading, exactly: machineId at the top level, the date under a
+    // name nobody writes. This is what was passing silently.
+    const drifted = manifestFrom(shape, sample);
+    drifted.machineId = drifted.source.machineId;
+    delete drifted.source.machineId;
+    drifted.createdAtUtc = drifted.createdAt;
+    delete drifted.createdAt;
+    expect(manifestSource(drifted)).toEqual({ machineId: null, exportedAt: null });
+  });
+
+  it('carries both onto every row it imports', () => {
+    const { machineId, exportedAt } = manifestSource(manifestFrom(shape, sample));
+    expect(toRow(line(), machineId, exportedAt)).toMatchObject({
+      source_machine_id: 'written-at-source.machineId',
+      source_export_at: 'written-at-createdAt',
+    });
+  });
+
+  it('says so out loud when an export carries no provenance', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'catalog-manifest-'));
+    try {
+      mkdirSync(join(folder, 'attribution'), { recursive: true });
+      writeFileSync(join(folder, 'attribution', 'catalog.jsonl'), JSON.stringify(line()));
+      const run = () => spawnSync(process.execPath, [SCRIPT, '--export', folder, '--dry-run'], {
+        encoding: 'utf8',
+        env: { ...process.env, SUPABASE_URL: '', SUPABASE_SERVICE_ROLE_KEY: '' },
+      });
+
+      writeFileSync(join(folder, 'manifest.json'), JSON.stringify(manifestFrom(shape, sample)));
+      const complete = run();
+      expect(complete.status).toBe(0);
+      expect(complete.stderr).not.toMatch(/WARNING/);
+
+      writeFileSync(join(folder, 'manifest.json'), JSON.stringify({ schemaVersion: 1, kind: 'deep_export' }));
+      const bare = run();
+      expect(bare.status).toBe(0);
+      expect(bare.stderr).toMatch(/no source\.machineId and no createdAt in the manifest/);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
 });
