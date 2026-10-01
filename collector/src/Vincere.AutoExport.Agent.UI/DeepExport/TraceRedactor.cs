@@ -11,15 +11,17 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
 /* ---------------------------------------------------------------------------
  * WHY THERE ARE TWO REDACTORS, AND WHY THIS ONE COULD NOT BE THE OTHER.
  *
- * SecretRedactor asks "is this field NAMED like a secret?" and it asks it of a
- * parsed JSON tree. Both halves of that are wrong for NinjaTrader's trace and
- * log files, so pointing SecretRedactor at them would have been worse than
- * doing nothing:
+ * SecretRedactor asks "is this field NAMED like a secret?", and when this was
+ * written it asked it of a parsed JSON tree. Both halves of that are wrong for
+ * NinjaTrader's trace and log files, so pointing it at them would have been
+ * worse than doing nothing:
  *
- *   - THE FILES ARE NOT JSON. SecretRedactor.RedactJsonText catches the parse
+ *   - THE FILES ARE NOT JSON. A whole-document JSON rule catches the parse
  *     failure and returns a one-line "withheld" stub. Aimed at 19 MB of trace,
  *     it replaces the whole file with that stub and the export loses the thing
- *     it exists to carry.
+ *     it exists to carry. (That rule is now AgentConfigProjection and it is an
+ *     allowlist, which only sharpens the point: it would emit none of a trace
+ *     file, because a trace file has none of the keys it names.)
  *   - THE KEY IS NOT NAMED LIKE A SECRET. The broker login is logged as
  *     `user=`, which no secret-name list would ever contain, because `user` is
  *     the most ordinary field name there is.

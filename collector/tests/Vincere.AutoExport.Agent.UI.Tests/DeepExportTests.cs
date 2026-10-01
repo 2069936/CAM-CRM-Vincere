@@ -1305,7 +1305,7 @@ public sealed class DeepExportTests : IDisposable
         // Acceptance 6. A grep over the unpacked package for
         // password|apikey|token|secret finds only "***".
         DeepExportResult result = await Runner(
-            "{\"deviceToken\":\"AAAA\",\"nested\":{\"apiKey\":\"BBBB\",\"schedule\":\"16:35\"},\"password\":\"CCCC\",\"emptySecret\":\"\"}")
+            "{\"scheduleTime\":\"16:35\",\"deviceToken\":\"AAAA\",\"nested\":{\"apiKey\":\"BBBB\",\"schedule\":\"16:40\"},\"password\":\"CCCC\",\"emptySecret\":\"\"}")
             .RunAsync();
         string extracted = Path.Combine(root, "y");
         ZipFile.ExtractToDirectory(result.ZipPath, extracted);
@@ -1313,13 +1313,23 @@ public sealed class DeepExportTests : IDisposable
         Assert.DoesNotContain("AAAA", config);
         Assert.DoesNotContain("BBBB", config);
         Assert.DoesNotContain("CCCC", config);
-        Assert.Contains("16:35", config);
+
+        // THESE USED TO BE ASSERTED AS "***", AND THE RULE CHANGED UNDER THEM.
+        // The file was copied through SecretRedactor, a denylist, which masked a
+        // secret-named key and passed everything else - including clientName, a
+        // person, which is why this test was green while the export said who it
+        // was about. It is now an allowlist: a key it does not name is not in
+        // the file at all, so there is no value left to mask. The keys are still
+        // accounted for, by name, under _projection.notProjected; the mask and
+        // the empty-stays-empty rule still apply to the fields the projection
+        // DOES name, and AgentConfigProjectionTests is where that is asserted.
         JObject parsed = JObject.Parse(config);
-        Assert.Equal("***", (string)parsed["deviceToken"]);
-        Assert.Equal("***", (string)parsed["nested"]["apiKey"]);
-        // A credential that was never set stays empty, so "never configured"
-        // and "configured and hidden" remain distinguishable.
-        Assert.Equal("", (string)parsed["emptySecret"]);
+        Assert.Equal("16:35", (string)parsed["scheduleTime"]);
+        Assert.Null(parsed["deviceToken"]);
+        Assert.Null(parsed["nested"]);
+        Assert.Null(parsed["password"]);
+        string[] accountedFor = parsed["_projection"]["notProjected"].Select(name => (string)name).ToArray();
+        Assert.Equal(new[] { "deviceToken", "nested", "password", "emptySecret" }, accountedFor);
 
         var secretPattern = new Regex("(password|apikey|token|secret)\\s*\"?\\s*:\\s*\"([^\"]*)\"", RegexOptions.IgnoreCase);
 
@@ -1628,6 +1638,15 @@ public sealed class DeepExportTests : IDisposable
         Assert.Contains("template", sentence, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("left out", sentence, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("licence", sentence, StringComparison.OrdinalIgnoreCase);
+
+        // AND THE CLIENT'S NAME, which is a third claim and the newest one.
+        // config/agent.config.redacted.json carried it on both real exports while
+        // this sentence listed only credentials, so the operator was told the
+        // package was anonymous and was handing over one that named a person.
+        // The name is masked now; the one sentence a human reads has to say so,
+        // and must not imply the name is in there.
+        Assert.DoesNotContain("client", contains, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("client", sentence, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CollectorRoot()
