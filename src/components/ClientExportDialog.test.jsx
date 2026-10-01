@@ -12,9 +12,14 @@
 // 2. NEVER A SILENT PARTIAL. A pull too big for one response is split into parts
 //    sized by bytes, and the split is shown before it happens. The property that
 //    matters is the refusal: when splitting cannot deliver the set whole, the
-//    button does not go. Four good files and a 413 on the fifth is exactly the
+//    button does not go. Four good parts and a 413 on the fifth is exactly the
 //    truncation the endpoint refuses to do inside one payload, moved into a
 //    downloads folder where nothing is watching for it.
+//
+//    The parts are still one request each, and they still each fit the response
+//    ceiling — that constraint has not moved. What changed is that they now
+//    leave as ONE zip (src/domain/clientExportPackage.js), so this dialog talks
+//    about requests where it used to talk about files.
 //
 // Synthetic throughout, so CI runs all of it. What the parts actually WEIGH on
 // the real book is src/domain/clientExportPlan.book.test.js.
@@ -141,10 +146,12 @@ describe('export scope', () => {
 const OVER_ONE_RESPONSE = Array.from({ length: 14 }, (_, index) => client(`h${index}`, 20));
 
 describe('a pull too big for one response', () => {
-  it('says how many files it will be before the download starts', () => {
+  it('says it will be read in parts, and handed over as one zip', () => {
     open({ clients: OVER_ONE_RESPONSE, namedScopeForAll: true });
-    expect(screen.getByText(/Too big for one file/)).toBeTruthy();
-    expect(downloadButton().textContent).toMatch(/Download \d+ files/);
+    expect(screen.getByText(/Too big for one request/)).toBeTruthy();
+    expect(screen.getByText(/downloaded as one zip/)).toBeTruthy();
+    // The part count stays on the button: it is the wait being agreed to.
+    expect(downloadButton().textContent).toMatch(/Download zip \(\d+ parts\)/);
   });
 
   it('sends one request per part, each labelled and each with its own clients', () => {
@@ -249,6 +256,11 @@ describe('after the download', () => {
 
 /* ── The wiring, which is the half a rendered dialog cannot show ──────────── */
 
+function runClientExportBody() {
+  const runner = APP.slice(APP.indexOf('async function runClientExport('));
+  return runner.slice(0, runner.indexOf('\n  /* THE SESSION THE LOADERS READ'));
+}
+
 describe('what App.jsx hands the dialog', () => {
   it('gives the manager the CAM whose workspace is open, and a CAM nothing', () => {
     // Without this the third scope renders on nobody's screen and every test
@@ -258,25 +270,36 @@ describe('what App.jsx hands the dialog', () => {
   });
 
   it('walks the parts instead of exporting only the first', () => {
-    const runner = APP.slice(APP.indexOf('async function runClientExport('));
-    const body = runner.slice(0, runner.indexOf('\n  function persistSession'));
+    const body = runClientExportBody();
     expect(body).toMatch(/for \(const request of parts\)/);
     // A failure has to stop the walk. A catch inside the loop would keep going
-    // and produce a folder that looks complete.
-    expect(body.indexOf('} catch (error) {')).toBeGreaterThan(body.indexOf('payloads.push(payload)'));
+    // and produce an archive that looks complete.
+    const pushed = body.indexOf('payloads.push(await loadClientScopedExport(request))');
+    expect(pushed).toBeGreaterThan(-1);
+    expect(body.indexOf('} catch (error) {')).toBeGreaterThan(pushed);
   });
 
   it('keeps the parts that did arrive, so their number can be reported', () => {
-    const runner = APP.slice(APP.indexOf('async function runClientExport('));
-    const body = runner.slice(0, runner.indexOf('\n  function persistSession'));
-    expect(body).toContain('result: payloads.length ? { payloads, expectedParts: parts.length } : null');
+    expect(runClientExportBody()).toContain(
+      'result: payloads.length ? { payloads, expectedParts: parts.length } : null',
+    );
   });
 
-  it('puts the part number in the filename as well as in the payload', () => {
-    // Five files named alike is the one place scope.batch cannot be read
-    // without opening them.
-    const runner = APP.slice(APP.indexOf('async function runClientExport('));
-    const body = runner.slice(0, runner.indexOf('\n  function persistSession'));
-    expect(body).toMatch(/part\$\{payload\.scope\.batch\.index\}of\$\{payload\.scope\.batch\.of\}/);
+  it('writes ONE file per run, at the end, instead of one per part', () => {
+    // The reason this feature exists. A save inside the loop is the four-file
+    // download it replaced, and it would pass every other test here.
+    const body = runClientExportBody();
+    const loop = body.slice(body.indexOf('for (const request of parts)'), body.indexOf('saveClientExportPackage'));
+    expect(loop).not.toContain('saveClientExportPackage');
+    expect(body.match(/saveClientExportPackage\(payloads, parts\.length\)/g)).toHaveLength(2);
+  });
+
+  it('writes the parts it did get when the walk fails, rather than dropping them', () => {
+    // Those parts cost a round trip each through every table. The archive that
+    // carries them names itself INCOMPLETE — pinned in
+    // src/domain/clientExportPackage.test.js, which is where the naming lives.
+    const body = runClientExportBody();
+    const failure = body.slice(body.indexOf('} catch (error) {'));
+    expect(failure).toContain('saveClientExportPackage(payloads, parts.length)');
   });
 });

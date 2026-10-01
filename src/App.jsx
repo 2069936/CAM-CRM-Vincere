@@ -129,6 +129,7 @@ import {
   packageFileName,
 } from "./domain/dailyReportPackage";
 import { downloadReportPdfBytes, saveBlobAs } from "./domain/reportPdfDownload";
+import { buildClientExportPackage } from "./domain/clientExportPackage";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import { buildBatchImportPlan } from "./domain/batchImport";
 import { suggestAccountDefaults } from "./domain/accountTargets";
@@ -1916,6 +1917,21 @@ function downloadTextFile(fileName, text, type = "application/json") {
   anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Writes whatever a client-export run produced, whether it finished or not.
+ *
+ * Goes through saveBlobAs rather than downloadTextFile because the package may
+ * be megabytes of zip: downloadTextFile revokes its object URL in the same task
+ * as the click, which only schedules the download, and the larger the blob the
+ * likelier that race is to eat it.
+ */
+function saveClientExportPackage(payloads, expectedParts) {
+  const file = buildClientExportPackage({ payloads, expectedParts });
+  if (!file) return null;
+  saveBlobAs(file.fileName, new Blob([file.body], { type: file.type }));
+  return file;
 }
 
 function csvCell(value) {
@@ -13274,13 +13290,19 @@ export default function App() {
     setClientExport({ open: true, focusClientId, busy: false, progress: null, error: "", result: null });
   }
   /**
-   * Runs the parts the dialog planned, in order, one file each.
+   * Runs the parts the dialog planned, in order, and hands over ONE file.
    *
-   * A pull that fits is one part and behaves exactly as it always did. A pull
-   * that does not is several, and the two properties that matter are that a
-   * failure STOPS the walk and that what did arrive is reported as incomplete:
-   * the parts that already downloaded are real files sitting in a folder, and
-   * the only place anyone can be told they are not the whole range is here.
+   * A pull that fits is one part and arrives as the .json it always did. A pull
+   * that does not is several requests, each still inside the response ceiling,
+   * held until the walk ends and written as a single archive — the split is the
+   * server's constraint and there is no reason for it to become the CAM's
+   * filing problem.
+   *
+   * A failure STOPS the walk, and what did arrive is still written rather than
+   * discarded: those parts cost a round trip each through every table. They go
+   * out named INCOMPLETE, with the count in the filename and again in the
+   * archive's manifest, so the one thing a folder cannot otherwise show — that
+   * this is a fragment — is on the fragment itself.
    */
   async function runClientExport(requests) {
     const parts = Array.isArray(requests) ? requests : [requests];
@@ -13294,30 +13316,13 @@ export default function App() {
     const payloads = [];
     try {
       for (const request of parts) {
-        const payload = await loadClientScopedExport(request);
-        const stamp = `${payload.range.from}_${payload.range.to}`;
-        const label = payload.scope.includedClientCount === 1
-          ? (payload.scope.includedClients[0]?.name || "client")
-              .toLowerCase()
-              .replace(/[^a-z0-9]+/g, "-")
-              .replace(/^-|-$/g, "")
-          : `${payload.scope.includedClientCount}-clients`;
-        // The part number goes in the FILENAME as well as in the payload. A
-        // folder of five files named alike is the one place the envelope's own
-        // `scope.batch` cannot be read without opening them.
-        const part = payload.scope?.batch
-          ? `-part${payload.scope.batch.index}of${payload.scope.batch.of}`
-          : "";
-        downloadTextFile(
-          `cam-crm-export-${label}-${stamp}${part}.json`,
-          JSON.stringify(payload, null, 2),
-        );
-        payloads.push(payload);
+        payloads.push(await loadClientScopedExport(request));
         setClientExport((prev) => ({
           ...prev,
           progress: { done: payloads.length, total: parts.length },
         }));
       }
+      saveClientExportPackage(payloads, parts.length);
       setClientExport((prev) => ({
         ...prev,
         busy: false,
@@ -13326,13 +13331,17 @@ export default function App() {
       }));
     } catch (error) {
       console.error("[CRM] Client export failed:", error);
+      // Written before the state update so that the file and the sentence about
+      // it cannot disagree: if the archive fails to save, the dialog says the
+      // export failed rather than pointing at a file nobody has.
+      saveClientExportPackage(payloads, parts.length);
       setClientExport((prev) => ({
         ...prev,
         busy: false,
         progress: null,
         // The parts that did arrive are kept, so the dialog can say how many of
-        // how many are on disk. Dropping them here would leave real files with
-        // nothing on screen admitting they are a fragment.
+        // how many are in the archive on disk. Dropping them here would leave a
+        // real file with nothing on screen admitting it is a fragment.
         result: payloads.length ? { payloads, expectedParts: parts.length } : null,
         error: parts.length > 1
           ? `Part ${payloads.length + 1} of ${parts.length} failed: ${error.message || "could not export client data."}`
