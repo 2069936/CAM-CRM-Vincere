@@ -64,11 +64,24 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  * mask there would delete the fact that the field was logged and protect
  * nothing.
  *
- * NOT IN SCOPE HERE, AND STILL OPEN. The same export carries a Windows account
- * name in 278 filesystem paths (only 22 of them inside a key='value', the rest
- * bare in prose) and a licence key 890 times inside a <LicenseKey> XML element
- * under templates/. Neither is a `user=` and neither is reached by this class.
- * They are named by this review, not closed by it.
+ * NOT IN SCOPE HERE. The same export carries a Windows account name in 278
+ * filesystem paths (only 22 of them inside a key='value', the rest bare in
+ * prose). It is not a `user=` and this class does not reach it. Named by this
+ * review, not closed by it.
+ *
+ * THE LICENCE KEY THIS HEADER ALSO NAMED IS CLOSED, ELSEWHERE, AND THE COUNT
+ * WAS WRONG. It said "890 times inside a <LicenseKey> XML element under
+ * templates/". Re-measured on both real exports: the literal `LicenseKey`
+ * appears 1,772 times under templates/, which is 886 open plus 886 close tags,
+ * and the VALUE appears 886 times, once in each of 886 files. The 890 was
+ * templates/ plus four copies in a folder a human had added to the unpacked
+ * export by hand. Anyone verifying a fix on a tag count is counting the wrong
+ * number, and a rule that empties an element leaves every tag in place. The key
+ * travelled by three doors and all three are now rules: templates/ no longer
+ * ships (DeepExportSources), the queue snapshots are emptied
+ * (StrategyConfigurationRedactor) and the database blobs are masked
+ * (StrategyUserdataRedactor). None of them is this class, which is why this
+ * paragraph is a pointer and not a fourth rule.
  * ------------------------------------------------------------------------- */
 public static class TraceRedactor
 {

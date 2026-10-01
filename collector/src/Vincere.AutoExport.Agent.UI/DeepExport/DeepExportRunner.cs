@@ -26,10 +26,35 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     backup API and everything else is a file copy at BelowNormal priority.
  *   - A source that fails is a warning in the manifest, not an abort. The only
  *     abort is being unable to write the ZIP itself.
- *   - Nothing that authenticates leaves the machine. Two rules, because there
- *     are two kinds of file: SecretRedactor for the JSON config, by key name,
- *     and TraceRedactor for the trace and log text, by measured line shape.
- *     TraceRedactor's header says why one could not do both jobs.
+ *   - Nothing that authenticates leaves the machine. FOUR rules, because there
+ *     are four kinds of file, and each one is a single definition applied in the
+ *     copy itself rather than in a tidying pass:
+ *       SecretRedactor                  the agent's JSON config, by key name.
+ *       TraceRedactor                   the trace and log text, by measured
+ *                                       line shape. Its header says why one
+ *                                       rule could not do both jobs.
+ *       StrategyConfigurationRedactor   the autoexport/ queue snapshots, by
+ *                                       emptying a strategy row's parameter
+ *                                       maps. Shared with the Desktop report,
+ *                                       which is where it used to live.
+ *       StrategyUserdataRedactor        a secret-named element inside any TEXT
+ *                                       or BLOB cell of the shipped database,
+ *                                       in UTF-16LE or UTF-8, escaped or not.
+ *                                       Applied by SqliteSnapshot.CopyRows.
+ *     All four mask the value and keep the key, and leave an empty value empty,
+ *     so "never configured" and "configured and hidden" stay different facts.
+ *   - THE PACKAGE IS NOT THEREBY "CLEAN", and no commit here should say so. It
+ *     still carries the desk's declared geometry in attribution/catalog.jsonl
+ *     and the live geometry in the Strategies blobs, both deliberately. It also
+ *     carries the REALISED geometry in attribution/trades.jsonl, which records
+ *     the stop and target each trade actually exhibited, so a reader who never
+ *     opens the catalogue can still recover what the algorithms do from the
+ *     trades alone. That is three carriers of the geometry and not two, and the
+ *     sentence above said two until a reviewer counted. None of the three is
+ *     removable without taking attribution with it. And the
+ *     same queue snapshots go to the CRM every day by a different door, which
+ *     this cannot reach: CrmClient sends the capture unchanged and the server
+ *     redacts. That is its own item at a higher frequency than this one.
  *   - The database in the package holds only the allowlisted tables. It is a
  *     new file built from the consistent copy, not the copy itself, and the
  *     copy is made OUTSIDE the staging folder that becomes the ZIP so the
@@ -37,6 +62,10 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     SqliteSnapshot's header for what that costs and what it buys.
  *   - It is the ONLY copy of those tables in the package. db/ holds the
  *     database and the schema, and each allowlisted table appears in it once.
+ *   - NOTHING SHIPS TWICE. The strategy library used to travel as 886 raw .xml
+ *     files under templates/ AND as the catalogue derived from them; the raw
+ *     copy had no reader and is gone. DeepExportSources' header has the
+ *     measurements and names what that costs.
  *   - Two runs produce two independent packages. Nothing is modified.
  *
  * WHAT IT DOES NOT DO. It does not analyse. The package is raw material plus a
@@ -232,6 +261,35 @@ public sealed class DeepExportRunner
                     {
                         string target = Path.Combine(staging, zipRelative.Replace('/', Path.DirectorySeparatorChar));
                         Directory.CreateDirectory(Path.GetDirectoryName(target));
+                        // THE QUEUE SNAPSHOTS ARE THE THIRD KIND OF FILE, and the
+                        // comment that used to sit on them in TraceRedactorTests
+                        // said the config rule already covered them. It did not:
+                        // SecretRedactor is applied to one file, the agent config,
+                        // and until this change its key list had no licence term
+                        // either. So they get the rule that is actually theirs,
+                        // here in the copy with the other two. Whole-document, so
+                        // it reads the text rather than streaming lines.
+                        if (StrategyConfigurationRedactor.AppliesTo(zipRelative))
+                        {
+                            // Read through a stream with the SAME share flags the
+                            // byte copy six lines down opens with. The agent writes
+                            // these files itself and may still hold one open, and
+                            // File.ReadAllTextAsync asks for FileShare.Read, which
+                            // on a live machine throws IOException and takes the
+                            // whole export with it. The other path has carried
+                            // ReadWrite | Delete all along for exactly this reason;
+                            // this branch is new and did not inherit it.
+                            string capture;
+                            using (FileStream captureInput = new(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                            using (StreamReader captureReader = new(captureInput))
+                                capture = await captureReader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+                            await File.WriteAllTextAsync(
+                                target,
+                                StrategyConfigurationRedactor.RedactCaptureJsonText(capture),
+                                cancellationToken).ConfigureAwait(false);
+                            copied++;
+                            continue;
+                        }
                         using (FileStream input = new(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                         using (FileStream output = File.Create(target))
                         {

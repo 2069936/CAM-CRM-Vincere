@@ -40,6 +40,61 @@ public sealed class DeepExportTests : IDisposable
     /// </summary>
     private const string WithheldFreed = "ZZFREEDWITHHELDROWZZ";
 
+    /// <summary>
+    /// The NinjaTrader licence key, planted in ALL THREE CARRIERS it was measured
+    /// in. FABRICATED for this file, in the measured shape
+    /// V-XXXXXX-XXXXXXXX-XXXXXXX. No value from a real export is in here, and
+    /// none may be put here: the two commits that closed earlier secrets leaks in
+    /// this repo each pasted a live value in to make an assertion concrete, and
+    /// that is how one ended up in git history.
+    ///
+    /// WHY THREE CARRIERS AND NOT ONE. The export was measured carrying this key
+    /// three ways, and any one of them alone gives a green that means nothing:
+    ///   templates/ .xml           886 of 886 files, plain ASCII in an element.
+    ///   autoexport/sent/*.json    12 occurrences, plain ASCII in a map.
+    ///   Strategies.Userdata       12 of 12 rows, UTF-16LE and HTML-ESCAPED, so
+    ///                             an ASCII grep over the 21.9 MB database
+    ///                             returns 0 while the key is in the file.
+    /// The third is why the sweep below reads every file in three forms.
+    /// </summary>
+    private const string TestLicence = "V-ZZQQ77-FIXTUREK-TESTKEY";
+
+    /// <summary>
+    /// The fixture's one strategy template, its path and its content. The name
+    /// carries the instrument, risk and version the way a real one does, because
+    /// StrategyTemplateReader takes the identity from the PATH and only the
+    /// geometry from the XML - a file called G4M.xml yields no catalogue row and
+    /// could not show that the catalogue survives templates/ not shipping.
+    /// </summary>
+    private const string TemplateFamily = "G4M";
+    private const string TemplateFile = "1 - G4M (MES) - 15 Min - Low Risk - v1 - Period 0.xml";
+
+    /// <summary>
+    /// What a Strategies.Userdata blob really holds, reproduced: an outer plain
+    /// XML document whose text content is HTML-escaped XML. The licence key is
+    /// inside the escaped half, which is the whole reason the sweep has to look
+    /// for the escaped form in UTF-16LE. The parameterisation beside it is the
+    /// part the rule deliberately leaves alone, so it is here to be asserted on.
+    /// </summary>
+    private const string StrategyBlobText =
+        "<NinjaTrader><_Impl>&lt;?xml version=\"1.0\"?&gt;\r\n&lt;G4M_PF&gt;\r\n"
+        + "  &lt;PosSize1&gt;2&lt;/PosSize1&gt;\r\n"
+        + "  &lt;StopLossTicks&gt;40&lt;/StopLossTicks&gt;\r\n"
+        + "  &lt;TrailByTicks&gt;8&lt;/TrailByTicks&gt;\r\n"
+        + "  &lt;LicenseKey&gt;" + TestLicence + "&lt;/LicenseKey&gt;\r\n"
+        + "  &lt;MondayFilter&gt;true&lt;/MondayFilter&gt;\r\n"
+        + "&lt;/G4M_PF&gt;</_Impl></NinjaTrader>";
+
+    /// <summary>The same blob after the rule, built by hand so the assertion is not circular.</summary>
+    private const string StrategyBlobMasked =
+        "<NinjaTrader><_Impl>&lt;?xml version=\"1.0\"?&gt;\r\n&lt;G4M_PF&gt;\r\n"
+        + "  &lt;PosSize1&gt;2&lt;/PosSize1&gt;\r\n"
+        + "  &lt;StopLossTicks&gt;40&lt;/StopLossTicks&gt;\r\n"
+        + "  &lt;TrailByTicks&gt;8&lt;/TrailByTicks&gt;\r\n"
+        + "  &lt;LicenseKey&gt;***&lt;/LicenseKey&gt;\r\n"
+        + "  &lt;MondayFilter&gt;true&lt;/MondayFilter&gt;\r\n"
+        + "&lt;/G4M_PF&gt;</_Impl></NinjaTrader>";
+
     private readonly string root = Path.Combine(Path.GetTempPath(), "vincere-deep-" + Guid.NewGuid().ToString("N"));
     private readonly string nt;
     private readonly string agent;
@@ -54,7 +109,7 @@ public sealed class DeepExportTests : IDisposable
         Directory.CreateDirectory(Path.Combine(nt, "log"));
         Directory.CreateDirectory(Path.Combine(nt, "trace"));
         Directory.CreateDirectory(Path.Combine(nt, "workspaces"));
-        Directory.CreateDirectory(Path.Combine(nt, "templates", "Strategy", "Sub"));
+        Directory.CreateDirectory(Path.Combine(nt, "templates", "Strategy", TemplateFamily));
         Directory.CreateDirectory(Path.Combine(agent, "queue", "sent"));
         Directory.CreateDirectory(Path.Combine(nt, "bin", "Custom"));
 
@@ -74,8 +129,46 @@ public sealed class DeepExportTests : IDisposable
             + $"2026-09-15 09:30:00:150 ERROR: There was a problem authenticating account {TestLogin} online. Please try again.\r\n"
             + "2026-09-15 09:30:01:200 (Continuum) Cbi.Order: account='LTATAGREH509159302022' orderId='12345678901' user=''\r\n");
         File.WriteAllText(Path.Combine(nt, "workspaces", "Main.xml"), "<Workspace/>");
-        File.WriteAllText(Path.Combine(nt, "templates", "Strategy", "Sub", "G4M.xml"), "<Strategy/>");
-        File.WriteAllText(Path.Combine(agent, "queue", "sent", "2026-09-15_abc.json"), "{}");
+
+        // THE TEMPLATE LIBRARY ON THE MACHINE, WHICH IS NOT THE SAME THING AS IN
+        // THE PACKAGE. It stays on disk because the catalogue is derived from it
+        // at export time, from the live folder; what this fixture now proves is
+        // that the derivation still happens while the 886 raw files stop
+        // travelling. It carries the geometry a real one carries and the licence
+        // key a real one carries - 886 of 886 files had a non-empty element.
+        File.WriteAllText(
+            Path.Combine(nt, "templates", "Strategy", TemplateFamily, TemplateFile),
+            "<StrategyTemplate><Strategy><G4M>"
+            + "<PosSize1>2</PosSize1><PosSize2>1</PosSize2><PosSize3>1</PosSize3>"
+            + "<StopLossTicks>40</StopLossTicks>"
+            + "<ProfitTarget1Ticks>20</ProfitTarget1Ticks>"
+            + "<ProfitTarget2Ticks>60</ProfitTarget2Ticks>"
+            + "<ProfitTarget3Ticks>120</ProfitTarget3Ticks>"
+            + "<TrailByTicks>8</TrailByTicks><BreakEvenAfterTicks>12</BreakEvenAfterTicks>"
+            + $"<LicenseKey>{TestLicence}</LicenseKey>"
+            + "</G4M></Strategy></StrategyTemplate>");
+
+        // A QUEUE SNAPSHOT SHAPED LIKE A REAL ONE. Measured: a strategy row
+        // carries 87 entries in `parameters` and 149 in `extraValues`, and the
+        // key sits in extraValues twice - once as LicenseKey and once inside the
+        // DisplayParameters string. Both are here, with the geometry beside them,
+        // and the trading fields that must SURVIVE the rule.
+        File.WriteAllText(
+            Path.Combine(agent, "queue", "sent", "2026-09-15_abc.json"),
+            "{\"captureId\":\"c1\",\"tradingDate\":\"2026-09-15\","
+            + "\"accounts\":[{\"accountName\":\"LTATAGREH509159302022\","
+            + "\"accountValues\":{\"NetLiquidation\":51234.5,\"BuyingPower\":120000}}],"
+            + "\"orders\":[{\"orderId\":\"12345678901\",\"instrument\":\"MES\"}],"
+            + "\"executions\":[{\"executionId\":\"e1\",\"price\":7675.25}],"
+            + "\"strategies\":[{\"strategyId\":\"s1\",\"strategyName\":\"G4M\","
+            + "\"accountName\":\"LTATAGREH509159302022\",\"instrument\":\"MES\","
+            + "\"state\":\"Enabled\",\"realizedPnl\":312.5,"
+            + "\"parameterCaptureStatus\":\"captured\","
+            + "\"parameters\":{\"PosSize1\":2,\"StopLossTicks\":40},"
+            + "\"extraValues\":{\"PosSize1\":\"2\",\"StopLossTicks\":\"40\","
+            + "\"TrailByTicks\":\"8\",\"StartTrailAfterTicks\":\"16\","
+            + $"\"LicenseKey\":\"{TestLicence}\","
+            + $"\"DisplayParameters\":\"StopLossTicks=40;LicenseKey={TestLicence}\"}}}}]}}");
         File.WriteAllText(Path.Combine(agent, "queue", "sent", "2026-09-15_abc.json.receipt"), "ok");
         File.WriteAllText(Path.Combine(agent, "queue", "sent", "notes.txt"), "not ours");
         File.WriteAllText(Path.Combine(nt, "db", "minute", "ES.mn"), new string('x', 10_000));
@@ -110,15 +203,41 @@ public sealed class DeepExportTests : IDisposable
         command.CommandText = @"
             CREATE TABLE Accounts (Id INTEGER PRIMARY KEY, Name TEXT, Data BLOB);
             CREATE TABLE Executions (Id INTEGER PRIMARY KEY, Account TEXT, Time TEXT, Price REAL);
-            CREATE TABLE Orders (Id INTEGER PRIMARY KEY, Account TEXT, Instrument INTEGER REFERENCES Instruments(Id));
+            -- THE COLUMNS AttributionExport ACTUALLY SELECTS. This table used to
+            -- be (Id, Account TEXT, Instrument) and the attribution step died on
+            -- it every single run: the query reads o.Name, o.Quantity,
+            -- o.AvgFillPrice and o.Time, none of which existed, and
+            -- AttributionExport swallows the SqliteException into a warning. So
+            -- the fixture produced a package with a catalogue and no trades and
+            -- nothing noticed. Account is an integer key into Accounts here, as it
+            -- is on a real machine, so the join resolves instead of silently
+            -- yielding nothing.
+            CREATE TABLE Orders (
+                Id INTEGER PRIMARY KEY, Account INTEGER REFERENCES Accounts(Id),
+                Instrument INTEGER REFERENCES Instruments(Id), Name TEXT,
+                Quantity INTEGER, AvgFillPrice REAL, Time INTEGER);
             CREATE INDEX IX_Executions_Time ON Executions (Time);
             CREATE TABLE MarketDataCache (Id INTEGER PRIMARY KEY);
-            CREATE TABLE Instruments (Id INTEGER PRIMARY KEY, Name TEXT);
+            -- WITHHELD, AND ALSO WHAT ATTRIBUTION NEEDS DURING THE RUN. The
+            -- instrument join goes Orders -> Instruments -> MasterInstruments to
+            -- turn an integer id into a symbol, which is why AttributionExport
+            -- reads the WORKING copy and not the shipped one. MasterInstruments
+            -- and Instruments.MasterInstrument were missing from this fixture
+            -- entirely, so every package it produced carried an attribution-
+            -- skipped warning and a null attribution block in the manifest -
+            -- half the step failing silently, which is exactly what makes a green
+            -- meaningless. Both tables still have to stay out of the package.
+            CREATE TABLE Instruments (Id INTEGER PRIMARY KEY, Name TEXT, MasterInstrument INTEGER);
+            CREATE TABLE MasterInstruments (Id INTEGER PRIMARY KEY, Name TEXT, TickSize REAL);
             CREATE TABLE Users (Id INTEGER PRIMARY KEY, Name TEXT, Password TEXT, Salt TEXT);
             CREATE TABLE JournalEntries (Id INTEGER PRIMARY KEY, Text TEXT);
+            -- LimitPrice beside StopPrice because AttributionExport reads both to
+            -- recover the price before the trail moved it, and a column it selects
+            -- that does not exist throws inside a swallowed catch.
             CREATE TABLE OrderUpdates (
                 [Order] INTEGER NOT NULL REFERENCES Orders(Id), Nr INTEGER NOT NULL,
-                OrderId TEXT, OrderState INTEGER, StatementDate INTEGER, StopPrice REAL, Time INTEGER,
+                OrderId TEXT, OrderState INTEGER, StatementDate INTEGER,
+                LimitPrice REAL, StopPrice REAL, Time INTEGER,
                 PRIMARY KEY ([Order], Nr));
             CREATE TABLE AccountItems (
                 Account INTEGER NOT NULL REFERENCES Accounts(Id), Currency INTEGER, ItemType INTEGER,
@@ -132,9 +251,10 @@ public sealed class DeepExportTests : IDisposable
             INSERT INTO Accounts VALUES (1, 'LTATAGREH509159302022', X'01020304');
             INSERT INTO Executions VALUES (1, 'LTATAGREH509159302022', '2026-08-01 09:30:00', 7675.25);
             INSERT INTO Executions VALUES (2, 'LTATAGREH509159302022', '2026-09-15 10:21:00', 7680.00);
-            INSERT INTO Instruments VALUES (1, 'MNQ 12-26');
-            INSERT INTO Orders VALUES (1, 'LTATAGREH509159302022', 1);
-            INSERT INTO Orders VALUES (2, 'LTATAGREH509159302022', 1);
+            INSERT INTO Instruments VALUES (1, 'MNQ 12-26', 1);
+            INSERT INTO MasterInstruments VALUES (1, 'MES', 0.25);
+            INSERT INTO Orders VALUES (1, 1, 1, 'Buy', 2, 7650.00, 638000000000000121);
+            INSERT INTO Orders VALUES (2, 1, 1, 'Sell', 2, 7655.00, 638000000000000125);
             INSERT INTO JournalEntries VALUES (1, '" + WithheldLive + @" a note about a client');
             INSERT INTO Users VALUES (1, '" + WithheldLive + @"', 'hunter2', 'salt');
             INSERT INTO AccountItems VALUES (1, 1, 1, 50000.0, 638000000000000001);
@@ -143,6 +263,20 @@ public sealed class DeepExportTests : IDisposable
             INSERT INTO Strategies VALUES (2, 'Unlinked', '', NULL);
             INSERT INTO Strategy2Order VALUES (1, 1);";
         command.ExecuteNonQuery();
+
+        // THE CARRIER AN ASCII GREP CANNOT SEE. Measured on a real export:
+        // Strategies holds 12 rows, all 12 Userdata blobs carry a non-empty
+        // LicenseKey, and the payload is UTF-16LE with no BOM whose text is
+        // HTML-ESCAPED XML - the outer document is <NinjaTrader><_Impl> and the
+        // inner tag reads &lt;LicenseKey&gt;. An ASCII search of that 21.9 MB
+        // file returns 0 while the key is in it 12 times. Row 3 gets this blob,
+        // so the fixture holds one blob with the key and two without.
+        using (SqliteCommand userdata = connection.CreateCommand())
+        {
+            userdata.CommandText = "INSERT INTO Strategies (Id, Name, Template, Userdata) VALUES (3, 'G4M_PF', '', $u)";
+            userdata.Parameters.AddWithValue("$u", System.Text.Encoding.Unicode.GetBytes(StrategyBlobText));
+            userdata.ExecuteNonQuery();
+        }
 
         // THE HISTORY, INSERTED OUT OF ORDER ON PURPOSE. Nr is the sequence and
         // the rows arrive in 3, 1, 2. Nothing may depend on insertion order, and
@@ -153,9 +287,12 @@ public sealed class DeepExportTests : IDisposable
         using (SqliteCommand history = connection.CreateCommand())
         {
             history.CommandText = @"
-                INSERT INTO OrderUpdates VALUES (1, 3, 'BROKER-SECOND', 6, 638000000000000000, 7650.25, 638000000000000123);
-                INSERT INTO OrderUpdates VALUES (1, 1, 'BROKER-FIRST', 1, 638000000000000000, 7640.75, 638000000000000121);
-                INSERT INTO OrderUpdates VALUES (1, 2, 'BROKER-FIRST', 2, 638000000000000000, 7645.50, 638000000000000122);";
+                INSERT INTO OrderUpdates ([Order], Nr, OrderId, OrderState, StatementDate, StopPrice, Time)
+                    VALUES (1, 3, 'BROKER-SECOND', 6, 638000000000000000, 7650.25, 638000000000000123);
+                INSERT INTO OrderUpdates ([Order], Nr, OrderId, OrderState, StatementDate, StopPrice, Time)
+                    VALUES (1, 1, 'BROKER-FIRST', 1, 638000000000000000, 7640.75, 638000000000000121);
+                INSERT INTO OrderUpdates ([Order], Nr, OrderId, OrderState, StatementDate, StopPrice, Time)
+                    VALUES (1, 2, 'BROKER-FIRST', 2, 638000000000000000, 7645.50, 638000000000000122);";
             history.ExecuteNonQuery();
         }
 
@@ -507,8 +644,39 @@ public sealed class DeepExportTests : IDisposable
         Assert.NotEmpty(tables);
         foreach (string table in tables)
         {
+            // EXCEPT THE ONE CELL A RULE DELIBERATELY REWRITES, named here rather
+            // than tolerated by a loose comparison. The credential rule masks a
+            // secret-named element inside Strategies.Userdata, so that blob's
+            // length changes and the projection cannot be identical. Every other
+            // table still has to match to the byte, and the Strategies row's every
+            // other column does too - see below.
+            if (string.Equals(table, "Strategies", StringComparison.OrdinalIgnoreCase)) continue;
             Assert.Equal(JsonLinesProjection(live, table), JsonLinesProjection(shipped, table));
         }
+
+        // Strategies: same rows in the same order with the same columns, and the
+        // only difference in the whole table is the length of the one blob the
+        // credential rule rewrote. TheLicenceKeyInsideADatabaseBlobIsMaskedAndThe
+        // GeometryIsNot asserts what it was rewritten TO.
+        string[] liveRows = JsonLinesProjection(live, "Strategies");
+        string[] shippedRows = JsonLinesProjection(shipped, "Strategies");
+        Assert.Equal(liveRows.Length, shippedRows.Length);
+        int rewritten = 0;
+        for (int at = 0; at < liveRows.Length; at++)
+        {
+            if (liveRows[at] == shippedRows[at]) continue;
+            rewritten++;
+            JObject before = JObject.Parse(liveRows[at]);
+            JObject after = JObject.Parse(shippedRows[at]);
+            Assert.Equal(before.Properties().Select(p => p.Name), after.Properties().Select(p => p.Name));
+            foreach (JProperty property in before.Properties())
+            {
+                if (property.Name == "Userdata") continue;
+                Assert.Equal(property.Value, after[property.Name]);
+            }
+            Assert.StartsWith("<blob ", (string)after["Userdata"]);
+        }
+        Assert.Equal(1, rewritten);
 
         // And the one cell the projection could not carry is still in the file as
         // a blob, with its length recoverable - so the placeholder was strictly
@@ -893,7 +1061,230 @@ public sealed class DeepExportTests : IDisposable
         Assert.Contains("logs/log.20260915.txt", names);
         Assert.Contains("trace/trace.20260915.txt", names);
         Assert.Contains("workspaces/Main.xml", names);
-        Assert.Contains("templates/Strategy/Sub/G4M.xml", names);
+    }
+
+    [Fact]
+    public async Task TheRawTemplateLibraryDoesNotTravelAndTheCatalogueStillDoes()
+    {
+        // THE WHOLE OF RULE 1 IN ONE TEST, both halves, because either alone is
+        // misleading. The library shipped as 886 raw .xml files in 20 family
+        // directories - 88.7% of a real manifest's file list, 1,879,557 bytes
+        // deflated, 657x the derived form - and nothing anywhere read it out of a
+        // finished package. attribution/catalog.jsonl is the derived form, it is
+        // the only export file any consumer opens, and it is NOT affected,
+        // because AttributionExport reads the live NinjaTrader folder at step 1b
+        // and not the staged copy.
+        //
+        // The fixture's template is still on disk under templates/Strategy, so a
+        // green here means the copy stopped and the derivation did not.
+        DeepExportResult result = await Runner().RunAsync();
+        Assert.True(File.Exists(Path.Combine(nt, "templates", "Strategy", TemplateFamily, TemplateFile)),
+            "the export must not touch NinjaTrader's own folders");
+
+        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
+        string[] names = zip.Entries.Select(e => e.FullName).ToArray();
+
+        // GONE, by path and by extension, so a renamed destination is caught too.
+        Assert.DoesNotContain(names, n => n.StartsWith("templates", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(names, n => n.Contains("/Strategy/", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(names, n => n.EndsWith(TemplateFile, StringComparison.OrdinalIgnoreCase));
+
+        // AND KEPT, with its row intact. 823 rows on a real machine; one here,
+        // and the geometry has to be the template's own numbers or the catalogue
+        // is present and useless - which is the failure the importer's loud
+        // missing-file guard does NOT catch, because the file would exist.
+        string catalog = ReadEntry(zip, "attribution/catalog.jsonl");
+        Assert.NotEmpty(catalog);
+        string[] rows = catalog.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Single(rows);
+        JObject row = JObject.Parse(rows[0]);
+        Assert.Equal(TemplateFamily, (string)row["family"]);
+        Assert.Equal("MES", (string)row["instrument"]);
+        Assert.Equal("v1", (string)row["version"]);
+        Assert.Equal("Low", (string)row["risk"]);
+        Assert.Equal(40, (int)row["stopTicks"]);
+        Assert.Equal(new[] { 20, 60, 120 }, row["targetTicks"].Select(t => (int)t).ToArray());
+        Assert.Equal(new[] { 2, 1, 1 }, row["sizes"].Select(t => (int)t).ToArray());
+
+        // The catalogue carries no credential - measured 0 on the real one - so
+        // keeping it is not keeping a key.
+        Assert.DoesNotContain(TestLicence, catalog, StringComparison.Ordinal);
+        Assert.DoesNotContain("LicenseKey", catalog, StringComparison.Ordinal);
+
+        // AND THE MANIFEST AGREES, in the same package. A manifest that still
+        // named 886 files the package no longer has would read as tampering, and
+        // the .sha256 beside the ZIP would still verify, which is worse.
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.DoesNotContain(
+            manifest["files"].Select(f => (string)f["path"]),
+            p => p.StartsWith("templates", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(1, (int)manifest["attribution"]["templates"]);
+    }
+
+    [Fact]
+    public void NoSourcePutsTheRawTemplateLibraryBackInThePackage()
+    {
+        // THE STRUCTURAL GUARD. The test above proves the files are absent from
+        // one package; this one proves nobody can put them back by adding a
+        // source, which is the quiet way a fix like this gets undone. The list is
+        // the single definition of what ships as a file - DeepExportSources'
+        // header says so - so asserting against the list is asserting against
+        // every package it will ever produce.
+        Assert.DoesNotContain(DeepExportSources.All, s =>
+            s.ZipFolder.StartsWith("templates", StringComparison.OrdinalIgnoreCase)
+            || s.RelativeFolder.Replace('\\', '/').StartsWith("templates", StringComparison.OrdinalIgnoreCase));
+
+        // And the sources that remain are exactly these, so a NEW one has to be
+        // decided here rather than appearing in a package nobody re-measured.
+        Assert.Equal(
+            new[]
+            {
+                "logs", "pending snapshots", "quarantined snapshots", "sent snapshots",
+                "trace", "uploading snapshots", "workspaces",
+            },
+            DeepExportSources.All.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
+    public async Task TheQueueSnapshotsLoseTheirConfigurationAndKeepTheirDay()
+    {
+        // RULE 2. The queue snapshots carried the licence key in plain ASCII - 12
+        // occurrences across 2 of 15 files on a real export, all 6 strategy rows -
+        // and with it the full tuning: 149 extraValues entries including
+        // TrailByTicks and StartTrailAfterTicks, which attribution/catalog.jsonl
+        // does not carry at all. Emptied rather than deleted, because
+        // src/domain/autoExportContract.js requires `parameters` to be an object
+        // and deleting it broke every capture that had a strategy.
+        DeepExportResult result = await Runner().RunAsync();
+        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
+        JObject capture = JObject.Parse(ReadEntry(zip, "autoexport/sent/2026-09-15_abc.json"));
+        JObject strategy = (JObject)capture["strategies"][0];
+
+        // The maps are there and they are empty, so "configured and hidden" and
+        // "never captured" stay different facts, and the contract still holds.
+        Assert.Empty((JObject)strategy["parameters"]);
+        Assert.Empty((JObject)strategy["extraValues"]);
+        Assert.Equal("captured", (string)strategy["parameterCaptureStatus"]);
+
+        // THE DAY SURVIVES INTACT, which is the whole reason these folders are
+        // copied: pending/ holds the one day the CRM could not be reached.
+        Assert.Equal("2026-09-15", (string)capture["tradingDate"]);
+        Assert.Equal(312.5, (double)strategy["realizedPnl"]);
+        Assert.Equal("G4M", (string)strategy["strategyName"]);
+        Assert.Equal("MES", (string)strategy["instrument"]);
+        Assert.Single((JArray)capture["orders"]);
+        Assert.Single((JArray)capture["executions"]);
+        // accounts[].accountValues is the client's own account and is NOT a
+        // strategy row, so it stays - the rule's one deliberate exception.
+        Assert.Equal(51234.5, (double)capture["accounts"][0]["accountValues"]["NetLiquidation"]);
+
+        // And the key is gone with the map that held it, in both of the two
+        // places it sat: LicenseKey itself and inside DisplayParameters.
+        string raw = ReadEntry(zip, "autoexport/sent/2026-09-15_abc.json");
+        Assert.DoesNotContain(TestLicence, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("DisplayParameters", raw, StringComparison.Ordinal);
+
+        // THE REST OF THE QUEUE IS NOT JSON AND IS NOT TOUCHED. A .receipt is not
+        // a capture, and running a JSON rule over it would have withheld it.
+        Assert.Equal("ok", ReadEntry(zip, "autoexport/sent/2026-09-15_abc.json.receipt"));
+    }
+
+    [Fact]
+    public async Task TheLicenceKeyInsideADatabaseBlobIsMaskedAndTheGeometryIsNot()
+    {
+        // RULE 3, and the carrier no ASCII grep finds. Measured on a real export:
+        // 12 of 12 Strategies rows carry a non-empty LicenseKey inside Userdata,
+        // UTF-16LE and HTML-escaped, two distinct values, and ONE OF THEM APPEARS
+        // NOWHERE ELSE IN THE PACKAGE - so dropping templates/ and emptying the
+        // queue could never have reached it. Strategies is allowlisted and has to
+        // be: AttributionExport joins it to name an algorithm. The constraint is
+        // on the table, not the cell.
+        DeepExportResult result = await Runner().RunAsync();
+        string extracted = Path.Combine(root, "blob");
+        ZipFile.ExtractToDirectory(result.ZipPath, extracted);
+        string shipped = Path.Combine(extracted, "db", "NinjaTrader.sqlite");
+
+        // THE GUARD THAT STOPS THIS PASSING FOR THE WRONG REASON: the key really
+        // is in the live database, and really is invisible to ASCII there.
+        // ORDINAL, because the default comparison is culture-sensitive and ICU
+        // treats NUL as ignorable - so "V-..." is "found" inside "V\0-\0..." and
+        // this guard would pass while proving the opposite of what it claims.
+        string liveBytes = Latin1(Path.Combine(nt, "db", "NinjaTrader.sqlite"));
+        Assert.DoesNotContain(TestLicence, liveBytes, StringComparison.Ordinal);
+        Assert.Contains(TestLicence, System.Text.Encoding.Unicode.GetString(
+            File.ReadAllBytes(Path.Combine(nt, "db", "NinjaTrader.sqlite"))), StringComparison.Ordinal);
+
+        using var connection = new SqliteConnection(Read(shipped));
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT Userdata FROM Strategies WHERE Id = 3";
+        byte[] stored = (byte[])command.ExecuteScalar();
+        string text = System.Text.Encoding.Unicode.GetString(stored);
+
+        // The key is gone, the element is still there, and the mask is the same
+        // one the other three rules use so a single search finds all of them.
+        Assert.DoesNotContain(TestLicence, text, StringComparison.Ordinal);
+        Assert.Contains("&lt;LicenseKey&gt;***&lt;/LicenseKey&gt;", text, StringComparison.Ordinal);
+
+        // AND NOTHING ELSE IN THE CELL MOVED. The same blob carries the live
+        // parameterisation - 144 element names on a real row, about 35 of them the
+        // stop, targets, sizes, trail, break-even and day filters - and that is
+        // deliberately NOT removed: nothing else in the package holds it, and
+        // attribution/catalog.jsonl already ships the same class of declared
+        // geometry on purpose. The expectation is written out by hand above, so
+        // this does not assert the rule against itself.
+        Assert.Equal(StrategyBlobMasked, text);
+        Assert.Contains("&lt;StopLossTicks&gt;40&lt;/StopLossTicks&gt;", text);
+        Assert.Contains("&lt;TrailByTicks&gt;8&lt;/TrailByTicks&gt;", text);
+
+        // The blobs with nothing to mask are copied byte for byte.
+        command.CommandText = "SELECT Userdata FROM Strategies WHERE Id = 1";
+        Assert.Equal(new byte[] { 0x0A, 0x0B, 0x0C }, (byte[])command.ExecuteScalar());
+        command.CommandText = "SELECT Data FROM Accounts WHERE Id = 1";
+        Assert.Equal(new byte[] { 0x01, 0x02, 0x03, 0x04 }, (byte[])command.ExecuteScalar());
+    }
+
+    [Fact]
+    public void EveryRuleAboutWhatShipsIsStatedOnce()
+    {
+        // THE SAME DISCIPLINE AS TheAllowlistIsStatedInExactlyOnePlace, for the
+        // rules this change added. The previous two PRs in this area exist
+        // because a list was honoured in one file and undone by the file beside
+        // it, and the strategy-configuration rule is the one with real history: it
+        // was a private method in OfflineReportWriter, and the Deep Export was
+        // copying the very same queue snapshots raw at the same time.
+        string[] sources = DeepExportSourceFiles();
+
+        // The recursive walk that empties a strategy row exists once. Counted by
+        // its two property names together, which is what a second copy would have
+        // to repeat whatever it called the method.
+        int stripper = sources.Sum(f => Occurrences(File.ReadAllText(f), "o[\"extraValues\"] = new JObject()"));
+        Assert.Equal(1, stripper);
+
+        // And the file holding it is not the one that used to.
+        string shared = sources.Single(f => Path.GetFileName(f) == "StrategyConfigurationRedactor.cs");
+        Assert.Contains("o[\"extraValues\"] = new JObject()", File.ReadAllText(shared));
+        string offline = sources.Single(f => Path.GetFileName(f) == "OfflineReportWriter.cs");
+        Assert.DoesNotContain("o[\"extraValues\"] = new JObject()", File.ReadAllText(offline));
+        Assert.Contains("StrategyConfigurationRedactor.Strip", File.ReadAllText(offline));
+
+        // "NAMED LIKE A SECRET" IS ONE PREDICATE WITH THREE CALLERS NOW. The
+        // licence term was added to it rather than beside it, which is the only
+        // reason the blob rule and the config rule cannot disagree about whether
+        // LicenseKey is a credential.
+        int keyList = sources.Sum(f => Occurrences(File.ReadAllText(f), "password|passwd|pwd|api[_-]?key"));
+        Assert.Equal(1, keyList);
+        Assert.True(SecretRedactor.IsSecretKey("LicenseKey"));
+        Assert.True(SecretRedactor.IsSecretKey("licenceKey"));
+        Assert.True(SecretRedactor.IsSecretKey("deviceToken"));
+        Assert.True(SecretRedactor.IsSecretKey("api_key"));
+        Assert.False(SecretRedactor.IsSecretKey("StopLossTicks"));
+        Assert.False(SecretRedactor.IsSecretKey("schedule"));
+
+        // The mask is one constant, so one search over a package finds whatever
+        // any of the four rules hid.
+        Assert.Equal(SecretRedactor.Mask, TraceRedactor.Mask);
+        Assert.Equal(SecretRedactor.Mask, StrategyUserdataRedactor.Mask);
     }
 
     [Fact]
@@ -940,41 +1331,133 @@ public sealed class DeepExportTests : IDisposable
         // trace's own syntax as well.
         var keyedIdentityPattern = new Regex("\\buser\\s*=\\s*'([^']*)'", RegexOptions.IgnoreCase);
         var prosePattern = new Regex("\\bauthenticating\\s+(?:account|user)\\s+(\\S+)", RegexOptions.IgnoreCase);
+
+        // AND IT COULD NEVER HAVE SEEN THE LICENCE KEY EITHER, for four reasons
+        // that stacked, all of them measured rather than reasoned:
+        //   (a) `LicenseKey` matches none of password|apikey|token|secret.
+        //   (b) secretPattern wants a JSON key: "value" with a colon and double
+        //       quotes; templates/ wrote <LicenseKey>v</LicenseKey>.
+        //   (c) the fixture's only template was the literal "<Strategy/>", so
+        //       the sweep read it and there was nothing in it to find.
+        //   (d) the .sqlite branch `continue`d past the CONTENT, and an ASCII
+        //       regex could not have seen a UTF-16LE payload anyway.
+        // So the shape is asserted too, and the fixture now plants a value.
+        var licencePattern = new Regex("V-[A-Za-z0-9]{6}-[A-Za-z0-9]{8}-[A-Za-z0-9]{7}");
+
         foreach (string file in Directory.EnumerateFiles(extracted, "*", SearchOption.AllDirectories))
         {
-            // THE DATABASE IS NO LONGER EXEMPT, it is checked as a database.
-            // This sweep used to `continue` past it, which is why the one test
-            // named after the promise could not see the 9 excluded tables riding
-            // along inside it. A text regex over a binary file would not have
-            // seen them either - the question a database file answers is which
-            // tables are in it, so that is the question asked of it here.
+            // THE DATABASE IS NO LONGER EXEMPT, AND NOW NOR IS ITS CONTENT. This
+            // sweep used to `continue` past the file entirely, which is why the
+            // one test named after the promise could not see the 9 excluded
+            // tables riding along inside it. Asking only which tables are present
+            // was the next version of the same blind spot: it cannot see a
+            // credential inside a cell of a table that is allowed to be there.
+            // So both questions are asked - which tables, and then every cell of
+            // every one of them, through the same three-form search as any file.
             if (file.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase))
             {
                 Assert.All(TablesIn(file), t => Assert.True(
                     SqliteSnapshot.IsAllowedTable(t),
                     $"{Path.GetFileName(file)} ships {t}, which the allowlist excludes"));
+                foreach ((string where, byte[] cell) in EveryCell(file))
+                {
+                    foreach (string form in Forms(cell))
+                    {
+                        Assert.DoesNotContain(TestLicence, form, StringComparison.Ordinal);
+                        Assert.False(licencePattern.IsMatch(form), $"{where} holds a licence-shaped value");
+                        Assert.DoesNotContain(TestLogin, form, StringComparison.Ordinal);
+                    }
+                }
                 continue;
             }
+
+            // THREE FORMS OF EVERY FILE, not one string. The bytes as text, the
+            // bytes decoded as UTF-16LE, and the HTML-unescaped text. A check
+            // that reads only the first comes back near-zero on a real package
+            // and reads as success while the key is still in it.
+            byte[] bytes = File.ReadAllBytes(file);
             string text = File.ReadAllText(file);
-            foreach (Match match in secretPattern.Matches(text))
+            foreach (string form in Forms(bytes))
             {
-                Assert.True(match.Groups[2].Value == "***" || match.Groups[2].Value == "",
-                    $"{Path.GetFileName(file)} leaks a secret: {match.Value}");
+                foreach (Match match in secretPattern.Matches(form))
+                {
+                    Assert.True(match.Groups[2].Value == "***" || match.Groups[2].Value == "",
+                        $"{Path.GetFileName(file)} leaks a secret: {match.Value}");
+                }
+                foreach (Match match in keyedIdentityPattern.Matches(form))
+                {
+                    Assert.True(match.Groups[1].Value == "***" || match.Groups[1].Value == "",
+                        $"{Path.GetFileName(file)} leaks a login: {match.Value}");
+                }
+                foreach (Match match in prosePattern.Matches(form))
+                {
+                    Assert.True(match.Groups[1].Value == "***",
+                        $"{Path.GetFileName(file)} leaks a login in prose: {match.Value}");
+                }
+                // THE VALUES THE FIXTURE PLANTED, BY VALUE, in every file of the
+                // package. These are the assertions that fail without the rules
+                // rather than merely describing a shape. And the SHAPE as well,
+                // so a second key nobody planted is caught too - never a count of
+                // `LicenseKey` tags, which on a real export is 1,772 for 886
+                // values and does not move at all when a rule empties an element.
+                Assert.DoesNotContain(TestLicence, form, StringComparison.Ordinal);
+                Assert.False(licencePattern.IsMatch(form),
+                    $"{Path.GetFileName(file)} holds a licence-shaped value");
+                Assert.DoesNotContain(TestLogin, form, StringComparison.Ordinal);
             }
-            foreach (Match match in keyedIdentityPattern.Matches(text))
-            {
-                Assert.True(match.Groups[1].Value == "***" || match.Groups[1].Value == "",
-                    $"{Path.GetFileName(file)} leaks a login: {match.Value}");
-            }
-            foreach (Match match in prosePattern.Matches(text))
-            {
-                Assert.True(match.Groups[1].Value == "***",
-                    $"{Path.GetFileName(file)} leaks a login in prose: {match.Value}");
-            }
-            // And the one the fixture actually planted, by value, in every file
-            // of the package. This is the assertion that fails without the
-            // redactor rather than merely describing a shape.
             Assert.DoesNotContain(TestLogin, text);
+        }
+    }
+
+    /// <summary>
+    /// Every TEXT and BLOB cell of every table in a shipped database, with where
+    /// it came from. The licence key was measured in a BLOB on an ALLOWLISTED
+    /// table, so no table-level question can reach it - only reading the cells.
+    /// </summary>
+    private static System.Collections.Generic.IEnumerable<(string Where, byte[] Value)> EveryCell(string databasePath)
+    {
+        using var connection = new SqliteConnection(Read(databasePath));
+        connection.Open();
+        foreach (string table in TablesIn(databasePath))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = $"SELECT * FROM \"{table}\"";
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    if (reader.IsDBNull(i)) continue;
+                    object value = reader.GetValue(i);
+                    byte[] bytes = value switch
+                    {
+                        byte[] blob => blob,
+                        string text => System.Text.Encoding.UTF8.GetBytes(text),
+                        _ => null,
+                    };
+                    if (bytes != null) yield return ($"{Path.GetFileName(databasePath)} {table}.{reader.GetName(i)}", bytes);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The three forms any check of this package has to search, because the key
+    /// was measured in all three: the bytes as text, the bytes as UTF-16LE, and
+    /// either of those with HTML escapes resolved. SqliteSnapshot's header asks
+    /// for exactly this and the measurement is why - 0 ASCII hits and 12 UTF-16LE
+    /// hits in the same cells of one real database.
+    /// </summary>
+    private static System.Collections.Generic.IEnumerable<string> Forms(byte[] bytes)
+    {
+        string narrow = System.Text.Encoding.UTF8.GetString(bytes);
+        yield return narrow;
+        yield return System.Net.WebUtility.HtmlDecode(narrow);
+        if (bytes.Length % 2 == 0)
+        {
+            string wide = System.Text.Encoding.Unicode.GetString(bytes);
+            yield return wide;
+            yield return System.Net.WebUtility.HtmlDecode(wide);
         }
     }
 
@@ -1109,5 +1592,52 @@ public sealed class DeepExportTests : IDisposable
     {
         DeepExportResult result = await Runner().RunAsync();
         Assert.True(File.Exists(Path.Combine(root, "Desktop", Path.GetFileName(result.ZipPath))));
+    }
+
+    /* THE SECOND STATEMENT OF WHAT SHIPS, AND THE ONLY ONE A HUMAN READS.
+     *
+     * DeepExportSources.All is the list the code obeys. MainWindow.xaml holds a
+     * sentence telling the operator what they are about to hand to the desk, and
+     * nothing has ever tied the two together. When the template library stopped
+     * shipping, that sentence still promised it, so the screen described a
+     * package that no longer existed and the commit claiming All was "the only
+     * statement of what ships" was wrong about the one statement that reaches a
+     * person.
+     *
+     * This cannot check prose against a list in general. It pins the two claims
+     * that would mislead: the operator must not be told the templates travel,
+     * and must be told the licence does not. */
+    [Fact]
+    public void TheOperatorIsToldWhatTheExportActuallyCarries()
+    {
+        string xaml = File.ReadAllText(Path.Combine(CollectorRoot(), "src", "Vincere.AutoExport.Agent.UI", "MainWindow.xaml"));
+        int at = xaml.IndexOf("Packages NinjaTrader", StringComparison.Ordinal);
+        Assert.True(at >= 0, "the Deep Export description moved; this test points at nothing");
+        string sentence = xaml.Substring(at, Math.Min(600, xaml.Length - at));
+
+        // The first clause is the list of what the ZIP CONTAINS; the rest says what
+        // is left out. Naming the templates in the second is right and was the
+        // whole point, so this reads the two halves apart rather than banning the
+        // word, which is what my first version did and it failed on the correct
+        // text.
+        int stop = sentence.IndexOf(". ", StringComparison.Ordinal);
+        Assert.True(stop > 0, "the description is no longer two sentences; re-read it before trusting this test");
+        string contains = sentence.Substring(0, stop);
+
+        Assert.DoesNotContain("template", contains, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("template", sentence, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("left out", sentence, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("licence", sentence, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CollectorRoot()
+    {
+        DirectoryInfo directory = new(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props"))) return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate the collector root.");
     }
 }

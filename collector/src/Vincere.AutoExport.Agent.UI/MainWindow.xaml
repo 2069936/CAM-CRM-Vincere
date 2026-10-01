@@ -373,7 +373,7 @@
                         <Border Background="{StaticResource RaisedBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,22,0,0">
                             <StackPanel>
                                 <TextBlock Text="Deep Export" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
-                                <TextBlock Text="Packages NinjaTrader's full trade database, logs, workspaces, strategy templates and every daily snapshot already sent. Market data and connection credentials are left out. The ZIP lands on the Desktop; send it to the desk."
+                                <TextBlock Text="Packages NinjaTrader's trade database, logs, workspaces and every daily snapshot already sent. The strategy template library is left out, and so are market data, connection credentials and the licence key. The ZIP lands on the Desktop; send it to the desk."
                                            Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,6,0,0" />
                                 <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                                     <Button Content="Deep Export"

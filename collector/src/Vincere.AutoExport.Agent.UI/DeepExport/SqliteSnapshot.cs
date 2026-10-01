@@ -80,26 +80,35 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  * and Accounts.Data are declared BLOB and 100% NULL on both machines, and
  * Strategies.Template is TEXT rather than a blob and empty on all 12 rows. So
  * the fidelity the placeholder costs is exactly those 12 cells, and what those
- * 12 cells contain is a licence key.
+ * 12 cells contain is a licence key - and, which no note here said until now,
+ * the live parameterisation of the 12 strategies that were running: 144 distinct
+ * element names, about 35 of them the stop, the targets, the sizes, the trail,
+ * break-even, the session window and the day filters. The key is masked; the
+ * parameterisation stays, and StrategyUserdataRedactor's header says why.
  *
- * IT IS AN EXPOSURE AND IT IS NOT THIS CHANGE'S TO FIX, deliberately. It
- * predates this commit - the rebuild has carried those blobs since it landed,
- * and removing the JSONL does not add them, because the JSONL never held them.
- * It is also not where the key mostly lives: templates/ ships one in plain
- * ASCII in 886 of 886 files, 1,772 occurrences, and nothing in db/ touches
- * that. A change that stripped the blob and called the package clean would be
- * fixing the smaller half - it would take the distinct keys in the package from
- * 2 to 1 and leave 1,772 plaintext copies of the other. The honest fix is a
- * templates/ rule and a blob rule together, with their own reasoning and their
- * own tests, the way the user table and the trace login each got their own.
- * Named here, measured, so the next reader inherits it rather than finds it.
+ * THE BLOB IS MASKED NOW, AND THE TWO HALVES LANDED TOGETHER as this header
+ * asked. It used to say the key was not this change's to fix and that the honest
+ * fix was a templates/ rule and a blob rule together. Both are here:
+ * templates/Strategy no longer ships at all (DeepExportSources' header has the
+ * numbers) and CopyRows below masks a secret-named element in every TEXT and
+ * BLOB cell on the way through, by StrategyUserdataRedactor.
+ *
+ * ONE CORRECTION TO THE ARITHMETIC ABOVE, because it would have been quoted.
+ * This header said a blob-only fix "would take the distinct keys in the package
+ * from 2 to 1". Measured on the same export, the templates-only fix is the one
+ * that banks nothing: the templates value also sits in 9 of the 12 blobs AND 12
+ * times in plain ASCII in autoexport/sent/*.json, so dropping templates/ alone
+ * takes the ASCII occurrences from 898 to 12 and the DISTINCT keys from 2 to 2.
+ * Neither half alone removes a single secret from the package. Three rules
+ * together take it from 2 to 0.
  *
  * AND AN ASCII GREP OVER THE DATABASE FINDS NONE OF IT. The payload is UTF-16LE
  * and HTML-escaped, so on disk the tag reads &lt;LicenseKey&gt; in UTF-16LE and
  * an ASCII search returns 0 on both machines. The note above about an ASCII grep
- * finding 0 signatures has the same blind spot, stated as reassurance. Any check
- * of a future fix has to search both encodings and the escaped form, or it will
- * pass while the key is still in the file.
+ * finding 0 signatures has the same blind spot, stated as reassurance. The check
+ * of this fix searches both encodings and the escaped form, in
+ * NothingThatAuthenticatesLeavesTheMachine, which also stopped exempting a
+ * .sqlite file's contents - it now reads every cell of every shipped table.
  *
  * WHAT IT COSTS TO TRAVEL, WHICH CORRECTS WHAT THIS HEADER USED TO CLAIM. It
  * said the rebuild costs the export nothing, because 319,488 bytes is smaller
@@ -543,16 +552,31 @@ public static class SqliteSnapshot
         // are blobs. This is now the ONLY place those values survive - the dump
         // that used to reduce them to a length is gone - so a coercion here is
         // a loss with nothing beside it to notice, which is what
-        // NothingTheJsonLinesCarriedLeftThePackageWithIt asserts against. It is
-        // also what carries the licence keys the header measures; read that
-        // paragraph before treating this line as purely a fidelity win.
+        // NothingTheJsonLinesCarriedLeftThePackageWithIt asserts against.
         for (int i = 0; i < reader.FieldCount; i++)
             insert.Parameters.Add(new SqliteParameter(placeholders[i], DBNull.Value));
 
+        // AND THE ONE THING THOSE VALUES MAY NOT CARRY IS A CREDENTIAL, masked
+        // HERE, in the copy itself, for the reason TraceRedactor is applied in
+        // the copy and not in a pass afterwards: a staged file that holds the key
+        // even briefly ships with it the day somebody moves the pass. Every TEXT
+        // and BLOB cell of every allowlisted table goes through the rule, not
+        // Strategies.Userdata by name, so the next blob nobody predicted is
+        // covered. The rule and its measurements are in StrategyUserdataRedactor
+        // and the element names it treats as secret are SecretRedactor's one
+        // list; neither is restated here.
         while (reader.Read())
         {
             for (int i = 0; i < reader.FieldCount; i++)
-                insert.Parameters[i].Value = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+            {
+                object value = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+                insert.Parameters[i].Value = value switch
+                {
+                    byte[] blob => StrategyUserdataRedactor.RedactBlob(blob),
+                    string text => StrategyUserdataRedactor.RedactText(text),
+                    _ => value,
+                };
+            }
             insert.ExecuteNonQuery();
         }
     }

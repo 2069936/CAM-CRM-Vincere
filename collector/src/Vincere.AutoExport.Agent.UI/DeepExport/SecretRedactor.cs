@@ -21,13 +21,28 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  * The acceptance test is a grep over the unpacked ZIP for password|apikey|
  * token|secret that finds only "***". This is the code that has to make that
  * test pass, so the pattern here is deliberately broader than the test.
+ *
+ * `licen[sc]e` IS IN THE LIST NOW, AND ITS ABSENCE IS WHY A KEY TRAVELLED.
+ * NinjaTrader's licence key is a device credential and it is named LicenseKey,
+ * which matched none of password|apikey|token|secret|credential - so every rule
+ * in the collector that asks this question answered no about it. The CRM side
+ * had already worked this out: server/export/clientExport.js matches
+ * licen[sc]e|password|passwd|secret|token|credential|api_?key and drops those
+ * parameters from a client export. The collector's list was strictly narrower
+ * than the CRM's for no reason anybody recorded. Both spellings, because the
+ * British one appears in prose and nothing stops a field using it.
+ *
+ * THIS PREDICATE IS THE SINGLE DEFINITION OF "NAMED LIKE A SECRET" and it now
+ * has two callers: RedactJsonText below, for the agent's own config.json, and
+ * StrategyUserdataRedactor, for a secret-named XML element inside a database
+ * blob. Do not restate the list; add to it here.
  * ------------------------------------------------------------------------- */
 public static class SecretRedactor
 {
     public const string Mask = "***";
 
     private static readonly Regex SecretKey = new(
-        @"(password|passwd|pwd|api[_-]?key|apikey|token|secret|credential|bearer|authorization)",
+        @"(password|passwd|pwd|api[_-]?key|apikey|token|secret|credential|bearer|authorization|licen[sc]e)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool IsSecretKey(string key) => !string.IsNullOrEmpty(key) && SecretKey.IsMatch(key);
