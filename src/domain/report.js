@@ -1,4 +1,5 @@
 import { buildClientSegments } from './clientSegments.js';
+import { buildEvaluationSection } from './evaluationReport.js';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile.js';
 import { ACCOUNT_NATURES, classifyAccountNature } from './simulationAccounts.js';
 import { strategyRan } from './strategyRan.js';
@@ -468,6 +469,19 @@ export function buildDailyReportSummary(client, dailyImport) {
   // told "Simulated accounts 1 of 1" - which reads as "everything you have is
   // simulated" on the one report where that sentence must be exact.
   const simulation = buildSimulationSection(client, dailyImport, snapshots.length);
+  /* THE EVALUATIONS BLOCK, built from the rows and the subtotal that already
+   * exist above rather than from `snapshots` again.
+   *
+   * `evaluationTotals` is handed in, not recomputed, for the reason
+   * buildClientMessageReport no longer computes its own: a second arithmetic over
+   * the same rows is a second answer waiting to drift from the first. Nothing
+   * below adds it to `totals`, and `buildClientSegments` is not told about it, so
+   * the block cannot reach the headline or the segment tiles by any path. */
+  const evaluations = buildEvaluationSection(client, dailyImport, {
+    rows: grouped.evaluations,
+    totals: evaluationTotals,
+    reportedAccountCount: snapshots.length,
+  });
 
   const openFlags = (dailyImport?.flags || []).filter((f) => f.status !== 'Resolved' && f.status !== 'Acknowledged');
   const criticalFlags = openFlags.filter((f) => f.severity === 'Critical');
@@ -497,6 +511,12 @@ export function buildDailyReportSummary(client, dailyImport) {
     // Shown beside the headline, never inside it. A reader has to be able to
     // see what the evaluations did without it moving the client's daily number.
     evaluationTotals,
+    /* Its own block, its own subtotal, never folded into `totals` or `segments`.
+     * Null when the client holds no evaluation account at all, so a renderer can
+     * tell "no challenge account" apart from "challenge accounts that said
+     * nothing today" — the same distinction `simulation` draws, and for the same
+     * reason. */
+    evaluations,
     pendingClassificationTotals,
     // Its own block, its own totals, never folded into `totals` or `counts`.
     // Null when the client has no simulation and nothing undetermined, so a
