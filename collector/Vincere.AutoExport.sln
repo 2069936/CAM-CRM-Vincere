@@ -22,6 +22,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{F014F912-5A7
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.NinjaTrader.Core", "src\Vincere.AutoExport.NinjaTrader.Core\Vincere.AutoExport.NinjaTrader.Core.csproj", "{A6BD17B9-109F-4EC5-B893-83A7FC28A2D2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.DeepExport", "src\Vincere.AutoExport.DeepExport\Vincere.AutoExport.DeepExport.csproj", "{C7A4E1D2-8B36-4F59-9E27-5D1A0B6C3F84}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{479794C5-E504-4EE5-AEE1-FDE7F6BCF957}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vincere.AutoExport.NinjaTrader.Core.Tests", "tests\Vincere.AutoExport.NinjaTrader.Core.Tests\Vincere.AutoExport.NinjaTrader.Core.Tests.csproj", "{D3E6B2AB-DF2C-4776-BA9D-796F3CAA39F3}"
@@ -68,6 +70,10 @@ Global
 		{A6BD17B9-109F-4EC5-B893-83A7FC28A2D2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A6BD17B9-109F-4EC5-B893-83A7FC28A2D2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A6BD17B9-109F-4EC5-B893-83A7FC28A2D2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C7A4E1D2-8B36-4F59-9E27-5D1A0B6C3F84}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C7A4E1D2-8B36-4F59-9E27-5D1A0B6C3F84}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C7A4E1D2-8B36-4F59-9E27-5D1A0B6C3F84}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C7A4E1D2-8B36-4F59-9E27-5D1A0B6C3F84}.Release|Any CPU.Build.0 = Release|Any CPU
 		{D3E6B2AB-DF2C-4776-BA9D-796F3CAA39F3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{D3E6B2AB-DF2C-4776-BA9D-796F3CAA39F3}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D3E6B2AB-DF2C-4776-BA9D-796F3CAA39F3}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -79,6 +85,7 @@ Global
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{A6BD17B9-109F-4EC5-B893-83A7FC28A2D2} = {F014F912-5A73-4C30-97BF-31B26904B0B8}
+		{C7A4E1D2-8B36-4F59-9E27-5D1A0B6C3F84} = {F014F912-5A73-4C30-97BF-31B26904B0B8}
 		{D3E6B2AB-DF2C-4776-BA9D-796F3CAA39F3} = {479794C5-E504-4EE5-AEE1-FDE7F6BCF957}
 		{85B22F35-3117-496C-91E6-FC1CC404DA2F} = {479794C5-E504-4EE5-AEE1-FDE7F6BCF957}
 	EndGlobalSection
