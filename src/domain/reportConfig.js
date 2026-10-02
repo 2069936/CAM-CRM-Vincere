@@ -21,6 +21,22 @@ export const REPORT_FIELDS = [
   // printing that for them would be noise; the one client mid-SIM-test is the
   // one whose CAM turns this on.
   { key: 'showSimulation', label: 'Simulation section (not real money)', advanced: false },
+  // Off by default like every other addition, and the default is what keeps an
+  // existing report identical: while this is off, App.jsx still draws the
+  // evaluations group inside the per-account table exactly as it did, and the
+  // Evaluations segment tile stays. Turning it on moves both into one block that
+  // owns the figure, rather than printing the same rows twice on one page.
+  //
+  // Measured over the book: 51 of 96 clients hold at least one evaluation
+  // account (median 5, max 15), 313 of the 329 closes on those clients carry at
+  // least one evaluation row (95.1%) at a median of 4 rows, and 47 of the 50 with
+  // a close have one on their latest. The section is NOT the rare case the
+  // simulation one is — showSimulation's default was set on a 33%-blank,
+  // median-2-line measurement, and copying that conclusion here would produce a
+  // section nobody sees. What it shares with the simulation block is the reason
+  // for its separation: an evaluation is challenge capital and its profit is not
+  // the client's money (report.js:432-453).
+  { key: 'showEvaluations', label: 'Evaluations section (challenge capital, with progress to target)', advanced: false },
   // Off by default like every other addition. Measured over the 485 imports the
   // local snapshot rebuilds: the section prints nothing at all on 159 of them
   // (33%), and where it does print the median is 2 lines. The four reasons fire
@@ -50,6 +66,7 @@ export const DEFAULT_REPORT_CONFIG = {
   // Anything new ships false: an existing client's report must not change shape
   // without someone choosing it.
   showSimulation: false,
+  showEvaluations: false,
   showReasons: false,
   showFlags: true,
   // Charts are new, so they stay off until a CAM turns them on. An existing
@@ -71,6 +88,13 @@ export const SIMPLIFIED_REPORT_CONFIG = {
   showTrailing: false,
   showWeeklyColumn: false,
   showSimulation: false,
+  // False here as well as in the defaults, and for the reason stated above them:
+  // a CAM who opens the app tomorrow having changed nothing, on either preset,
+  // sees the report they saw yesterday. The Simplified preset is also the one
+  // place a single click changes thirteen fields at once, so a new section
+  // appearing in it would change shape for every client on the preset without
+  // anybody choosing it.
+  showEvaluations: false,
   // The simplified report is for the client who reads a picture faster than a
   // table, and this section is prose about their own accounts — it is the part
   // of a stripped-down report that still says something. Explicit rather than

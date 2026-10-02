@@ -7664,6 +7664,94 @@ tr:nth-child(2) .rank-badge {
   font-size: 13px;
   cursor: pointer;
 }
+/* A TOGGLE THAT WOULD PRINT NOTHING SAYS SO, in the drawer and nowhere else.
+   The drawer is `.no-print` (hidden in the @media print block below), so these
+   sentences reach the CAM designing the report and never the client who receives
+   it — which is right, because most of them name something the desk has not filled
+   in. Wraps to its own line under the label, so a two-line caption cannot push the
+   checkbox off its own row. */
+.report-design-toggle.is-silent {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.report-design-toggle.is-silent input {
+  margin-top: 2px;
+}
+.report-design-silent {
+  flex: 0 0 100%;
+  padding-left: 22px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.report-sheet .report-design-drawer .report-design-silent {
+  color: #556675;
+}
+
+/* THE EVALUATIONS BLOCK. Separated structurally, not by adjacency: its own
+   border, its own heading, its own subtotal, and the words "challenge capital"
+   beside its figures. Two totals on one page that could be mistaken for each
+   other is the defect, not the layout. */
+.report-evaluations {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 18px;
+}
+.report-evaluations-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.report-evaluations-head h2 {
+  margin: 0;
+}
+.eval-chip {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.report-evaluations-note {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.report-evaluations-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 14px;
+  margin: 10px 0 0;
+}
+.report-evaluations-totals div {
+  display: flex;
+  flex-direction: column;
+}
+.report-evaluations-totals span {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.report-evaluations-activity,
+.report-evaluations-coverage,
+.report-evaluations-footnote,
+.report-evaluations-absent {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.report-eval-reached {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success);
+}
 .report-design-note { display: grid; gap: 4px; font-size: 12px; margin-bottom: 12px; }
 .report-design-note input {
   padding: 6px 8px;
@@ -7733,6 +7821,17 @@ tr:nth-child(2) .rank-badge {
   font-size: 13px;
   font-style: italic;
   color: var(--text-muted);
+}
+/* The Sim / Live cell: the select, and under it what the automatic ladder
+   decided when nobody has overridden it. */
+.simulation-mode-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.simulation-mode-picker small {
+  font-size: 10.5px;
+  line-height: 1.3;
 }
 .report-progress {
   position: relative;

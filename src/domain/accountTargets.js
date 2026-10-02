@@ -6,7 +6,12 @@
 // be inferred from the current balance. Cash (live) accounts have no standard
 // size and no target — only their cash balance matters.
 
-import { ACCOUNT_TYPES, isCashType, isSimulationAccountType } from './reconcile';
+/* `.js` on the specifier, not a style choice: report.js now reaches this module
+ * (through evaluationReport.js), report.js is reached by the Vercel ingest route,
+ * and native Node ESM will not resolve an extensionless relative import. Vite
+ * resolved it happily, so the first thing that noticed was
+ * server/tests/api/entrypointsLoadUnderNode.test.js. */
+import { ACCOUNT_TYPES, isCashType, isSimulationAccountType } from './reconcile.js';
 
 export const STANDARD_ACCOUNT_SIZES = [50000, 100000, 150000];
 
