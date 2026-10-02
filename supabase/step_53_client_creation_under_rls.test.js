@@ -95,7 +95,9 @@ describe('the third arm, and the fact that it closes itself', () => {
   const arm = 'created_by = (select auth.uid()) and not public.client_is_assigned(id)';
 
   it('is on select and on update', () => {
-    expect(flat.match(new RegExp(arm.replace(/[()]/g, '\\$&'), 'g') || [])).not.toBeNull();
+    // At least twice: once in the select policy, once in the update policy. The
+    // update's WITH CHECK repeats it, so the real count is three.
+    expect((flat.match(new RegExp(arm.replace(/[()]/g, '\\$&'), 'g')) || []).length).toBeGreaterThanOrEqual(2);
     const selectPolicy = /create policy "cam sees its own clients" on public\.clients[\s\S]*?;/i.exec(sql)[0];
     const updatePolicy = /create policy "cam updates its own clients" on public\.clients[\s\S]*?;/i.exec(sql)[0];
     expect(selectPolicy.toLowerCase().replace(/\s+/g, ' ')).toContain(arm);
