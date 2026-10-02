@@ -35,20 +35,23 @@ const sql = raw.split('\n').filter((line) => !line.trimStart().startsWith('--'))
 const flat = sql.toLowerCase().replace(/\s+/g, ' ');
 const runbook = readFileSync(runbookUrl, 'utf8');
 
-describe('step 53 is the one that runs last', () => {
-  it('is the highest number and appears once', () => {
+describe('step 53 exists and is in the runbook', () => {
+  it('appears once, and 54 now carries the highest-number claim', () => {
+    /* "I am the highest number" moved to step_54_deep_export_requests.test.js
+     * when 54 arrived, the same way 52 handed it to 53 and 51 handed it to 52.
+     * Exactly one test in this directory may hold it, or the next migration makes
+     * two of them fail and the real signal is which. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 53)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(53);
   });
 
-  it('is in the runbook table and at the end of the run order', () => {
+  it('is in the runbook table and still runs before whatever came after it', () => {
     expect(runbook).toMatch(/^\| 53 \| `step_53_client_creation_under_rls\.sql` \|.*\|$/m);
-    expect(runbook).toContain('→ 52 → 53.');
+    expect(runbook).toContain('→ 52 → 53');
   });
 });
 

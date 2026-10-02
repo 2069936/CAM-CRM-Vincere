@@ -31,6 +31,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 51 | `step_51_app_users_write_lockdown.sql` | `revoke insert, update, delete on app_users` from `authenticated` and `anon`; SELECT stays | Closing a CAM's ability to promote themselves to Manager by talking to PostgREST directly |
 | 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
+| 54 | `step_54_deep_export_requests.sql` | `ingest_deep_export_requests` and the singleton `ingest_deep_export_settings` that holds every tunable as a column, `claim_deep_export_request` and `finalize_deep_export_request`, and the private `ninjatrader-deep-exports` bucket with its own size and mime limits | Asking a client's VPS for a deep export from the CRM instead of somebody sitting at the machine clicking a button |
 
 ## These three groups behave differently
 
@@ -104,7 +105,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 54. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -221,6 +222,43 @@ replay has waited. Every row is the VPS's own word: the agent reports after each
 review and the function replaces the device's inventory whole, so a capture
 that was accepted after a retry, or replayed here and then resent, leaves the
 table on the next report and never before.
+
+**54 is inert until something asks it to do anything, which is why it can run
+whenever.** It creates two tables, two functions and a bucket that no deployed
+code calls. Run it on its own and the CRM behaves exactly as it does today: no
+request can exist because no route creates one, `claim_deep_export_request` is
+granted only to the service role and nothing calls it, and
+`record_ingest_heartbeat` is not touched at all — so every heartbeat on the fleet
+is byte for byte the one it sends now. Not running it before the routes land is
+the direction that fails, and it fails loudly rather than quietly: the admin
+endpoint answers 404 on a missing function the way the quarantine endpoint does.
+
+Its thirteen tunables are the point of the table rather than a side effect. The
+five decisions taken on this feature — retention of the newest 3 per device and
+nothing past 30 days, a manager-only trigger to begin with, a CAM allowed to
+request while only a manager may download, a 72-hour expiry on a request no
+machine came for, and the 17:15–18:00 New York quiet window with a manager-only
+`run now` beside it — are each a column with a default that encodes the decision.
+Changing one is an UPDATE in the SQL editor:
+
+    update public.ingest_deep_export_settings set cam_may_request = true;
+    update public.ingest_deep_export_settings set window_start_minute = 1020;
+
+None of them is an environment variable and none of them needs a deploy, which is
+the constraint this desk actually operates under.
+
+**Two things to check before the routes are built on it, neither of which this
+repository can answer.** The first is whether a restrictive `to anon,
+authenticated` Storage policy interferes with a token-authorised insert; the SDK
+says `uploadToSignedUrl` needs no `objects` permission and sends no Authorization
+header, so it should not, but it is unproven here and everything downstream
+changes if it fails. Mint one signed upload URL on the new bucket with the
+service client, PUT a few bytes, read it back, remove it. The second is the
+project-wide upload limit in the Supabase dashboard, which appears nowhere in
+this code: `ninjatrader-imports` was created without a `file_size_limit` and
+inherits it. This bucket sets its own at 512 MB, but a project ceiling below that
+still wins, and Supabase's default is commonly 50 MB — fine for the 4.43 MiB a
+real package measures, decisive for a machine whose sqlite has grown.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of
