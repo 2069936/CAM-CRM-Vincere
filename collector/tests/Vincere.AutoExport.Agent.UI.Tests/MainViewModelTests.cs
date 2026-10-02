@@ -808,14 +808,26 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public async Task DeepExportFailurePutsTheReasonOnScreen()
+    public async Task DeepExportRefusalPutsTheReasonOnScreenWithoutDressingItUp()
     {
+        // A REFUSAL IS NOT A CRASH. The export now refuses rather than packaging a
+        // machine with no database, and the refusal's own words are the whole of
+        // what the operator needs - the paths it tried and the account it tried
+        // them as. The generic branch below would prefix this with "The export did
+        // not finish" and an exception type name, and bury the only readable part.
+        // DeepExportUnavailableException used to be thrown here; it was the UI's
+        // own second word for the same condition, and the library owns it now.
+        const string Refusal =
+            "A deep export with no database is not a deep export, so no package was produced. "
+            + "Missing: db/NinjaTrader.sqlite. Looked at: C:\\Windows\\system32\\config\\systemprofile\\Documents\\NinjaTrader 8\\db\\NinjaTrader.sqlite. "
+            + "This process is running as SYSTEM, whose Documents folder is C:\\Windows\\system32\\config\\systemprofile\\Documents.";
         MainViewModel viewModel = new(PairedAt("1.0.5"), deepExport: (environment, progress, token) =>
-            throw new DeepExportUnavailableException("NinjaTrader 8 was not found under this user's Documents."));
+            throw new DeepExportRefusedException(Refusal));
         await viewModel.InitializeAsync();
         await viewModel.DeepExportAsync();
         Assert.False(viewModel.HasDeepExport);
-        Assert.Contains("not found", viewModel.DeepExportMessage);
+        Assert.Equal(Refusal, viewModel.DeepExportMessage);
+        Assert.DoesNotContain("did not finish", viewModel.DeepExportMessage);
         Assert.False(viewModel.IsBusy);
         Assert.True(viewModel.DeepExportCommand.CanExecute(null));
     }

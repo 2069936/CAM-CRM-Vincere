@@ -24,8 +24,13 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *     AutoExport\deep and a copy to the Desktop.
  *   - It never blocks the platform. The database is read through the SQLite
  *     backup API and everything else is a file copy at BelowNormal priority.
- *   - A source that fails is a warning in the manifest, not an abort. The only
- *     abort is being unable to write the ZIP itself.
+ *   - A source that fails is a warning in the manifest, not an abort - WITH ONE
+ *     EXCEPTION, AND IT IS THE DATABASE. db/NinjaTrader.sqlite absent from the
+ *     package is a refusal, before anything is staged and with the paths named,
+ *     because a package without it answers nothing and still looks like an
+ *     answer. DeepExportRefusedException below has the line between the one
+ *     refusal and the five warnings, source by source. The other abort is being
+ *     unable to write the ZIP itself.
  *   - Nothing that authenticates leaves the machine, and nothing says WHO it is
  *     about. Those are TWO QUESTIONS, and the second one is new here: it was
  *     never asked, so config/agent.config.redacted.json carried the client's
@@ -153,6 +158,25 @@ public sealed class DeepExportRunner
         string stamp = started.ToString("yyyyMMdd-HHmmss");
         string machine8 = (environment.MachineId ?? "unknown").Replace("|", "-");
         machine8 = machine8.Length > 8 ? machine8.Substring(0, 8) : machine8;
+
+        // THE REFUSAL, AND IT COMES BEFORE A SINGLE DIRECTORY IS CREATED.
+        //
+        // A deep export with no database is not a deep export. Until this check
+        // existed, a machine whose NinjaTrader folder held no db/NinjaTrader.
+        // sqlite produced a package that LOOKED like an answer: no db/, no
+        // attribution/, a manifest whose warnings said "database not found" and
+        // "trace folder missing", and a ZIP small enough to mail. A person
+        // clicking the button would probably open it and notice. A service asked
+        // to produce one on a schedule will not, and the CRM would write down a
+        // successful export against a client whose history is not in it.
+        //
+        // Nothing is created first because the reason this fires is usually that
+        // the root itself is wrong, and outputRoot lives UNDER that root: a log
+        // explaining the refusal would be written into the folder that does not
+        // exist. The message carries the explanation instead.
+        string livePath = Path.GetFullPath(Path.Combine(ninjaTraderRoot, DeepExportSources.DatabaseRelativePath));
+        if (!File.Exists(livePath)) throw DeepExportRefusedException.NoDatabaseOnThisMachine(ninjaTraderRoot, livePath);
+
         Directory.CreateDirectory(outputRoot);
         string zipPath = Path.Combine(outputRoot, $"deep_{machine8}_{stamp}.zip");
         string staging = Path.Combine(outputRoot, $".staging_{stamp}");
@@ -163,17 +187,17 @@ public sealed class DeepExportRunner
         string working = Path.Combine(outputRoot, $".work_{stamp}");
         Directory.CreateDirectory(staging);
         Directory.CreateDirectory(working);
-        ProcessPriorityClass? previousPriority = null;
+        IDisposable priority = null;
 
         try
         {
-            // Nothing here is urgent and the machine may be trading.
-            try
-            {
-                previousPriority = Process.GetCurrentProcess().PriorityClass;
-                Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal;
-            }
-            catch (Exception) { }
+            // Nothing here is urgent and the machine may be trading. Taken as a
+            // counted hold rather than saved into a local, because this library is
+            // referenced by a service that runs six loops in one process: a
+            // save/restore in a stack frame is not re-entrant and two overlapping
+            // runs leave the whole process demoted for good. SharedProcessPriority's
+            // header has the interleaving.
+            priority = SharedProcessPriority.ThisProcess.Lower(ProcessPriorityClass.BelowNormal);
 
             // database, attribution, config, manifest: four steps beside the
             // folder sources, and the bar has to know about all of them or it
@@ -192,7 +216,6 @@ public sealed class DeepExportRunner
             //    package; copyPath is built from it by the allowlist.
             SqliteSnapshotResult database = null;
             SqliteFilterResult filter = null;
-            string livePath = Path.GetFullPath(Path.Combine(ninjaTraderRoot, DeepExportSources.DatabaseRelativePath));
             string workingCopy = Path.Combine(working, "NinjaTrader.sqlite");
             string copyPath = Path.Combine(staging, "db", "NinjaTrader.sqlite");
             if (File.Exists(livePath))
@@ -229,11 +252,19 @@ public sealed class DeepExportRunner
                     warnings.Add($"schema could not be written: {exception.GetType().Name}");
                 }
             }
-            else
-            {
-                warnings.Add("database not found at " + DeepExportSources.DatabaseRelativePath);
-            }
             Report("database");
+
+            // AND THE SAME REFUSAL FOR THE OTHER ROAD TO AN EMPTY db/, which is
+            // the road nobody would have predicted: the file was there, and the
+            // consistent copy or the allowlist filter failed anyway. Both ends up
+            // in the same place - a package with no database - so both refuse,
+            // and the invariant is stated once, here, as "the staged file exists"
+            // rather than twice as a list of the ways it might not.
+            //
+            // It is checked BEFORE step 2 walks a single folder, so a refusal
+            // stages nothing. The run's log is still written by the finally
+            // below, because by this point there is a folder to write it in.
+            if (!File.Exists(copyPath)) throw DeepExportRefusedException.NoDatabaseInThePackage(livePath, warnings);
 
             // 1b. WHICH ALGORITHM PLACED WHAT, worked out here rather than
             // shipped as tables for somebody else to join. The join mostly
@@ -453,10 +484,7 @@ public sealed class DeepExportRunner
         }
         finally
         {
-            if (previousPriority.HasValue)
-            {
-                try { Process.GetCurrentProcess().PriorityClass = previousPriority.Value; } catch (Exception) { }
-            }
+            priority?.Dispose();
             try { Directory.Delete(staging, recursive: true); } catch (Exception) { }
             // The unfiltered copy was never in the package and does not stay on
             // the disk either. Deleted on the failure path too, which is the one
@@ -498,5 +526,78 @@ public sealed class DeepExportRunner
     {
         using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * There is no package, and here is what was missing and where we looked.
+ *
+ * THE MESSAGE IS THE FEATURE. The reader is trying to fix a machine they cannot
+ * see - a VPS in a data centre, through a CRM card or a Setup window - so a
+ * refusal that says "not found" and stops has cost them the trip. Every refusal
+ * here names the thing that was absent, the absolute path it was looked for at,
+ * and the Windows account that did the looking, because the account is the
+ * answer: the service installs as LocalSystem (Package.wxs sets
+ * Account="LocalSystem"), SpecialFolder.MyDocuments for LocalSystem is
+ * C:\Windows\system32\config\systemprofile\Documents, and NinjaTraderFolder
+ * resolves from MyDocuments and %USERPROFILE% and nothing else. A machine where
+ * the trader's own export works and the service's does not is explained by that
+ * one line and by nothing else in the package.
+ *
+ * WHY IT IS AN EXCEPTION AND NOT A WARNING, when a missing trace folder is a
+ * warning. The class above promises that a source which fails is a warning and
+ * the only abort is being unable to write the ZIP. That promise now has a second
+ * clause, and the line between them is whether the package can still answer the
+ * question it exists for:
+ *   db/NinjaTrader.sqlite    REFUSE. It is the whole history - 18,827 orders and
+ *                            149,126 order updates on a real machine - and
+ *                            everything a consumer reads either is it or is
+ *                            derived from it. Its absence also silently removes
+ *                            attribution/, because AttributionExport reads the
+ *                            working copy, so one missing file empties both of
+ *                            the two things anything downstream opens.
+ *   trace/, logs/            WARN. No programmatic consumer in this repository
+ *                            reads either, they are what a human greps when a
+ *                            machine misbehaves, and a package without them
+ *                            still answers the question.
+ *   workspaces/              WARN. Chart layout. Context, not evidence.
+ *   autoexport/ queue        WARN. Diagnostics for the agent itself, and the
+ *                            agentRoot is legitimately null on a path that has
+ *                            no agent at all.
+ *   config/                  WARN. The agent's own redacted settings, same
+ *                            reason, and the projection already reports its own
+ *                            refusals as warnings so they reach the manifest.
+ *   attribution/             WARN, and only because it cannot fail alone: it is
+ *                            derived during the run from the database that the
+ *                            first rule has already guaranteed. A thin catalogue
+ *                            means a thin templates folder, which is a fact
+ *                            about the machine rather than a broken export.
+ * One refusal, five warnings, and the test suite pins both halves.
+ * ------------------------------------------------------------------------- */
+public sealed class DeepExportRefusedException : Exception
+{
+    public DeepExportRefusedException(string message) : base(message) { }
+
+    /// <summary>The machine has no database where this run was told to look.</summary>
+    internal static DeepExportRefusedException NoDatabaseOnThisMachine(string ninjaTraderRoot, string livePath)
+    {
+        return new DeepExportRefusedException(
+            "A deep export with no database is not a deep export, so no package was produced. "
+            + $"Missing: {DeepExportSources.DatabaseRelativePath}. "
+            + $"Looked at: {livePath}. "
+            + $"NinjaTrader folder this run was given: {ninjaTraderRoot}"
+            + $" ({(Directory.Exists(ninjaTraderRoot) ? "the folder is there, the database is not" : "no such folder")}). "
+            + NinjaTraderFolder.ThisAccount());
+    }
+
+    /// <summary>The machine has one and no copy of it reached the package.</summary>
+    internal static DeepExportRefusedException NoDatabaseInThePackage(string livePath, IReadOnlyList<string> warnings)
+    {
+        return new DeepExportRefusedException(
+            "A deep export with no database is not a deep export, so no package was produced. "
+            + $"The database at {livePath} is there, and no copy of it reached {DeepExportSources.DatabaseRelativePath} in the package. "
+            + (warnings.Count == 0
+                ? "The run recorded no warning explaining why, which is itself worth reporting."
+                : "Why: " + string.Join("; ", warnings) + "."));
     }
 }

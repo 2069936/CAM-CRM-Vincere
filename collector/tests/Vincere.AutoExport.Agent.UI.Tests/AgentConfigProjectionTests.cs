@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json.Linq;
 using Vincere.AutoExport.Agent.UI.DeepExport;
 using Xunit;
@@ -404,7 +405,17 @@ public sealed class AgentConfigProjectionTests : IDisposable
         return JObject.Parse(result.Json);
     }
 
-    /// <summary>A minimal export over an otherwise empty NinjaTrader folder; the configuration is the subject.</summary>
+    /// <summary>
+    /// A minimal export over an almost empty NinjaTrader folder; the configuration
+    /// is the subject.
+    ///
+    /// ALMOST empty, and it used to be empty. The export now refuses outright when
+    /// db/NinjaTrader.sqlite is absent rather than producing a package with no
+    /// database in it, so a fixture with no database can no longer run one at all -
+    /// which is the right way round: a machine that has an agent configuration has
+    /// a NinjaTrader database too, and a tree without one was never a shape this
+    /// test meant to assert on.
+    /// </summary>
     private async Task<string> RunExportWithConfig(string configJson)
     {
         string nt = Path.Combine(root, "NinjaTrader 8");
@@ -412,6 +423,15 @@ public sealed class AgentConfigProjectionTests : IDisposable
         string outDir = Path.Combine(nt, "AutoExport", "deep");
         Directory.CreateDirectory(nt);
         Directory.CreateDirectory(agent);
+        Directory.CreateDirectory(Path.Combine(nt, "db"));
+        using (var build = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = Path.Combine(nt, "db", "NinjaTrader.sqlite"), Pooling = false }.ConnectionString))
+        {
+            build.Open();
+            using SqliteCommand create = build.CreateCommand();
+            create.CommandText = "CREATE TABLE Accounts (Id INTEGER PRIMARY KEY, Name TEXT)";
+            create.ExecuteNonQuery();
+        }
         File.WriteAllText(Path.Combine(agent, "config.json"), configJson);
 
         DeepExportResult result = await new DeepExportRunner(

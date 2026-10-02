@@ -1027,8 +1027,9 @@ public sealed class DeepExportTests : IDisposable
         string[] expected =
         {
             "AgentConfigProjection.cs", "AttributionExport.cs", "DeepExportRunner.cs", "DeepExportSources.cs",
-            "NinjaTraderFolder.cs", "SecretRedactor.cs", "SqliteSnapshot.cs", "StrategyConfigurationRedactor.cs",
-            "StrategyUserdataRedactor.cs", "TraceRedactor.cs", "OfflineReportWriter.cs",
+            "NinjaTraderFolder.cs", "SecretRedactor.cs", "SharedProcessPriority.cs", "SqliteSnapshot.cs",
+            "StrategyConfigurationRedactor.cs", "StrategyUserdataRedactor.cs", "TraceRedactor.cs",
+            "OfflineReportWriter.cs",
         };
         string[] present = files.Select(Path.GetFileName).ToArray();
         foreach (string name in expected)
@@ -1607,6 +1608,131 @@ public sealed class DeepExportTests : IDisposable
         DeepExportResult result = await Runner().RunAsync();
         Assert.Contains(result.Warnings, w => w.Contains("trace", StringComparison.OrdinalIgnoreCase));
         Assert.True(File.Exists(result.ZipPath));
+    }
+
+    [Fact]
+    public async Task ANinjaTraderWithNoDatabaseIsRefusedInsteadOfPackaged()
+    {
+        // THE OTHER SIDE OF RULE 5, and the test above is why it has to be stated
+        // separately: a missing trace folder is a warning and a missing database
+        // is not the same kind of absence. Without this, the export over a tree
+        // with no db/ SUCCEEDED - a ZIP with no db/, no attribution/ and a
+        // manifest whose warnings were "database not found" and five "folder
+        // missing" lines. Small, well-formed, and it reads like an answer. The
+        // operator clicking the button might open it and notice; the service about
+        // to be asked for one on a schedule will not, and the CRM would record a
+        // successful export against a client whose history is not in it.
+        string bare = Path.Combine(root, "bare", "NinjaTrader 8");
+        Directory.CreateDirectory(Path.Combine(bare, "log"));
+        Directory.CreateDirectory(Path.Combine(bare, "trace"));
+        File.WriteAllText(Path.Combine(bare, "log", "log.20260915.txt"), "the machine ran, and kept no database\r\n");
+        string bareOut = Path.Combine(bare, "AutoExport", "deep");
+
+        DeepExportRefusedException refusal = await Assert.ThrowsAsync<DeepExportRefusedException>(
+            () => RunnerOver(bare, bareOut).RunAsync());
+
+        // NOTHING WAS PRODUCED AND NOTHING WAS STAGED. The refusal lands before
+        // the output folder is created, because the usual reason it fires is that
+        // the root is wrong - and outputRoot is under that root, so even the log
+        // would have had nowhere to go.
+        Assert.False(Directory.Exists(bareOut));
+        Assert.Empty(Directory.GetFiles(bare, "deep_*.zip", SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetDirectories(bare, ".staging_*", SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetDirectories(bare, ".work_*", SearchOption.AllDirectories));
+
+        // AND THE REFUSAL NAMES WHAT WAS MISSING AND WHERE IT LOOKED, because the
+        // reader is trying to fix a machine they cannot open. The relative name,
+        // the absolute path, the root this run was handed, and the account that
+        // did the looking - that last one being the answer on a service, where it
+        // is SYSTEM and its Documents folder is not the trader's.
+        Assert.Contains(DeepExportSources.DatabaseRelativePath, refusal.Message);
+        Assert.Contains(Path.GetFullPath(Path.Combine(bare, "db", "NinjaTrader.sqlite")), refusal.Message);
+        Assert.Contains(bare, refusal.Message);
+        Assert.Contains("the folder is there, the database is not", refusal.Message);
+        Assert.Contains("running as", refusal.Message);
+        Assert.Contains("Documents folder is", refusal.Message);
+    }
+
+    [Fact]
+    public async Task ADatabaseThatCannotBeCopiedIsRefusedToo()
+    {
+        // THE SECOND ROAD TO AN EMPTY db/, and the one nobody predicts: the file
+        // is there and the package still ends up without it, because the
+        // consistent copy or the allowlist filter failed. Same destination, same
+        // refusal - the invariant is "db/NinjaTrader.sqlite is in the package",
+        // not a list of the ways it might not be. Asserted through the runner and
+        // not through SqliteSnapshot, because the unit test next door already
+        // proves the filter returns null and proved nothing about what the export
+        // then did with that.
+        string broken = Path.Combine(root, "broken", "NinjaTrader 8");
+        Directory.CreateDirectory(Path.Combine(broken, "db"));
+        File.WriteAllText(Path.Combine(broken, "db", "NinjaTrader.sqlite"), "this is not a SQLite file");
+        string brokenOut = Path.Combine(broken, "AutoExport", "deep");
+
+        DeepExportRefusedException refusal = await Assert.ThrowsAsync<DeepExportRefusedException>(
+            () => RunnerOver(broken, brokenOut).RunAsync());
+
+        Assert.Empty(Directory.GetFiles(brokenOut, "deep_*.zip"));
+        Assert.Empty(Directory.GetDirectories(brokenOut, ".staging_*"));
+        Assert.Empty(Directory.GetDirectories(brokenOut, ".work_*"));
+
+        // It says the file was there, so nobody goes looking for a missing folder,
+        // and it carries the reason the copy gave.
+        Assert.Contains(Path.GetFullPath(Path.Combine(broken, "db", "NinjaTrader.sqlite")), refusal.Message);
+        Assert.Contains("is there", refusal.Message);
+        Assert.Contains("no database is in this package", refusal.Message);
+
+        // The run's own account of itself is still beside the folder: there was an
+        // output folder by then, so the refusal is readable from the machine as
+        // well as from whatever asked for the export.
+        Assert.Single(Directory.GetFiles(brokenOut, "deep_*.log"));
+    }
+
+    [Fact]
+    public void TheRefusalToResolveNinjaTraderNamesEveryPathItTried()
+    {
+        // Resolve returning null used to become "NinjaTrader 8 was not found under
+        // this user's Documents", in the view model, naming no path at all - while
+        // WHICH user is the entire question. Under the Windows service every
+        // candidate is under C:\Windows\system32\config\systemprofile and none of
+        // them is where the trader's NinjaTrader lives. Printing the list says so
+        // to somebody who has never heard of LocalSystem.
+        string absent = Path.Combine(root, "nowhere", "NinjaTrader 8");
+        string folderOnly = Path.Combine(root, "shell", "NinjaTrader 8");
+        Directory.CreateDirectory(folderOnly);
+
+        DeepExportRefusedException refusal = Assert.Throws<DeepExportRefusedException>(
+            () => NinjaTraderFolder.Require(new[] { absent }));
+        Assert.Contains(absent, refusal.Message);
+        Assert.Contains("no such folder", refusal.Message);
+        Assert.Contains("running as", refusal.Message);
+
+        // A folder with the right name and no database is still a resolution -
+        // that is Resolve's documented second choice - and the refusal that
+        // follows comes from the runner, with the database path in it. So the two
+        // refusals divide the question cleanly: this one is "NinjaTrader is not
+        // here", that one is "it is here and it kept nothing".
+        Assert.Equal(folderOnly, NinjaTraderFolder.Require(new[] { absent, folderOnly }));
+    }
+
+    [Fact]
+    public void ResolvingOverNoCandidatesAtAllSaysThatRatherThanNamingNothing()
+    {
+        // The LocalSystem shape where even the shell declines to answer. An empty
+        // list must not print "Looked at: ." and leave the reader to guess.
+        DeepExportRefusedException refusal = Assert.Throws<DeepExportRefusedException>(
+            () => NinjaTraderFolder.Require(Array.Empty<string>()));
+        Assert.Contains("nowhere to look", refusal.Message);
+        Assert.Contains("running as", refusal.Message);
+    }
+
+    /// <summary>A runner over a tree this test built, with no Desktop copy and the fixture's clock.</summary>
+    private DeepExportRunner RunnerOver(string ninjaTraderRoot, string outputRoot)
+    {
+        return new DeepExportRunner(
+            ninjaTraderRoot, agent, outputRoot, null,
+            new DeepExportEnvironment("eb205103-0805|host|inst", "SERVER", "1.0.5", "1.0.0", "8.1.6.2", true, "America/New_York"),
+            () => new DateTimeOffset(2026, 9, 16, 14, 5, 0, TimeSpan.FromHours(-4)));
     }
 
     [Fact]

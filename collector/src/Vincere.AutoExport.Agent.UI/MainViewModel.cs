@@ -339,7 +339,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 ? $"Package ready ({size}). A copy is on the Desktop. Send that file to the desk."
                 : $"Package ready ({size}) with {result.Warnings.Count} warning{(result.Warnings.Count == 1 ? string.Empty : "s")}: {string.Join("; ", result.Warnings)}. A copy is on the Desktop.";
         }
-        catch (DeepExportUnavailableException exception)
+        // A REFUSAL IS NOT A CRASH, so it keeps its own branch and shows its own
+        // words. The export now refuses rather than packaging a machine with no
+        // database, and that message is the whole of what the operator needs: the
+        // paths it tried and the account it tried them as. Prefixing it with "The
+        // export did not finish" and a type name would bury it.
+        catch (DeepExportRefusedException exception)
         {
             DeepExportProgressText = string.Empty;
             DeepExportMessage = exception.Message;
@@ -447,12 +452,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private static Task<DeepExportResult> RunDeepExportOnThisMachineAsync(
         DeepExportEnvironment environment, IProgress<DeepExportProgress> progress, CancellationToken cancellationToken)
     {
-        string ninjaTrader = NinjaTraderFolder.Resolve();
-        if (ninjaTrader == null)
-        {
-            throw new DeepExportUnavailableException(
-                "NinjaTrader 8 was not found under this user's Documents. Sign in as the user who runs NinjaTrader and try again.");
-        }
+        // Require, not Resolve plus a sentence of our own. The sentence was
+        // "NinjaTrader 8 was not found under this user's Documents. Sign in as the
+        // user who runs NinjaTrader and try again", and it named no path while
+        // "this user" was the whole of the question. Require prints every
+        // candidate, what is at each, and the account that looked.
+        string ninjaTrader = NinjaTraderFolder.Require();
         string agentRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Vincere", "AutoExport");
         string outputRoot = Path.Combine(ninjaTrader, "AutoExport", "deep");
         string desktop = null;
@@ -964,11 +969,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 }
 
-/// <summary>The export could not start on this machine, for a reason a person can act on.</summary>
-public sealed class DeepExportUnavailableException : Exception
-{
-    public DeepExportUnavailableException(string message) : base(message) { }
-}
+/* DeepExportUnavailableException USED TO BE HERE, and it is gone rather than
+ * kept beside the new one. It said "the export could not start on this machine,
+ * for a reason a person can act on", which is word for word what
+ * DeepExportRefusedException says - except that one lives in the library, is
+ * thrown by the code that actually discovers the reason, and carries the paths.
+ * Two types for one condition is how one of them stops being thrown and then
+ * stops being caught. */
 
 public sealed class AsyncCommand : ICommand
 {
