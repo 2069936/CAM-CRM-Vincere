@@ -247,6 +247,28 @@ Changing one is an UPDATE in the SQL editor:
 None of them is an environment variable and none of them needs a deploy, which is
 the constraint this desk actually operates under.
 
+**A re-run of 54 resets the new bucket's limits, so change them in SQL and not
+in the dashboard.** The bucket insert carries `on conflict (id) do update set
+name, public, file_size_limit, allowed_mime_types`. It can only ever reach its
+own row — `ninjatrader-imports` is untouched and byte identical after two applies
+— but it means that if you raise `ninjatrader-deep-exports` past 512 MB, or widen
+its mime types, in the Supabase dashboard, running this file again silently puts
+them back. Edit the `insert ... values` line in the migration, or use an
+`update storage.buckets`, so the file and the bucket keep agreeing.
+
+**A request lives for its TTL plus one lease, and 'offered' past `expires_at` is
+a machine that is working and not a row that is stuck.** `request_ttl_hours`
+answers "did any machine ever come for this"; `lease_seconds` answers "is one
+working on it now". They are two different clocks on purpose: expiry leaves a
+live lease alone, because an export that spans the TTL instant has been answered
+and throwing it away loses a package already in the bucket, and it collects a
+request whose lease has ALSO run out, because that is a VPS that died mid-export.
+So the worst case is 72 hours waiting plus 90 minutes running. A beat from the
+machine that already holds the lease is answered `held` — not `offered` — and
+changes nothing on the row: it burns no offer and earns no new deadline, so an
+export longer than `max_offers` heartbeats is not killed by its own check-ins.
+Both clocks and `max_offers` are columns, so all of that is one UPDATE.
+
 **Two things to check before the routes are built on it, neither of which this
 repository can answer.** The first is whether a restrictive `to anon,
 authenticated` Storage policy interferes with a token-authorised insert; the SDK

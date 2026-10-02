@@ -352,9 +352,10 @@ $deep_export_storage_policy$;
 -- failure. The heartbeat's own contract is untouched, so nothing in here can
 -- stop a beat.
 --
--- The order of the steps is the point of the function and each one is cheaper
--- than the next: probe, sweep, lock, ownership, window, lease, offer. A beat on
--- an ordinary day stops at the probe.
+-- The order of the steps is the point of the function: probe, lock, ownership,
+-- expiry, lease, window, offer. A beat on an ordinary day stops at the probe and
+-- writes nothing; nothing writes before the lock, which is what keeps this from
+-- deadlocking against the ack.
 create or replace function public.claim_deep_export_request(
   p_device_id uuid,
   p_lease_token uuid,
@@ -412,25 +413,25 @@ begin
     raise exception 'invalid_deep_export_claim' using errcode = '22023';
   end if;
 
-  -- STEP 2: SWEEP WHAT HAS RUN OUT OF TIME, and only now, because this is a
-  -- write and it is reached only when the probe already matched. A request past
-  -- its TTL becomes 'expired' here rather than being quietly re-offered to a
-  -- machine that has just come back from a week off - which is the unattended
-  -- action this whole design exists not to take.
-  update public.ingest_deep_export_requests as request
-  set status = 'expired',
-      lease_token = null,
-      lease_expires_at = null
-  where request.device_id = p_device_id
-    and request.status in ('open', 'offered')
-    and request.expires_at <= v_now;
-
-  -- STEP 3: SERIALISE TWO BEATS FROM THE SAME MACHINE. step_45:294's trick. Two
+  -- STEP 2: SERIALISE TWO BEATS FROM THE SAME MACHINE. step_45:294's trick. Two
   -- heartbeats racing is not hypothetical on a VPS whose clock has just been
   -- corrected.
+  --
+  -- NOTHING IN THIS FUNCTION WRITES ANYTHING ABOVE THIS LINE, AND THAT IS A LOCK
+  -- ORDER RATHER THAN A PREFERENCE. An earlier draft swept the timed-out rows
+  -- here, above the lock, and a sweep is an UPDATE: it takes a tuple lock on the
+  -- request row and only then waits for the advisory lock, while
+  -- `finalize_deep_export_request` takes the advisory lock first and the request
+  -- row second. That is a cycle, and Postgres breaks a cycle by killing one side
+  -- of it: 33 of 40 synchronised rounds aborted with 40P01, and in 15 of them a
+  -- finished, uploaded export was never recorded as uploaded, because the victim
+  -- was the ack rather than the beat. Both functions now take the same four locks
+  -- in the same order - advisory, client, device, request - and the expiry moved
+  -- below to STEP 4. `scripts/race-deep-export-lock-order.sh` is the harness that
+  -- proved it and the thing to re-run if this order is ever touched.
   perform pg_advisory_xact_lock(hashtextextended(p_device_id::text || ':deep-export', 0));
 
-  -- STEP 4: THE OWNERSHIP CHAIN, client -> device -> request, in that order and
+  -- STEP 3: THE OWNERSHIP CHAIN, client -> device -> request, in that order and
   -- with the same locks step_45:274-299 takes. The order is what keeps this from
   -- deadlocking against the enrollment and revocation paths, which walk it the
   -- same way.
@@ -468,24 +469,119 @@ begin
   limit 1
   for update;
   if not found then
-    -- The sweep above took it, or another beat finished it between the probe and
-    -- the lock. Both are 'none' and neither is an error.
+    -- Another beat finished it, or the admin route revoked it, between the probe
+    -- and the lock. Both are 'none' and neither is an error.
     return jsonb_build_object('outcome', 'none');
   end if;
   if v_request.client_id is distinct from v_device.client_id then
     raise exception 'invalid_ingest_device' using errcode = 'P0001';
   end if;
 
-  -- STEP 5: A LIVE LEASE HELD BY SOMEBODY ELSE MEANS BUSY, not a second offer.
-  -- step_45:317-321's rule, and the thing that stops two beats producing two
-  -- exports on one machine. A beat holding the SAME token is the same worker
-  -- asking again and is answered below with its own offer, unchanged.
+  -- STEP 4: WHAT HAS RUN OUT OF TIME, WHICH IS TWO CLOCKS AND NOT ONE.
+  --
+  -- `expires_at` answers one question: did any machine ever come for this? It
+  -- exists so a request nobody answered does not wait forever, and so the CRM
+  -- can tell a manager "the VPS never came" rather than leaving him watching a
+  -- spinner. `lease_expires_at` answers a different question entirely: is a
+  -- machine working on it right now?
+  --
+  -- A REQUEST UNDER A LIVE LEASE HAS ALREADY BEEN ANSWERED, so the TTL has
+  -- nothing left to decide about it and expiry must not touch it. An earlier
+  -- draft had one clock here and expired anything open or offered whose TTL had
+  -- passed, which threw away work that had succeeded: a machine that spent
+  -- twenty minutes building a 7.2 MB package and uploaded it was told its
+  -- request had expired, with the ZIP already sitting at `storage_path` and
+  -- `upsert: false` making that path unusable again, so the desk was told the
+  -- VPS never came about an export that was in the bucket. It needed no
+  -- concurrency: any run that spanned the TTL instant lost. And it is ordinary,
+  -- because the offer below stamps a full lease without clamping it to the TTL -
+  -- deliberately, since a machine offered the job two minutes before expiry
+  -- needs ninety minutes to finish it and not two.
+  --
+  -- A LEASE THAT HAS ITSELF EXPIRED IS THE OTHER CASE, and that one IS expiry's
+  -- business: a lease runs out only when the VPS died mid-export, and then the
+  -- TTL's question is unanswered again. So the longest a request can live is its
+  -- TTL plus one lease - 72 hours to be picked up, then one lease to finish - and
+  -- both halves of that are a column in the settings table.
+  --
+  -- Reached only when the probe already matched, which is what keeps the
+  -- ordinary beat free of writes, and taken on the row this transaction has
+  -- already locked, so no second session can move the lease under the
+  -- comparison. The partial unique index means that row is the only open or
+  -- offered one this device has, so there is nothing else here to sweep.
+  if v_request.expires_at <= v_now
+    and (v_request.status <> 'offered'
+      or v_request.lease_expires_at is null
+      or v_request.lease_expires_at <= v_now) then
+    update public.ingest_deep_export_requests
+    set status = 'expired',
+        lease_token = null,
+        lease_expires_at = null
+    where id = v_request.id;
+    return jsonb_build_object('outcome', 'none');
+  end if;
+
+  -- STEP 5: A LIVE LEASE. WHOSE IT IS DECIDES THE ANSWER, and there are two
+  -- answers here and not one.
   if v_request.status = 'offered'
     and v_request.lease_expires_at is not null
-    and v_request.lease_expires_at > v_now
-    and v_request.lease_token is distinct from p_lease_token then
-    v_retry_after := greatest(1, ceil(extract(epoch from (v_request.lease_expires_at - v_now)))::integer);
-    return jsonb_build_object('outcome', 'busy', 'retry_after_seconds', v_retry_after);
+    and v_request.lease_expires_at > v_now then
+
+    if v_request.lease_token is distinct from p_lease_token then
+      -- SOMEBODY ELSE IS RUNNING IT: busy, with the seconds left on their lease.
+      -- step_45:317-321's rule, and the thing that stops two beats producing two
+      -- exports on one machine.
+      v_retry_after := greatest(1, ceil(extract(epoch from (v_request.lease_expires_at - v_now)))::integer);
+      return jsonb_build_object('outcome', 'busy', 'retry_after_seconds', v_retry_after);
+    end if;
+
+    -- THIS WORKER IS THE ONE RUNNING IT, and that is not a new offer. The comment
+    -- that used to stand here said such a beat "is answered below with its own
+    -- offer, unchanged" and then let it fall through to the offer UPDATE, which
+    -- is not unchanged: it burnt an offer and stamped a fresh lease. Measured
+    -- against a database, six beats a minute apart carrying one token took
+    -- offer_count to 1, 2, 3, 4, 5 and then wrote `failed / offer_limit` while
+    -- the export was still running, after which the machine's honest ack was
+    -- refused. With max_offers = 5 and a one minute heartbeat that is every
+    -- export that runs longer than five minutes. The comment was right about what
+    -- should happen and the code was doing something else; this is the code
+    -- agreeing with it.
+    --
+    -- So the beat is idempotent. The worker gets back exactly what it was given -
+    -- the same token, the same deadline, the same path, the same offer_count - and
+    -- the row is not written at all. It has earned no new deadline and it owes no
+    -- attempt. The lease is NOT renewed by checking in: if an export really
+    -- outlives its lease the server has to be allowed to conclude the machine
+    -- died, which is STEP 4's other half and the reason `lease_seconds` has a
+    -- five minute floor.
+    --
+    -- 'held' AND NOT 'offered', because "you are already running this" and "here
+    -- is a new job" are different messages and a route that cannot tell them
+    -- apart spawns a second export on a trading machine. An outcome a caller does
+    -- not recognise makes it do nothing, which is the right thing to do here;
+    -- 'offered' would make it do the wrong one. It is answered whether or not the
+    -- quiet window is still open, because the window decides whether to START a
+    -- run and this run has started.
+    return jsonb_build_object(
+      'outcome', 'held',
+      'request', jsonb_build_object(
+        'id', v_request.id,
+        'client_id', v_request.client_id,
+        'storage_path', v_request.storage_path,
+        'lease_token', v_request.lease_token,
+        'lease_expires_at', v_request.lease_expires_at,
+        'run_mode', v_request.run_mode,
+        'offer_count', v_request.offer_count,
+        'max_bytes', v_settings.max_bytes,
+        'min_free_disk_bytes', v_settings.min_free_disk_bytes,
+        'window', jsonb_build_object(
+          'start_minute', v_settings.window_start_minute,
+          'end_minute', v_settings.window_end_minute,
+          'weekend_any_time', v_settings.weekend_any_time,
+          'time_zone', coalesce(nullif(btrim(v_device.schedule_timezone), ''), 'America/New_York')
+        )
+      )
+    );
   end if;
 
   -- STEP 6: THE WINDOW, DECIDED SERVER SIDE, AND IT DOES NOT BURN AN OFFER.
