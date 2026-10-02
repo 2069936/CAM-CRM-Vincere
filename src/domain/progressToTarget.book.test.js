@@ -106,6 +106,31 @@ describe('what it prints now', () => {
     for (const entry of notAbove) expect(entry.percent).toBeNull();
   });
 
+  it('rests half its percentages on a recovered start, which the cell now names', () => {
+    /* THE HALF OF THE FIRST FIX THAT WAS LEFT UNSAID.
+     *
+     * Recovering the start is what took this column from a figure that read 90%
+     * for an account that had made nothing to a figure that reads what it is. It
+     * also means the floor under half the percentages here is a balance the CRM
+     * observed rather than one the desk typed, and nothing on the page said so —
+     * the same shape of defect, one step along: an inferred number presented as a
+     * measured one. The cell says it now, in the words the Target cell in the
+     * evaluations section already uses.
+     *
+     * Over every close on the book, not just the latest, because this section
+     * ships `true` in SIMPLIFIED_REPORT_CONFIG and reaches clients from a config
+     * nobody touched. */
+    const all = closes.flatMap((entry) => entry.rows);
+    const measured = all.filter((entry) => entry.state === PROGRESS_STATE.MEASURED);
+    expect(all).toHaveLength(1687);
+    expect(measured).toHaveLength(1623);
+    expect(measured.filter((entry) => entry.startSource === 'stored')).toHaveLength(826);
+    expect(measured.filter((entry) => entry.startSource === 'observed')).toHaveLength(797);
+    // Every measured row has one or the other. A third state here would be a
+    // percentage drawn from a start that is neither on record nor recovered.
+    expect(measured.filter((entry) => entry.startSource === null)).toHaveLength(0);
+  });
+
   it('keeps exactly the rows it kept before: no client gains or loses a line', () => {
     // Eligibility is unchanged on purpose. The figures moved; the row set did not.
     for (const entry of latest) {

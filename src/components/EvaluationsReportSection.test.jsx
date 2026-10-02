@@ -154,6 +154,61 @@ describe('the evaluations block a client receives', () => {
     expect(text).toContain('shown because this close is the one it broke on');
   });
 
+  it('keeps the pronoun in that sentence agreeing with its own number', () => {
+    /* IT PRINTS ON THE CLIENT'S PDF. The plural branch read "...are shown
+     * because this close is the one IT broke on" — the verb agreed and the
+     * pronoun did not. 10 closes on the book take the plural branch (Parker Pine
+     * 7, Devon Onyx 4, Reese Cedar 4) against 6 that take the singular one, so
+     * the wrong form is the commoner of the two. */
+    const text = strip(render([
+      evalRow('A', {}, { status: 'Failed' }),
+      evalRow('B', {}, { status: 'Failed' }),
+    ]));
+    expect(text).toContain('2 of them are recorded as failed');
+    expect(text).toContain('shown because this close is the one they broke on');
+    expect(text).not.toContain('the one it broke on');
+  });
+
+  it('says when the percentage is measured from a start nobody typed', () => {
+    /* THE DEFECT. `evaluationProgressFor` recovers a start from the earliest close
+     * on record when Start Bal $ is blank, and the denominator is
+     * `target - start`, so the recovered number moves the percentage a client
+     * reads. The inferred TARGET carried a label from the first commit; the
+     * inferred START carried none, on 96 of the book's 203 latest-close rows and
+     * 82 of its 186 bars. It is the same defect as measuring from a start of zero
+     * — an inferred figure presented as a measured one — in a different place.
+     *
+     * Labelled rather than refused, and the measurement is why: 44% of the column
+     * is too much to delete over a fact about the desk's own data entry. */
+    const dailyImports = [
+      { date: '2026-07-01', snapshots: [{ accountName: 'NOSTART', accountBalance: 50000 }] },
+      { date: '2026-07-30', snapshots: [{ accountName: 'NOSTART', accountBalance: 52050 }] },
+    ];
+    const observed = evalRow('NOSTART', { accountBalance: 52050 }, { targetProfit: 54100 });
+    const html = renderToStaticMarkup(<EvaluationsReportSection evaluations={buildEvaluationSection(
+      { accountRegistry: { NOSTART: observed.meta }, dailyImports },
+      { accounts: {} },
+      { rows: [observed], totals: summarizeAccountRows([observed]).totals, reportedAccountCount: 1 },
+    )} />);
+    const text = strip(html);
+    // The same 50% the stored-start row prints, so the figure is unchanged and
+    // only its provenance is added.
+    expect(text).toContain('50%');
+    expect(text).toContain('start taken from its earliest close');
+    // And the coverage line above the table carries the count, the way the target
+    // half of the same sentence always has.
+    expect(text).toContain("Each percentage is measured from the account's starting balance: 0 on record, 1 taken from its earliest close on record");
+  });
+
+  it('says nothing of the sort where the start was typed by the desk', () => {
+    // A label on every row would be noise and would stop meaning anything. Only
+    // the inferred half is named — the rule the Target cell beside it follows.
+    const text = strip(render(rows));
+    expect(text).toContain('50%');
+    expect(text).not.toContain('start taken from its earliest close');
+    expect(text).toContain("Each percentage is measured from the account's starting balance: 2 on record.");
+  });
+
   it('prints the buffer the platform reported, and nothing where it reported none', () => {
     const text = strip(render(rows));
     expect(text).toContain('Buffer reported');
@@ -185,5 +240,37 @@ describe('the evaluations block a client receives', () => {
     // No chip over an empty block, and no table of nothing.
     expect(html).not.toContain('eval-chip');
     expect(html).not.toContain('<table');
+  });
+
+  it('does not head that sentence with a number that contradicts it', () => {
+    /* THE HEADING AND THE SENTENCE UNDER IT COUNTED DIFFERENT THINGS. The
+     * heading counts rows; the sentence counts accounts on record. With no row
+     * the heading read "Evaluations (0)" directly over "3 evaluation accounts on
+     * record", and a reader takes a figure in a heading for a count of the
+     * client's accounts. 19 closes on the book print that pair, 4 of them a
+     * client's latest close, and it prints on the PDF. The count stays a count of
+     * rows everywhere it is a count; where there are none the heading says so. */
+    const text = strip(render([], {
+      registry: {
+        A: { accountType: ACCOUNT_TYPES.EVALUATION_BULLET },
+        B: { accountType: ACCOUNT_TYPES.EVALUATION_STANDARD },
+        C: { accountType: ACCOUNT_TYPES.EVALUATION_STANDARD },
+      },
+    }));
+    expect(text).toContain('Evaluations (none reported today)');
+    expect(text).not.toContain('Evaluations (0)');
+    expect(text).toContain('3 evaluation accounts on record');
+    // And the heading is still a row count the moment there is a row to count.
+    expect(strip(render(rows))).toContain('Evaluations (2)');
+  });
+
+  it('agrees with its own number when exactly one account is on record', () => {
+    // "1 evaluation account on record, and none of them reported". 5 of the 51
+    // clients holding an evaluation account hold exactly one, and 5 of the 19
+    // closes that print this sentence are theirs — Ellis Iris on their latest.
+    const text = strip(render([], { registry: { A: { accountType: ACCOUNT_TYPES.EVALUATION_BULLET } } }));
+    expect(text).toContain('1 evaluation account on record, and it reported no close on this date');
+    expect(text).toContain('nothing to show for it today');
+    expect(text).not.toContain('none of them');
   });
 });

@@ -135,6 +135,51 @@ describe('what each sentence says', () => {
     expect(silent.showSimulation).toContain("Set Sim / Live on the account in the client's Accounts tab");
   });
 
+  it('reports the tile strip the evaluations section empties', () => {
+    /* THE SILENT-EMPTY-SHELL DEFECT, REINTRODUCED BY THE FIX FOR IT. With
+     * `showEvaluations` on, the section takes the Evaluations tile over. For a
+     * client whose ONLY tileable pool is Evaluation - Standard that leaves the
+     * strip with no tile, and before this the sheet emitted an empty
+     * <section class="report-metrics report-segments"> and the designer said
+     * nothing about it. 31 closes on the book are in that state, 5 of them a
+     * client's latest (Kai Birch, Reese Knoll, Noel Dune, Sage Pine, Wren Larch).
+     *
+     * The sentence names the cause rather than the desk's data entry, because
+     * there is nothing for the CAM to fill here: the tile moved, it is not
+     * missing. */
+    const report = fullReport();
+    report.segments = {
+      funded: { count: 0 }, evalStandard: { count: 2 },
+      cashIra: { count: 0 }, cashStraight: { count: 0 }, cashLegacy: { count: 0 },
+    };
+    // Off, the strip still has its one tile and nothing is explained.
+    expect(describeSilentReportFields({ report, cfg: { showEvaluations: false }, history, reasons: [{}] }).showSegmentTiles)
+      .toBeUndefined();
+    const silent = describeSilentReportFields({ report, cfg: { showEvaluations: true }, history, reasons: [{}] });
+    expect(silent.showSegmentTiles).toBe(
+      'The only tileable pool on this close is Evaluation - Standard, and the Evaluations section below is showing it, so this strip would have no tile left to draw.',
+    );
+    // And a client who still has another tile is not told the strip is empty.
+    report.segments.funded = { count: 1 };
+    expect(describeSilentReportFields({ report, cfg: { showEvaluations: true }, history, reasons: [{}] }).showSegmentTiles)
+      .toBeUndefined();
+  });
+
+  it('keeps the plain empty-strip sentence where no pool is tileable at all', () => {
+    // Reachable before this change and unchanged by it: 38 closes on the book have
+    // no account typed Funded, Evaluation - Standard or Cash. Here a CAM CAN fix
+    // the missing fact, so the sentence names the field.
+    const report = fullReport();
+    report.segments = {
+      funded: { count: 0 }, evalStandard: { count: 0 },
+      cashIra: { count: 0 }, cashStraight: { count: 0 }, cashLegacy: { count: 0 },
+    };
+    for (const cfg of [{}, { showEvaluations: true }]) {
+      expect(describeSilentReportFields({ report, cfg, history, reasons: [{}] }).showSegmentTiles)
+        .toBe('No account on this close is typed Funded, Evaluation - Standard or Cash, so there is no balance split to tile. Set the account type in the client\'s Accounts tab.');
+    }
+  });
+
   it('explains the new evaluations toggle the same way as the rest', () => {
     const silent = describeSilentReportFields({ report: fullReport({ evaluations: null }), history, reasons: [{}] });
     expect(silent.showEvaluations).toContain("No evaluation account on this client's record");

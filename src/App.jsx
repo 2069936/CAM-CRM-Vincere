@@ -218,7 +218,7 @@ import {
 } from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { parseBenchmarkCsv, summarizeBenchmarkImport } from "./domain/algorithmBenchmark";
-import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
+import { REPORT_FIELDS, REPORT_SEGMENT_TILES, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import { buildReportReasons } from "./domain/reportReasons";
 import { describeSilentReportFields } from "./domain/reportFieldPreview";
 import { buildProgressToTargetRows, PROGRESS_STATE } from "./domain/progressToTarget";
@@ -7721,7 +7721,25 @@ function ReportDesignDrawer({
   );
 }
 
-function ReportPanel({
+/**
+ * The client's daily report sheet.
+ *
+ * EXPORTED FOR ONE REASON, and it is worth stating because the comment this
+ * replaces argued the opposite. The PDF is `sheetRef.current.outerHTML` posted to
+ * /api/report/pdf, so the only question that matters about any section on this
+ * sheet is whether it is INSIDE that div, and that is a question about a rendered
+ * document. Asserting it on App.jsx as text did not answer it: a verifier moved
+ * the evaluations mount out of the sheet and into the enclosing `.report-overlay`
+ * — still on screen, gone from every PDF, which is the CAM's original complaint
+ * verbatim — and the gate test passed, along with all 4,440 others.
+ *
+ * `export` is the whole seam. No prop, no branch and no code path changes for it;
+ * `src/reportEvaluationsMount.test.jsx` renders this component with its real
+ * props and walks the DOM that comes out. That file is also where the handoff is
+ * asserted — the rows appearing ONCE on the page rather than a filter expression
+ * appearing in this file.
+ */
+export function ReportPanel({
   client,
   dailyImport,
   camConfig,
@@ -7774,6 +7792,36 @@ function ReportPanel({
   const progressRows = useMemo(
     () => buildProgressToTargetRows(report, client?.dailyImports || []),
     [report, client],
+  );
+  /* THE TILES THAT WILL ACTUALLY BE DRAWN, decided before the <section> that
+   * holds them rather than inside it.
+   *
+   * It used to be filtered in place, so the strip's element was emitted whenever
+   * the toggle was on and only its CHILDREN were filtered away. That leaves an
+   * empty <section class="report-metrics report-segments"> on the sheet and in
+   * the PDF: 0 children, 0px tall, and still 12px of top and bottom margin under
+   * print media, about 3.2mm of a client's paper spent on nothing. It was
+   * already reachable before this change — 38 closes on the book have no tileable
+   * account at all, 14 of them a client's latest — and the evaluations handoff
+   * below opens a second way in, on 31 more closes where the Evaluations tile was
+   * the only one there. Computing the list first makes the empty case visible to
+   * the sheet AND to describeSilentReportFields, which reads the same rule. */
+  const segmentTiles = useMemo(
+    () => REPORT_SEGMENT_TILES
+      /* ONE BLOCK OWNS THE EVALUATION FIGURE.
+       *
+       * This tile has always been here, so it stays while the Evaluations section
+       * is off — a CAM who changed nothing sees yesterday's report. With the
+       * section on, the tile would state a different number for the same pool on
+       * the same page: it covers `evalStandard` only, which is 39 of the 203
+       * evaluation rows on the book's latest closes, while the section covers all
+       * 203 (the other 164 are Bullet Bot, which has a segment of its own and
+       * never had a tile). Two figures for one pool is the defect the simulation
+       * block was separated to avoid, so the section takes the tile over rather
+       * than sitting beside it. */
+      .filter(({ key }) => !(key === "evalStandard" && cfg.showEvaluations))
+      .filter(({ key }) => report.segments[key].count > 0),
+    [report, cfg.showEvaluations],
   );
   const setField = (key, value) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -8005,28 +8053,12 @@ function ReportPanel({
         </section>
         ) : null}
 
-        {cfg.showSegmentTiles ? (
+        {/* No tile left to draw means no strip. An empty bordered-off row of
+            nothing is the silent-empty-shell defect this change exists to
+            remove, and it costs the client 3.2mm of paper to say nothing. */}
+        {cfg.showSegmentTiles && segmentTiles.length ? (
         <section className="report-metrics report-segments">
-          {[
-            { key: "funded", label: "Funded" },
-            { key: "evalStandard", label: "Evaluations" },
-            { key: "cashIra", label: "Cash - IRA" },
-            { key: "cashStraight", label: "Cash - Straight" },
-            { key: "cashLegacy", label: "Cash (unclassified)" },
-          ]
-            /* ONE BLOCK OWNS THE EVALUATION FIGURE.
-             *
-             * This tile has always been here, so it stays while the Evaluations
-             * section is off — a CAM who changed nothing sees yesterday's report.
-             * With the section on, the tile would state a different number for the
-             * same pool on the same page: it covers `evalStandard` only, which is
-             * 39 of the 203 evaluation rows on the book's latest closes, while the
-             * section covers all 203 (the other 164 are Bullet Bot, which has a
-             * segment of its own and never had a tile). Two figures for one pool is
-             * the defect the simulation block was separated to avoid, so the
-             * section takes the tile over rather than sitting beside it. */
-            .filter(({ key }) => !(key === "evalStandard" && cfg.showEvaluations))
-            .filter(({ key }) => report.segments[key].count > 0)
+          {segmentTiles
             .map(({ key, label }) => (
               <div key={key}>
                 <span>{label} · {report.segments[key].count} acct</span>
@@ -8077,10 +8109,27 @@ function ReportPanel({
                     <td>{formatCurrency(entry.target)}</td>
                     <td>
                       {entry.state === PROGRESS_STATE.MEASURED ? (
-                        <div className="report-progress">
-                          <span className="report-progress-bar" style={{ width: `${entry.percent}%` }} />
-                          <span className="report-progress-label">{entry.percent}%</span>
-                        </div>
+                        <>
+                          <div className="report-progress">
+                            <span className="report-progress-bar" style={{ width: `${entry.percent}%` }} />
+                            <span className="report-progress-label">{entry.percent}%</span>
+                          </div>
+                          {/* THE START IS HALF THE DENOMINATOR AND IT IS OFTEN A
+                              GUESS. The percentage is
+                              `(balance - start) / (target - start)`, and the
+                              start is recovered from the earliest close on record
+                              wherever Start Bal $ is blank — the recovery this
+                              branch added, and the thing the fix to the
+                              90%-for-nothing defect rests on. Measured over all
+                              477 closes: 797 of the 1,623 percentages this table
+                              draws sit on a recovered start and 826 on a stored
+                              one. Unlabelled, all 1,623 read alike, and this
+                              section is `true` in SIMPLIFIED_REPORT_CONFIG, so it
+                              reaches clients from a config nobody touched. */}
+                          {entry.startSource === "observed" ? (
+                            <small className="muted">start taken from its earliest close</small>
+                          ) : null}
+                        </>
                       ) : (
                         <small className="muted">
                           {entry.state === PROGRESS_STATE.NO_START

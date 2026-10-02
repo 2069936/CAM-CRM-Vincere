@@ -158,6 +158,14 @@ describe('where the printed report is allowed to break', () => {
     expect(print('.report-table tbody tr:last-child')['break-before']).toBe('avoid');
   });
 
+  it('never strands the last open item either, which is the other repeated row', () => {
+    // Measured with the Evaluations section on: Kai Birch's close runs to 273mm and
+    // put the eighth open item alone on sheet two with the footer under it, 18mm of
+    // ink on a 255mm sheet. The list is the only other repeated row the report
+    // prints, so it gets the rule the table rows have.
+    expect(print('.report-flag-list li:last-child')['break-before']).toBe('avoid');
+  });
+
   it('repeats the column headings when a table continues on the next sheet', () => {
     // This rule was in the file before and was dead: a header only repeats when
     // a table splits, and nothing was allowed to split. It is load-bearing now.
@@ -217,6 +225,30 @@ describe('how much of the sheet the report is allowed to use', () => {
     expect(screen('.report-metrics').margin).toBe('22px 0');
     expect(screen('.report-section')['margin-top']).toBe('20px');
     expect(screen('.report-footer')['margin-top']).toBe('32px');
+  });
+
+  it('puts the evaluations block on the same paper budget as every other block', () => {
+    /* IT WAS NOT, AND IT COST A CLIENT A FOOTER-ONLY SHEET.
+     *
+     * `.report-evaluations` is the one section with a border, so on screen it
+     * carries 18px of margin and 12px of padding inside that border. Those
+     * declarations are written AFTER the @media print block that tightens
+     * `.report-section` to 12px and carry the same specificity, so source order
+     * handed them the paper as well: 32px — 8.5mm — more whitespace than its
+     * neighbours, on the one block that only exists when a CAM asks for it.
+     * Harper Juniper's close, with the toggle on, filled sheet two to 244mm and
+     * put the footer alone on sheet three: 9mm of ink, 246mm blank, the failure
+     * scripts/verify-report-print-layout.mjs names by that name.
+     *
+     * The assertion is on the SCOPED selector, because that is the half that
+     * makes the rule bite. `.report-evaluations` inside @media print would read
+     * identically here and still lose to index.css:7694 in the browser. */
+    expect(print('.report-sheet .report-evaluations')['margin-top']).toBe('12px');
+    expect(print('.report-sheet .report-evaluations').padding).toBe('8px 14px');
+    // And the screen keeps the box it needs to read as a separate block.
+    expect(screen('.report-evaluations')['margin-top']).toBe('18px');
+    expect(screen('.report-evaluations').padding).toBe('12px 14px');
+    expect(screen('.report-evaluations').border).toBe('1px solid var(--border)');
   });
 
   it('pins the metric tiles to a row, because paper is not a phone', () => {

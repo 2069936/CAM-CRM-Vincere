@@ -1,28 +1,47 @@
-// The opt-in gate on the client report's evaluations section, and its route to
-// the PDF.
+// The opt-in gate on the client report's evaluations section: that there is
+// exactly one mount, that it is guarded, that it ships off, and that a CAM can
+// open it.
 //
-// WHY THIS IS ASSERTED ON THE SOURCE. The same reason simulationReportGate.test.js
-// gives: the mount lives eight thousand lines into App.jsx's report preview, in a
-// component wired to Supabase, routing and a dozen panels. There is no seam to
-// render it through, and adding one to make it testable would change shipped code
-// to satisfy a test. So the wiring is asserted textually here and the behaviour of
-// the section itself is left to EvaluationsReportSection.test.jsx, which renders
-// it, and to evaluationReport.test.js, which exercises the builder.
+// WHAT THIS FILE NO LONGER CLAIMS, and why that matters more than what it does.
+// It used to hold the PDF half as well — "the mount is inside `.report-sheet` and
+// outside every `.no-print` subtree" — as arithmetic on positions inside App.jsx
+// read as a 500 KB string. It could not fail on the regression it was written for:
 //
-// simulationReportGate.test.js exists because a mutation pass changed its gate to
-// `{true ? ... }` and then to `{false ? ... }` and BOTH passed all 1782 tests —
-// one printing a section on every client report whether or not a CAM asked for
-// it, the other deleting the feature from the product while leaving every file in
-// place. This file is the same guard for the same shape of wiring, and the
-// mutations were run against it before it was written down.
+//   `const sheetAt = APP.indexOf('className="report-sheet"')` takes the FIRST of
+//   three occurrences in App.jsx. That one belongs to MonthlyReportPanel, 450
+//   lines above the ReportPanel sheet the mount actually lives in, so
+//   `expect(mountAt).toBeGreaterThan(sheetAt)` asserted only that the mount came
+//   somewhere after a different component's opening tag, and the `head` slice it
+//   searched for an unclosed `no-print` spanned two components.
 //
-// IT ALSO PINS THE PDF, because that is how the complaint arrived: "it does not
-// come out in the PDF". The PDF is the live `.report-sheet` DOM posted to
-// /api/report/pdf and rendered in headless Chrome against this build's
-// stylesheet, so a section reaches the paper if and only if it is inside that div
-// and outside every `.no-print` subtree. Both halves are checked: the position in
-// App.jsx here, and the absence of `no-print` on the rendered markup in
-// EvaluationsReportSection.test.jsx.
+//   A verifier moved the gated mount out of the sheet and into the enclosing
+//   `.report-overlay`, right after the sheet's closing `</div>`. The section still
+//   renders on screen; `sheetRef.current.outerHTML` — the exact string
+//   reportPdfDownload.js:89 posts to /api/report/pdf — no longer contains it, so
+//   it is gone from every client's PDF. That is the CAM's complaint reproduced
+//   word for word, and this file passed, with all 4,440 tests green.
+//
+// The handoff half went the same way. "Hands the rows over rather than printing
+// them twice" was two regexes for two `.filter(...)` expressions, and the same
+// verifier deleted both filters while leaving their text inside block comments.
+// The regexes matched the comments. With the toggle on, every evaluation row then
+// printed twice on one page.
+//
+// Both questions are about a rendered document, so both now live in
+// src/reportEvaluationsMount.test.jsx, which renders `ReportPanel` with real props
+// and walks the DOM: `section.closest('.report-sheet')`, the ancestors checked for
+// `.no-print`, `sheet.outerHTML`, and the account names counted in the sheet's
+// table bodies. Mutations F and G were applied again afterwards and that file fails
+// 7 of 12 and 3 of 12 respectively; this file still passed both, which is the
+// reason the assertions moved rather than being corrected in place. A gate that
+// cannot fail is worse than no gate, because it reads as proof.
+//
+// WHAT IS LEFT HERE EARNS BEING TEXTUAL. "Exactly one mount in the file" is a
+// question about the file — a second, unguarded mount somewhere else in App.jsx is
+// counted in source and is invisible to any single render. The config assertions
+// are about reportConfig.js. And the stylesheet assertions are about the text of
+// src/index.css, which is where printLayout.test.js pins every other print rule
+// for the same reason: jsdom has no fragmentation engine and no print media.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -35,7 +54,9 @@ describe('the report evaluations section is opt-in, and reachable', () => {
   it('mounts only behind cfg.showEvaluations', () => {
     const mounts = APP.match(/<EvaluationsReportSection\b/g) || [];
     // Not just "a guarded mount exists": a SECOND, unguarded mount elsewhere in
-    // App.jsx would satisfy the regex below on the strength of the first one.
+    // App.jsx would satisfy the regex below on the strength of the first one, and
+    // would print the section on every client report. One render cannot see it;
+    // counting the file can.
     expect(mounts).toHaveLength(1);
 
     // The one mount is the consequent of a cfg.showEvaluations conditional.
@@ -67,60 +88,44 @@ describe('the report evaluations section is opt-in, and reachable', () => {
     expect(resolveReportConfig(null, { showEvaluations: true }).showEvaluations).toBe(true);
     expect(resolveReportConfig({ showEvaluations: true }, { showEvaluations: false }).showEvaluations).toBe(false);
   });
-
-  it('hands the rows over rather than printing them twice', () => {
-    // 203 evaluation rows across 47 clients on the book's latest closes. With the
-    // section on and the per-account table untouched, every one of them would
-    // print twice on one page, and printLayout.book.test.js would not notice:
-    // its POOLS list is hardcoded, so a second evaluations section adds paper
-    // while every assertion in that file still passes.
-    expect(APP).toMatch(/\.filter\(\(group\) => !\(group === "evaluations" && cfg\.showEvaluations\)\)/);
-    // And the segment tile, which states a balance and a P&L for the same pool.
-    expect(APP).toMatch(/\.filter\(\(\{ key \}\) => !\(key === "evalStandard" && cfg\.showEvaluations\)\)/);
-  });
 });
 
-describe('the evaluations section reaches the PDF', () => {
-  // The CAM's complaint arrived as "it does not come out in the PDF", and a test
-  // that asserts a component renders on screen says nothing about paper.
-  const sheetAt = APP.indexOf('className="report-sheet"');
-  const mountAt = APP.indexOf('<EvaluationsReportSection');
+describe('the print stylesheet lets the section through and keeps the drawer out', () => {
+  // The PDF is the posted `.report-sheet` rendered in headless Chrome against this
+  // build's own stylesheet. WHERE the section sits in that DOM is asserted on a
+  // rendered document in src/reportEvaluationsMount.test.jsx; what the stylesheet
+  // then does to it is a question about this file's text, and this is the half
+  // that belongs here.
 
-  it('mounts inside .report-sheet, which is the DOM the PDF is made from', () => {
-    expect(sheetAt).toBeGreaterThan(-1);
-    expect(mountAt).toBeGreaterThan(sheetAt);
-    // reportPdfDownload.js posts `sheet?.outerHTML` for exactly this element.
-    expect(APP).toContain('<div\n      className="report-overlay"');
-    expect(APP).toMatch(/<div className="report-sheet" ref=\{sheetRef\}>/);
-  });
-
-  it('mounts outside every .no-print subtree inside that sheet', () => {
-    // The three no-print subtrees in the sheet are the action bar, the design
-    // drawer and the save-error notice. Each is opened and closed before the
-    // report body starts, so the check is that none of them is still open where
-    // the section mounts: the last `no-print` occurrence before the mount must be
-    // followed by its own closing tag before the mount is reached.
-    const head = APP.slice(sheetAt, mountAt);
-    const lastNoPrint = head.lastIndexOf('no-print');
-    expect(lastNoPrint).toBeGreaterThan(-1);
-    const after = head.slice(lastNoPrint);
-    // `) : null}` closes the conditional that renders the last no-print block.
-    expect(after).toMatch(/\) : null\}/);
-    // And the section's own markup carries no no-print of its own.
-    const section = readFileSync(new URL('../components/EvaluationsReportSection.jsx', import.meta.url), 'utf8');
-    expect(section).not.toContain('no-print');
-  });
-
-  it('is not hidden by the print stylesheet, and the designer still is', () => {
-    // A rule that hid `.report-evaluations` in print would produce exactly the
-    // complaint this change answers: visible on screen, absent from the paper.
+  it('does not hide .report-evaluations in print, which would be the whole complaint', () => {
+    // A rule that hid it in print would produce exactly the defect this change
+    // answers: visible on screen, absent from the paper.
     expect(CSS).not.toMatch(/\.report-evaluations[^{]*\{[^}]*display:\s*none/);
-    // The counterpart: the designer's per-toggle explanations are the desk's own
-    // bookkeeping and must never reach the client. They live inside the drawer,
-    // which the print block hides — pinned from the stylesheet side in
-    // printLayout.test.js and from this side here.
+  });
+
+  it('still hides the designer, which is where the per-toggle explanations live', () => {
+    // The counterpart: describeSilentReportFields' sentences are the desk's own
+    // bookkeeping — "no account on this client is set to simulation" is about data
+    // entry, not about the client's day — and they must never reach the client.
+    // They live inside the drawer, which the print block hides: pinned from the
+    // stylesheet side in printLayout.test.js and from this side here, and proved on
+    // delivered PDF bytes by scripts/verify-report-print-layout.mjs, which looks
+    // for "Done designing" in the text of every report it renders.
     expect(CSS).toContain('.report-design-drawer');
     expect(APP).toContain('className="report-design-drawer no-print"');
     expect(APP).toMatch(/<small className="report-design-silent">/);
+  });
+
+  it('has a rendered counterpart for everything it cannot answer', () => {
+    /* NOT DECORATION. Four tests in this repo have now passed against prose, and
+     * the rule learned from them is that a source-text assertion about the report
+     * needs a behavioural one standing beside it. This checks the file is there
+     * and is wired to the component, because a renamed or deleted
+     * reportEvaluationsMount.test.jsx would otherwise leave this file looking like
+     * a complete gate again — which is the state the branch was reviewed in. */
+    const mount = readFileSync(new URL('../reportEvaluationsMount.test.jsx', import.meta.url), 'utf8');
+    expect(mount).toContain("from './App'");
+    expect(mount).toContain("closest('.report-sheet')");
+    expect(mount).toContain('sheet.outerHTML');
   });
 });

@@ -52,6 +52,24 @@ export const REPORT_FIELDS = [
   { key: 'chartAsPercent', label: 'Show cumulative as % of capital', advanced: true },
 ];
 
+/**
+ * The balance-split tiles, in the order the sheet draws them.
+ *
+ * Exported because two readers have to agree about this list and each used to
+ * hold its own copy: App.jsx draws the strip, and
+ * `reportFieldPreview.describeSilentReportFields` tells the CAM, beside the
+ * checkbox, when the strip would hold nothing. Copies that drifted would have the
+ * designer promise a tile the sheet withholds — the exact defect
+ * describeSilentReportFields exists to answer — so there is one list.
+ */
+export const REPORT_SEGMENT_TILES = [
+  { key: 'funded', label: 'Funded' },
+  { key: 'evalStandard', label: 'Evaluations' },
+  { key: 'cashIra', label: 'Cash - IRA' },
+  { key: 'cashStraight', label: 'Cash - Straight' },
+  { key: 'cashLegacy', label: 'Cash (unclassified)' },
+];
+
 // Defaults preserve the report exactly as it shipped, except progress-to-target
 // which is new and opt-in.
 export const DEFAULT_REPORT_CONFIG = {

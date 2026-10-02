@@ -114,7 +114,16 @@ describe('how much of the book the evaluations section is for', () => {
     expect(silent).toHaveLength(3);
     for (const close of silent) {
       expect(close.report.evaluations.counts.onRecord).toBeGreaterThan(0);
-      expect(close.report.evaluations.note).toContain('none of them reported a close on this date');
+      // The sentence agrees with its own number: one of these three clients holds
+      // exactly one challenge account (Ellis Iris), and "1 ... none of them" was
+      // printing on the PDF.
+      expect(close.report.evaluations.note).toContain(
+        close.report.evaluations.counts.onRecord === 1
+          ? 'it reported no close on this date'
+          : 'none of them reported a close on this date',
+      );
+      // And the heading over it never states a count that contradicts it.
+      expect(close.report.evaluations.label).toBe('Evaluations (none reported today)');
     }
   });
 });
@@ -136,6 +145,41 @@ describe('what the section says about the latest close of every client', () => {
     expect(latest.reduce((sum, section) => sum + section.counts.idle, 0)).toBe(164);
     expect(latest.reduce((sum, section) => sum + section.counts.traded, 0)).toBe(39);
     expect(latest.filter((section) => section.counts.traded === 0)).toHaveLength(32);
+  });
+
+  it('rests almost half its percentages on a start nobody typed, and says which', () => {
+    /* THE NUMBER THAT DECIDED THE DISCLOSURE, and it is the same class of defect
+     * as the 90%-for-nothing one this change already fixed: an inferred figure
+     * presented as a measured one.
+     *
+     * The denominator is `target - start`, so the start moves the percentage
+     * exactly as much as the target does. The inferred TARGET has been labelled
+     * since this section shipped; the inferred START was labelled nowhere, and a
+     * CAM reading "63%" to a client could not tell whether the floor under it was
+     * typed by the desk or was whatever balance the CRM happened to see first.
+     *
+     * Three options were measured. REFUSING the percentage on an inferred start
+     * blanks the figures below — too many to delete over a fact about the desk's
+     * own data entry. LEAVING IT SILENT is the defect. LABELLING it costs one
+     * muted line per affected row and is what the Target cell beside it already
+     * does, so that is what the cell does.
+     */
+    const sum = (field) => latest.reduce((total, section) => total + section.coverage[field], 0);
+    expect(sum('startStored') + sum('startObserved')).toBe(203);
+    expect(sum('startStored')).toBe(107);
+    expect(sum('startObserved')).toBe(96);
+    // Of the bars actually drawn, the ones whose floor is a guess. This is the
+    // figure the choice was made on: too many to refuse, too many to leave silent.
+    const bars = latest.reduce(
+      (total, section) => total + section.accounts.filter((row) => row.progress.state === EVALUATION_PROGRESS.BELOW).length,
+      0,
+    );
+    expect(bars).toBe(186);
+    expect(sum('percentFromObservedStart')).toBe(82);
+    // And never counted where the start is not a denominator: a row reading
+    // "Target reached" compares a balance against a target and the start does not
+    // enter it.
+    expect(sum('percentFromObservedStart')).toBeLessThan(sum('startObserved'));
   });
 
   it('names 21 failed rows as broken on this close, and never leads with them', () => {

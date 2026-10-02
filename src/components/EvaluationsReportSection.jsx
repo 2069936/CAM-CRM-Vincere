@@ -103,8 +103,14 @@ export default function EvaluationsReportSection({ evaluations }) {
             {counts.failed ? (
               <>
                 {' '}
+                {/* The pronoun agrees with the verb. The plural branch read
+                    "...are shown because this close is the one IT broke on",
+                    which printed on 10 closes of the book against 6 that took
+                    the singular branch and read correctly — on the client's PDF,
+                    not in the drawer. */}
                 {counts.failed} of them {counts.failed === 1 ? 'is' : 'are'} recorded as failed and{' '}
-                {counts.failed === 1 ? 'is' : 'are'} shown because this close is the one it broke on.
+                {counts.failed === 1 ? 'is' : 'are'} shown because this close is the one{' '}
+                {counts.failed === 1 ? 'it' : 'they'} broke on.
               </>
             ) : null}
           </p>
@@ -131,6 +137,20 @@ export default function EvaluationsReportSection({ evaluations }) {
               : ''}
             {coverage.targetNotAboveStart
               ? `, ${coverage.targetNotAboveStart} whose recorded target is not above the starting balance`
+              : ''}
+            .
+            {/* THE OTHER END OF THE SAME PERCENTAGE, which this paragraph used to
+                leave out. The denominator is `target - start`, so the start moves
+                the figure exactly as much as the target does, and the builder has
+                counted both halves since evaluationReport.js:246 — the component
+                printed only the target half. Measured on the book's latest
+                closes: 96 of 203 starts are taken from the earliest close on
+                record rather than from a Start Bal $ anybody typed, and 82 of the
+                186 percentage bars rest on one. */}
+            {' '}Each percentage is measured from the account&apos;s starting balance:{' '}
+            {coverage.startStored} on record
+            {coverage.startObserved
+              ? `, ${coverage.startObserved} taken from its earliest close on record`
               : ''}
             .
           </p>
@@ -258,10 +278,24 @@ function EvaluationProgressCell({ progress }) {
   }
   if (progress.state === EVALUATION_PROGRESS.BELOW) {
     return (
-      <div className="report-progress">
-        <span className="report-progress-bar" style={{ width: `${progress.percent}%` }} />
-        <span className="report-progress-label">{progress.percent}%</span>
-      </div>
+      <>
+        <div className="report-progress">
+          <span className="report-progress-bar" style={{ width: `${progress.percent}%` }} />
+          <span className="report-progress-label">{progress.percent}%</span>
+        </div>
+        {/* THE FIGURE NAMES ITS OWN PROVENANCE, the habit AccountManager's
+            Sim / Live caption keeps ("· guessed from the name") and the habit the
+            Target cell beside this one already keeps ("standard for its type and
+            size"). Only the inferred half is labelled, for the same reason: a
+            number nobody typed must not read like one somebody confirmed.
+            Labelled rather than withheld, because withholding was measured and
+            is worse — 82 of the 186 bars on the book's latest closes rest on an
+            inferred start, and refusing 44% of the column answers a question
+            about the desk's data entry by deleting the client's figure. */}
+        {progress.startSource === 'observed' ? (
+          <small className="muted">start taken from its earliest close</small>
+        ) : null}
+      </>
     );
   }
   if (progress.state === EVALUATION_PROGRESS.TARGET_NOT_ABOVE_START) {

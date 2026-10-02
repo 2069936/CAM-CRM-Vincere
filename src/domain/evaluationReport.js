@@ -204,15 +204,36 @@ export function buildEvaluationSection(client, dailyImport, {
   const failed = accounts.filter((row) => row.meta?.status === 'Failed').length;
 
   return {
-    label: `Evaluations (${accounts.length})`,
+    /**
+     * THE HEADING COUNTS THE ROWS UNDER IT, and where there are none it says so
+     * in words instead of printing a nought.
+     *
+     * `(n)` is the number of rows the block shows — the same count the chat
+     * block has printed since report.js:205 and the same one the subtotal's
+     * denominator is read against, so the number is the right one and it stays.
+     * The WORD was wrong. A reader takes a figure in a heading for a count of
+     * the client's accounts, not of today's rows, so "Evaluations (0)" over a
+     * sentence reading "3 evaluation accounts on record" asserted the opposite
+     * of its own body at a glance. 19 closes on the book print that pair, 4 of
+     * them a client's latest close, and it prints on the PDF.
+     */
+    label: accounts.length
+      ? `Evaluations (${accounts.length})`
+      : 'Evaluations (none reported today)',
     /**
      * The words that say what the money is. Currency formatting alone does not
      * carry "this is not yours", so the sentence does, and the column headings
      * repeat it beside every figure.
+     *
+     * The none-reported branch agrees with its own number: one account is "it",
+     * not "none of them". 5 of the 51 clients holding an evaluation account hold
+     * exactly one, and 5 of the 19 closes that print this sentence are theirs.
      */
     note: accounts.length
       ? 'These are challenge accounts. The capital in them belongs to the prop firm, not to you — what matters is whether each one reaches its target. Their balances and results are shown separately and are not included in any figure above.'
-      : `${onRecord} evaluation account${onRecord === 1 ? '' : 's'} on record, and none of them reported a close on this date, so there is nothing to show for them today.`,
+      : onRecord === 1
+        ? '1 evaluation account on record, and it reported no close on this date, so there is nothing to show for it today.'
+        : `${onRecord} evaluation accounts on record, and none of them reported a close on this date, so there is nothing to show for them today.`,
     hasRows: accounts.length > 0,
     accounts,
     totals: totals || { grossRealizedPnl: 0, weeklyPnl: 0, aggregateBalance: 0 },
@@ -245,6 +266,19 @@ export function buildEvaluationSection(client, dailyImport, {
       targetMissing: accounts.filter((row) => !row.progress.target).length,
       startStored: accounts.filter((row) => row.progress.startSource === 'stored').length,
       startObserved: accounts.filter((row) => row.progress.startSource === 'observed').length,
+      /**
+       * The rows whose PERCENTAGE rests on a start nobody typed.
+       *
+       * Narrower than `startObserved` on purpose: the start is a denominator only
+       * in the BELOW branch. A row reading "Target reached" compares a balance
+       * against a target and the start never enters it, so an inferred start
+       * there is not a figure anybody reads. 82 of the 186 bars on the book's
+       * latest closes are in this state, and until the cell said so the reader
+       * could not tell which.
+       */
+      percentFromObservedStart: accounts.filter(
+        (row) => row.progress.state === EVALUATION_PROGRESS.BELOW && row.progress.startSource === 'observed',
+      ).length,
       targetNotAboveStart: accounts.filter(
         (row) => row.progress.state === EVALUATION_PROGRESS.TARGET_NOT_ABOVE_START,
       ).length,

@@ -44,11 +44,16 @@
 // drawer that is already fourteen checkboxes.
 
 import { buildPerformanceSeries, summarizePerformance } from './performanceSeries.js';
+import { REPORT_SEGMENT_TILES } from './reportConfig.js';
 
 /** The pools the per-account table draws, in App.jsx's order. */
 const TABLE_POOLS = ['evaluations', 'funded', 'cashIra', 'cashStraight', 'cashLegacy', 'unclassified'];
-/** The pools the segment tile row draws. */
-const TILE_SEGMENTS = ['funded', 'evalStandard', 'cashIra', 'cashStraight', 'cashLegacy'];
+/**
+ * The pools the segment tile row draws — the list App.jsx maps, not a second copy
+ * of it. There were two copies until now, and what two copies drift into is this
+ * module's whole subject: the designer promising something the sheet withholds.
+ */
+const TILE_SEGMENTS = REPORT_SEGMENT_TILES.map((tile) => tile.key);
 
 const plural = (n, one, many) => (n === 1 ? one : many);
 
@@ -75,8 +80,22 @@ export function describeSilentReportFields({ report, cfg = {}, history = [], rea
     out.showPriorDelta = 'This is the earliest close on record for this client, so there is no prior close to compare against.';
   }
 
-  if (!TILE_SEGMENTS.some((key) => (segments[key]?.count || 0) > 0)) {
-    out.showSegmentTiles = 'No account on this close is typed Funded, Evaluation - Standard or Cash, so there is no balance split to tile. Set the account type in the client\'s Accounts tab.';
+  /* THE STRIP THE EVALUATIONS SECTION CAN EMPTY.
+   *
+   * Asked of the list AFTER the handoff, because that is the list the sheet draws:
+   * with `showEvaluations` on the section takes the Evaluations tile over, and for
+   * a client whose only tile was that one the strip has nothing left. 31 closes on
+   * the book are in that state, 5 of them a client's latest, and before this they
+   * were reported nowhere — the sheet emitted an empty strip and the designer said
+   * nothing, which is the pair of failures this module was built to end.
+   *
+   * The unconditional case was reachable already: 38 closes, 14 of them a latest
+   * close, have no tileable account at all. */
+  const tiles = TILE_SEGMENTS.filter((key) => !(key === 'evalStandard' && cfg.showEvaluations));
+  if (!tiles.some((key) => (segments[key]?.count || 0) > 0)) {
+    out.showSegmentTiles = (segments.evalStandard?.count || 0) > 0 && cfg.showEvaluations
+      ? 'The only tileable pool on this close is Evaluation - Standard, and the Evaluations section below is showing it, so this strip would have no tile left to draw.'
+      : 'No account on this close is typed Funded, Evaluation - Standard or Cash, so there is no balance split to tile. Set the account type in the client\'s Accounts tab.';
   }
 
   // The table's own pools, minus the one the evaluations section takes over when

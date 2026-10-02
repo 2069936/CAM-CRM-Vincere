@@ -5685,6 +5685,18 @@ tr:nth-child(2) .rank-badge {
     break-before: avoid;
   }
   /*
+    The same rule for the open-items list, which is the only other repeated row
+    the report prints. Measured: Kai Birch's close with the Evaluations section on
+    is 273mm, and the eighth open item landed alone on sheet two with the footer
+    under it — 18mm of ink on a 255mm sheet. Tying the last item back takes the
+    seventh down with it and the sheet reads as a continuation instead of an
+    accident. Only `:last-child`: the first item travels under its own `h2`, which
+    `break-after: avoid` already holds.
+  */
+  .report-flag-list li:last-child {
+    break-before: avoid;
+  }
+  /*
     The other half of the complaint. A sheet that is full, plus a footer whose
     margin, rule and single line come to another 74px, overflows by a couple of
     points — and the client gets a second sheet holding that one line. That
@@ -5730,6 +5742,39 @@ tr:nth-child(2) .rank-badge {
   }
   .report-section {
     margin-top: 12px;
+  }
+  /*
+    THE ONE BLOCK THAT NEVER GOT THE TIGHTENING ABOVE, and it cost a client a
+    sheet holding nothing but the footer line.
+
+    `.report-evaluations` is declared at index.css:7740 with the screen values it
+    needs — 18px of margin, 12px of padding inside its own border, because it is
+    the one section the report draws a box around. Those declarations sit AFTER
+    this @media block in the file and carry the same specificity, so source order
+    gave them the paper too: every other block on the sheet printed at 12px while
+    this one printed at 18 plus 24 of padding. 32px, 8.5mm, on a block that only
+    appears when a CAM turns it on.
+
+    Measured through the endpoint at Letter/12mm, with the toggle on: Harper
+    Juniper's close filled sheet two to 244mm, left 11mm, and put the footer alone
+    on sheet three — 9mm of ink, 246mm blank, which is the exact failure
+    scripts/verify-report-print-layout.mjs names ("a sheet holding the footer and
+    nothing else"). `.report-footer { break-before: avoid }` could not save it:
+    the 42px left could hold the trailing prose and not the footer, and Chrome
+    takes the break it can over the one it is asked for. With the block printing
+    on the same whitespace budget as its neighbours the same close is two sheets
+    at 255mm and 255mm, and Noel Dune's drops from two sheets to one. Measured
+    across 17 book clients, toggle on, no sheet is left footer-only and none holds
+    under 20mm; with the toggle off every one of the 17 is unchanged to the
+    millimetre, because this selector matches nothing on a default report.
+
+    Scoped through `.report-sheet` so it outranks the screen declaration whatever
+    order the file ends up in — the same device `.report-sheet .cam-day-client`
+    above uses, and for the same reason.
+  */
+  .report-sheet .report-evaluations {
+    margin-top: 12px;
+    padding: 8px 14px;
   }
   .report-table,
   .report-sheet .ops-table {
