@@ -194,6 +194,32 @@ async function asAnon(statement, params) {
   }
 }
 
+/** Any role, by name, so "who may call this function" can be asked rather than read. */
+async function asRole(role, statement, params) {
+  await db.exec('begin');
+  try {
+    await db.exec(`set local role ${role}`);
+    const { rows } = await db.query(statement, params);
+    return { rows, error: null };
+  } catch (error) {
+    return { rows: [], error: String(error.message || error) };
+  } finally {
+    await db.exec('rollback');
+  }
+}
+
+/* EVERY COLUMN OF EVERY ROW OF ingest_devices, AS ONE STRING.
+ *
+ * A negative search for `record_ingest_heartbeat` or `last_seen_at` over the
+ * migration text cannot see dynamic SQL, cannot see a trigger, and is vacuously
+ * true on a file of nothing but comments - all three measured. `t::text` on the
+ * whole row is the behavioural form of the same question: if anything about any
+ * device changed, this string changes, whatever wrote it and however. */
+async function heartbeatFingerprint() {
+  return one(`select coalesce(string_agg(device::text, '|' order by device.id), '<no devices>')
+    from public.ingest_devices as device`);
+}
+
 /** The whole table emptied, so each behavioural test starts from nothing. */
 async function reset() {
   await db.exec('delete from public.account_live_samples');
@@ -276,11 +302,18 @@ describe('step 55 is the one that runs last', () => {
       .toEqual(['account_live_samples', 'account_tracker_settings']);
   });
 
-  it('leaves the heartbeat alone', () => {
-    // The whole reason the sample has its own endpoint, its own table and its
-    // own function: the heartbeat's vocabulary is fixed on the server, every
-    // deployed agent depends on it staying that way, and the heartbeat is the
-    // only thing that says a machine is alive.
+  it('leaves the heartbeat alone, as far as reading the file can tell', () => {
+    /* The whole reason the sample has its own endpoint, its own table and its
+     * own function: the heartbeat's vocabulary is fixed on the server, every
+     * deployed agent depends on it staying that way, and the heartbeat is the
+     * only thing that says a machine is alive.
+     *
+     * AND THESE THREE LINES ARE NOT THE GUARD. They are a cheap first look. All
+     * three pass on a file stripped to comments, none of them can see dynamic SQL
+     * and none of them can see a trigger - and this repository has already watched
+     * a string guard walk past a concatenated `drop function`. The guard is
+     * "record_account_live_sample never writes a row of ingest_devices", asked of
+     * a running Postgres further down. */
     expect(sql).not.toMatch(/record_ingest_heartbeat/);
     expect(sql).not.toMatch(/last_error_code/);
     expect(sql).not.toMatch(/health_status/);
@@ -534,22 +567,106 @@ describe('the sample row', () => {
     await reset();
   });
 
-  it('derives the three run states, and never folds unmeasured into idle', async () => {
+  it('derives FOUR run states, and never folds two of them into one word', async () => {
+    /* `unmeasured` is not `idle` - "nobody looked" and "the desk switched
+     * everything off" lead to opposite actions - and `no_strategies` is neither of
+     * those. This column shipped folding (0, 0) into `unmeasured`, so an account
+     * the VPS HAD measured and found empty got the screen's sentence "the sample
+     * carried no strategy count", which is false about a sample that carried
+     * (0, 0). Not a rare row: the collector's own measurement is "14 at 09:21, 9 at
+     * 16:30, 0 at 18:28", so every account on the fleet reports (0, 0) overnight. */
     await reset();
     await send(world.grayDevice, minutesAgo(20), [
       { accountName: 'R', connected: true, strategyCount: 3, enabledStrategyCount: 1 },
       { accountName: 'I', connected: true, strategyCount: 3, enabledStrategyCount: 0 },
-      { accountName: 'U-none', connected: true, strategyCount: 0, enabledStrategyCount: 0 },
+      { accountName: 'N-none', connected: true, strategyCount: 0, enabledStrategyCount: 0 },
       { accountName: 'U-absent', connected: true },
     ]);
     const { rows } = await db.query(`select account_name, run_state
       from public.account_live_samples order by account_name`);
     expect(rows).toEqual([
       { account_name: 'I', run_state: 'idle' },
+      { account_name: 'N-none', run_state: 'no_strategies' },
       { account_name: 'R', run_state: 'running' },
       { account_name: 'U-absent', run_state: 'unmeasured' },
-      { account_name: 'U-none', run_state: 'unmeasured' },
     ]);
+    // Four inputs, four words: asserted as a set so a future fold cannot pass by
+    // being right about three of them.
+    expect(new Set(rows.map((row) => row.run_state)).size).toBe(4);
+    await reset();
+  });
+
+  it('tells a measured-and-empty account from an unmeasured one through the REAL rpc', async () => {
+    /* Driven through record_account_live_sample rather than an insert, because the
+     * question is whether the pair survives the wire the agent actually posts on:
+     * StrategyLiveCount sends (0, 0) for a collection it read and found empty and
+     * (null, null) for one it could not read, "so the wire says which of the two
+     * happened", and until now the CRM threw that away. */
+    await reset();
+    await send(world.grayDevice, minutesAgo(5), [
+      { accountName: 'MEASURED-EMPTY', connected: true, strategyCount: 0, enabledStrategyCount: 0 },
+      { accountName: 'NOT-MEASURED', connected: true },
+    ]);
+    const { rows } = await db.query(`select account_name, strategy_count, enabled_strategy_count, run_state
+      from public.account_live_samples order by account_name`);
+    expect(rows).toEqual([
+      { account_name: 'MEASURED-EMPTY', strategy_count: 0, enabled_strategy_count: 0, run_state: 'no_strategies' },
+      { account_name: 'NOT-MEASURED', strategy_count: null, enabled_strategy_count: null, run_state: 'unmeasured' },
+    ]);
+    await reset();
+  });
+
+  it('RECOMPUTES run_state when an earlier copy of this file created the column with three words', async () => {
+    /* `create table if not exists` does nothing when the table is there, so a
+     * database that ran the three-word version of this file would keep printing the
+     * false sentence forever and re-running the file - which is how Pedro checks
+     * whether a step landed - would not fix it. The block after the table replaces
+     * that one DERIVED column.
+     *
+     * Built here by putting the OLD expression back on the deployed table, with
+     * rows in it, and then applying the file as it stands on disk. */
+    await reset();
+    await db.exec('alter table public.account_live_samples drop column run_state');
+    await db.exec(`alter table public.account_live_samples
+      add column run_state text generated always as (
+        case
+          when strategy_count is null or enabled_strategy_count is null then 'unmeasured'
+          when strategy_count = 0 then 'unmeasured'
+          when enabled_strategy_count > 0 then 'running'
+          else 'idle'
+        end
+      ) stored`);
+    const sampledAt = minutesAgo(12);
+    await db.query(`insert into public.account_live_samples
+      (device_id, client_id, account_name, connected, strategy_count, enabled_strategy_count, sampled_at)
+      values ($1, $2, 'MEASURED-EMPTY', true, 0, 0, $3::timestamptz),
+             ($1, $2, 'NOT-MEASURED', true, null, null, $3::timestamptz),
+             ($1, $2, 'RUNNING', true, 4, 2, $3::timestamptz)`,
+    [world.grayDevice, world.grayClient, sampledAt]);
+    // The collapse, on the old column, before the file is applied: this is what a
+    // database that ran the earlier copy is holding right now.
+    expect((await db.query(`select run_state from public.account_live_samples
+      where account_name in ('MEASURED-EMPTY', 'NOT-MEASURED') order by account_name`))
+      .rows.map((row) => row.run_state)).toEqual(['unmeasured', 'unmeasured']);
+
+    await db.exec(raw);
+
+    const { rows } = await db.query(`select account_name, run_state, strategy_count, sampled_at
+      from public.account_live_samples order by account_name`);
+    expect(rows.map((row) => [row.account_name, row.run_state])).toEqual([
+      ['MEASURED-EMPTY', 'no_strategies'],
+      ['NOT-MEASURED', 'unmeasured'],
+      ['RUNNING', 'running'],
+    ]);
+    // And the DATA is untouched: the column is derived, so replacing it recomputes
+    // from the two integers the sample carried and loses nothing.
+    expect(rows.map((row) => row.strategy_count)).toEqual([0, null, 4]);
+    for (const row of rows) expect(row.sampled_at).toEqual(new Date(sampledAt));
+    // Applying it a third time is a no-op: the guard sees the new word and stops.
+    await db.exec(raw);
+    expect(await one(`select run_state from public.account_live_samples
+      where account_name = 'MEASURED-EMPTY'`)).toBe('no_strategies');
+    expect(await one('select count(*)::int from public.account_live_samples')).toBe(3);
     await reset();
   });
 
@@ -727,7 +844,114 @@ describe('record_account_live_sample', () => {
     }
   });
 
-  it('is security definer with a pinned search_path, and reachable only by the service role', () => {
+  /* ── THE HEARTBEAT, ASKED OF THE DATABASE AND NOT OF THE FILE ──────────────
+   *
+   * THE DEFECT: "leaves the heartbeat alone" was three negative string checks and
+   * nothing else, so a single line inside the function - `update
+   * public.ingest_devices set last_seen_at = v_now where id = p_device_id;` -
+   * passed all three and the whole 4024-test suite. Measured against real
+   * Postgres: last_seen_at moved from 45 minutes stale, which the fleet view calls
+   * Offline, to now, after one tracker sample. The tracker forged the one signal
+   * that says a machine is alive, and the migration's own header says that signal
+   * is the thing this whole feature exists to protect.
+   *
+   * SO THE INVARIANT IS BEHAVIOURAL AND IT IS ABOUT EVERY COLUMN, NOT last_seen_at.
+   * Every row of ingest_devices, cast to text, before and after. A trigger, a
+   * dynamic statement, a cascade, a second function called from inside - all of
+   * them change that string and none of them changes a negative grep. */
+  it('NEVER writes a row of ingest_devices, which is the only thing that says a machine is alive', async () => {
+    await reset();
+    // Backdated so that a write would be visible as a change AND as a change with
+    // a consequence: the fleet view calls this machine Offline at ten minutes.
+    await db.query(`update public.ingest_devices
+      set last_seen_at = now() - interval '45 minutes' where id = $1`, [world.grayDevice]);
+    const before = await heartbeatFingerprint();
+    expect(before).not.toBe('<no devices>');
+
+    const accepted = await send(world.grayDevice, minutesAgo(2), [
+      { accountName: 'APEX-1', connected: true, totalPnl: 120, strategyCount: 2, enabledStrategyCount: 2 },
+      { accountName: 'APEX-2', connected: false },
+    ]);
+    expect(accepted.recorded).toBe(2);
+    expect(await heartbeatFingerprint()).toBe(before);
+
+    // The throttled answer, which returns early and is the other path out of the
+    // function, and a refused one, which raises and rolls back.
+    const throttled = await send(world.grayDevice, minutesAgo(1), [{ accountName: 'APEX-1', connected: true }]);
+    expect(throttled.throttled).toBe(true);
+    expect(await heartbeatFingerprint()).toBe(before);
+
+    await tenMinutesPass(world.grayDevice);
+    expect(await refusal(`select public.record_account_live_sample($1, $2::timestamptz, '[{"accountName": 7}]'::jsonb)`,
+      [world.grayDevice, minutesAgo(2)])).toMatch(/INVALID_ACCOUNT_SAMPLE/);
+    expect(await heartbeatFingerprint()).toBe(before);
+
+    // And the sweep, which is the only statement in the function that deletes.
+    await db.query(`update public.account_live_samples
+      set sampled_at = now() - interval '9 days', reported_at = now() - interval '9 days'
+      where device_id = $1`, [world.grayDevice]);
+    const swept = await send(world.grayDevice, minutesAgo(2), [{ accountName: 'APEX-3', connected: true }]);
+    expect(swept.removed).toBe(2);
+    expect(await heartbeatFingerprint()).toBe(before);
+
+    // Said once in the strongest form: the machine is still as stale as it was, so
+    // the fleet view still calls it Offline and the tracker has told it nothing.
+    expect(await one(`select last_seen_at < now() - interval '40 minutes'
+      from public.ingest_devices where id = $1`, [world.grayDevice])).toBe(true);
+    await reset();
+  });
+
+  /* ── IDEMPOTENCE, WITH DATA IN THE TABLE ────────────────────────────────────
+   *
+   * THE DEFECT: beforeAll applies this file twice, but both times before any row
+   * exists, so idempotence was only ever tested on an empty table. `delete from
+   * public.account_live_samples;` before the COMMIT satisfies every assertion in
+   * this file - it is not a drop, not a truncate, not a drop function, not a drop
+   * policy - and the full suite stayed 4024 passed. Measured: 1 row before the
+   * re-run, 0 rows after. Pedro re-runs steps he is not sure landed; this file's
+   * own runbook entry says so. */
+  it('PRESERVES the rows and their clocks when the file is applied again over data', async () => {
+    await reset();
+    const firstSeen = minutesAgo(40);
+    await send(world.grayDevice, firstSeen, [
+      { accountName: 'APEX-1', connected: true, totalPnl: 250, strategyCount: 3, enabledStrategyCount: 1 },
+      { accountName: 'GONE-DARK', connected: false },
+    ]);
+    await db.query(`insert into public.account_live_samples
+      (device_id, client_id, account_name, connected, sampled_at)
+      values ($1, $2, 'BIRCH-1', true, $3::timestamptz)`,
+    [world.birchDevice, world.birchClient, firstSeen]);
+    await db.exec(`update public.account_tracker_settings
+      set sample_interval_seconds = 900, stale_sample_seconds = 2400, min_agent_version = '1.4.0' where id`);
+    const rowsBefore = (await db.query(`select account_name, connected, total_pnl::text, run_state,
+      sampled_at, reported_at, strategy_count from public.account_live_samples order by account_name`)).rows;
+    expect(rowsBefore).toHaveLength(3);
+
+    // Applied again, exactly as it stands on disk, twice, with data in the table.
+    await db.exec(raw);
+    await db.exec(raw);
+
+    const rowsAfter = (await db.query(`select account_name, connected, total_pnl::text, run_state,
+      sampled_at, reported_at, strategy_count from public.account_live_samples order by account_name`)).rows;
+    expect(rowsAfter).toEqual(rowsBefore);
+    // GONE-DARK is the row the desk most needs: an account that went dark is absent
+    // from every later sample and its own sampled_at age is what says when it went.
+    expect(rowsAfter.map((row) => row.account_name)).toEqual(['APEX-1', 'BIRCH-1', 'GONE-DARK']);
+    expect(await one(`select sampled_at from public.account_live_samples
+      where account_name = 'GONE-DARK'`)).toEqual(new Date(firstSeen));
+
+    /* AND THE HAND EDITS SURVIVE, which is the other half of re-running: the
+       settings row is a singleton Pedro types into, and a re-run that reset it
+       would silently retune the whole fleet back to the defaults. */
+    const settings = (await db.query(`select sample_interval_seconds, stale_sample_seconds,
+      min_agent_version from public.account_tracker_settings`)).rows;
+    expect(settings).toEqual([{
+      sample_interval_seconds: 900, stale_sample_seconds: 2400, min_agent_version: '1.4.0',
+    }]);
+    await reset();
+  });
+
+  it('is security definer with a pinned search_path, and says so in the file', () => {
     const record = functionDefinition('record_account_live_sample');
     expect(record).toContain('security definer');
     expect(record).toContain('set search_path = pg_catalog, public');
@@ -736,6 +960,72 @@ describe('record_account_live_sample', () => {
     // No `for update` on the device row: there is no delete-what-is-absent to
     // serialise, and the lock would contend with the heartbeat every minute.
     expect(record).not.toMatch(/from public\.ingest_devices as device where device\.id = p_device_id for update/);
+  });
+
+  /* ── WHO MAY CALL IT, ASKED BY CALLING IT AS EACH ROLE ──────────────────────
+   *
+   * THE DEFECT: who may EXECUTE this function was asserted only as the text of the
+   * REVOKE line and the GRANT line. Appending one more grant AFTER them -
+   * `grant execute ... to authenticated;` - leaves both asserted strings in place
+   * and the whole 4024-test suite green. Measured as CAM Gray under role
+   * authenticated with that one extra grant in the file: the call returned
+   * {"recorded":1,...} against ANOTHER client's device, the table then held
+   * {"account_name":"FORGED-GREEN","connected":true,"run_state":"running",
+   * "total_pnl":"999999"}, and the CAM read its own forgery back through the SELECT
+   * policy.
+   *
+   * THE RESTRICTIVE DENIAL CANNOT STOP THAT, and that is why this is a separate
+   * question from every other RLS assertion here: the function is SECURITY DEFINER,
+   * so it runs as the owner and bypasses the policy entirely. The suite proved at
+   * length that a CAM cannot INSERT into the table and never once asked whether a
+   * CAM can CALL the thing that inserts on its behalf. */
+  it('REFUSES the call to every browser-reachable role, asked by calling it', async () => {
+    await reset();
+    const call = `select public.record_account_live_sample($1, $2::timestamptz, $3::jsonb)`;
+    const forgery = JSON.stringify([{
+      accountName: 'FORGED-GREEN', connected: true, totalPnl: 999999,
+      strategyCount: 3, enabledStrategyCount: 3,
+    }]);
+
+    for (const role of ['anon', 'authenticated']) {
+      const attempt = await asRole(role, call, [world.grayDevice, minutesAgo(2), forgery]);
+      expect(attempt.error, role).toMatch(/permission denied for function record_account_live_sample/);
+      expect(attempt.rows, role).toEqual([]);
+    }
+    // As a real signed-in CAM too, which is the shape that actually reaches
+    // PostgREST: the session claim is set and the role is `authenticated`.
+    const asCam = await asSession(AUTH_GRAY, call, [world.grayDevice, minutesAgo(2), forgery]);
+    expect(asCam.error).toMatch(/permission denied for function record_account_live_sample/);
+    // And against ANOTHER client's device, which is the forgery that was proved
+    // reachable: still a refusal, and for the same reason.
+    const crossClient = await asSession(AUTH_GRAY, call, [world.birchDevice, minutesAgo(2), forgery]);
+    expect(crossClient.error).toMatch(/permission denied for function record_account_live_sample/);
+
+    expect(await one('select count(*)::int from public.account_live_samples')).toBe(0);
+    await reset();
+  });
+
+  it('IS callable by the service role, which is the only caller there is', async () => {
+    /* The other half of the same question, because a REVOKE that went one line too
+       far would leave the endpoint answering 500 on every report with a green
+       suite: the route is the only caller and it holds this role. */
+    await reset();
+    const accepted = await asRole('service_role',
+      'select public.record_account_live_sample($1, $2::timestamptz, $3::jsonb) as out',
+      [world.grayDevice, minutesAgo(2), JSON.stringify([{ accountName: 'APEX-1', connected: true }])]);
+    expect(accepted.error).toBeNull();
+    expect(accepted.rows[0]?.out?.recorded).toBe(1);
+    await reset();
+  });
+
+  it('and the catalogue agrees, which is what a later blanket grant would change', async () => {
+    const signature = 'public.record_account_live_sample(uuid, timestamptz, jsonb)';
+    expect(await one(`select has_function_privilege('anon', $1, 'EXECUTE')`, [signature])).toBe(false);
+    expect(await one(`select has_function_privilege('authenticated', $1, 'EXECUTE')`, [signature])).toBe(false);
+    expect(await one(`select has_function_privilege('service_role', $1, 'EXECUTE')`, [signature])).toBe(true);
+    // PUBLIC too: the default on a new function is EXECUTE to PUBLIC, which is why
+    // the REVOKE in the file names `public` first and is not merely tidy.
+    expect(await one(`select has_function_privilege('public', $1, 'EXECUTE')`, [signature])).toBe(false);
   });
 });
 
@@ -781,60 +1071,239 @@ describe('who can read and write a live sample', () => {
     expect(anon.rows).toEqual([]);
   });
 
-  it('a CAM CANNOT forge a green light on its own client', async () => {
-    /* A read policy with no restrictive write denial is step 51's hole with a
-     * new table name: a CAM talking to PostgREST with the publishable key could
-     * insert a row claiming any of its accounts is connected and running. */
-    const inserted = await asSession(AUTH_GRAY,
-      `insert into public.account_live_samples
-        (device_id, client_id, account_name, connected, sampled_at)
-        values ($1, $2, 'FORGED', true, now())`, [world.grayDevice, world.grayClient]);
-    expect(inserted.error).toMatch(/row-level security|violates/i);
-
-    /* UPDATE and DELETE do not raise, and that is worth knowing rather than
-     * guessing at: there is no PERMISSIVE policy for either verb, so RLS
-     * filters every row out and the statement affects nothing and says nothing.
-     * The assertion has to be about the effect. */
-    const updated = await asSession(AUTH_GRAY,
-      `update public.account_live_samples set connected = false
-       where account_name = 'GRAY-1' returning account_name`);
-    expect(updated.rows).toEqual([]);
-
-    const deleted = await asSession(AUTH_GRAY,
-      `delete from public.account_live_samples
-       where account_name = 'GRAY-1' returning account_name`);
-    expect(deleted.rows).toEqual([]);
+  /* ── WHAT A SIGNED-IN SESSION CAN DO TO THIS TABLE, IN BOTH LAYERS ──────────
+   *
+   * There are two, they fail in different directions, and the committed suite
+   * tested neither of them against DELETE.
+   *
+   *   THE GRANT. Supabase's default privileges hand `anon` and `authenticated`
+   *   INSERT, UPDATE and DELETE on every new table in `public`, which is why step
+   *   51 had to REVOKE. A revoked privilege RAISES, and it does not depend on any
+   *   policy existing or naming the right verb.
+   *
+   *   THE POLICY. A RESTRICTIVE policy is what survives step 52 re-writing the
+   *   permissive ones. It cannot make a DELETE raise - for DELETE, `using` is a
+   *   filter, so `using (false)` means the statement affects nothing and says
+   *   nothing - so it is proved on the EFFECT, with the grant put back inside the
+   *   test to stand in for a later blanket grant.
+   */
+  it('a CAM CANNOT forge a green light on its own client: the privilege is gone', async () => {
+    /* A read policy with no write denial is step 51's hole with a new table name:
+     * a CAM talking to PostgREST with the publishable key could insert a row
+     * claiming any of its accounts is connected and running. */
+    for (const [verb, statement, params] of [
+      ['insert', `insert into public.account_live_samples
+          (device_id, client_id, account_name, connected, sampled_at)
+          values ($1, $2, 'FORGED', true, now())`, [world.grayDevice, world.grayClient]],
+      ['update', `update public.account_live_samples set connected = false
+          where account_name = 'GRAY-1' returning account_name`, undefined],
+      /* THE ONE THE SHIPPED FILE LET THROUGH. `with check (false)` refuses INSERT
+       * and UPDATE because both make a new row for the check to refuse; a DELETE
+       * makes none and was judged by `using`, which was `true`. */
+      ['delete', `delete from public.account_live_samples
+          where account_name = 'GRAY-1' returning account_name`, undefined],
+    ]) {
+      const attempt = await asSession(AUTH_GRAY, statement, params);
+      expect(attempt.error, verb).toMatch(/permission denied for table account_live_samples/);
+      const asAnonymous = await asAnon(statement, params);
+      expect(asAnonymous.error, `${verb} as anon`).toMatch(/permission denied for table account_live_samples/);
+    }
+    // A Manager too: this is not about which clients a session can see.
+    expect((await asSession(AUTH_MANAGER,
+      `delete from public.account_live_samples returning account_name`)).error)
+      .toMatch(/permission denied for table account_live_samples/);
 
     expect(await one('select count(*)::int from public.account_live_samples')).toBe(2);
     expect(await one("select connected from public.account_live_samples where account_name = 'GRAY-1'"))
       .toBe(true);
     expect(await one("select count(*)::int from public.account_live_samples where account_name = 'FORGED'"))
       .toBe(0);
+    // Asked of the catalogue as well, because that is the thing a later migration
+    // or a blanket grant changes.
+    for (const role of ['anon', 'authenticated']) {
+      for (const privilege of ['INSERT', 'UPDATE', 'DELETE']) {
+        expect(await one('select has_table_privilege($1, $2, $3)',
+          [role, 'public.account_live_samples', privilege]), `${role} ${privilege}`).toBe(false);
+      }
+      // And SELECT is untouched, or the overview loses its one-request read.
+      expect(await one('select has_table_privilege($1, $2, $3)',
+        [role, 'public.account_live_samples', 'SELECT']), `${role} SELECT`).toBe(true);
+    }
   });
 
-  it('the write denial is RESTRICTIVE, which is what survives a re-run of step 52', async () => {
+  /* ── THE DELETE, AND WHY THE POLICY LAYER NEEDED A SECOND POLICY ─────────────
+   *
+   * THE DEFECT: the restrictive denial was a single `for all ... using (true) with
+   * check (false)`, and `with check` does not govern DELETE. Every other
+   * restrictive denial in this repository - step_28 (four of them), step_45:492,
+   * step_46:268 - uses `using (false)`.
+   *
+   * IT ONLY BITES AFTER STEP 52 IS RE-RUN, which is exactly the scenario this
+   * file's own header says to expect, because re-running is how step 52 picks up
+   * tables added after it. Before the re-run there is no permissive DELETE policy
+   * at all, so RLS filters every row out and a delete affects nothing - which is
+   * why the committed baseline passed and proved nothing about this. Measured with
+   * step 52's loop A policy installed verbatim and the grant present: INSERT
+   * refused by name, UPDATE refused by name, and `delete ... returning
+   * account_name` returned [{"account_name":"GRAY-1"}], committed, row gone.
+   *
+   * AND `using (false)` ON THE EXISTING POLICY IS NOT THE FIX: `using` is also what
+   * SELECT is judged by, and the overview's whole read depends on it. Mutated that
+   * way, three tests fail.
+   *
+   * THE GRANT IS PUT BACK INSIDE THIS TEST, deliberately. The point is to prove the
+   * POLICY holds on its own, in the world where somebody has handed the write
+   * privilege back - a later migration, a hand edit, a blanket grant - because
+   * defence in depth that is only ever tested with the outer layer in place is not
+   * tested at all. */
+  it('the write denial is RESTRICTIVE and covers DELETE, which is what survives a re-run of step 52', async () => {
     /* Step 52's loop A gives every `client_id` table `for all to authenticated
-     * using <predicate> with check <predicate>` - read AND WRITE - and drops
-     * only PERMISSIVE policies on its way through. So the only thing standing
-     * between a CAM and a forged row after that re-run is this policy's
-     * RESTRICTIVE-ness. Proved by installing step 52's own policy here and
-     * asking again. */
-    await db.exec(`create policy "cam sees its own clients re-run"
+     * using <predicate> with check <predicate>` - read AND WRITE - and drops only
+     * PERMISSIVE policies on its way through. Reproduced by doing to this table
+     * exactly that: drop every permissive policy, then install step 52's own. */
+    const dropped = (await db.query(`select policyname from pg_catalog.pg_policies
+      where schemaname = 'public' and tablename = 'account_live_samples'
+        and permissive = 'PERMISSIVE'`)).rows.map((row) => row.policyname);
+    // The re-run really does take the read policy away and put its own back, which
+    // is what makes this a faithful reproduction rather than an extra policy added
+    // beside the shipped ones.
+    expect(dropped).toEqual(['cam sees its own clients']);
+    for (const name of dropped) {
+      await db.exec(`drop policy "${name}" on public.account_live_samples`);
+    }
+    await db.exec(`create policy "cam sees its own clients"
       on public.account_live_samples for all to authenticated
       using ((select public.is_manager()) or client_id in (select public.assigned_client_ids()))
       with check ((select public.is_manager()) or client_id in (select public.assigned_client_ids()))`);
+    await db.exec('grant insert, update, delete on public.account_live_samples to anon, authenticated');
     try {
       const inserted = await asSession(AUTH_GRAY,
         `insert into public.account_live_samples
           (device_id, client_id, account_name, connected, sampled_at)
           values ($1, $2, 'FORGED-AFTER-52', true, now())`, [world.grayDevice, world.grayClient]);
       expect(inserted.error).toMatch(/row-level security|violates/i);
+      expect(inserted.error).toContain('account_live_samples deny browser writes');
+
+      const updated = await asSession(AUTH_GRAY,
+        `update public.account_live_samples set connected = false
+         where account_name = 'GRAY-1' returning account_name`);
+      expect(updated.error).toMatch(/row-level security|violates/i);
+
+      /* THE DELETE, ASSERTED ON THE EFFECT, because a DELETE that RLS filters to
+         nothing raises nothing either - the restrictive `using (false)` makes the
+         row invisible to the statement. So the row is shown to be THERE and
+         readable first, which is what separates "refused" from "matched nothing":
+         the CAM can see GRAY-1 and still cannot remove it. */
+      expect((await asSession(AUTH_GRAY,
+        `select account_name from public.account_live_samples where account_name = 'GRAY-1'`))
+        .rows.map((row) => row.account_name)).toEqual(['GRAY-1']);
+      const deleted = await asSession(AUTH_GRAY,
+        `delete from public.account_live_samples
+         where account_name = 'GRAY-1' returning account_name`);
+      expect(deleted.rows).toEqual([]);
+
+      // Counted by the owner, because the harness rolls each session back and a
+      // rollback would hide a successful delete behind a clean-looking table.
+      expect(await one('select count(*)::int from public.account_live_samples')).toBe(2);
+      expect(await one("select connected from public.account_live_samples where account_name = 'GRAY-1'"))
+        .toBe(true);
+
       // And reading still works, which is what makes the re-run harmless.
       const read = await asSession(AUTH_GRAY, 'select account_name from public.account_live_samples');
       expect(read.rows.map((r) => r.account_name)).toEqual(['GRAY-1']);
     } finally {
-      await db.exec('drop policy "cam sees its own clients re-run" on public.account_live_samples');
+      // The file itself puts the shipped policies and the REVOKE back, which is
+      // also one more proof that re-running it is safe.
+      await db.exec('drop policy "cam sees its own clients" on public.account_live_samples');
+      await db.exec(raw);
     }
+  });
+
+  it('and the DELETE policy is what did the work there, not the grant that was handed back', async () => {
+    /* The control for the test above: with the same permissive `for all` policy
+       installed and the grant restored, removing the restrictive DELETE policy -
+       which is the file as it shipped - lets the CAM delete its own client's row,
+       committed. Run here so that the fix is known to be the thing that holds
+       rather than something else in the file. */
+    await db.exec(`drop policy "cam sees its own clients" on public.account_live_samples`);
+    await db.exec(`create policy "cam sees its own clients"
+      on public.account_live_samples for all to authenticated
+      using ((select public.is_manager()) or client_id in (select public.assigned_client_ids()))
+      with check ((select public.is_manager()) or client_id in (select public.assigned_client_ids()))`);
+    await db.exec('grant insert, update, delete on public.account_live_samples to anon, authenticated');
+    await db.exec('drop policy "account_live_samples deny browser deletes" on public.account_live_samples');
+    try {
+      const deleted = await asSession(AUTH_GRAY,
+        `delete from public.account_live_samples
+         where account_name = 'GRAY-1' returning account_name`);
+      // The hole, reproduced: this is what the shipped file did.
+      expect(deleted.rows.map((row) => row.account_name)).toEqual(['GRAY-1']);
+    } finally {
+      await db.exec(`drop policy "cam sees its own clients" on public.account_live_samples`);
+      await db.exec(raw);
+    }
+    // And once the file has put its own policies back, the same delete does nothing.
+    const again = await asSession(AUTH_GRAY,
+      `delete from public.account_live_samples where account_name = 'GRAY-1' returning account_name`);
+    expect(again.rows).toEqual([]);
+    expect(await one('select count(*)::int from public.account_live_samples')).toBe(2);
+  });
+
+  it('nobody signed in can delete the tunables either, which is how every one of them reverts at once', async () => {
+    /* account_tracker_settings has no `client_id`, so step 52's loop A never reaches
+       it - but deleting the singleton makes the function fall back to the literals
+       in its own body, silently retuning the whole fleet, and the gap is the same
+       gap. Closed the same way rather than left to depend on a loop's exclusion
+       list staying what it is. */
+    for (const attempt of [
+      await asSession(AUTH_GRAY, 'delete from public.account_tracker_settings returning id'),
+      await asSession(AUTH_MANAGER, 'delete from public.account_tracker_settings returning id'),
+      await asAnon('delete from public.account_tracker_settings returning id'),
+    ]) {
+      expect(attempt.error).toMatch(/permission denied for table account_tracker_settings/);
+    }
+    expect(await one('select count(*)::int from public.account_tracker_settings')).toBe(1);
+  });
+
+  it('names both halves of the denial on both tables, as RESTRICTIVE and for the right verb', async () => {
+    /* Read from the catalogue rather than from the file: a policy the file creates
+       inside a guarded `do` block that silently did not run would still be in the
+       text. Four policies, two per table, and the DELETE one must be RESTRICTIVE
+       with a false qual - a PERMISSIVE one would add permission instead of
+       removing it. */
+    const { rows } = await db.query(`select tablename, policyname, permissive, cmd, qual, with_check,
+      roles::text as roles
+      from pg_catalog.pg_policies
+      where schemaname = 'public'
+        and tablename in ('account_live_samples', 'account_tracker_settings')
+        and permissive = 'RESTRICTIVE'
+      order by tablename, cmd`);
+    expect(rows).toEqual([
+      {
+        tablename: 'account_live_samples',
+        policyname: 'account_live_samples deny browser writes',
+        permissive: 'RESTRICTIVE', cmd: 'ALL', qual: 'true', with_check: 'false',
+        roles: '{anon,authenticated}',
+      },
+      {
+        tablename: 'account_live_samples',
+        policyname: 'account_live_samples deny browser deletes',
+        permissive: 'RESTRICTIVE', cmd: 'DELETE', qual: 'false', with_check: null,
+        roles: '{anon,authenticated}',
+      },
+      {
+        tablename: 'account_tracker_settings',
+        policyname: 'account_tracker_settings deny browser writes',
+        permissive: 'RESTRICTIVE', cmd: 'ALL', qual: 'true', with_check: 'false',
+        roles: '{anon,authenticated}',
+      },
+      {
+        tablename: 'account_tracker_settings',
+        policyname: 'account_tracker_settings deny browser deletes',
+        permissive: 'RESTRICTIVE', cmd: 'DELETE', qual: 'false', with_check: null,
+        roles: '{anon,authenticated}',
+      },
+    ]);
   });
 
   it('is NOT named ingest_*, because step 52 skips that family on purpose', () => {
@@ -855,7 +1324,7 @@ describe('who can read and write a live sample', () => {
     const written = await asSession(AUTH_GRAY,
       `update public.account_tracker_settings set sample_interval_seconds = 300
        where id returning sample_interval_seconds`);
-    expect(written.rows).toEqual([]);
+    expect(written.error).toMatch(/permission denied for table account_tracker_settings/);
     expect(await one('select sample_interval_seconds from public.account_tracker_settings')).toBe(600);
     const anon = await asAnon('select stale_sample_seconds from public.account_tracker_settings');
     expect(anon.rows).toEqual([]);

@@ -153,10 +153,20 @@ export default function AccountTrackerPanel({
             Live accounts
             {view.everySampled ? ` · ${headline(view.summary)}` : ''}
           </strong>
+          {/* THREE SENTENCES, BECAUSE THERE ARE THREE STATES AND THE MIDDLE ONE
+              USED TO BE MISSING. With no build named AND nothing sampled, the
+              panel says so and claims no fault - that is the day step 55 is run.
+              With a build named, it says the cadence. The third case is a machine
+              that is sampling before anybody has named a build, which is exactly
+              what happens between installing the sampler and Pedro editing the
+              column: the old wording said "nothing below is live" directly above
+              rows that said Live and carried money. */}
           <span>
             {view.enabled
               ? `Sampled about every ${view.intervalMinutes} minutes, between the open and the close. The close is unaffected by this.`
-              : 'No collector build sends live samples yet, so nothing below is live. Set account_tracker_settings.min_agent_version to the build that does.'}
+              : view.everySampled
+                ? 'A collector is already sampling, and no build is named yet. Set account_tracker_settings.min_agent_version to the build that samples, so a machine too old to sample can be told apart from one that simply has not reported.'
+                : 'No collector build sends live samples yet, so nothing below is live. Set account_tracker_settings.min_agent_version to the build that does.'}
           </span>
         </div>
       </div>
@@ -179,6 +189,7 @@ function headline(summary) {
   const parts = [];
   if (summary.running) parts.push(`${summary.running} running`);
   if (summary.idle) parts.push(`${summary.idle} all off`);
+  if (summary.no_strategies) parts.push(`${summary.no_strategies} with nothing loaded`);
   if (summary.unmeasured) parts.push(`${summary.unmeasured} not measured`);
   if (summary.disconnected) parts.push(`${summary.disconnected} disconnected`);
   if (summary.silent) parts.push(`${summary.silent} silent`);
@@ -239,9 +250,13 @@ function TrackerRow({ row }) {
   );
 }
 
+/* `no_strategies` IS MUTED AND `unmeasured` IS NOT, which is the difference the
+ * fourth run state exists for. "The VPS looked and there is nothing loaded" is an
+ * ordinary morning; "the sample carried no count" is a reading the desk did not
+ * get, and the only one of the four worth a second look. */
 function runTone(runState) {
   if (runState === 'running') return 'success';
-  if (runState === 'idle') return 'muted';
+  if (runState === 'idle' || runState === 'no_strategies') return 'muted';
   return 'warning';
 }
 

@@ -31,7 +31,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 51 | `step_51_app_users_write_lockdown.sql` | `revoke insert, update, delete on app_users` from `authenticated` and `anon`; SELECT stays | Closing a CAM's ability to promote themselves to Manager by talking to PostgREST directly |
 | 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
-| 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts, plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
+| 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts in four words — `running`, `idle`, `no_strategies` (the VPS looked and nothing is loaded) and `unmeasured` (nobody looked) — plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
 
 ## These three groups behave differently
 
@@ -258,6 +258,26 @@ absent from the next sample, and deleting its row at that moment would show
 nothing where the one state the desk needs to see should be. Rows leave only by
 the device-scoped sweep at the end of the function, on the
 `retention_days` horizon.
+
+**Nobody signed in may write to either table, and that is two layers rather than
+one.** `revoke insert, update, delete from anon, authenticated`, the way step 51
+closed `app_users`, plus a RESTRICTIVE policy per verb. The two fail in different
+directions and you want both: a revoked privilege answers `permission denied for
+table` whatever any policy says, and a RESTRICTIVE policy is what survives a
+re-run of 52, which hands every `client_id` table a permissive `for all` with
+read AND write. SELECT stays on both tables, or the overview loses its
+one-request read of the whole book. DELETE needs its own policy, because `with
+check` does not govern DELETE: a delete makes no new row for a check to refuse
+and is judged by `using` alone.
+
+**Re-running 55 is safe with data in the table, and it will fix one thing if you
+ran an earlier copy.** `run_state` shipped with three words and folded
+"measured, nothing loaded" into "nobody measured", so a flat desk read as an
+unmeasured one every morning before the open. `create table if not exists` does
+nothing on a table that already exists, so the file replaces that one column —
+and only that column, which is derived, so every value is recomputed from the two
+strategy counts the sample carried and no data moves. It prints a NOTICE when it
+does. Your hand edits to `account_tracker_settings` survive a re-run untouched.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of

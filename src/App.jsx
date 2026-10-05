@@ -9756,6 +9756,10 @@ export function liveCardTitle(live) {
   const parts = [`${live.total} account${live.total === 1 ? "" : "s"} sampled`];
   if (live.running) parts.push(`${live.running} running`);
   if (live.idle) parts.push(`${live.idle} loaded and all off`);
+  /* Two numbers, not one. They were one until step 55 grew a fourth run state,
+     and merged they made a flat desk - every account on the fleet before the
+     open - read as a desk nobody had measured. */
+  if (live.no_strategies) parts.push(`${live.no_strategies} with nothing loaded`);
   if (live.unmeasured) parts.push(`${live.unmeasured} with no strategy count`);
   if (live.disconnected) parts.push(`${live.disconnected} not connected to the broker`);
   if (live.silent) parts.push(`${live.silent} whose VPS has stopped sampling`);

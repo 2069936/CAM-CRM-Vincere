@@ -109,6 +109,26 @@ describe('the account tracker on the client status call', () => {
     expect(serialized).not.toContain('reportedAt');
   });
 
+  it('passes the FOURTH run state through unchanged, and does not re-derive it here', async () => {
+    /* `no_strategies` is the word step 55 generates for a sample that carried
+     * (0, 0) - measured, nothing loaded - as against (null, null), which is nobody
+     * looked. The route must not collapse them on the way out: the two sentences on
+     * the panel are the whole reason the column grew a fourth word, and one of them
+     * was false until it did. */
+    const empty = await load({
+      samples: [sampleRow({ run_state: 'no_strategies', strategy_count: 0, enabled_strategy_count: 0 })],
+    });
+    expect(empty.body.accountTracker.accounts[0]).toMatchObject({
+      runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0,
+    });
+    const unknown = await load({
+      samples: [sampleRow({ run_state: 'unmeasured', strategy_count: null, enabled_strategy_count: null })],
+    });
+    expect(unknown.body.accountTracker.accounts[0]).toMatchObject({
+      runState: 'unmeasured', strategyCount: null, enabledStrategyCount: null,
+    });
+  });
+
   it('carries the tuning, so the panel never holds a second copy of the numbers', async () => {
     const res = await load();
     expect(res.body.accountTracker).toMatchObject({

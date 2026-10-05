@@ -111,10 +111,30 @@ describe('the four states a CAM has to be able to tell apart', () => {
   it('3b. an agent that has never said its version is treated as old, not as new', () => {
     /* The collector csproj left <Version> undeclared until 1.1.3, so a build from
      * last quarter and one from today are indistinguishable on that field.
-     * Assuming new would claim a machine can sample when it cannot. */
+     * Assuming new would claim a machine can sample when it cannot.
+     *
+     * ASKED OF A MACHINE THAT HAS SENT NOTHING, because that is the only state the
+     * sentence can be true of. "This VPS runs a collector build from before live
+     * sampling" is a claim about the absence of sampling, and a reading from that
+     * same machine disproves it whatever the version field says. */
     for (const agentVersion of [null, undefined, '']) {
-      expect(tracker({ device: device({ agentVersion }) }).state).toBe('tracker_unsupported');
+      expect(tracker({ device: device({ agentVersion }), sample: null, deviceHasSamples: false }).state)
+        .toBe('tracker_unsupported');
     }
+  });
+
+  it('3c. and NEVER about a machine whose readings are in the table', () => {
+    /* The two tracker_* words are both claims about the absence of sampling, so a
+     * row is what refutes them. Measured both ways: an old version field with a
+     * current reading is a machine that is sampling, and a machine sending other
+     * accounts is a machine whose build samples. */
+    expect(tracker({ device: device({ agentVersion: '1.1.3' }) }).state).toBe('live');
+    expect(tracker({ device: device({ agentVersion: null }) }).state).toBe('live');
+    const otherAccounts = tracker({
+      device: device({ agentVersion: '1.1.3' }), sample: null, deviceHasSamples: true,
+    });
+    expect(otherAccounts.state).toBe('never_sampled');
+    expect(otherAccounts.detail).toContain('sampling other accounts');
   });
 
   it('4. never sampled, in the two different ways that happen', () => {
@@ -136,7 +156,7 @@ describe('the four states a CAM has to be able to tell apart', () => {
       tracker({ sample: sample({ connected: false }) }),
       tracker({ device: device({ lastSeenAt: '2026-10-05T14:30:00.000Z' }) }),
       tracker({ sample: sample({ sampledAt: '2026-10-05T14:20:00.000Z' }) }),
-      tracker({ device: device({ agentVersion: '1.1.3' }) }),
+      tracker({ device: device({ agentVersion: '1.1.3' }), sample: null, deviceHasSamples: false }),
       tracker({ sample: null, deviceHasSamples: false }),
       tracker({ sample: null, deviceHasSamples: true }),
     ].map((verdict) => verdict.detail);
@@ -147,19 +167,130 @@ describe('the four states a CAM has to be able to tell apart', () => {
 
 describe('the day this merges, with no agent in the world sampling', () => {
   it('says the neutral true thing and claims no fault against any machine', () => {
-    // min_agent_version is NULL on a freshly migrated database. Nothing below it
-    // can be true while no build samples, so nothing below it is reported.
+    // min_agent_version is NULL on a freshly migrated database, and NOTHING is
+    // sampling, which is the whole of the inert state.
     const verdict = tracker({ trackerMinAgentVersion: null, sample: null, deviceHasSamples: false });
     expect(verdict.state).toBe('tracker_off');
     expect(verdict.label).toBe('Not sampling yet');
     expect(verdict.attention).toBe(false);
     // Including for a machine that is also offline and also behind the release:
-    // "fix the VPS and the light comes on" would be false.
+    // "fix the VPS and the light comes on" would be false while nothing in the
+    // world is expected to sample. This is why the gate is asked ABOVE `offline`.
     expect(tracker({
       trackerMinAgentVersion: null,
       device: device({ agentVersion: '1.0.0', lastSeenAt: '2026-10-01T00:00:00.000Z', healthStatus: 'error' }),
       sample: null,
+      deviceHasSamples: false,
     }).state).toBe('tracker_off');
+  });
+
+  /* ── THE DEFECT THIS DESCRIBE BLOCK DID NOT COVER ──────────────────────────
+   *
+   * The gate used to be the FIRST question in classifyAccountTracker, so for the
+   * whole window between installing the sampler and Pedro editing one column -
+   * which is precisely the path the design routes through - the client page said
+   * "No collector build sends live samples yet, so nothing here is live" about a
+   * row the overview was printing as Live with $1,024 against it. Measured
+   * verbatim before the fix.
+   *
+   * THE SENTENCE IS WHAT DECIDES IT, not a preference about ordering. "No
+   * collector build sends live samples yet" is a claim about the ABSENCE of
+   * sampling, and a reading in the table is proof of its presence. So the gate may
+   * only speak when nothing is sampling, and the reading always wins. */
+  it('yields to a reading, because a row in the table disproves its own sentence', () => {
+    const live = tracker({ trackerMinAgentVersion: null });
+    expect(live.state).toBe('live');
+    expect(live.detail).not.toContain('No collector build');
+    // Including for the stale and disconnected shapes: it is the EXISTENCE of the
+    // reading that refutes the gate, not the reading being good news.
+    expect(tracker({ trackerMinAgentVersion: null, sample: sample({ connected: false }) }).state)
+      .toBe('disconnected');
+    expect(tracker({ trackerMinAgentVersion: null, sample: sample({ sampledAt: '2026-10-05T14:20:00.000Z' }) }).state)
+      .toBe('sample_stale');
+  });
+
+  it('yields to a reading on ANY account of the machine, not only this one', () => {
+    /* deviceHasSamples is the same evidence one step out: a machine sending other
+     * accounts is a machine that samples, so "no collector build sends live
+     * samples yet" is false about it even with nothing for this account. */
+    const verdict = tracker({ trackerMinAgentVersion: null, sample: null, deviceHasSamples: true });
+    expect(verdict.state).toBe('never_sampled');
+    expect(verdict.detail).toContain('sampling other accounts');
+  });
+
+  /* ── AND THE TEST THAT IS THE FIX ──────────────────────────────────────────
+   *
+   * The same row, rendered through BOTH screens, asserted to agree. The client
+   * page has the device and the overview does not, so the only honest invariant is
+   * this one: when the machine is answering, the two screens must return the same
+   * state, the same label and the same sentence, for every row shape and at every
+   * value of min_agent_version - including the NULL this ships with. */
+  it('renders the same row identically on both screens, at every min_agent_version', () => {
+    const rows = [
+      sample(),
+      sample({ connected: false, status: 'ConnectionLost' }),
+      sample({ sampledAt: '2026-10-05T14:20:00.000Z' }),
+      sample({ runState: 'idle' }),
+      sample({ runState: 'no_strategies' }),
+      sample({ runState: 'unmeasured', totalPnl: null }),
+    ];
+    const versions = [null, undefined, '', '1.0.0', '1.2.0', '9.9.9'];
+    for (const row of rows) {
+      for (const trackerMinAgentVersion of versions) {
+        for (const deviceHasSamples of [true, false]) {
+          const clientPage = classifyAccountTracker({
+            now: NOW,
+            device: device(),
+            sample: row,
+            deviceHasSamples,
+            trackerMinAgentVersion,
+            staleSeconds: STALE_SECONDS,
+          });
+          const overview = classifyAccountSample({ now: NOW, sample: row, staleSeconds: STALE_SECONDS });
+          const where = `${row.accountName} ${row.runState} min=${trackerMinAgentVersion} has=${deviceHasSamples}`;
+          expect(clientPage.state, where).toBe(overview.state);
+          expect(clientPage.label, where).toBe(overview.label);
+          expect(clientPage.detail, where).toBe(overview.detail);
+          expect(clientPage.runState, where).toBe(overview.runState);
+          expect(clientPage.ageMinutes, where).toBe(overview.ageMinutes);
+        }
+      }
+    }
+  });
+
+  it('and no row that exists can ever be answered with a sentence about absence', () => {
+    /* The three states whose sentences claim nothing has been sampled. A row that
+     * exists must be unable to reach any of them from either screen, whatever the
+     * machine's version field says and whatever min_agent_version is. */
+    const absence = ['tracker_off', 'tracker_unsupported', 'never_sampled'];
+    for (const agentVersion of [null, '', '1.0.0', '1.2.0', '9.9.9']) {
+      for (const trackerMinAgentVersion of [null, '1.2.0', '9.9.9']) {
+        const verdict = tracker({
+          device: device({ agentVersion }),
+          trackerMinAgentVersion,
+        });
+        expect(absence, `${agentVersion} / ${trackerMinAgentVersion}`).not.toContain(verdict.state);
+      }
+    }
+  });
+
+  /* THE ONE PLACE THE TWO SCREENS MAY DIFFER, said out loud so it is a decision
+   * and not a leftover. A machine that has stopped answering is a fact the row
+   * cannot carry, and both sentences are true at once. */
+  it('differs from the overview only about the MACHINE, and both sentences stay true', () => {
+    const dark = device({ lastSeenAt: '2026-10-05T14:20:00.000Z' });
+    for (const trackerMinAgentVersion of [null, '1.2.0']) {
+      const clientPage = tracker({ device: dark, trackerMinAgentVersion });
+      const overview = classifyAccountSample({ now: NOW, sample: sample(), staleSeconds: STALE_SECONDS });
+      expect(clientPage.state).toBe('offline');
+      expect(clientPage.detail).toBe('The VPS has stopped reporting heartbeats.');
+      expect(overview.state).toBe('live');
+      // Neither claims the thing the other denies: the client page says nothing
+      // about whether a sample arrived, and the overview says nothing about the
+      // heartbeat.
+      expect(clientPage.detail).not.toContain('sample');
+      expect(overview.detail).not.toContain('heartbeat');
+    }
   });
 
   it('counts nothing as needing attention', () => {
@@ -305,10 +436,15 @@ describe('what the overview can honestly say from samples alone', () => {
 });
 
 describe('the run state words', () => {
-  it('are the same three src/domain/liveAccounts.js already prints from a close', () => {
+  it('are the three src/domain/liveAccounts.js already prints from a close, plus one', () => {
     expect(accountRunStateCopy('running').label).toBe('running');
     expect(accountRunStateCopy('idle').label).toBe('all off');
     expect(accountRunStateCopy('unmeasured').label).toBe('no strategy data');
+    /* THE FOURTH IS THE ONE A CLOSE CANNOT HAVE. By 16:45 the desk has switched
+     * the algos off and NinjaTrader has removed them from the account, so every
+     * account looks empty and "measured and empty" is not a distinction a close
+     * can draw. A mid-day sample can. */
+    expect(accountRunStateCopy('no_strategies').label).toBe('none loaded');
   });
 
   it('never fold an unknown word into "all off"', () => {
@@ -321,6 +457,78 @@ describe('the run state words', () => {
 
   it('says "not measured - not zero" in so many words', () => {
     expect(accountRunStateCopy('unmeasured').detail).toContain('Not measured - not zero.');
+  });
+
+  /* ── THE DEFECT: TWO STATES THAT READ THE SAME, AND ONE SENTENCE THAT LIED ──
+   *
+   * `no_strategies` and `unmeasured` used to be one word. An account the VPS HAD
+   * measured and found empty got `unmeasured`'s sentence - "the sample carried no
+   * strategy count" - which is FALSE about a sample that carried (0, 0). The
+   * collector is explicit that it sends the difference: StrategyLiveCount returns
+   * (0, 0) for a collection it read and found empty, (null, null) for one it could
+   * not read, "so the wire says which of the two happened".
+   *
+   * AND IT IS NOT A RARE ROW. The agent's own measurement on one machine in one
+   * day is "14 at 09:21, 9 at 16:30, 0 at 18:28", because NinjaTrader removes a
+   * strategy from the account when it is disabled. Every account on the fleet
+   * reports (0, 0) overnight and before the open, so a flat desk read "2 with no
+   * strategy count" on the briefing card every morning. */
+  it('keeps "measured and empty" apart from "nobody measured", in both sentences', () => {
+    const empty = accountRunStateCopy('no_strategies');
+    const unknown = accountRunStateCopy('unmeasured');
+
+    expect(empty.runState).toBe('no_strategies');
+    expect(unknown.runState).toBe('unmeasured');
+    expect(empty.label).not.toBe(unknown.label);
+    expect(empty.detail).not.toBe(unknown.detail);
+
+    // AND BOTH SENTENCES ARE TRUE OF THEIR OWN ROW, which is the actual bar: one
+    // says the VPS looked, the other says it did not.
+    expect(empty.detail).toContain('read this account');
+    expect(empty.detail).toContain('no strategies loaded');
+    expect(empty.detail).toContain('Measured');
+    expect(unknown.detail).toContain('carried no strategy count');
+    // And neither borrows the other's claim.
+    expect(empty.detail).not.toContain('carried no strategy count');
+    expect(unknown.detail).not.toContain('Measured,');
+  });
+
+  it('does NOT reuse idle, whose sentence is false about an account with nothing loaded', () => {
+    /* `idle` says "strategies are loaded and every one of them is switched off".
+     * Nothing is loaded, so that is a third false sentence and not the fix. */
+    const empty = accountRunStateCopy('no_strategies');
+    expect(empty.runState).not.toBe('idle');
+    expect(accountRunStateCopy('idle').detail).toContain('are loaded');
+    expect(empty.detail).not.toContain('switched off');
+  });
+
+  it('all four sentences are distinct, checked rather than assumed', () => {
+    const words = ['running', 'idle', 'no_strategies', 'unmeasured'];
+    const copies = words.map((word) => accountRunStateCopy(word));
+    expect(new Set(copies.map((copy) => copy.label)).size).toBe(words.length);
+    expect(new Set(copies.map((copy) => copy.detail)).size).toBe(words.length);
+    expect(copies.map((copy) => copy.runState)).toEqual(words);
+  });
+
+  it('counts a flat desk as flat and not as unmeasured, on the rollup and the headline', () => {
+    /* The rollup is where the merge did its damage: both words landed in one
+     * counter, so the briefing card said "2 with no strategy count" about a desk
+     * that had been measured twice and found quiet. */
+    const summary = summarizeAccountTracker([
+      sample({ accountName: 'A', runState: 'no_strategies' }),
+      sample({ accountName: 'B', runState: 'no_strategies' }),
+      sample({ accountName: 'C', runState: 'unmeasured' }),
+    ], { now: NOW, staleSeconds: STALE_SECONDS });
+
+    expect(summary.no_strategies).toBe(2);
+    expect(summary.unmeasured).toBe(1);
+    expect(summary.running).toBe(0);
+    expect(summary.idle).toBe(0);
+    // Still exactly the live accounts, with the fourth counter inside the sum.
+    expect(summary.running + summary.idle + summary.no_strategies + summary.unmeasured)
+      .toBe(summary.live);
+    expect(accountTrackerHeadline(summary))
+      .toBe('3 accounts sampled: 2 with nothing loaded, 1 not measured.');
   });
 });
 

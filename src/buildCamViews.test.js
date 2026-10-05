@@ -279,6 +279,28 @@ describe('buildTodayBriefing and the live tracker', () => {
     expect(tone([sample({ sampledAt: '2026-06-25T10:00:00.000Z' })])).toBe('warn');
   });
 
+  it('counts a flat desk as flat on the card, not as a desk nobody measured', () => {
+    /* THE DEFECT, ON THE BRIEFING CARD. `no_strategies` and `unmeasured` were one
+     * counter, so an account the VPS had measured and found empty was reported as
+     * "with no strategy count". Every account on the fleet reports (0, 0) overnight
+     * and before the open - the collector's own measurement is "14 at 09:21, 9 at
+     * 16:30, 0 at 18:28" - so a quiet desk read as an unmeasured one every morning. */
+    const [entry] = buildTodayBriefing([client], {
+      liveByClientId: new Map([['c1', [
+        sample({ accountName: 'A', runState: 'no_strategies' }),
+        sample({ accountName: 'B', runState: 'no_strategies' }),
+        sample({ accountName: 'C', runState: 'unmeasured' }),
+      ]]]),
+    });
+    expect(entry.live).toMatchObject({ total: 3, running: 0, idle: 0, no_strategies: 2, unmeasured: 1 });
+    const title = liveCardTitle(entry.live);
+    expect(title).toContain('2 with nothing loaded');
+    expect(title).toContain('1 with no strategy count');
+    // A quiet desk is not an alarm: nothing here is attention.
+    expect(entry.live.attention).toBe(0);
+    expect(liveDotTone(entry.live)).toBe('idle');
+  });
+
   it('says out loud how many accounts the live figure is about', () => {
     /* A live total silently covering 3 of 11 accounts would be read as the
        client's whole book, which is the same mistake the card's own "$0 today"

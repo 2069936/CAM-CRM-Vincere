@@ -67,6 +67,16 @@
 -- desk can get. The column repeats the rule here so the screen does not ship a
 -- second copy of it, exactly as step 46 stores `final`.
 --
+-- IT HAS A FOURTH WORD THAT THE CLOSE DOES NOT NEED, `no_strategies`. A close
+-- cannot tell "measured and empty" from "not measured", because by 16:45 the
+-- desk has switched the algos off and NinjaTrader has removed them from the
+-- account, so every account is empty. A MID-DAY sample can tell them apart and
+-- the collector already does: StrategyLiveCount returns (0, 0) for a collection
+-- it read and found empty, and (null, null) for one it could not read. Folding
+-- those together is what this file shipped with, and the sentence the screen
+-- prints for `unmeasured` - "the sample carried no strategy count" - is false
+-- about a sample that carried (0, 0). See the column.
+--
 -- WHY THE BROWSER MAY READ THIS TABLE AND THE INGEST TABLES ARE SHUT.
 -- The CAM Overview asks about every client at once. Through a serverless route
 -- that is one invocation per client - 37 per refresh on one CAM's book, against
@@ -88,6 +98,23 @@
 -- that makes the traffic light unforgeable, and step 51 exists because exactly
 -- this was once possible on app_users.
 --
+-- AND IT TAKES TWO POLICIES, NOT ONE, BECAUSE `with check` DOES NOT GOVERN
+-- DELETE. A single `as restrictive for all ... using (true) with check (false)`
+-- refuses INSERT and UPDATE - both of those produce a new row for the check to
+-- refuse - and lets DELETE through, because a DELETE has no new row and is
+-- judged by `using` alone. Proved in a real Postgres with step 52's loop A
+-- policy installed verbatim after this file: INSERT and UPDATE were both refused
+-- by name, and `delete ... returning account_name` returned the row and the row
+-- was gone. `using (false)` on the `for all` policy is NOT the fix, because
+-- `using` is also what SELECT is judged by, and the overview's whole read
+-- depends on it. So there is a second restrictive policy below, `for delete`,
+-- with `using (false)` - the form step_28, step_45:492 and step_46:268 all use.
+--
+-- A deletable row is the same wound as a replace-whole upsert, arriving by a
+-- different door: an account that goes dark becomes an ABSENT row, and absent on
+-- a screen is indistinguishable from "this client has no accounts". The one
+-- state the desk most needs to see would be the one state a CAM could erase.
+--
 -- EVERY TUNABLE IS A COLUMN, NOT AN ENVIRONMENT VARIABLE. Pedro cannot set one
 -- in Vercel; a merge to main is the whole deployment. So the interval, the
 -- staleness horizon, the throttle, the retention window and the first agent
@@ -101,7 +128,12 @@
 -- collector build sends live samples yet. The day Pedro sets that column is the
 -- day a machine below it starts reading "too old to sample", and not before.
 --
--- Idempotent. Additive. Drops nothing, rewrites nothing, back-fills nothing.
+-- Idempotent. Additive. Back-fills nothing, and drops nothing except one DERIVED
+-- column, named and guarded below: a database that ran an earlier copy of this
+-- file has a three-word `run_state`, and the block after the table replaces it so
+-- that re-running the file actually fixes the sentence it was printing. Every
+-- value in that column is recomputed from the two integers the sample carried, so
+-- there is no data in it to lose.
 
 begin;
 
@@ -227,9 +259,13 @@ create table if not exists public.account_live_samples (
   realized_pnl numeric,
   unrealized_pnl numeric,
   total_pnl numeric,
-  -- The two integers that answer "which are running". NULL means the sample did
-  -- not carry them, which is not the same as an account with no strategies
-  -- loaded - though both read `unmeasured`, because neither is a zero.
+  -- The two integers that answer "which are running", and the pair carries THREE
+  -- facts, not two. NULL means the sample did not carry a count at all - nobody
+  -- looked. (0, 0) means the VPS looked and the account has no strategies loaded.
+  -- Anything else is a count. The collector is explicit about this and says so in
+  -- StrategyLiveCount: `Tally` returns (0, 0) for a collection it read
+  -- successfully and found empty, "so the wire says which of the two happened".
+  -- run_state below keeps all three apart; it used to fold the first two together.
   strategy_count integer,
   enabled_strategy_count integer,
   -- The machine's own clock at the moment it read the accounts. Every staleness
@@ -238,14 +274,31 @@ create table if not exists public.account_live_samples (
   -- fresh.
   sampled_at timestamptz not null,
   reported_at timestamptz not null default now(),
-  -- Three states, three words, the same three src/domain/liveAccounts.js:268-269
-  -- already prints from a close. `unmeasured` is not `idle`: 121 of 457 accounts
-  -- on this book carry no strategy row at all, and "nobody looked" and "the desk
-  -- switched everything off" lead to opposite actions.
+  /* FOUR STATES, FOUR WORDS, BECAUSE THE PAIR OF COUNTS CARRIES FOUR FACTS.
+   *
+   * The first three are src/domain/liveAccounts.js:268-269's own vocabulary,
+   * printed from a close. `unmeasured` is not `idle`: 121 of 457 accounts on this
+   * book carry no strategy row at all, and "nobody looked" and "the desk switched
+   * everything off" lead to opposite actions.
+   *
+   * THE FOURTH ONE IS NEW HERE AND IT IS NOT AN EDGE CASE. This column shipped
+   * with `strategy_count = 0` folded into `unmeasured`, so an account the VPS HAD
+   * measured and found empty read the same as an account nobody had measured -
+   * and the sentence the screen prints for `unmeasured` is "the sample carried no
+   * strategy count", which is FALSE about a sample that carried (0, 0). It is not
+   * a rare row either: the agent's own measurement on one machine in one day is
+   * "14 at 09:21, 9 at 16:30, 0 at 18:28", because NinjaTrader removes a
+   * strategy from the account when it is disabled. Every account on the fleet
+   * reports (0, 0) overnight and before the open, so a genuinely flat desk read
+   * "2 with no strategy count" on the briefing card every morning.
+   *
+   * `idle` is not the answer either: its sentence is "strategies are loaded and
+   * every one of them is switched off", and nothing is loaded. Four facts, four
+   * words, four sentences, each true of exactly one of them. */
   run_state text generated always as (
     case
       when strategy_count is null or enabled_strategy_count is null then 'unmeasured'
-      when strategy_count = 0 then 'unmeasured'
+      when strategy_count = 0 then 'no_strategies'
       when enabled_strategy_count > 0 then 'running'
       else 'idle'
     end
@@ -258,9 +311,10 @@ create table if not exists public.account_live_samples (
       or (connection_name = btrim(connection_name) and length(connection_name) between 1 and 64)),
   constraint account_live_samples_status_check
     check (status is null or status ~ '^[A-Za-z][A-Za-z0-9 _-]{0,31}$'),
-  -- The pair is sent together or not at all. A strategy_count with no enabled
-  -- count would read `idle` - "the desk switched everything off" - about an
-  -- account nobody measured.
+  -- The pair is sent together or not at all. Half a count reaches run_state as a
+  -- NULL on one side, which answers `unmeasured` - "nobody looked" - about an
+  -- account somebody did look at, or, if the NULL were on the other side,
+  -- `no_strategies` about an account that has them. The pair is the measurement.
   constraint account_live_samples_counts_check
     check ((strategy_count is null) = (enabled_strategy_count is null)
       and (strategy_count is null
@@ -277,6 +331,56 @@ create table if not exists public.account_live_samples (
       and (unrealized_pnl is null or abs(unrealized_pnl) <= 1e12)
       and (total_pnl is null or abs(total_pnl) <= 1e12))
 );
+
+-- ---------------------------------------------------------------------------
+-- THE ONE THING IN THIS FILE THAT CHANGES A COLUMN THAT MAY ALREADY EXIST, and
+-- it is here because `create table if not exists` does NOTHING when the table is
+-- there. An earlier copy of step 55 created run_state with three arms and folded
+-- "measured and empty" into "nobody measured". A database that ran that copy
+-- would keep printing the false sentence forever, and re-running the file - which
+-- is how Pedro checks whether a step landed - would not fix it.
+--
+-- SO IT REPLACES ONE DERIVED COLUMN AND NOTHING ELSE. run_state holds no data:
+-- every value in it is computed from strategy_count and enabled_strategy_count,
+-- which ARE the data and are not touched. Dropping and re-adding it recomputes
+-- each row from what the sample actually carried, so nothing is lost and nothing
+-- is guessed. The column moves to the end of the column order, which no caller
+-- notices: the function, the browser read and every test name their columns.
+--
+-- GUARDED THREE WAYS so it can only fire on the thing it is for - the table must
+-- exist, run_state must exist and be stored-generated, and its expression must
+-- not already mention the new word. After it has fired once, re-running is a
+-- no-op, which is the whole point.
+-- ---------------------------------------------------------------------------
+do $account_tracker_run_state$
+declare
+  v_expression text;
+begin
+  select pg_catalog.pg_get_expr(def.adbin, def.adrelid)
+    into v_expression
+  from pg_catalog.pg_attrdef as def
+  join pg_catalog.pg_attribute as att
+    on att.attrelid = def.adrelid and att.attnum = def.adnum
+  where def.adrelid = 'public.account_live_samples'::regclass
+    and att.attname = 'run_state'
+    and att.attgenerated = 's'
+    and not att.attisdropped;
+
+  if v_expression is not null and position('no_strategies' in v_expression) = 0 then
+    alter table public.account_live_samples drop column run_state;
+    alter table public.account_live_samples
+      add column run_state text generated always as (
+        case
+          when strategy_count is null or enabled_strategy_count is null then 'unmeasured'
+          when strategy_count = 0 then 'no_strategies'
+          when enabled_strategy_count > 0 then 'running'
+          else 'idle'
+        end
+      ) stored;
+    raise notice 'step 55 recomputed run_state: an earlier copy of this file folded a measured-and-empty account into unmeasured';
+  end if;
+end
+$account_tracker_run_state$;
 
 -- The screens ask by client: the overview reads every assigned client's rows in
 -- one request, the client workspace reads one client's.
@@ -507,6 +611,41 @@ grant execute on function public.record_account_live_sample(uuid, timestamptz, j
 alter table public.account_live_samples enable row level security;
 alter table public.account_tracker_settings enable row level security;
 
+-- ---------------------------------------------------------------------------
+-- AND THE GRANT, WHICH IS A SECOND LAYER AND NOT A RESTATEMENT OF THE FIRST.
+--
+-- Supabase's own default privileges grant SELECT, INSERT, UPDATE and DELETE on
+-- every new table in `public` to `anon` and `authenticated` - which is why step
+-- 51 had to REVOKE rather than simply not grant. The restrictive policies below
+-- are the layer that survives step 52 re-writing the permissive ones. This is the
+-- layer that survives the policies themselves being wrong, and the two fail in
+-- different directions:
+--
+--   * A RESTRICTIVE policy cannot make a DELETE RAISE. For DELETE, `using` is a
+--     FILTER: `using (false)` means no row is visible to delete, so the statement
+--     affects nothing and says nothing. Correct, and silent. A revoked privilege
+--     answers `permission denied for table account_live_samples`, which is a thing
+--     a person can see in a log.
+--   * A revoked privilege is not conditional on any policy existing, being
+--     RESTRICTIVE, or naming the right verb - the three things that went wrong
+--     here once already.
+--
+-- SELECT STAYS, on both tables, and that is the whole point of the pair: the CAM
+-- Overview reads account_live_samples directly under step 52's predicate - one
+-- PostgREST request for a whole book, no serverless invocations - and the screens
+-- read stale_sample_seconds so that the number is not copied into JavaScript.
+-- Revoking SELECT would take the feature away.
+--
+-- The service role is unaffected: its grants are separate and it is BYPASSRLS, so
+-- the ingest route keeps writing exactly as before. The function is SECURITY
+-- DEFINER and runs as the owner, so its own upsert and its retention sweep are
+-- unaffected too.
+--
+-- Idempotent: revoking a privilege that is already absent is a no-op.
+-- ---------------------------------------------------------------------------
+revoke insert, update, delete on public.account_live_samples from anon, authenticated;
+revoke insert, update, delete on public.account_tracker_settings from anon, authenticated;
+
 do $account_tracker_policies$
 begin
   if not exists (
@@ -536,6 +675,33 @@ begin
       to anon, authenticated
       using (true)
       with check (false);
+  end if;
+
+  /* AND THE SECOND HALF OF THAT DENIAL, which cannot be folded into the policy
+     above. `with check (false)` refuses INSERT and UPDATE because both produce a
+     new row for the check to refuse; a DELETE produces none and is judged by
+     `using` alone, which has to stay `true` there because `using` is also what
+     SELECT is judged by. So DELETE gets its own restrictive policy with
+     `using (false)`, the form step_28, step_45 and step_46 all use.
+
+     Without it, the first re-run of step 52 - which is how that migration picks
+     up tables added after it - installs a permissive `for all` with step 52's
+     predicate as its `using`, and a CAM can delete its own clients' rows. An
+     account that goes dark is already an absent row in the next sample; a CAM
+     able to make a row absent is a CAM able to erase the one state this table
+     exists to hold. */
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'account_live_samples'
+      and policyname = 'account_live_samples deny browser deletes'
+  ) then
+    create policy "account_live_samples deny browser deletes"
+      on public.account_live_samples
+      as restrictive
+      for delete
+      to anon, authenticated
+      using (false);
   end if;
 
   -- The settings row is desk tuning and names no client, so it is readable by
@@ -569,6 +735,25 @@ begin
       to anon, authenticated
       using (true)
       with check (false);
+  end if;
+
+  /* The same second half for the tunables. This table has no `client_id`, so
+     step 52's loop A never reaches it - but deleting the singleton is how every
+     tunable on this feature reverts to the literals in the function body at
+     once, silently, and the gap is the same gap, so it is closed the same way
+     rather than left to depend on a loop's exclusion list staying what it is. */
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'account_tracker_settings'
+      and policyname = 'account_tracker_settings deny browser deletes'
+  ) then
+    create policy "account_tracker_settings deny browser deletes"
+      on public.account_tracker_settings
+      as restrictive
+      for delete
+      to anon, authenticated
+      using (false);
   end if;
 end
 $account_tracker_policies$;

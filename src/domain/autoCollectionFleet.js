@@ -315,13 +315,29 @@ export function classifyFleetRow({
  * card already raise, and counting them twice is how a count stops being read.
  * ──────────────────────────────────────────────────────────────────────────── */
 
+/* FOUR WORDS, AND THE FOURTH IS WHY THIS IS NOT A COPY OF THE CLOSE'S THREE.
+ *
+ * The first three are src/domain/liveAccounts.js:268-269's, because it is the
+ * same question. `unmeasured` is not `idle`: "nobody looked" and "the desk
+ * switched everything off" lead to opposite actions, and 121 of 457 accounts on
+ * this book carry no strategy row at all.
+ *
+ * `no_strategies` IS THE ONE A CLOSE CANNOT HAVE. By 16:45 the desk has switched
+ * the algos off and NinjaTrader has removed them from the account, so every
+ * account looks empty and "measured and empty" is not a distinction a close can
+ * draw. A mid-day sample can, and step 55 now stores it: (0, 0) is a
+ * measurement, (null, null) is not, and the collector's StrategyLiveCount
+ * deliberately sends the pair so the wire says which happened.
+ *
+ * This file shipped with those two folded into `unmeasured`, so an account the
+ * VPS HAD measured and found empty got the sentence "the sample carried no
+ * strategy count" - which is false about a sample that carried (0, 0), and false
+ * about every account on the fleet overnight and before the open. Four facts,
+ * four sentences, each true of exactly one of them. */
 const ACCOUNT_RUN_STATES = Object.freeze({
-  // The same three words src/domain/liveAccounts.js:268-269 prints from a close,
-  // because it is the same question. `unmeasured` is not `idle`: "nobody looked"
-  // and "the desk switched everything off" lead to opposite actions, and 121 of
-  // 457 accounts on this book carry no strategy row at all.
   running: ['running', 'strategies are enabled on this account right now'],
   idle: ['all off', 'strategies are loaded and every one of them is switched off'],
+  no_strategies: ['none loaded', 'the VPS read this account and it has no strategies loaded at all. Measured, and nothing to run.'],
   unmeasured: ['no strategy data', 'the sample carried no strategy count. Not measured - not zero.'],
 });
 
@@ -419,10 +435,21 @@ export function classifyAccountSample({ now, sample = null, staleSeconds = 1500 
  * The same question with the device in hand, which is the only way the four
  * states stay four.
  *
- * `trackerMinAgentVersion` is account_tracker_settings.min_agent_version, and
- * NULL - no build named - is what makes step 55 inert on the day it is run: with
- * nothing to be behind, no machine is behind, and the answer is the neutral
- * tracker_off rather than "update required" beside thirty client names.
+ * THE BUG THIS ORDER EXISTS TO MAKE IMPOSSIBLE. The version gate used to be the
+ * FIRST question, above the sample, so with min_agent_version NULL - the value
+ * step 55 ships with, and the whole of its inertness mechanism - this screen and
+ * the CAM Overview said contradictory things about the same row in the same
+ * minute. Measured: one row, device agentVersion 1.6.0, heartbeat 20 seconds old,
+ * sample 2 minutes old, connected, running, $1,024.31. This screen: "Not sampling
+ * yet - No collector build sends live samples yet, so nothing here is live."
+ * The overview: "Live - Sampled 2 minutes ago", tone running, "$1,024 across the
+ * 1 account that reported a figure." And this screen was the one that was wrong.
+ *
+ * SO THE READING IS TAKEN FIRST, through the same classifyAccountSample the
+ * overview runs, and the two tracker_* sentences - both of which are claims about
+ * the ABSENCE of sampling - can only be reached when there is no reading to
+ * falsify them. The gate is evaluated in exactly ONE line below and nowhere else
+ * in this file.
  *
  * @param {object} input
  * @param {Date|string|number} input.now
@@ -448,34 +475,69 @@ export function classifyAccountTracker({
   if (device.status === 'revoked' || device.revokedAt) return trackerResult('revoked');
   if (device.status !== 'active') return trackerResult('paused');
 
-  // Before anything about this machine, the question of whether the feature is
-  // switched on at all. Nothing below it can be true while no build samples.
-  if (!trackerMinAgentVersion) return trackerResult('tracker_off');
+  /* THE READING, TAKEN THROUGH THE SAME FUNCTION THE OVERVIEW RUNS, before any
+   * question that could talk over it. `never_sampled` out of there means there is
+   * nothing readable to age - no row at all, or a row whose clock cannot be read -
+   * so `reading` is null exactly when this screen has nothing of its own to show
+   * and the device has to answer instead. */
+  const verdict = classifyAccountSample({ now, sample, staleSeconds });
+  const reading = verdict.state === 'never_sampled' ? null : verdict;
 
-  /* An agent that has never said its version is treated as old, not as new.
-   * The collector's own csproj left <Version> undeclared until 1.1.3, so a
-   * build from last quarter and one from today are indistinguishable on this
-   * field; assuming new would claim a machine can sample when it cannot. */
-  if (!device.agentVersion
-    || compareVersions(device.agentVersion, trackerMinAgentVersion) < 0) {
-    return trackerResult('tracker_unsupported');
-  }
+  /* ── THE VERSION GATE, EVALUATED HERE AND IN NO OTHER LINE OF THIS FILE ──
+   *
+   * Its sentence is "No collector build sends live samples yet", so the one thing
+   * that can falsify it is evidence that a collector IS sampling - this account's
+   * own reading, or a reading for any other account on this machine. With either
+   * of those in hand the gate has nothing to say and does not get to speak. That
+   * is the whole of the fix: the gate used to be the FIRST question, so a fresh
+   * row sitting in the table could not reach the screen and the client page said
+   * "nothing here is live" about a row the overview was printing as Live with
+   * $1,024 against it.
+   *
+   * ABOVE `offline` DELIBERATELY, AND ONLY WHEN NOTHING IS SAMPLING. On the day
+   * step 55 is run, a machine that is also dark and also behind the release still
+   * reads "Not sampling yet", because "fix the VPS and the light comes on" would
+   * be false - nothing is expected of any machine until Pedro names a build. Once
+   * something IS expected, a dark machine is the honest explanation for a missing
+   * reading and `offline` says so below. */
+  const samplingSeen = Boolean(reading) || deviceHasSamples === true;
+  if (!samplingSeen && !trackerMinAgentVersion) return trackerResult('tracker_off');
 
+  /* THE MACHINE NOT ANSWERING OUTRANKS THE READING IT LEFT BEHIND, which is the
+   * one place the client page deliberately says more than the overview can: a
+   * 40-minute-old heartbeat beside a 2-minute-old sample reads "The VPS has
+   * stopped reporting heartbeats" here and "Sampled 2 minutes ago" there. Both
+   * true, neither contradicting the other, and the extra fact is what having the
+   * device is for. */
   const lastSeen = validDate(device.lastSeenAt);
   if (!lastSeen || current.getTime() - lastSeen.getTime() > offlineMinutes * 60_000) {
     return trackerResult('offline');
   }
 
-  const verdict = classifyAccountSample({ now, sample, staleSeconds });
-  if (verdict.state === 'never_sampled' && deviceHasSamples) {
-    // The machine IS sampling, and this one account is not in what it sends -
-    // which on the collector side is what an account dropped by the relevance
-    // filter looks like. A different thing from a machine that samples nothing.
+  if (reading) return reading;
+
+  /* NO READING FOR THIS ACCOUNT, AND THE MACHINE IS SAMPLING OTHERS - which on
+   * the collector side is what an account dropped by the relevance filter looks
+   * like. Asked before the version, because a machine that is sending readings
+   * demonstrably runs a build that samples, and "runs a collector build from
+   * before live sampling" would be false about it. */
+  if (deviceHasSamples) {
     return trackerResult('never_sampled', {
       detail: 'This VPS is sampling other accounts and has never sent this one.',
     });
   }
-  return verdict;
+
+  /* A build IS named - the gate above returned otherwise - and this machine has
+   * sent nothing at all. An agent that has never said its version is treated as
+   * old, not as new: the collector's own csproj left <Version> undeclared until
+   * 1.1.3, so a build from last quarter and one from today are indistinguishable
+   * on this field, and assuming new would claim a machine can sample when it
+   * cannot. */
+  if (!device.agentVersion
+    || compareVersions(device.agentVersion, trackerMinAgentVersion) < 0) {
+    return trackerResult('tracker_unsupported');
+  }
+  return trackerResult('never_sampled');
 }
 
 /**
@@ -495,6 +557,7 @@ export function summarizeAccountTracker(samples = [], { now, staleSeconds = 1500
     silent: 0,
     running: 0,
     idle: 0,
+    no_strategies: 0,
     unmeasured: 0,
     attention: 0,
     totalPnl: null,
@@ -546,6 +609,10 @@ export function accountTrackerHeadline(summary) {
   const parts = [];
   if (summary.running) parts.push(`${summary.running} running`);
   if (summary.idle) parts.push(`${summary.idle} all off`);
+  /* Said separately from `not measured`, because they were one number until step
+   * 55 grew a fourth run state and the merged number made a flat desk read as an
+   * unmeasured one every morning before the open. */
+  if (summary.no_strategies) parts.push(`${summary.no_strategies} with nothing loaded`);
   if (summary.unmeasured) parts.push(`${summary.unmeasured} not measured`);
   if (summary.disconnected) parts.push(`${summary.disconnected} disconnected`);
   if (summary.silent) parts.push(`${summary.silent} silent`);

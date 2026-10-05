@@ -107,12 +107,40 @@ describe('the four states, each with its own sentence on screen', () => {
   });
 
   it('collector too old: names the sampling and says the close is unaffected', () => {
-    const html = markup({ device: device({ agentVersion: '1.1.3' }), tracker: tracker({ accounts: [] }) });
+    /* deviceHasSamples FALSE, because the sentence is "this VPS runs a collector
+     * build from before live sampling" and a reading from that same VPS - for this
+     * account or any other - disproves it. The panel may only say this about a
+     * machine that has sent nothing. */
+    const html = markup({
+      device: device({ agentVersion: '1.1.3' }),
+      tracker: tracker({ accounts: [], deviceHasSamples: false }),
+    });
     expect(html).toContain('tracker-tracker_unsupported');
     expect(html).toContain('before live sampling');
     expect(html).toContain('daily close is unaffected');
     // Not the collector card's own sentence, which is already on this page.
     expect(html).not.toContain('must be updated');
+  });
+
+  it('and NEVER says a collector is too old above a row it is sampling', () => {
+    /* THE DEFECT, ON THE SCREEN. With min_agent_version unset - the value step 55
+     * ships with - this panel said "No collector build sends live samples yet, so
+     * nothing below is live" in its header and then printed a row saying Live, $293
+     * and 4m ago directly beneath it. The same shape with an old version field said
+     * "Collector too old to sample" about a machine whose reading was on the row. */
+    const old = markup({ device: device({ agentVersion: '1.0.0' }) });
+    expect(old).toContain('tracker-live');
+    expect(old).not.toContain('before live sampling');
+
+    const unnamed = markup({ tracker: tracker({ minAgentVersion: null }) });
+    expect(unnamed).toContain('tracker-live');
+    expect(unnamed).toContain('$293');
+    expect(unnamed).not.toContain('tracker-tracker_off');
+    // And the HEADING above those rows does not deny them either. It used to read
+    // "nothing below is live" over a row that said Live.
+    expect(unnamed).not.toContain('nothing below is live');
+    expect(unnamed).toContain('A collector is already sampling, and no build is named yet');
+    expect(unnamed).toContain('account_tracker_settings.min_agent_version');
   });
 
   it('never sampled: the registry account appears, rather than simply being absent', () => {
@@ -166,6 +194,34 @@ describe('the day this merges, with no collector sampling anywhere', () => {
 });
 
 describe('what the panel refuses to print', () => {
+  it('prints a different chip and a different tooltip for empty and unmeasured', () => {
+    /* THE DEFECT, ON THE SCREEN. These two were one word, so an account the VPS had
+     * measured and found empty got the chip "no strategy data" and the tooltip "the
+     * sample carried no strategy count" - about a sample that carried (0, 0). Every
+     * account on the fleet reports (0, 0) overnight and before the open. */
+    const emptyHtml = markup({
+      tracker: tracker({
+        accounts: [sample({ runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 })],
+      }),
+    });
+    expect(emptyHtml).toContain('none loaded');
+    expect(emptyHtml).toContain('no strategies loaded at all');
+    expect(emptyHtml).not.toContain('carried no strategy count');
+    // Muted, not a warning: an account with nothing loaded is an ordinary morning.
+    expect(emptyHtml).toMatch(/badge muted"[^>]*>none loaded</);
+
+    const unknownHtml = markup({
+      tracker: tracker({
+        accounts: [sample({ runState: 'unmeasured', strategyCount: null, enabledStrategyCount: null })],
+      }),
+    });
+    expect(unknownHtml).toContain('no strategy data');
+    expect(unknownHtml).toContain('carried no strategy count');
+    expect(unknownHtml).not.toContain('no strategies loaded at all');
+    // A reading the desk did not get IS worth a second look.
+    expect(unknownHtml).toMatch(/badge warning"[^>]*>no strategy data</);
+  });
+
   it('never turns a missing P&L into a zero', () => {
     const html = markup({ tracker: tracker({ accounts: [sample({ totalPnl: null })] }) });
     expect(html).toContain('no figure');
@@ -179,7 +235,14 @@ describe('what the panel refuses to print', () => {
       tracker: tracker({ accounts: [sample({ sampledAt: '2026-10-05T13:00:00.000Z', runState: 'running' })] }),
     });
     expect(html).toContain('Silent');
-    expect(html).not.toMatch(/badge success">running/);
+    /* `[^>]*` because the chip carries a title attribute between its class and its
+       text: `/badge success">running/` could never match this markup and was
+       vacuously true whatever the panel did. */
+    const RUN_CHIP = /badge success"[^>]*>running</;
+    expect(html).not.toMatch(RUN_CHIP);
+    // The positive control, so the negative above is known to have teeth: the same
+    // pattern against a current reading DOES match.
+    expect(markup()).toMatch(RUN_CHIP);
   });
 
   it('carries the state in words and not in a colour class alone', () => {
@@ -189,7 +252,11 @@ describe('what the panel refuses to print', () => {
       [{}, 'Live'],
       [{ tracker: tracker({ accounts: [sample({ connected: false })] }) }, 'Disconnected'],
       [{ device: device({ lastSeenAt: '2026-10-01T00:00:00Z' }) }, 'Offline'],
-      [{ device: device({ agentVersion: '1.0.0' }) }, 'Collector too old to sample'],
+      [{
+        device: device({ agentVersion: '1.0.0' }),
+        tracker: tracker({ accounts: [], deviceHasSamples: false }),
+        accountNames: ['APEX-1'],
+      }, 'Collector too old to sample'],
       [{ tracker: tracker({ accounts: [], deviceHasSamples: false }), accountNames: ['APEX-1'] }, 'Never sampled'],
     ]) {
       expect(markup(props), word).toContain(word);
