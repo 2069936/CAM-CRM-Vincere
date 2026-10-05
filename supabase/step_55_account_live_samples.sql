@@ -408,7 +408,7 @@ create index if not exists idx_account_live_samples_client
   on public.account_live_samples (client_id, account_name);
 
 comment on table public.account_live_samples is
-  'The LAST sample of each account on each paired VPS, overwritten. Not a time series. Rows leave only by the retention sweep in record_account_live_sample; a sample that omits an account never deletes it, because an account that goes dark is absent from the sample.';
+  'The LAST sample of each account on each paired VPS, overwritten. Not a time series. Rows leave three ways and this list is the whole of it: the retention sweep in record_account_live_sample, the cascade from public.clients, and the cascade from public.ingest_devices. The cascades are right, a client or a device that no longer exists has no accounts to track, and they are named here because the first version of this comment said rows leave ONLY by the sweep, which a reviewer disproved by deleting a client as a CAM and watching the rows go with it. A sample that omits an account never deletes it, because an account that goes dark is absent from the sample and absence is the signal.';
 
 -- ---------------------------------------------------------------------------
 -- record_account_live_sample: the reading, upserted.

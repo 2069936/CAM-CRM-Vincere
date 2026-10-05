@@ -1489,6 +1489,55 @@ describe('who can read and write a live sample', () => {
    * than by reading a policy, because a policy test about TRUNCATE proves nothing
    * whatever it says. Step 51's header is the instruction: "may only SELECT" has to
    * be true rather than nearly true. */
+  /* THE HARNESS ITSELF, WHICH NOTHING WAS DEFENDING.
+   *
+   * Every access-control assertion below is only worth what the PREREQUISITES
+   * are worth, and a reviewer proved they were worth nothing by reverting that
+   * one line to the narrower `grant select, insert, update, delete` an earlier
+   * version carried. Not one test failed. The grant hole this whole describe
+   * block exists to close had been wide open with the suite green for exactly
+   * that reason: the model was kinder than the world, so no assertion could see
+   * the difference.
+   *
+   * Fixing the prerequisites without pinning them moves the defect up one level
+   * instead of closing it, which is what happened to the composition root a
+   * round earlier. So the harness now asserts its own fidelity, against a string
+   * measured on the real project rather than one anybody reasoned to:
+   *
+   *   select defaclacl from pg_default_acl ... on 2026-10-05 returned
+   *   {postgres=arwdDxtm/postgres,anon=arwdDxtm/postgres,
+   *    authenticated=arwdDxtm/postgres,service_role=arwdDxtm/postgres}
+   *
+   * arwdDxtm is all eight: INSERT, SELECT, UPDATE, DELETE, TRUNCATE,
+   * REFERENCES, TRIGGER and MAINTAIN. The D is the one that ignores row level
+   * security, and the m is the one step 51 missed on app_users, which still
+   * carries MAINTAIN in production today. */
+  describe('the model is not kinder than the world', () => {
+    it('hands anon and authenticated every privilege by default, as Supabase does', async () => {
+      const acl = await one(`select array_to_string(d.defaclacl, ' ')
+        from pg_default_acl d join pg_namespace n on n.oid = d.defaclnamespace
+        where n.nspname = 'public' and d.defaclobjtype = 'r'`);
+      expect(acl, 'the prerequisites no longer model Supabase default privileges').toBeTruthy();
+      for (const role of ['anon', 'authenticated']) {
+        expect(acl).toContain(`${role}=arwdDxtm/`);
+      }
+    });
+
+    it('so a table created with no revoke is truncatable by a signed in user', async () => {
+      /* The control for the lockdown below. If this ever stops being true the
+       * revoke has become decoration and the tests that depend on it are
+       * measuring nothing. */
+      await db.exec('create table if not exists public.zz_model_control (id int)');
+      const truncate = await one(
+        `select has_table_privilege('authenticated', 'public.zz_model_control', 'TRUNCATE')`);
+      const maintain = await one(
+        `select has_table_privilege('authenticated', 'public.zz_model_control', 'MAINTAIN')`);
+      await db.exec('drop table public.zz_model_control');
+      expect(truncate).toBe(true);
+      expect(maintain).toBe(true);
+    });
+  });
+
   describe('the three privileges that are not INSERT, UPDATE or DELETE', () => {
     beforeAll(reset);
 
