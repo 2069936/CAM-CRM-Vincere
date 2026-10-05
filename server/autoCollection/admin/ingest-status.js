@@ -24,6 +24,13 @@ const DEVICE_SELECT = [
 ].join(',');
 const ENROLLMENT_SELECT = 'id,expires_at,consumed_at,revoked_at,created_at';
 const QUARANTINE_SELECT = 'device_id,capture_id,trading_date,code,attempts,quarantined_at,last_attempt_at,reported_at,final';
+/* The tracker's own columns, and nothing the close already stores. The screen
+ * asks three questions - alive, running, how the day is going - and this is the
+ * least that answers them. */
+const ACCOUNT_SAMPLE_SELECT = 'device_id,account_name,connection_name,connected,status,'
+  + 'realized_pnl,unrealized_pnl,total_pnl,strategy_count,enabled_strategy_count,'
+  + 'run_state,sampled_at,reported_at';
+const TRACKER_SETTINGS_SELECT = 'stale_sample_seconds,sample_interval_seconds,min_agent_version';
 
 /* The refusals a CAM is allowed to read back, by the name the agent already
  * shows on the VPS. Anything unrecognised collapses, so a reason added to the
@@ -112,6 +119,58 @@ export function createIngestStatusStore(admin) {
     }
   }
 
+  /* WHAT EACH ACCOUNT SAID ABOUT ITSELF A FEW MINUTES AGO.
+   *
+   * Step 55 keeps the last sample of each account on each paired VPS. This read
+   * is here, on the one collector endpoint a CAM can reach, because the browser
+   * CANNOT see ingest_devices - step 28 shut it with a restrictive denial - and
+   * without the device there is no way to tell an account whose VPS has stopped
+   * answering from an account whose collector is too old to sample from an
+   * account that has simply never been sampled. All three are an absent row.
+   * Those are three different jobs and a light that merges them is worse than no
+   * light, so the distinction is made where the device is in hand.
+   *
+   * Null, not empty, when the table is not there yet: an un-migrated database has
+   * nothing to say about a sample and the panel says so, the same way the
+   * quarantine line does.
+   *
+   * Swallows its own failure for the same reason the pairing audit and the
+   * quarantine read do: the device and enrollment rows are the card, and a
+   * tracker line is not worth a 500 on the client page. */
+  async function accountSampleRows(clientId) {
+    try {
+      const { data, error } = await admin
+        .from('account_live_samples')
+        .select(ACCOUNT_SAMPLE_SELECT)
+        .eq('client_id', clientId)
+        .order('account_name', { ascending: true })
+        .limit(500);
+      if (error) return null;
+      return data || [];
+    } catch {
+      return null;
+    }
+  }
+
+  /* THE TUNING, READ RATHER THAN REPEATED. `stale_sample_seconds` decides what
+   * "silent" means and `min_agent_version` decides whether any build is expected
+   * to sample at all; both are columns Pedro edits in the SQL editor, because he
+   * cannot set an environment variable. A second copy of either number in
+   * JavaScript would be a second thing to keep in step with the fleet. */
+  async function trackerSettings() {
+    try {
+      const { data, error } = await admin
+        .from('account_tracker_settings')
+        .select(TRACKER_SETTINGS_SELECT)
+        .limit(1)
+        .maybeSingle();
+      if (error) return null;
+      return data || null;
+    } catch {
+      return null;
+    }
+  }
+
   /* THE LAST THING THE VPS ACTUALLY COLLECTED, WHICH THE CARD HAS NEVER SEEN.
    *
    * The Connected light is heartbeat-only: this endpoint has never read
@@ -146,17 +205,21 @@ export function createIngestStatusStore(admin) {
       const attemptPromise = lastPairAttempt(clientId);
       const quarantinePromise = quarantineRows(clientId);
       const batchPromise = lastBatch(clientId);
-      const [{ data: client, error }, device, enrollment, attempt, quarantine, batch] = await Promise.all([
+      const samplePromise = accountSampleRows(clientId);
+      const settingsPromise = trackerSettings();
+      const [{ data: client, error }, device, enrollment, attempt, quarantine, batch, samples, settings] = await Promise.all([
         clientPromise,
         devicePromise,
         enrollmentPromise,
         attemptPromise,
         quarantinePromise,
         batchPromise,
+        samplePromise,
+        settingsPromise,
       ]);
       if (error) throw error;
       if (!client?.id) throw new ApiError(404, 'client_not_found');
-      return { client, device, enrollment, attempt, quarantine, batch };
+      return { client, device, enrollment, attempt, quarantine, batch, samples, settings };
     },
   };
 }
@@ -223,6 +286,66 @@ function publicQuarantine(rows, device) {
       lastAttemptAt: row.last_attempt_at || null,
       reportedAt: row.reported_at,
     })));
+}
+
+/* THE TRACKER, SHAPED FOR THE PANEL.
+ *
+ * Only the device on the card, for the same reason the quarantine is narrowed
+ * that way: a row left by a machine this client no longer uses is not this
+ * client's problem.
+ *
+ * `deviceHasSamples` is the one derived fact the panel cannot work out for
+ * itself and cannot do without. It is what separates "this VPS is sampling other
+ * accounts and has never sent this one" from "this VPS has never sampled
+ * anything", and those are a different job each.
+ *
+ * NO FREE TEXT AND NO IDENTIFIERS. The account name and the connection name are
+ * the desk's own words and already on every other screen; `status` is a
+ * shape-checked platform word; the device id is not here because nothing on the
+ * panel is actionable with it.
+ *
+ * NULL rather than an empty tracker when the table is absent, so the panel can
+ * tell "step 55 has not run" from "this VPS has sent nothing", which are a
+ * different sentence each. */
+function publicAccountTracker(rows, device, settings) {
+  if (!Array.isArray(rows)) return null;
+  const mine = device ? rows.filter((row) => row.device_id === device.id) : [];
+  return {
+    // The horizon and the expected build come from the settings row, and the
+    // column defaults stand in only when the row itself is missing.
+    staleSeconds: Number.isInteger(settings?.stale_sample_seconds) && settings.stale_sample_seconds > 0
+      ? settings.stale_sample_seconds
+      : 1500,
+    sampleIntervalSeconds: Number.isInteger(settings?.sample_interval_seconds) && settings.sample_interval_seconds > 0
+      ? settings.sample_interval_seconds
+      : 600,
+    minAgentVersion: typeof settings?.min_agent_version === 'string' && settings.min_agent_version
+      ? settings.min_agent_version
+      : null,
+    deviceHasSamples: mine.length > 0,
+    accounts: mine.map((row) => ({
+      accountName: row.account_name,
+      connectionName: row.connection_name || null,
+      connected: row.connected === true,
+      status: row.status || null,
+      realizedPnl: numberOrNull(row.realized_pnl),
+      unrealizedPnl: numberOrNull(row.unrealized_pnl),
+      totalPnl: numberOrNull(row.total_pnl),
+      strategyCount: Number.isInteger(row.strategy_count) ? row.strategy_count : null,
+      enabledStrategyCount: Number.isInteger(row.enabled_strategy_count) ? row.enabled_strategy_count : null,
+      runState: row.run_state || 'unmeasured',
+      sampledAt: row.sampled_at || null,
+    })),
+  };
+}
+
+/* numeric comes back from PostgREST as a string, and Number('') is 0. Tested
+ * rather than coerced: an account that reported no P&L must not arrive as an
+ * account that made nothing. */
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function publicEnrollment(row) {
@@ -302,6 +425,7 @@ export function createHandler({
         lastPairAttempt: publicPairAttempt(status.attempt),
         quarantine: publicQuarantine(status.quarantine, status.device),
         lastBatch: publicLastBatch(status.batch),
+        accountTracker: publicAccountTracker(status.samples, status.device, status.settings),
       });
     } catch (error) {
       return handleApiError(res, publicError(error), { fallbackMessage: 'collector_status_failed' });

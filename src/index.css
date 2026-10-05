@@ -2569,6 +2569,20 @@ textarea {
 .briefing-dot-closed {
   background: var(--success);
 }
+/* The live dot (step 55). A SECOND dot beside the close dot, with a ring rather
+   than a fill, so the two are distinguishable at a glance by shape and not by
+   colour alone - a card carrying two solid dots of the same size would be read
+   as one state said twice. */
+.briefing-dot-live-running,
+.briefing-dot-live-idle,
+.briefing-dot-live-warn,
+.briefing-dot-live-none {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px #94a3b8;
+}
+.briefing-dot-live-running { box-shadow: inset 0 0 0 2px var(--success); }
+.briefing-dot-live-idle { box-shadow: inset 0 0 0 2px #94a3b8; }
+.briefing-dot-live-warn { box-shadow: inset 0 0 0 2px var(--warning); }
 
 .briefing-card em {
   font-style: normal;
@@ -4497,6 +4511,69 @@ tr:nth-child(2) .rank-badge {
 .auto-collection-quarantine strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
 .auto-collection-quarantine abbr { text-decoration: underline dotted; cursor: help; }
 .auto-collection-quarantine span { color: var(--muted); font-size: 10.5px; }
+
+/* ── The account tracker (step 55) ─────────────────────────────────────────────
+   One row per account, each carrying its own state in WORDS and its own sample
+   time. The dot is decoration beside the word, never the only encoding of it:
+   the existing strategy chips encode enabled in a colour class alone, which is
+   exactly what this panel does not repeat. */
+.account-tracker {
+  margin: 8px 6px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.account-tracker.empty,
+.account-tracker-head { display: flex; align-items: flex-start; gap: 8px; }
+.account-tracker.empty svg,
+.account-tracker-head svg { flex-shrink: 0; margin-top: 1px; color: var(--muted); }
+.account-tracker.empty > div,
+.account-tracker-head > div { display: grid; gap: 3px; min-width: 0; }
+.account-tracker.empty strong,
+.account-tracker-head strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.account-tracker.empty span,
+.account-tracker-head span { color: var(--muted); font-size: 10.5px; }
+.account-tracker-none { margin: 8px 0 0; color: var(--muted); font-size: 10.5px; }
+.account-tracker-rows { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.account-tracker-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1.3fr) auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0 0;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+}
+.account-tracker-row:first-child { border-top: 0; padding-top: 0; }
+.account-tracker-dot { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+.account-tracker-name { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.account-tracker-name abbr { color: var(--warning); font-weight: 500; text-decoration: underline dotted; cursor: help; }
+.account-tracker-state { color: var(--text); white-space: nowrap; }
+.account-tracker-age { color: var(--muted); white-space: nowrap; }
+.account-tracker-absent { color: var(--muted); font-style: italic; }
+/* The sentence, on its own line under the row, which is where the four states
+   stop being four colours and start being four different jobs. */
+.account-tracker-detail {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.account-tracker-row.tracker-live .account-tracker-dot { background: var(--success); }
+.account-tracker-row.tracker-disconnected .account-tracker-dot,
+.account-tracker-row.tracker-sample_stale .account-tracker-dot { background: var(--warning); }
+.account-tracker-row.tracker-never_sampled .account-tracker-dot { background: var(--warning); opacity: 0.55; }
+.account-tracker-row.tracker-tracker_off .account-tracker-dot,
+.account-tracker-row.tracker-tracker_unsupported .account-tracker-dot,
+.account-tracker-row.tracker-offline .account-tracker-dot,
+.account-tracker-row.tracker-paused .account-tracker-dot,
+.account-tracker-row.tracker-revoked .account-tracker-dot,
+.account-tracker-row.tracker-not_installed .account-tracker-dot { background: #94a3b8; }
+@media (max-width: 720px) {
+  .account-tracker-row { grid-template-columns: 10px minmax(0, 1fr) auto; }
+  .account-tracker-detail { grid-column: 2 / -1; }
+}
 .auto-collection-footer {
   display: flex;
   align-items: center;

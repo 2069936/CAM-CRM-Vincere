@@ -31,6 +31,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 51 | `step_51_app_users_write_lockdown.sql` | `revoke insert, update, delete on app_users` from `authenticated` and `anon`; SELECT stays | Closing a CAM's ability to promote themselves to Manager by talking to PostgREST directly |
 | 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
+| 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts in four words — `running`, `idle`, `no_strategies` (the VPS looked and nothing is loaded) and `unmeasured` (nobody looked) — plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
 
 ## These three groups behave differently
 
@@ -104,7 +105,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -221,6 +222,84 @@ replay has waited. Every row is the VPS's own word: the agent reports after each
 review and the function replaces the device's inventory whole, so a capture
 that was accepted after a retry, or replayed here and then resent, leaves the
 table on the next report and never before.
+
+**55 degrades gracefully in both directions, and it is inert until you edit one
+column.** The agent that fills it posts to `POST /api/ingest/accounts`, and
+against a CRM without this step's table that endpoint answers 404 `not_found` —
+the same answer a CRM without the endpoint at all gives — so deploy and
+migration can happen in either order with no error line on a VPS. Nothing rides
+on the heartbeat, so an un-migrated CRM sees every heartbeat it sees today.
+
+Without it, the account tracker panel says it is not available and every other
+screen reads exactly as it does now. With it and with no agent sampling yet —
+which is the state on the day it is run — the panel says that no collector build
+sends live samples, once, quietly, and claims no fault against any machine. That
+is what `account_tracker_settings.min_agent_version` being NULL means: no build
+is named, so no machine is behind. The day you set it to the tag that ships the
+sampler is the day a machine below it starts reading "too old to sample", and
+not before.
+
+Everything tunable is a column on `account_tracker_settings`, because this fleet
+cannot take an environment variable. Edit them in the SQL editor; the CHECK
+constraints are the review that edit gets, and each one says in the file what
+bad edit it is refusing. Two are worth knowing before you touch them.
+`stale_sample_seconds` must be at least twice `sample_interval_seconds` — setting
+both to 600 looks obviously consistent and would put every healthy sample
+exactly on the boundary, so one slow close paints a live account silent.
+`min_report_interval_seconds` cannot exceed `sample_interval_seconds` — a longer
+throttle would refuse every report the fleet sends and the whole screen would
+read silent while every machine was working perfectly.
+
+One row per account per device, overwritten, and never a time series: ~700
+accounts every ten minutes would be ~33,600 rows a day and ~8.4M in a year, and
+there is no retention mechanism anywhere in this directory. A sample that leaves
+an account out does **not** delete it — an account that goes dark is simply
+absent from the next sample, and deleting its row at that moment would show
+nothing where the one state the desk needs to see should be. Rows leave only by
+the device-scoped sweep at the end of the function, on the
+`retention_days` horizon.
+
+**Nobody signed in may write to either table, and that is two layers rather than
+one.** `revoke all from anon, authenticated` then `grant select` back — the way
+step 51 closed `app_users`, but as a complement rather than a list — plus a
+RESTRICTIVE policy per verb. The two fail in different directions and you want
+both: a revoked privilege answers `permission denied for table` whatever any
+policy says, and a RESTRICTIVE policy is what survives a re-run of 52, which
+hands every `client_id` table a permissive `for all` with read AND write. SELECT
+stays on both tables, or the overview loses its one-request read of the whole
+book. DELETE needs its own policy, because `with check` does not govern DELETE: a
+delete makes no new row for a check to refuse and is judged by `using` alone.
+
+**And it is `revoke all`, not three named verbs, because TRUNCATE ignores row
+level security.** Supabase's default privileges on `public` are `grant all` —
+`anon=arwdDxtm/postgres`, `authenticated=arwdDxtm/postgres`, which is eight
+privileges and not four. `revoke insert, update, delete` leaves TRUNCATE, TRIGGER,
+REFERENCES and MAINTAIN, and a TRUNCATE consults no policy at all: it empties the
+table in one statement. Measured before the fix — a signed-in CAM truncated both
+tables, and so did the anonymous key. Naming the verbs is also what goes stale:
+PostgreSQL 17 added MAINTAIN, so the six-verb form leaves `MAINTAIN,SELECT` behind,
+which is what `app_users` carries today. `revoke all` then `grant select` says the
+intended thing instead, needs no version-gated keyword, and leaves exactly
+`anon=r/postgres,authenticated=r/postgres`.
+
+**The same hole is open on 32 other tables, and 55 does not close them.**
+Measured across the whole database: `authenticated` can TRUNCATE 32 of the 37
+tables in `public`. The only five it cannot are `app_users` (step 51) and the four
+`ingest%` tables. Step 55 closes it for its own two tables and no others — a known
+gap, written down so nobody reads the careful revoke in 55 and assumes the rest of
+the database matches. Closing the other 32 is its own migration and needs a
+table-by-table reading of what each one's browser path actually requires; a blanket
+statement written without that reading would take SELECT off something the CRM
+reads and break a screen instead of protecting a table.
+
+**Re-running 55 is safe with data in the table, and it will fix one thing if you
+ran an earlier copy.** `run_state` shipped with three words and folded
+"measured, nothing loaded" into "nobody measured", so a flat desk read as an
+unmeasured one every morning before the open. `create table if not exists` does
+nothing on a table that already exists, so the file replaces that one column —
+and only that column, which is derived, so every value is recomputed from the two
+strategy counts the sample carried and no data moves. It prints a NOTICE when it
+does. Your hand edits to `account_tracker_settings` survive a re-run untouched.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of

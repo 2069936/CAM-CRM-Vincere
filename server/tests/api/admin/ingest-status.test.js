@@ -277,6 +277,11 @@ describe('collector profile status store', () => {
       // card needed to know whether the VPS is checking in and collecting
       // nothing, which the heartbeat alone cannot tell it.
       ingest_batches: { id: 'batch-1', trading_date: '2026-09-22', status: 'processed', row_counts: { accounts: 0 }, received_at: '2026-09-22T21:00:00Z' },
+      // The account tracker (step 55). Read here and not in the browser because
+      // the four states it has to keep apart need the DEVICE, which the browser
+      // key cannot see.
+      account_live_samples: [{ device_id: DEVICE_ID, account_name: 'APEX-1', connected: true, run_state: 'running', sampled_at: '2026-10-05T14:56:00Z' }],
+      account_tracker_settings: { stale_sample_seconds: 1500, sample_interval_seconds: 600, min_agent_version: null },
     };
     function builder(table) {
       const query = {
@@ -297,10 +302,12 @@ describe('collector profile status store', () => {
       attempt: rows.audit_logs,
       quarantine: rows.ingest_quarantine_reports,
       batch: rows.ingest_batches,
+      samples: rows.account_live_samples,
+      settings: rows.account_tracker_settings,
     });
     const columns = selected.map(([, value]) => value).join(',');
     expect(columns).not.toMatch(/product.?key|machine|credential|code_hash|metadata/i);
-    expect(admin.from).toHaveBeenCalledTimes(6);
+    expect(admin.from).toHaveBeenCalledTimes(8);
   });
 
   it('renders the page even when the audit read fails, because a card is worth more than a 500', async () => {
