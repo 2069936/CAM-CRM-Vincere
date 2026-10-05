@@ -36,11 +36,16 @@ const flat = sql.toLowerCase().replace(/\s+/g, ' ');
 const runbook = readFileSync(runbookUrl, 'utf8');
 
 describe('step 53 exists and is no longer the one that runs last', () => {
-  it('appears once, and 55 now carries the highest-number claim', () => {
+  it('appears once, and 56 now carries the highest-number claim', () => {
     /* Handed on the way step 52 handed it here: the Math.max assertion moves to
      * the newest step's own test, because leaving it behind makes every later
-     * migration look like a break in this one. 54 is skipped deliberately and
-     * step 55's test is where that is asserted. */
+     * migration look like a break in this one.
+     *
+     * It has now moved twice in a day, 53 to 55 to 56, and both moves were a
+     * rebase conflict. That is the convention working rather than failing: two
+     * migrations landing hours apart both want to be the newest, and git makes
+     * them say which one is. 54 is still claimed by an unmerged branch, which
+     * is why the numbers on disk skip it. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
