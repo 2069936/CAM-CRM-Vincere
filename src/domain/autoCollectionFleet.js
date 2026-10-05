@@ -17,6 +17,22 @@ const STATUS_COPY = Object.freeze({
   not_installed: ['Not installed', 'No VPS is paired with this client.'],
   not_expected: ['Weekend', 'No regular weekday capture is expected.'],
   quarantine: ['Quarantine', 'The VPS holds captures the CRM refused.'],
+
+  /* THE ACCOUNT LEVEL, one layer down from the machine. Added here rather than in
+   * a second module so there is one vocabulary and one voice, and so a reader
+   * comparing a machine's sentence with an account's finds them side by side.
+   *
+   * SIX NEW WORDS, AND EACH IS A DIFFERENT THING TO DO. An account that is
+   * disconnected, an account whose VPS cannot be reached, an account whose
+   * collector is too old to sample and an account nobody has ever sampled are
+   * four different facts, and a light that merges any two of them is worse than
+   * no light: the desk acts on the sentence, not on the colour. */
+  tracker_off: ['Not sampling yet', 'No collector build sends live samples yet, so nothing here is live.'],
+  tracker_unsupported: ['Collector too old to sample', 'This VPS runs a collector build from before live sampling. Its daily close is unaffected.'],
+  never_sampled: ['Never sampled', 'This VPS is paired and answering, and no live sample of this account has ever arrived.'],
+  sample_stale: ['Silent', 'The VPS is answering heartbeats but has stopped sampling this account.'],
+  disconnected: ['Disconnected', 'The VPS is sampling and this account is not connected to its broker.'],
+  live: ['Live', 'Sampled within the last few minutes.'],
 });
 
 function validDate(value) {
@@ -241,6 +257,300 @@ export function classifyFleetRow({
   if (todayReceived) return result('received');
   if (clock.minuteOfDay < scheduledAt) return result('pending');
   return result('expected');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * THE ACCOUNT TRAFFIC LIGHT.
+ *
+ * WHAT IT IS FOR. Everything above answers "did today's close arrive". Nothing
+ * answers "what is happening now". Between the open and 16:45 the CRM says `$0
+ * today` on every briefing card, because the close has not happened, and the
+ * live accounts panel reads from the last close, which on this book can be
+ * twelve days old. The desk's own morning question is smaller than any of that:
+ * which accounts are alive, which are running, and roughly how the day is going.
+ *
+ * Step 55 stores the last sample of each account. These two functions are the
+ * only place its shape for a screen is decided.
+ *
+ * TWO FUNCTIONS, BECAUSE THE TWO SURFACES KNOW DIFFERENT THINGS, and pretending
+ * otherwise is how the four states get merged.
+ *
+ *   classifyAccountSample  what the SAMPLE ALONE says. The browser reads
+ *     account_live_samples directly under step 52's predicate - one PostgREST
+ *     request for a whole book, no serverless invocations - and it cannot read
+ *     ingest_devices, which step 28 shut to the browser key. So from a sample
+ *     row alone there are four honest answers and no more: live, disconnected,
+ *     silent, and nothing-ever-arrived.
+ *
+ *   classifyAccountTracker  the same question with the DEVICE in hand. Only
+ *     /api/admin/ingest-status has that, and it is per client, which is exactly
+ *     right for the client workspace and exactly wrong for a 37-client overview.
+ *     With the device it can also separate "the collector is too old to sample"
+ *     from "paired, answering, and this account has never been sampled" from
+ *     "the machine has stopped answering at all" - three facts that look
+ *     identical from the sample table, because all three are an absent row.
+ *
+ * WHAT IT DELIBERATELY DOES NOT INHERIT FROM THE MACHINE.
+ *
+ *   `failed`. device.lastErrorCode paints a fleet row Failed, and reading it
+ *   here would paint every account on a machine red for a capture fault that
+ *   says nothing about whether the account is sampling. If the machine really
+ *   cannot be reached, `offline` and `sample_stale` say so from evidence. The
+ *   tracker must not write those device fields either, and it does not: that is
+ *   the whole reason it has its own endpoint and its own table.
+ *
+ *   `not_expected`. The weekend is about the daily batch. A machine still beats
+ *   and still samples on Saturday, and "no capture expected" would be false
+ *   about a live account.
+ *
+ *   `update_required`. The header badge and the collector card already say the
+ *   collector must be updated, with a sentence about the collector. Here the
+ *   precise sentence is tracker_unsupported's, which names the sampling and says
+ *   the daily close is unaffected - because it is, and a CAM reading "update
+ *   required" twice learns to read it never.
+ *
+ * ATTENTION IS COUNTED NARROWLY, from what the tracker uniquely knows:
+ * disconnected, silent, never_sampled. not_installed, revoked, paused, offline
+ * and the two tracker_* states are fleet facts the fleet view and the collector
+ * card already raise, and counting them twice is how a count stops being read.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+const ACCOUNT_RUN_STATES = Object.freeze({
+  // The same three words src/domain/liveAccounts.js:268-269 prints from a close,
+  // because it is the same question. `unmeasured` is not `idle`: "nobody looked"
+  // and "the desk switched everything off" lead to opposite actions, and 121 of
+  // 457 accounts on this book carry no strategy row at all.
+  running: ['running', 'strategies are enabled on this account right now'],
+  idle: ['all off', 'strategies are loaded and every one of them is switched off'],
+  unmeasured: ['no strategy data', 'the sample carried no strategy count. Not measured - not zero.'],
+});
+
+export const ACCOUNT_TRACKER_ATTENTION_STATES = Object.freeze(
+  new Set(['disconnected', 'sample_stale', 'never_sampled']),
+);
+
+/** The three words and the tooltip behind them, for whichever panel is asking. */
+export function accountRunStateCopy(runState) {
+  const [label, detail] = ACCOUNT_RUN_STATES[runState] || ACCOUNT_RUN_STATES.unmeasured;
+  return { runState: ACCOUNT_RUN_STATES[runState] ? runState : 'unmeasured', label, detail };
+}
+
+function trackerResult(state, extra = {}) {
+  const [label, detail] = STATUS_COPY[state];
+  return {
+    state,
+    label,
+    detail: extra.detail || detail,
+    attention: ACCOUNT_TRACKER_ATTENTION_STATES.has(state),
+    ageMinutes: extra.ageMinutes ?? null,
+    sampledAt: extra.sampledAt ?? null,
+    runState: extra.runState ?? null,
+  };
+}
+
+function minutesBetween(later, earlier) {
+  return Math.max(0, Math.floor((later.getTime() - earlier.getTime()) / 60_000));
+}
+
+/* `new Date(null)` IS THE EPOCH, NOT AN INVALID DATE, and validDate above
+ * therefore accepts a null as 1 January 1970. For a heartbeat that accident
+ * lands on the right answer, because a 56-year-old beat reads offline either
+ * way. Here it is the difference between "this account has never been sampled"
+ * and "the VPS stopped sampling it 29 million minutes ago", which is the
+ * difference between a true sentence and a ridiculous one. */
+function sampleClock(value) {
+  if (value instanceof Date) return validDate(value);
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  return validDate(value);
+}
+
+function agedSentence(minutes) {
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return `${Math.floor(hours / 24)} days ago`;
+}
+
+/**
+ * What one sample row says on its own.
+ *
+ * `staleSeconds` comes from account_tracker_settings and is never a constant
+ * here. The fleet view's ten minutes is a heartbeat threshold at a one minute
+ * beat - a 10x margin - and reusing that NUMBER against a ten minute sample
+ * interval would put every healthy sample on the boundary, so one slow close
+ * paints a live account silent. Step 55's CHECK keeps the stored value at least
+ * twice the interval; this is only the reader.
+ *
+ * @param {{now: Date|string|number, sample: object|null, staleSeconds: number}} input
+ */
+export function classifyAccountSample({ now, sample = null, staleSeconds = 1500 } = {}) {
+  const current = validDate(now);
+  if (!current) return trackerResult('never_sampled');
+  if (!sample) return trackerResult('never_sampled');
+  const sampledAt = sampleClock(sample.sampledAt);
+  // A row with an unreadable clock is a row that cannot be aged, and a tracker
+  // that cannot age a reading has nothing to say about it.
+  if (!sampledAt) return trackerResult('never_sampled');
+  const ageMinutes = minutesBetween(current, sampledAt);
+  const runState = accountRunStateCopy(sample.runState).runState;
+  const horizon = Number.isFinite(Number(staleSeconds)) && Number(staleSeconds) > 0
+    ? Number(staleSeconds) : 1500;
+  const shared = { ageMinutes, sampledAt: sample.sampledAt, runState };
+  if (current.getTime() - sampledAt.getTime() > horizon * 1000) {
+    return trackerResult('sample_stale', {
+      ...shared,
+      detail: `The VPS last sampled this account ${agedSentence(ageMinutes)}.`,
+    });
+  }
+  if (sample.connected !== true) {
+    return trackerResult('disconnected', {
+      ...shared,
+      // The platform's own word stays beside the sentence rather than replacing
+      // it, so the desk reads what to do AND can name the state on the VPS.
+      detail: sample.status
+        ? `${STATUS_COPY.disconnected[1]} NinjaTrader reports it as ${sample.status}.`
+        : STATUS_COPY.disconnected[1],
+    });
+  }
+  return trackerResult('live', { ...shared, detail: `Sampled ${agedSentence(ageMinutes)}.` });
+}
+
+/**
+ * The same question with the device in hand, which is the only way the four
+ * states stay four.
+ *
+ * `trackerMinAgentVersion` is account_tracker_settings.min_agent_version, and
+ * NULL - no build named - is what makes step 55 inert on the day it is run: with
+ * nothing to be behind, no machine is behind, and the answer is the neutral
+ * tracker_off rather than "update required" beside thirty client names.
+ *
+ * @param {object} input
+ * @param {Date|string|number} input.now
+ * @param {object|null|undefined} input.device the ingest-status device, or null
+ *   when no VPS is paired with this client.
+ * @param {object|null} input.sample this account's row from account_live_samples.
+ * @param {boolean} input.deviceHasSamples whether ANY account on this device has
+ *   a row, which is what separates "this account has never been sampled" from
+ *   "this machine has never sampled anything".
+ */
+export function classifyAccountTracker({
+  now,
+  device = null,
+  sample = null,
+  deviceHasSamples = false,
+  trackerMinAgentVersion = null,
+  staleSeconds = 1500,
+  offlineMinutes = 10,
+} = {}) {
+  const current = validDate(now);
+  if (!current) return trackerResult('never_sampled');
+  if (!device) return trackerResult('not_installed');
+  if (device.status === 'revoked' || device.revokedAt) return trackerResult('revoked');
+  if (device.status !== 'active') return trackerResult('paused');
+
+  // Before anything about this machine, the question of whether the feature is
+  // switched on at all. Nothing below it can be true while no build samples.
+  if (!trackerMinAgentVersion) return trackerResult('tracker_off');
+
+  /* An agent that has never said its version is treated as old, not as new.
+   * The collector's own csproj left <Version> undeclared until 1.1.3, so a
+   * build from last quarter and one from today are indistinguishable on this
+   * field; assuming new would claim a machine can sample when it cannot. */
+  if (!device.agentVersion
+    || compareVersions(device.agentVersion, trackerMinAgentVersion) < 0) {
+    return trackerResult('tracker_unsupported');
+  }
+
+  const lastSeen = validDate(device.lastSeenAt);
+  if (!lastSeen || current.getTime() - lastSeen.getTime() > offlineMinutes * 60_000) {
+    return trackerResult('offline');
+  }
+
+  const verdict = classifyAccountSample({ now, sample, staleSeconds });
+  if (verdict.state === 'never_sampled' && deviceHasSamples) {
+    // The machine IS sampling, and this one account is not in what it sends -
+    // which on the collector side is what an account dropped by the relevance
+    // filter looks like. A different thing from a machine that samples nothing.
+    return trackerResult('never_sampled', {
+      detail: 'This VPS is sampling other accounts and has never sent this one.',
+    });
+  }
+  return verdict;
+}
+
+/**
+ * One client's accounts, rolled up for the overview card.
+ *
+ * Counted from the rows the browser can see, which is why it takes a verdict
+ * per row rather than a device: see the two-functions note above.
+ */
+export function summarizeAccountTracker(samples = [], { now, staleSeconds = 1500 } = {}) {
+  const rows = (Array.isArray(samples) ? samples : [])
+    .filter((sample) => sample && typeof sample === 'object')
+    .map((sample) => ({ sample, verdict: classifyAccountSample({ now, sample, staleSeconds }) }));
+  const summary = {
+    total: rows.length,
+    live: 0,
+    disconnected: 0,
+    silent: 0,
+    running: 0,
+    idle: 0,
+    unmeasured: 0,
+    attention: 0,
+    totalPnl: null,
+    measuredPnl: 0,
+    newestSampledAt: null,
+    rows,
+  };
+  for (const { sample, verdict } of rows) {
+    if (verdict.state === 'live') summary.live += 1;
+    if (verdict.state === 'disconnected') summary.disconnected += 1;
+    if (verdict.state === 'sample_stale') summary.silent += 1;
+    if (verdict.attention) summary.attention += 1;
+    /* RUN STATES ARE COUNTED FOR LIVE ACCOUNTS ONLY, and the two exclusions are
+     * different arguments.
+     *
+     * A SILENT account's last known "running" is a claim about a machine that
+     * has stopped answering, and the desk would read it as now.
+     *
+     * A DISCONNECTED account's strategies may well be enabled, and the row shows
+     * that - but they cannot trade, and "N of M running" is the number Pedro
+     * reads to see what the desk is doing. Counting it here would overstate
+     * exactly that. It is already counted once, as disconnected.
+     *
+     * So running + idle + unmeasured is `live`, not `total`, and anything else
+     * is in its own count. */
+    if (verdict.state === 'live') {
+      summary[verdict.runState] = (summary[verdict.runState] || 0) + 1;
+    }
+    /* Tested against null rather than coerced with Number(), which turns a null
+     * into a zero: an account that reported no P&L would be counted as an
+     * account that made nothing, and `measuredPnl` exists so the screen can say
+     * how many of the accounts the figure is actually about. */
+    const pnl = sample.totalPnl;
+    if (typeof pnl === 'number' && Number.isFinite(pnl) && verdict.state !== 'sample_stale') {
+      summary.totalPnl = (summary.totalPnl ?? 0) + pnl;
+      summary.measuredPnl += 1;
+    }
+    const sampledAt = sampleClock(sample.sampledAt);
+    if (sampledAt && (!summary.newestSampledAt || sampledAt > summary.newestSampledAt)) {
+      summary.newestSampledAt = sampledAt;
+    }
+  }
+  return summary;
+}
+
+/** The one line the overview card and the panel header both print. */
+export function accountTrackerHeadline(summary) {
+  if (!summary || !summary.total) return '';
+  const parts = [];
+  if (summary.running) parts.push(`${summary.running} running`);
+  if (summary.idle) parts.push(`${summary.idle} all off`);
+  if (summary.unmeasured) parts.push(`${summary.unmeasured} not measured`);
+  if (summary.disconnected) parts.push(`${summary.disconnected} disconnected`);
+  if (summary.silent) parts.push(`${summary.silent} silent`);
+  const head = `${summary.total} account${summary.total === 1 ? '' : 's'} sampled`;
+  return parts.length ? `${head}: ${parts.join(', ')}.` : `${head}.`;
 }
 
 /* WHAT THE INGEST COST TODAY, IN ONE LINE.

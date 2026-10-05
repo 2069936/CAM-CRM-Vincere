@@ -19,6 +19,7 @@ import {
 import { autoCollectionApi } from '../domain/autoCollectionApi';
 import { collectorFlags } from '../domain/collectorFlags';
 import { describeQuarantineItem, quarantineCounts } from '../domain/autoCollectionFleet';
+import AccountTrackerPanel from './AccountTrackerPanel';
 import { describePairRefusal } from '../domain/pairRefusal';
 import {
   buildAutoCollectionViewModel,
@@ -244,6 +245,11 @@ function StatusDetail({ label, value, dateTime }) {
 export default function AutoCollectionCard({
   clientUuid,
   clientName,
+  // The registry's own account names, so an account the desk knows about and the
+  // VPS has never mentioned shows as never sampled rather than simply missing
+  // from a list. Defaulted, because every other prop here is and because the
+  // tracker is still useful without it.
+  accountNames = [],
   api = autoCollectionApi,
   initialStatus = null,
   initialError = null,
@@ -743,6 +749,25 @@ export default function AutoCollectionCard({
         </div>
       ) : null}
       {device ? <QuarantineLine quarantine={status?.quarantine} canReplay={Boolean(status?.permissions?.replay)} /> : null}
+
+      {/* WHAT IS HAPPENING NOW, under the card that already says what happened.
+        *
+        * Here and not on its own tab because the device is here: three of the
+        * four states this panel has to keep apart need it, and the browser key
+        * cannot read ingest_devices. Only for a paired client - a client with no
+        * VPS has nothing to sample and the card above already says so in its own
+        * words. */}
+      {device ? (
+        <AccountTrackerPanel
+          clientUuid={clientUuid}
+          tracker={status?.accountTracker ?? null}
+          device={device}
+          accountNames={accountNames}
+          api={api}
+          disableAutoRefresh={disableAutoLoad}
+          now={() => new Date(nowMs)}
+        />
+      ) : null}
 
       {device || status?.enrollment ? (
         <footer className="auto-collection-footer">

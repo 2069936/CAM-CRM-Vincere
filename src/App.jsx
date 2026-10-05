@@ -299,7 +299,9 @@ import {
   deleteSupabaseCoverage,
   timeOffEntryFromRow,
   upsertSupabaseTradingAccount,
+  loadSupabaseAccountTracker,
 } from "./domain/supabaseStore";
+import { summarizeAccountTracker } from "./domain/autoCollectionFleet";
 import {
   persistEdit,
   refreshFailedMessage,
@@ -9637,8 +9639,29 @@ export function searchClients(clients, query) {
   return results;
 }
 
-export function buildTodayBriefing(clients) {
+/* THE LIVE HALF OF THIS CARD, AND WHY IT IS A SECOND ARGUMENT.
+ *
+ * Everything else here comes from the login state, which is loaded once. The
+ * tracker moves every ten minutes, so it arrives separately and is handed in.
+ * Defaulted to nothing, which is also the state on the day step 55 is run and on
+ * a CRM that has not run it: `live` is then null and the card says nothing live,
+ * which is exactly the honest empty state.
+ *
+ * WHAT IT CAN AND CANNOT SAY. The overview reads account_live_samples through
+ * PostgREST - one request for the whole book, no serverless invocations - and it
+ * cannot read ingest_devices, which the browser key has never been able to. So
+ * from a row it can say live, disconnected or silent, and for a client with no
+ * rows it makes NO claim rather than guessing between a VPS that cannot be
+ * reached, a collector too old to sample, and an account nobody ever sampled.
+ * Those three are told apart on the client's own page, where the device is in
+ * hand. */
+export function buildTodayBriefing(clients, {
+  liveByClientId = null,
+  staleSeconds = 1500,
+  now = () => new Date(),
+} = {}) {
   const today = todayIsoDate();
+  const at = typeof now === "function" ? now() : now;
   return clients
     .map((client) => {
       const todayImport = getClientImportByDate(client, today);
@@ -9673,6 +9696,13 @@ export function buildTodayBriefing(clients) {
       const daysSinceContact = lastContactDaysAgo(client);
       const staleContact = daysSinceContact === null || daysSinceContact >= 7;
 
+      /* Null when no sample for this client has ever arrived, so every reader
+         below can tell "nothing to say" from "nothing is running". */
+      const samples = liveByClientId?.get(client.id) || null;
+      const live = samples?.length
+        ? summarizeAccountTracker(samples, { now: at, staleSeconds })
+        : null;
+
       const urgency =
         criticalFlags.length > 0
           ? "critical"
@@ -9699,12 +9729,43 @@ export function buildTodayBriefing(clients) {
         urgency,
         staleContact,
         daysSinceContact,
+        live,
       };
     })
     .sort((a, b) => {
       const order = { critical: 0, warning: 1, info: 2, pending: 3, ok: 4 };
       return order[a.urgency] - order[b.urgency];
     });
+}
+
+/* THE DOT'S TONE AND THE SENTENCE BEHIND IT.
+ *
+ * Three tones only, and the sentence carries everything else: the dot says
+ * whether to look, not what is wrong. Anything a dot could be read as claiming
+ * on its own is in the title instead, including the fact that a figure may be
+ * about fewer accounts than the client has. */
+export function liveDotTone(live) {
+  if (!live || !live.total) return "none";
+  if (live.attention) return "warn";
+  if (live.running) return "running";
+  return "idle";
+}
+
+export function liveCardTitle(live) {
+  if (!live || !live.total) return "No live sample for this client.";
+  const parts = [`${live.total} account${live.total === 1 ? "" : "s"} sampled`];
+  if (live.running) parts.push(`${live.running} running`);
+  if (live.idle) parts.push(`${live.idle} loaded and all off`);
+  if (live.unmeasured) parts.push(`${live.unmeasured} with no strategy count`);
+  if (live.disconnected) parts.push(`${live.disconnected} not connected to the broker`);
+  if (live.silent) parts.push(`${live.silent} whose VPS has stopped sampling`);
+  /* Said out loud rather than left to be inferred. A live total that silently
+     covered 3 of 11 accounts would be read as the client's whole book, which is
+     the same mistake the briefing's own "$0 today" makes before the close. */
+  const money = typeof live.totalPnl === "number"
+    ? `. ${formatCurrency(live.totalPnl)} across the ${live.measuredPnl} account${live.measuredPnl === 1 ? "" : "s"} that reported a figure`
+    : ". No account reported a profit and loss figure";
+  return `${parts.join(", ")}${money}. Last sample ${live.newestSampledAt ? live.newestSampledAt.toLocaleTimeString() : "unknown"}.`;
 }
 
 // ── Insight Feed ─────────────────────────────────────────────────────────────
@@ -10449,7 +10510,71 @@ function CamOverview({
     () => buildCamOverview(workingClients),
     [workingClients],
   );
-  const briefing = useMemo(() => buildTodayBriefing(workingClients), [workingClients]);
+  /* WHAT IS HAPPENING RIGHT NOW, ON THE SCREEN THE CAM OPENS FIRST.
+   *
+   * Its own small read, not part of the login state: the login state is loaded
+   * once and held, and a tracker that only moved at login would be a tracker of
+   * whenever the CAM signed in. One PostgREST request for the whole assigned
+   * book, under step 55's SELECT policy, so a 37-client overview costs no
+   * serverless invocations at all.
+   *
+   * REFRESHED FASTER THAN IT CHANGES, on purpose. The fleet samples about every
+   * ten minutes; this asks every two, which is what keeps "4 minutes ago" on a
+   * card from reading "4 minutes ago" a quarter of an hour later. One bounded
+   * query against a few hundred rows is the cheapest thing on this page.
+   *
+   * ITS OWN FAILURE IS SILENCE. `available: false` is what a CRM where step 55
+   * has not run answers, and it is also what a failed read answers, and both
+   * mean the same thing here: say nothing live. A tracker is not worth an error
+   * banner on the screen a CAM opens first. */
+  const [liveTracker, setLiveTracker] = useState(null);
+  const [liveClock, setLiveClock] = useState(() => Date.now());
+  const trackerScope = useMemo(
+    () => workingClients.map((client) => client.id).filter(Boolean).sort().join(","),
+    [workingClients],
+  );
+  useEffect(() => {
+    let live = true;
+    const clientIds = trackerScope ? trackerScope.split(",") : [];
+    if (!clientIds.length) {
+      setLiveTracker(null);
+      return undefined;
+    }
+    async function read() {
+      try {
+        const result = await loadSupabaseAccountTracker({ clientIds });
+        if (!live) return;
+        setLiveTracker(result.available ? result : null);
+        setLiveClock(Date.now());
+      } catch {
+        if (live) setLiveTracker(null);
+      }
+    }
+    read();
+    const timer = setInterval(read, 120_000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [trackerScope]);
+
+  const briefing = useMemo(() => buildTodayBriefing(workingClients, {
+    liveByClientId: liveTracker?.samplesByClientId || null,
+    staleSeconds: liveTracker?.staleSeconds || 1500,
+    now: () => new Date(liveClock),
+  }), [workingClients, liveTracker, liveClock]);
+  /* THE DESK'S LIVE LINE, which is the half of "how is the day going" the close
+     cannot answer before 16:45. Counted across the CAM's own book. */
+  const liveSummary = useMemo(() => {
+    if (!liveTracker) return null;
+    const rows = [...(liveTracker.samplesByClientId?.values() || [])].flat();
+    if (!rows.length) return null;
+    const summary = summarizeAccountTracker(rows, {
+      now: new Date(liveClock),
+      staleSeconds: liveTracker.staleSeconds,
+    });
+    return { ...summary, clients: liveTracker.samplesByClientId.size };
+  }, [liveTracker, liveClock]);
   const insights = useMemo(
     () => buildPortfolioInsights(workingClients),
     [workingClients],
@@ -10618,6 +10743,26 @@ function CamOverview({
             {closeStats.total > closeStats.withUpload && (
               <span className="negative">
                 · {closeStats.total - closeStats.withUpload} no upload
+              </span>
+            )}
+            {/* THE LINE THAT IS TRUE BEFORE 16:45.
+                Everything to the left of this reads 0/N from midnight until the
+                closes land, because it is about the close. This says what the
+                desk is doing right now, from samples taken minutes ago, and it
+                is absent rather than zeroed when nothing is sampling - a "0
+                running" on a fleet nobody is sampling would be a claim about
+                the desk instead of a claim about the CRM. */}
+            {liveSummary && (
+              <span
+                className="muted"
+                title={`Live samples from ${liveSummary.clients} of ${closeStats.total} clients. The oldest reading counted here is inside the staleness window; anything older is counted as silent.`}
+              >
+                · live: {liveSummary.running} of {liveSummary.total} accounts
+                running
+                {liveSummary.disconnected
+                  ? `, ${liveSummary.disconnected} disconnected`
+                  : ""}
+                {liveSummary.silent ? `, ${liveSummary.silent} silent` : ""}
               </span>
             )}
             {formerCount > 0 && (
@@ -11166,6 +11311,7 @@ function CamOverview({
                 urgency,
                 staleContact,
                 daysSinceContact,
+                live,
               }) => {
                 const nextTask =
                   overdueTasks[0] || highTasks[0] || openTasks[0] || null;
@@ -11192,6 +11338,19 @@ function CamOverview({
                               : "Uploaded"
                         }
                       />
+                      {/* A SECOND DOT, AND NOT A REPLACEMENT FOR THE FIRST.
+                          The close dot is about the 16:45 batch and this one is
+                          about right now; they answer different questions and a
+                          card that showed only one of them would answer the
+                          wrong one for most of the day. Absent when nothing is
+                          sampled for this client, which is the honest empty
+                          state and the state on the day step 55 is run. */}
+                      {live ? (
+                        <span
+                          className={`briefing-dot briefing-dot-live-${liveDotTone(live)}`}
+                          title={liveCardTitle(live)}
+                        />
+                      ) : null}
                     </div>
                     <em className={dailyPnl >= 0 ? "positive" : "negative"}>
                       {formatCurrency(dailyPnl)} today
@@ -11225,6 +11384,18 @@ function CamOverview({
                       {openTasks.length ? (
                         <span className="task-chip">
                           {openTasks.length} tasks
+                        </span>
+                      ) : null}
+                      {/* The live chip leads the row, because it is the only
+                          chip on this card that is about this minute. */}
+                      {live ? (
+                        <span
+                          className={`task-chip${live.attention ? " task-chip-due warning" : ""}`}
+                          title={liveCardTitle(live)}
+                        >
+                          {live.running}/{live.total} running
+                          {live.disconnected ? ` · ${live.disconnected} disc.` : ""}
+                          {live.silent ? ` · ${live.silent} silent` : ""}
                         </span>
                       ) : null}
                       {staleContact ? (
@@ -12820,6 +12991,7 @@ function CredentialsTab({
           key={client.uuid}
           clientUuid={client.uuid}
           clientName={client.name}
+          accountNames={Object.keys(client.accountRegistry || {})}
         />
       ) : null}
 

@@ -35,20 +35,24 @@ const sql = raw.split('\n').filter((line) => !line.trimStart().startsWith('--'))
 const flat = sql.toLowerCase().replace(/\s+/g, ' ');
 const runbook = readFileSync(runbookUrl, 'utf8');
 
-describe('step 53 is the one that runs last', () => {
-  it('is the highest number and appears once', () => {
+describe('step 53 exists and is no longer the one that runs last', () => {
+  it('appears once, and 55 now carries the highest-number claim', () => {
+    /* Handed on the way step 52 handed it here: the Math.max assertion moves to
+     * the newest step's own test, because leaving it behind makes every later
+     * migration look like a break in this one. 54 is skipped deliberately and
+     * step 55's test is where that is asserted. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 53)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(53);
   });
 
-  it('is in the runbook table and at the end of the run order', () => {
+  it('is in the runbook table and in the run order', () => {
     expect(runbook).toMatch(/^\| 53 \| `step_53_client_creation_under_rls\.sql` \|.*\|$/m);
-    expect(runbook).toContain('→ 52 → 53.');
+    // No trailing period: the arrow continues past 53 now.
+    expect(runbook).toContain('→ 52 → 53');
   });
 });
 

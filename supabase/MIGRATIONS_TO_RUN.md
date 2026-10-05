@@ -31,6 +31,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 51 | `step_51_app_users_write_lockdown.sql` | `revoke insert, update, delete on app_users` from `authenticated` and `anon`; SELECT stays | Closing a CAM's ability to promote themselves to Manager by talking to PostgREST directly |
 | 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
+| 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts, plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
 
 ## These three groups behave differently
 
@@ -104,7 +105,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -221,6 +222,42 @@ replay has waited. Every row is the VPS's own word: the agent reports after each
 review and the function replaces the device's inventory whole, so a capture
 that was accepted after a retry, or replayed here and then resent, leaves the
 table on the next report and never before.
+
+**55 degrades gracefully in both directions, and it is inert until you edit one
+column.** The agent that fills it posts to `POST /api/ingest/accounts`, and
+against a CRM without this step's table that endpoint answers 404 `not_found` —
+the same answer a CRM without the endpoint at all gives — so deploy and
+migration can happen in either order with no error line on a VPS. Nothing rides
+on the heartbeat, so an un-migrated CRM sees every heartbeat it sees today.
+
+Without it, the account tracker panel says it is not available and every other
+screen reads exactly as it does now. With it and with no agent sampling yet —
+which is the state on the day it is run — the panel says that no collector build
+sends live samples, once, quietly, and claims no fault against any machine. That
+is what `account_tracker_settings.min_agent_version` being NULL means: no build
+is named, so no machine is behind. The day you set it to the tag that ships the
+sampler is the day a machine below it starts reading "too old to sample", and
+not before.
+
+Everything tunable is a column on `account_tracker_settings`, because this fleet
+cannot take an environment variable. Edit them in the SQL editor; the CHECK
+constraints are the review that edit gets, and each one says in the file what
+bad edit it is refusing. Two are worth knowing before you touch them.
+`stale_sample_seconds` must be at least twice `sample_interval_seconds` — setting
+both to 600 looks obviously consistent and would put every healthy sample
+exactly on the boundary, so one slow close paints a live account silent.
+`min_report_interval_seconds` cannot exceed `sample_interval_seconds` — a longer
+throttle would refuse every report the fleet sends and the whole screen would
+read silent while every machine was working perfectly.
+
+One row per account per device, overwritten, and never a time series: ~700
+accounts every ten minutes would be ~33,600 rows a day and ~8.4M in a year, and
+there is no retention mechanism anywhere in this directory. A sample that leaves
+an account out does **not** delete it — an account that goes dark is simply
+absent from the next sample, and deleting its row at that moment would show
+nothing where the one state the desk needs to see should be. Rows leave only by
+the device-scoped sweep at the end of the function, on the
+`retention_days` horizon.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of

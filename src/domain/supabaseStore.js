@@ -807,6 +807,122 @@ async function loadCloseSummaryRows(byClient) {
   }
 }
 
+/* ───────────────────────────────────────────────────────────────────────────── *
+ * THE ACCOUNT TRACKER, ON THE OVERVIEW (supabase/step_55_account_live_samples.sql)
+ *
+ * NOT part of loadSupabaseCrmState, and that is the point. The login state is
+ * loaded once and held; a tracker that only moved at login would be a tracker of
+ * whenever the CAM signed in. This is its own small read, taken again every few
+ * minutes by whoever is showing it.
+ *
+ * ONE POSTGREST REQUEST FOR A WHOLE BOOK, AND NO SERVERLESS INVOCATIONS. The
+ * only other CAM-reachable collector read is /api/admin/ingest-status, which is
+ * keyed on one client: a 37-client overview would be 37 invocations per refresh,
+ * per CAM, against a project Vercel caps at 12 functions. Step 55's SELECT policy
+ * is what makes this a query instead, and its restrictive write denial is what
+ * makes handing the browser the table safe.
+ *
+ * WHAT IT CANNOT ANSWER, said here so the caller does not assume it can: without
+ * ingest_devices - closed to the browser key since step 28 - an absent row could
+ * be a VPS that cannot be reached, a collector too old to sample, or an account
+ * nobody has ever sampled. So this is used for the clients that DO have rows, and
+ * a client with none gets no claim at all. The client workspace asks
+ * ingest-status, which has the device, and tells those three apart there.
+ *
+ * ABSENT IS NOT AN ERROR. Before step 55 runs, PostgREST answers PGRST205 for a
+ * table it has no schema cache entry for and this returns `available: false`,
+ * which every screen reads as "say nothing" - the same shape loadCloseSummaryRows
+ * uses for step 48.
+ * ───────────────────────────────────────────────────────────────────────────── */
+export const ACCOUNT_LIVE_SAMPLE_COLUMNS = 'client_id, account_name, connection_name, connected, '
+  + 'status, realized_pnl, unrealized_pnl, total_pnl, strategy_count, enabled_strategy_count, '
+  + 'run_state, sampled_at';
+
+export function isMissingAccountTracker(error) {
+  const message = error?.message || '';
+  return error?.code === 'PGRST205'
+    || error?.code === '42P01'
+    || /account_live_samples|account_tracker_settings/i.test(message)
+      && /(does not exist|schema cache)/i.test(message);
+}
+
+/* numeric arrives from PostgREST as a string, and `Number('')` is 0. Tested
+ * rather than coerced: an account that reported no P&L must not become an account
+ * that made nothing, which is the figure a CAM would repeat to a client. */
+function sampleNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sampleInteger(value) {
+  const parsed = sampleNumber(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+export function mapAccountLiveSample(row = {}) {
+  return {
+    clientId: row.client_id,
+    accountName: row.account_name,
+    connectionName: row.connection_name || null,
+    connected: row.connected === true,
+    status: row.status || null,
+    realizedPnl: sampleNumber(row.realized_pnl),
+    unrealizedPnl: sampleNumber(row.unrealized_pnl),
+    totalPnl: sampleNumber(row.total_pnl),
+    strategyCount: sampleInteger(row.strategy_count),
+    enabledStrategyCount: sampleInteger(row.enabled_strategy_count),
+    runState: row.run_state || 'unmeasured',
+    sampledAt: row.sampled_at || null,
+  };
+}
+
+/**
+ * The last sample of every account on a named set of clients, plus the one
+ * tunable a screen needs to read them.
+ *
+ * @param {{clientIds?: string[]|null}} options clientIds narrows the read the
+ *   way every other per-client load is narrowed; null reads the whole book, for
+ *   a Manager.
+ * @returns {Promise<{available: boolean, staleSeconds: number, samplesByClientId: Map<string, object[]>}>}
+ */
+export async function loadSupabaseAccountTracker({ clientIds = null } = {}) {
+  const empty = { available: false, staleSeconds: 1500, samplesByClientId: new Map() };
+  if (!isSupabaseConfigured || !supabase) return empty;
+  const scope = Array.isArray(clientIds) ? [...new Set(clientIds.filter(Boolean))] : null;
+  if (scope && !scope.length) return { ...empty, available: true };
+  try {
+    const [rows, settings] = await Promise.all([
+      selectRows('account_live_samples', ACCOUNT_LIVE_SAMPLE_COLUMNS, (query) => {
+        const scoped = scope ? query.in('client_id', scope) : query;
+        // Bounded rather than paged: one row per account per machine is a few
+        // hundred rows for the whole desk, forever, and a tracker that needed
+        // pagination would mean the table had stopped being a last sample.
+        return scoped.order('account_name', { ascending: true }).limit(2000);
+      }),
+      selectRows('account_tracker_settings', 'stale_sample_seconds', (query) => query.limit(1)),
+    ]);
+    const samplesByClientId = new Map();
+    for (const row of rows) {
+      if (!row?.client_id) continue;
+      const list = samplesByClientId.get(row.client_id) || [];
+      list.push(mapAccountLiveSample(row));
+      samplesByClientId.set(row.client_id, list);
+    }
+    const stored = Number(settings?.[0]?.stale_sample_seconds);
+    return {
+      available: true,
+      // Never zero, whatever comes back: a horizon of zero would read every
+      // sample as silent the instant it landed.
+      staleSeconds: Number.isInteger(stored) && stored > 0 ? stored : 1500,
+      samplesByClientId,
+    };
+  } catch (error) {
+    if (isMissingAccountTracker(error)) return empty;
+    throw error;
+  }
+}
+
 export function isMissingCloseSummaries(error) {
   const message = error?.message || '';
   return error?.code === 'PGRST205'

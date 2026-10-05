@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildIncomeProjection, buildTodayBriefing, importAsOf } from './App';
+import { buildIncomeProjection, buildTodayBriefing, importAsOf, liveCardTitle, liveDotTone } from './App';
 
 // ── buildIncomeProjection ─────────────────────────────────────────────────────
 
@@ -199,5 +199,115 @@ describe('importAsOf', () => {
   it('handles a client with no closes at all', () => {
     expect(importAsOf({ dailyImports: [] }, '2026-07-20')).toBeNull();
     expect(importAsOf({}, '')).toBeNull();
+  });
+});
+
+// ── the live half of the briefing card (supabase/step_55) ─────────────────────
+//
+// The card already answers "did today's close arrive", which is `pending` for
+// every client from midnight until the closes land. This is the half that is
+// true before 16:45 - and the half that must make NO claim at all on the day
+// step 55 is run, when nothing in the world is sampling.
+
+const LIVE_TODAY = '2026-06-25';
+
+describe('buildTodayBriefing and the live tracker', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(`${LIVE_TODAY}T12:00:00Z`)); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const client = { id: 'c1', name: 'Gray Elm', accountRegistry: {}, dailyImports: [], tasks: [], activityLog: [] };
+
+  function sample(overrides = {}) {
+    return {
+      accountName: 'APEX-1',
+      connected: true,
+      status: 'Connected',
+      totalPnl: 250,
+      runState: 'running',
+      sampledAt: '2026-06-25T11:56:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('says nothing live when no tracker is handed in', () => {
+    // Which is the state before step 55 is run, the state on a CRM where the
+    // read failed, and the state for every client on the day it is run.
+    const [entry] = buildTodayBriefing([client]);
+    expect(entry.live).toBeNull();
+    expect(liveDotTone(entry.live)).toBe('none');
+    expect(liveCardTitle(entry.live)).toBe('No live sample for this client.');
+  });
+
+  it('says nothing live for a client with no rows, even when other clients have them', () => {
+    const [entry] = buildTodayBriefing([client], {
+      liveByClientId: new Map([['someone-else', [sample()]]]),
+    });
+    expect(entry.live).toBeNull();
+  });
+
+  it('counts the client\'s own accounts and keeps the close status untouched', () => {
+    const [entry] = buildTodayBriefing([client], {
+      liveByClientId: new Map([['c1', [
+        sample({ accountName: 'A' }),
+        sample({ accountName: 'B', runState: 'idle', totalPnl: -40 }),
+        sample({ accountName: 'C', connected: false, totalPnl: 10 }),
+      ]]]),
+    });
+    expect(entry.live).toMatchObject({ total: 3, running: 1, idle: 1, disconnected: 1, silent: 0 });
+    expect(entry.live.totalPnl).toBe(220);
+    // The close half of the card is unchanged: these are two different questions
+    // and the card answers both.
+    expect(entry.closeStatus).toBe('pending');
+    expect(entry.dailyPnl).toBe(0);
+  });
+
+  it('reads the staleness horizon it is handed and never a literal', () => {
+    const rows = new Map([['c1', [sample({ sampledAt: '2026-06-25T11:30:00.000Z' })]]]);
+    expect(buildTodayBriefing([client], { liveByClientId: rows, staleSeconds: 1500 })[0].live)
+      .toMatchObject({ silent: 1, live: 0 });
+    expect(buildTodayBriefing([client], { liveByClientId: rows, staleSeconds: 7200 })[0].live)
+      .toMatchObject({ silent: 0, live: 1 });
+  });
+
+  it('turns a disconnected or silent account into a dot worth looking at', () => {
+    const tone = (rows) => liveDotTone(buildTodayBriefing([client], {
+      liveByClientId: new Map([['c1', rows]]),
+    })[0].live);
+    expect(tone([sample()])).toBe('running');
+    expect(tone([sample({ runState: 'idle' })])).toBe('idle');
+    expect(tone([sample({ connected: false })])).toBe('warn');
+    expect(tone([sample({ sampledAt: '2026-06-25T10:00:00.000Z' })])).toBe('warn');
+  });
+
+  it('says out loud how many accounts the live figure is about', () => {
+    /* A live total silently covering 3 of 11 accounts would be read as the
+       client's whole book, which is the same mistake the card's own "$0 today"
+       makes before the close. */
+    const [entry] = buildTodayBriefing([client], {
+      liveByClientId: new Map([['c1', [sample({ accountName: 'A' }), sample({ accountName: 'B', totalPnl: null })]]]),
+    });
+    const title = liveCardTitle(entry.live);
+    expect(title).toContain('2 accounts sampled');
+    expect(title).toContain('1 account that reported a figure');
+    expect(title).toContain('Last sample');
+  });
+
+  it('says so rather than printing a zero when no account reported a figure', () => {
+    const [entry] = buildTodayBriefing([client], {
+      liveByClientId: new Map([['c1', [sample({ totalPnl: null })]]]),
+    });
+    expect(entry.live.totalPnl).toBeNull();
+    expect(liveCardTitle(entry.live)).toContain('No account reported a profit and loss figure');
+  });
+
+  it('does not let the live half change a client\'s urgency', () => {
+    /* Urgency drives the sort order and the "N clients critical" badge, both of
+       which are about flags, tasks and the close. A tracker hiccup must not
+       reorder a CAM's morning. */
+    const quiet = buildTodayBriefing([client])[0].urgency;
+    const withSilence = buildTodayBriefing([client], {
+      liveByClientId: new Map([['c1', [sample({ connected: false, sampledAt: '2026-06-25T09:00:00.000Z' })]]]),
+    })[0].urgency;
+    expect(withSilence).toBe(quiet);
   });
 });
