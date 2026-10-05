@@ -53,6 +53,7 @@ const raw = exists ? readFileSync(migrationUrl, 'utf8') : '';
 const sql = raw.split('\n').filter((line) => !line.trimStart().startsWith('--')).join('\n');
 const flat = sql.toLowerCase().replace(/\s+/g, ' ');
 const runbook = readFileSync(runbookUrl, 'utf8');
+const TRUNCATE_STATEMENT = /\btruncate\s+(?!on\b)(?:table\b|only\b|public\.|%|"|'|[a-z_])/;
 
 // ---------------------------------------------------------------------------
 // THE MEASUREMENT, as data.
@@ -63,7 +64,7 @@ const runbook = readFileSync(runbookUrl, 'utf8');
 // PostgREST emits `insert ... on conflict do update`.
 //
 // The four tables marked (var) are reached only through `.from(table)` with a
-// variable at supabaseStore.js:2702/:2742, so a grep for `.from('name')` cannot
+// variable in createSupabaseDailyImportAdapter, so a grep for `.from('name')` cannot
 // see them. Three of them appear nowhere in this repository as a literal.
 // ---------------------------------------------------------------------------
 const EXPECTED = {
@@ -84,7 +85,7 @@ const EXPECTED = {
   strategy_snapshots: 'SID', // (var)
   // no DELETE
   account_snapshots: 'SIU',
-  algorithm_benchmarks: 'SIU', // NOT read-only: saveAlgorithmBenchmarks upserts at :3312
+  algorithm_benchmarks: 'SIU', // NOT read-only: saveAlgorithmBenchmarks upserts
   cam_profiles: 'SIU',
   cam_time_off: 'SIU',
   client_credentials: 'SIU',
@@ -482,8 +483,8 @@ describe('authenticated CAN still do every write the browser actually makes', ()
   });
 
   it('leaves algorithm_benchmarks writable, which a read-only reading of it would have broken', async () => {
-    /* saveAlgorithmBenchmarks upserts at supabaseStore.js:3312, called from
-     * src/App.jsx:2973 - the My Futures Book import a CAM runs holding 36 files.
+    /* saveAlgorithmBenchmarks (supabaseStore.js) upserts, called from the
+     * My Futures Book import in src/App.jsx a CAM runs holding 36 files.
      * An earlier count called this table read-only. */
     expect(await privilegesOn(after, 'authenticated', 'algorithm_benchmarks'))
       .toEqual(['INSERT', 'SELECT', 'UPDATE']);
@@ -496,7 +497,7 @@ describe('authenticated CAN still do every write the browser actually makes', ()
   });
 
   it('keeps INSERT on client_price_changes, whose failure would be silent', async () => {
-    /* supabaseStore.js:2293 is `.then(() => {}, () => {})`. A revoked INSERT
+    /* updateSupabaseClient's price-change insert is `.then(() => {}, () => {})`. A revoked INSERT
      * here reaches nobody and the revenue movement figures quietly go empty. */
     expect(await privilegesOn(after, 'authenticated', 'client_price_changes')).toEqual(['INSERT', 'SELECT']);
   });
@@ -949,8 +950,12 @@ describe('what the file must not do', () => {
   it('changes no row and drops nothing', () => {
     expect(flat).not.toMatch(/\bdrop table\b|\bdelete from\b|\bdrop function\b|\bdrop policy\b/);
     expect(flat).not.toMatch(/\bupdate public\.\w+ set\b/);
-    // And it must not TRUNCATE anything while taking TRUNCATE away.
-    expect(flat).not.toMatch(/^\s*truncate\b/m);
+    // And it must not TRUNCATE anything while taking TRUNCATE away. `flat` is
+    // one line, so an anchored pattern could only ever see the file's first
+    // token; this one finds the statement anywhere, static or built for
+    // `execute`, and steps over the prose that names the privilege
+    // ("can truncate,", 'truncate', "delete/truncate/") and `revoke truncate on`.
+    expect(flat).not.toMatch(TRUNCATE_STATEMENT);
   });
 
   it('never disables row level security or hands out BYPASSRLS', () => {

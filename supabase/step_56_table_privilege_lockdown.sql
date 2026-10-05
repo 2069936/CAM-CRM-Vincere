@@ -91,8 +91,9 @@
 -- `.from('name')` cannot see them and an earlier count of 23 written tables
 -- missed four:
 --
---   supabaseStore.js:2702 `.delete()` and :2742 `.insert()` - the manual-import
---   re-upload, gated by the deleteTables/insertTables sets at :2651-2652 to
+--   deleteDailyImportRows `.delete()` and insertRows `.insert()` inside
+--   createSupabaseDailyImportAdapter (supabaseStore.js) - the manual-import
+--   re-upload, gated by its deleteTables/insertTables sets to
 --   strategy_snapshots, orders, executions and operational_flags. Three of
 --   those appear nowhere in this repository as a literal table name. Revoking
 --   their DELETE or INSERT breaks every manual close re-upload, on a trading
@@ -253,28 +254,33 @@
 -- TWO THINGS THAT WILL LOOK LIKE BREAKAGE AND ARE NOT.
 --
 -- 1. THE LOGIN SCREEN WILL LOG TWO CONSOLE ERRORS ON EVERY FRESH TAB.
---    src/App.jsx:14032 and :14051 load strategy_classifications and
---    log_algo_history from effects that have no `if (!session) return;` guard -
+--    src/App.jsx loads strategy_classifications and log_algo_history from two
+--    `[]`-deps effects (loadStrategyClassifications, loadLogAlgoHistory) that
+--    have no `if (!session) return;` guard -
 --    only `if (!isSupabaseConfigured) return;` - so they fire while the login
 --    form is on screen, as anon. Today they get `200 []`: the grant allows the
 --    read and no policy admits anon to a row. After this migration they get
---    42501 and the `.catch(console.error)` at :14037 and :14056 prints
---    `[CRM] Failed to load strategy classifications:`. No user-visible change;
---    both slices are repopulated by the keyed load after sign-in. The one-line
+--    42501 and each effect's `.catch(console.error)` prints
+--    `[CRM] Failed to load strategy classifications:`. No user-visible change,
+--    and NOT because anything reloads them: nothing does, setStrategyClassifications
+--    and setLogAlgoHistory have no other caller. It is because on a fresh sign-in
+--    those reads already returned `200 []` as anon, so the slice was already
+--    empty, and on a refresh the session is restored from sessionStorage before
+--    the effects run, so they run as authenticated and load. The one-line
 --    session guard in each effect is the right follow-up and is not a SQL
 --    change.
 --
--- 2. /database WILL GO RED. src/App.jsx:15791 renders DatabaseCheck BEFORE the
---    `if (!session)` gate at :15793, and vercel.json rewrites everything
+-- 2. /database WILL GO RED. src/App.jsx renders DatabaseCheck on the
+--    `/database` path BEFORE the `if (!session)` gate, and vercel.json rewrites everything
 --    non-/api/ to index.html, so the page is publicly reachable with no
---    session. loadSupabaseDiagnostics (supabaseStore.js:1681) probes 20 tables
+--    session. loadSupabaseDiagnostics (supabaseStore.js) probes 20 tables
 --    and will report `permission denied for table ...` for each instead of a
 --    count of 0. Errors are caught per table and rendered, never thrown, so
 --    nothing crashes - the page reports "Needs attention". That page only ever
 --    told the truth when signed in; now it tells it louder.
 --
 -- AND ONE DEAD POLICY, so nobody "fixes" it. clients is soft-deleted -
--- softDeleteSupabaseClient (supabaseStore.js:2334) is an UPDATE setting status
+-- softDeleteSupabaseClient (supabaseStore.js) is an UPDATE setting status
 -- and deleted_at - and the browser never issues a DELETE on it. DELETE is
 -- therefore not granted back, which makes step_52's "cam deletes its own
 -- clients" policy unreachable. That is correct and deliberate. Do not grant
@@ -447,8 +453,8 @@ begin
     ('client_assignments',       'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
     ('client_coverage',          'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
     ('daily_imports',            'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
-    -- operational_flags is insert+delete through `.from(table)` at
-    -- supabaseStore.js:2702/:2742 and update through a literal.
+    -- operational_flags is insert+delete through `.from(table)` in
+    -- createSupabaseDailyImportAdapter and update through a literal.
     ('operational_flags',        'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
     ('strategy_classifications', 'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
     ('tasks',                    'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
@@ -456,31 +462,31 @@ begin
 
     -- NO UPDATE: appended to and removed from, never edited in place. executions,
     -- orders and strategy_snapshots are three of the four reached only through
-    -- `.from(table)` with a VARIABLE at supabaseStore.js:2702/:2742 - the manual
+    -- `.from(table)` with a VARIABLE in createSupabaseDailyImportAdapter - the manual
     -- close re-upload - so a grep for `.from('name')` cannot see them and
     -- revoking their DELETE or INSERT breaks every re-upload, on a trading day.
     ('activity_logs',            'select, insert, delete', 'step 56, measured on supabaseStore.js'),
     ('client_prop_firms',        'select, insert, delete', 'step 56, measured on supabaseStore.js'),
-    ('executions',               'select, insert, delete', 'step 56, measured on supabaseStore.js:2702/:2742'),
-    ('orders',                   'select, insert, delete', 'step 56, measured on supabaseStore.js:2702/:2742'),
+    ('executions',               'select, insert, delete', 'step 56, measured on createSupabaseDailyImportAdapter'),
+    ('orders',                   'select, insert, delete', 'step 56, measured on createSupabaseDailyImportAdapter'),
     ('price_checks',             'select, insert, delete', 'step 56, measured on supabaseStore.js'),
-    ('strategy_snapshots',       'select, insert, delete', 'step 56, measured on supabaseStore.js:2702/:2742'),
+    ('strategy_snapshots',       'select, insert, delete', 'step 56, measured on createSupabaseDailyImportAdapter'),
 
     -- NO DELETE: nothing in the browser deletes from these. account_snapshots
     -- loses its DELETE safely because deleteSupabaseDailyImport removes only the
     -- daily_imports row and the children go by ON DELETE CASCADE, which is a
     -- referential action and is not privilege-checked. clients is soft-deleted -
-    -- softDeleteSupabaseClient (supabaseStore.js:2334) is an UPDATE - which makes
+    -- softDeleteSupabaseClient (supabaseStore.js) is an UPDATE - which makes
     -- step_52's "cam deletes its own clients" policy unreachable. That is correct
     -- and deliberate: do NOT add delete here to make the policy live again.
     ('account_snapshots',        'select, insert, update', 'step 56, measured on supabaseStore.js'),
-    -- NOT read-only: saveAlgorithmBenchmarks upserts at supabaseStore.js:3312,
+    -- NOT read-only: saveAlgorithmBenchmarks (supabaseStore.js) upserts,
     -- called from the My Futures Book import. An earlier count got this wrong.
-    ('algorithm_benchmarks',     'select, insert, update', 'step 56, measured on supabaseStore.js:3312'),
+    ('algorithm_benchmarks',     'select, insert, update', 'step 56, measured on saveAlgorithmBenchmarks'),
     ('cam_profiles',             'select, insert, update', 'step 56, measured on supabaseStore.js'),
     ('cam_time_off',             'select, insert, update', 'step 56, measured on supabaseStore.js'),
     ('client_credentials',       'select, insert, update', 'step 56, measured on supabaseStore.js'),
-    ('clients',                  'select, insert, update', 'step 56, soft-deleted at supabaseStore.js:2334'),
+    ('clients',                  'select, insert, update', 'step 56, soft-deleted by softDeleteSupabaseClient'),
     ('daily_sop_checklists',     'select, insert, update', 'step 56, measured on supabaseStore.js'),
     ('log_algo_history',         'select, insert, update', 'step 56, measured on supabaseStore.js'),
     ('reports',                  'select, insert, update', 'step 56, measured on supabaseStore.js'),
@@ -492,7 +498,7 @@ begin
     -- APPEND ONLY. client_price_changes has no reader in this repository and
     -- SELECT is kept anyway: step_42:125-127 says a management dashboard is meant
     -- to read it and :148 already grants exactly these two. Its insert at
-    -- supabaseStore.js:2293 is deliberately fire-and-forget - `.then(() => {},
+    -- updateSupabaseClient (supabaseStore.js) is deliberately fire-and-forget - `.then(() => {},
     -- () => {})` - so a revoked INSERT would fail SILENTLY and the revenue
     -- movement figures would quietly go empty. That is the worst failure shape in
     -- this migration: no error reaches anyone.
