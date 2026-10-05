@@ -17,6 +17,7 @@ using Newtonsoft.Json;
 using Vincere.AutoExport.Agent.Security;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Diagnostics;
+using Vincere.AutoExport.Contracts;
 using Newtonsoft.Json.Linq;
 
 namespace Vincere.AutoExport.Agent.Crm;
@@ -32,6 +33,11 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     private static readonly Regex DeviceTokenPattern = new(
         "^[A-Za-z0-9_-]{43}$",
         RegexOptions.CultureInvariant);
+
+    /* A THIRD OF THE CLIENT'S OWN TIMEOUT, for the one route whose answer expires.
+     * A reading that takes longer than this to deliver has already lost the race
+     * with the next one, and the loop holding it is a loop that should be idle. */
+    private static readonly TimeSpan AccountSampleRequestTimeout = TimeSpan.FromSeconds(10);
     private readonly Uri baseUri;
     private readonly HttpClient httpClient;
     private readonly IDeviceTokenStore tokenStore;
@@ -530,6 +536,99 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
     }
 
+    /* THE TRACKER READING, POSTED ONCE AND THEN FORGOTTEN.
+     *
+     * NO RETRY LOOP, DELIBERATELY, AND IT IS THE ONLY METHOD HERE WITHOUT ONE.
+     * Every other route on this client walks retryPolicy, which is six attempts
+     * with backoff capped at two minutes, on top of a thirty-second request
+     * timeout. Against a CRM answering 5xx that is up to about thirteen minutes
+     * inside one call - and the loop that called it then waits its whole interval
+     * on top, because the supervisor measures the interval from when the body
+     * RETURNS. Samples would land twenty-odd minutes apart, each one already stale
+     * on arrival, and the retries would be spending a trading machine's evening
+     * delivering readings nobody can use. A sample is worthless five minutes
+     * later: one attempt, a short timeout, and the next tick carries a FRESH
+     * reading. A stale sample is worse than a missing one, because the screen
+     * cannot tell that it is stale.
+     *
+     * THE REPLY CARRIES THE FLEET'S TUNING. `sampleIntervalSeconds` comes from the
+     * CRM's own settings table, which is how the cadence is retuned for thirty
+     * machines from a SQL editor by someone who cannot set an environment
+     * variable. Read defensively: this is a number that decides how often a
+     * trading machine is disturbed, so the caller clamps it and nothing here
+     * trusts it.
+     *
+     * 404 IS THE EXPECTED ANSWER FOR A WHILE, exactly as it is for the quarantine
+     * report, and is Unsupported rather than a fault. That is what lets the CRM
+     * half and this half merge in either order. */
+    public async Task<AccountSampleReportResult> PostAccountSampleAsync(
+        AccountSampleV1 sample,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sample);
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(sample, Formatting.None));
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(
+                HttpMethod.Post,
+                "api/ingest/accounts",
+                requestBytes,
+                authenticated: true,
+                contentEncoding: null,
+                cancellationToken,
+                timeout: AccountSampleRequestTimeout).ConfigureAwait(false);
+            byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken).ConfigureAwait(false);
+
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+                return AccountSampleReportResult.Unsupported("account_sample_unsupported");
+
+            if (!response.IsSuccessStatusCode)
+                return AccountSampleReportResult.Failed(ReadErrorCode(responseBytes) ?? "account_sample_refused");
+
+            /* A reply this machine cannot parse is a reading that was probably
+             * stored and certainly cannot be learned from. Accepted, with no
+             * interval: the caller keeps the cadence it already had rather than
+             * standing down over a malformed field. */
+            AccountSampleResponse parsed;
+            try
+            {
+                parsed = JsonConvert.DeserializeObject<AccountSampleResponse>(
+                    Encoding.UTF8.GetString(responseBytes));
+            }
+            catch (JsonException)
+            {
+                parsed = null;
+            }
+            return new AccountSampleReportResult(
+                AccountSampleReportStatus.Accepted,
+                parsed?.SampleIntervalSeconds,
+                null);
+        }
+        // Every transport fault is this reading lost and nothing else. Not
+        // retried, not thrown: the caller is a loop that must degrade to nothing,
+        // and giving it an exception to catch is giving it a chance to catch the
+        // wrong one.
+        catch (HttpRequestException)
+        {
+            return AccountSampleReportResult.Failed("account_sample_unreachable");
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return AccountSampleReportResult.Failed("account_sample_timeout");
+        }
+        // device_not_paired and crm_response_invalid arrive this way. Both are
+        // ordinary here: the first is every machine before it is paired, and the
+        // second is a reply too large to be the one we asked for.
+        catch (CrmClientException exception)
+        {
+            return AccountSampleReportResult.Failed(exception.Code);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
     public void Dispose()
     {
         httpClient.Dispose();
@@ -599,6 +698,11 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         return response.IsSuccessStatusCode;
     }
 
+    /// <param name="timeout">
+    /// Overrides the client's own request timeout for this call. Only the account
+    /// sample passes it: every other route here is worth waiting the full thirty
+    /// seconds for, and a tracker reading is not.
+    /// </param>
     private async Task<HttpResponseMessage> SendAsync(
         HttpMethod method,
         string relativePath,
@@ -606,7 +710,8 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         bool authenticated,
         string contentEncoding,
         CancellationToken cancellationToken,
-        (string Name, string Value)? extraHeader = null)
+        (string Name, string Value)? extraHeader = null,
+        TimeSpan? timeout = null)
     {
         using HttpRequestMessage request = new(method, new Uri(baseUri, relativePath));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -623,12 +728,13 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         if (!string.IsNullOrEmpty(contentEncoding))
             request.Content.Headers.ContentEncoding.Add(contentEncoding);
-        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(requestTimeout);
+        using CancellationTokenSource requestCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        requestCancellation.CancelAfter(timeout ?? requestTimeout);
         return await httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseContentRead,
-            timeout.Token).ConfigureAwait(false);
+            requestCancellation.Token).ConfigureAwait(false);
     }
 
     private static Uri ValidateBaseUri(Uri value, bool allowInsecureLocalhost)
@@ -1092,6 +1198,16 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         // is deliberately withholding it, which it does for exactly one of them.
         [JsonProperty("reason")]
         public string Reason { get; set; }
+    }
+
+    /* Only the one field this machine can act on is declared. `recorded` and
+     * `throttled` are the CRM's own bookkeeping and the agent has no decision that
+     * turns on either: a sample is not retried on either answer, so reading them
+     * would only create the temptation. Newtonsoft ignores the rest. */
+    private sealed class AccountSampleResponse
+    {
+        [JsonProperty("sampleIntervalSeconds")]
+        public int? SampleIntervalSeconds { get; set; }
     }
 
     private sealed class UploadResponse

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
 using NodaTime.Text;
+using Vincere.AutoExport.Agent.Capture;
 using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Crm;
 using Vincere.AutoExport.Agent.Diagnostics;
@@ -12,6 +13,7 @@ using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
 using Vincere.AutoExport.Agent.Security;
+using Vincere.AutoExport.Contracts;
 
 namespace Vincere.AutoExport.Agent.Service;
 
@@ -888,6 +890,300 @@ public sealed class ReportEmailLoop : ICollectorLoop
 
     private static string FormatDate(LocalDate date) =>
         date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+}
+
+/* ---------------------------------------------------------------------------
+ * The account tracker: a traffic light, sampled every ten minutes.
+ *
+ * WHAT IT IS FOR. The desk wants to open the CRM mid-morning and see, per client
+ * account, which are alive, which are running, and roughly how the day is going.
+ * The big report already happens at the close. This is only the light.
+ *
+ * WHY IT IS ITS OWN LOOP, in the house's terms: the capture must succeed whether
+ * or not anything else does, and nothing here may delay the upload. It is also
+ * the only loop whose work is worthless the moment it is late, and that single
+ * fact decides every design question below.
+ *
+ * IT NEVER CALLS CaptureAndQueueWorkflow, which is the reuse that would look like
+ * good engineering and would corrupt the day's bookkeeping twice over. That
+ * workflow refuses a capture with `positions_open` whenever any account carries a
+ * non-zero unrealized P&L - correct for a 16:35 close and catastrophic at 10:15,
+ * when it is true of essentially every sample during market hours. It also writes
+ * the queue and the capture history. Read, post, forget.
+ *
+ * IT NEVER TOUCHES CollectorState'S ERROR FIELDS, exactly as the quarantine
+ * review does not. Those feed the heartbeat, and the fleet view paints a machine
+ * "Failed - the collector reported an operational error" for any code it finds
+ * there. Both codes a tracker would naturally produce - a busy pipe, an
+ * unavailable add-on - are inside the heartbeat's accepted vocabulary, so they
+ * would be stored and rendered, and a CAM would be sent to look at a machine
+ * whose close is perfect. The only call it makes is RecordUnpaired, which every
+ * loop makes and which is about the device rather than the tracker.
+ *
+ * NOTHING IS QUEUED, PERSISTED OR RETRIED, ANYWHERE ON THIS PATH. The pipe client
+ * answers an outcome instead of throwing, the CRM post has no retry loop, and the
+ * two backoffs below are in memory. A failed sample is dropped and the next tick
+ * carries a FRESH reading. The uploader has a durable queue because a close is
+ * irreplaceable; the opposite is true here, and a stale sample is worse than a
+ * missing one because the screen cannot tell that it is stale.
+ *
+ * TWO SEPARATE DAY-LONG SILENCES, because there are two independent reasons this
+ * cannot work yet and the fleet will be in both states at once for a while:
+ * an add-on too old to know the command, and a CRM that has not merged the route.
+ * Each is a 404-shaped answer, each gets one INFO line and twenty-four hours of
+ * quiet, and neither is a fault. Collapsing them into one timer would let a CRM
+ * deploy be hidden behind an add-on's silence for a day.
+ * ------------------------------------------------------------------------- */
+public sealed class AccountSampleLoop : ICollectorLoop
+{
+    /* The add-on cannot be replaced while NinjaTrader is loaded, and the CRM is
+     * deployed by a merge. Neither answer changes within the hour, and a day is
+     * the right silence - the same number and the same reasoning as the quarantine
+     * review's UnsupportedBackoff. */
+    public static readonly TimeSpan UnsupportedBackoff = TimeSpan.FromHours(24);
+
+    /* The cadence before the CRM has said otherwise, and the bounds it is held
+     * to. These mirror step 55's own CHECK on sample_interval_seconds, because an
+     * agent that honoured a value the table would not accept would be tuned to a
+     * number nobody could see. The floor matters most: this asks a terminal
+     * trading live prop-firm accounts to read its own state, and five minutes is
+     * as often as that is reasonable however the column is edited. */
+    public const int DefaultIntervalSeconds = 600;
+    public const int MinimumIntervalSeconds = 300;
+    public const int MaximumIntervalSeconds = 3600;
+
+    private readonly INinjaTraderAccountSampleClient sampleClient;
+    private readonly ICollectorCrmClient crm;
+    private readonly IDeviceTokenStore tokenStore;
+    private readonly ICollectorClock clock;
+    private readonly CollectorState state;
+    private readonly LiveAccountMemory liveAccounts;
+    private readonly IServiceReporter reporter;
+    private readonly IRedactingLogger logger;
+    private readonly SemaphoreSlim gate = new(1, 1);
+
+    /* Read by the supervisor on every iteration, from a thread that is not this
+     * one. See the Interval getter for why this is a plain int and not a lookup. */
+    private volatile int intervalSeconds = DefaultIntervalSeconds;
+    private Instant? addonUnsupportedUntil;
+    private Instant? crmUnsupportedUntil;
+    private bool addonUnsupportedLogged;
+    private bool crmUnsupportedLogged;
+    private string lastReportedCode;
+
+    /* EVERY ARGUMENT IS REQUIRED, AND THAT IS THE POINT.
+     *
+     * The other loops here take their reporter and logger as optional trailing
+     * arguments, which is how they avoided breaking existing constructions - and
+     * also how one of them silently did nothing for want of a store a composition
+     * root forgot to pass. That happened in Program.cs, it compiled, and nothing
+     * would have failed. This loop is new, so it owes no caller that courtesy:
+     * nothing is defaulted, which means the compiler refuses an incomplete
+     * construction and the by-type registration in Program.cs cannot under-supply
+     * it. The pattern and the test that pins it are the whole answer to "whatever
+     * your loop needs, pin the wiring". */
+    public AccountSampleLoop(
+        INinjaTraderAccountSampleClient sampleClient,
+        ICollectorCrmClient crm,
+        IDeviceTokenStore tokenStore,
+        ICollectorClock clock,
+        CollectorState state,
+        LiveAccountMemory liveAccounts,
+        IServiceReporter reporter,
+        IRedactingLogger logger)
+    {
+        this.sampleClient = sampleClient ?? throw new ArgumentNullException(nameof(sampleClient));
+        this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
+        this.tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
+        this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        this.state = state ?? throw new ArgumentNullException(nameof(state));
+        this.liveAccounts = liveAccounts ?? throw new ArgumentNullException(nameof(liveAccounts));
+        this.reporter = reporter ?? throw new ArgumentNullException(nameof(reporter));
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public string Name => "account-sample";
+
+    /* THIS GETTER CAN STOP THE ENTIRE SERVICE IF IT MISBEHAVES, so it is written
+     * to be incapable of it.
+     *
+     * Worker.SuperviseAsync reads Interval on every iteration and reads it OUTSIDE
+     * its try block, and the host's default behaviour for an unhandled exception
+     * in a BackgroundService is to stop. So a getter that threw - or returned zero
+     * or a negative - would not cost this loop, it would take down the scheduler,
+     * the uploader and the heartbeat with it. The heartbeat is the only thing that
+     * says a machine is alive, so the failure mode is losing the whole fleet's
+     * traffic light in order to build one.
+     *
+     * Hence: a volatile int clamped between two constants. No I/O, no parse, no
+     * options file, no nullable arithmetic - nothing that can fail. The CRM's value
+     * is validated when it arrives, and clamped AGAIN here, because the thing that
+     * must never be wrong is what this returns. It is also what lets the cadence
+     * change without a restart: the supervisor re-reads it every pass.
+     *
+     * The catch cannot currently fire and is kept anyway. The cost of being wrong
+     * about that is the entire service, which is not a bet worth winning. */
+    public TimeSpan Interval
+    {
+        get
+        {
+            try
+            {
+                return TimeSpan.FromSeconds(
+                    Math.Clamp(intervalSeconds, MinimumIntervalSeconds, MaximumIntervalSeconds));
+            }
+            catch
+            {
+                return TimeSpan.FromSeconds(DefaultIntervalSeconds);
+            }
+        }
+    }
+
+    public async Task RunOnceAsync(CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Instant now = clock.GetCurrentInstant();
+
+            // Unpaired. Every loop asks first, and it is the ordinary state of a
+            // machine between install and enrollment rather than a fault.
+            if (string.IsNullOrWhiteSpace(await tokenStore.LoadTokenAsync(cancellationToken).ConfigureAwait(false)))
+            {
+                state.RecordUnpaired();
+                return;
+            }
+
+            // Inside either day-long silence. Checked before the pipe is touched,
+            // so a machine whose add-on predates the command does not disturb
+            // NinjaTrader every ten minutes to be told so again.
+            if (Waiting(addonUnsupportedUntil, now) || Waiting(crmUnsupportedUntil, now)) return;
+
+            AccountSampleAttempt attempt = await sampleClient
+                .SampleAccountsAsync(cancellationToken).ConfigureAwait(false);
+
+            if (attempt.Outcome == AccountSampleOutcome.Unsupported)
+            {
+                addonUnsupportedUntil = now + Duration.FromTimeSpan(UnsupportedBackoff);
+                if (!addonUnsupportedLogged)
+                {
+                    addonUnsupportedLogged = true;
+                    logger.Write(
+                        "INFO",
+                        "account_sample_addon_unsupported",
+                        "The NinjaTrader AddOn on this machine is older than the account tracker and "
+                        + "cannot answer it. The daily close is unaffected. The tracker will ask again "
+                        + "in 24 hours; replacing the AddOn needs NinjaTrader closed.");
+                }
+                return;
+            }
+
+            if (attempt.Outcome != AccountSampleOutcome.Sampled)
+            {
+                // NinjaTrader closed, the pipe busy with the day's close, a
+                // timeout. One line when it changes, nothing when it repeats, and
+                // the next tick tries again from scratch.
+                ReportChange(attempt.Code ?? "account_sample_unavailable", null);
+                return;
+            }
+
+            /* Which accounts are worth telling the CRM about. See LiveAccountMemory:
+             * the add-on deliberately reports disconnected accounts, and this is
+             * what keeps "this account has gone dark" without also forwarding the
+             * forty leftovers from connections that no longer exist. */
+            IList<AccountSampleRowV1> accounts = liveAccounts.Retain(attempt.Sample.Accounts);
+
+            /* Nothing to say. A machine whose only accounts are leftovers, or one
+             * read before any connection came up. Silent rather than an empty
+             * report: no row would be written either way, and an ordinary reason
+             * not to act is a return and not a log. */
+            if (accounts.Count == 0)
+            {
+                ReportChange(null, null);
+                return;
+            }
+
+            AccountSampleReportResult result = await crm.PostAccountSampleAsync(
+                new AccountSampleV1
+                {
+                    SchemaVersion = attempt.Sample.SchemaVersion,
+                    // The machine's own clock at the moment it read, carried
+                    // through untouched. Never re-stamped here: the CRM ages every
+                    // row from this, and a reading delayed on its way must not
+                    // arrive looking fresh.
+                    SampledAt = attempt.Sample.SampledAt,
+                    Accounts = accounts,
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            switch (result.Status)
+            {
+                case AccountSampleReportStatus.Accepted:
+                    StoreInterval(result.SampleIntervalSeconds);
+                    // A CRM that answers has been deployed, and an add-on that
+                    // answered is not old. Both silences are forgotten so that a
+                    // fault coming back is written again.
+                    crmUnsupportedUntil = null;
+                    crmUnsupportedLogged = false;
+                    addonUnsupportedUntil = null;
+                    addonUnsupportedLogged = false;
+                    ReportChange(null, null);
+                    return;
+
+                case AccountSampleReportStatus.Unsupported:
+                    crmUnsupportedUntil = now + Duration.FromTimeSpan(UnsupportedBackoff);
+                    if (!crmUnsupportedLogged)
+                    {
+                        crmUnsupportedLogged = true;
+                        logger.Write(
+                            "INFO",
+                            "account_sample_unsupported",
+                            "The CRM does not accept account samples yet. The tracker will offer one "
+                            + "again in 24 hours.");
+                    }
+                    return;
+
+                default:
+                    ReportChange(result.Code ?? "account_sample_failed", null);
+                    return;
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            /* A tracker reading is worth nothing next to the day's close, and this
+             * loop shares a process with the capture, the upload and the
+             * heartbeat. Whatever happened, it dies here. */
+            ReportChange("account_sample_failed", exception);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static bool Waiting(Instant? until, Instant now) => until.HasValue && now < until.Value;
+
+    /* THE ONE NUMBER THE CRM GETS TO CHANGE ON A TRADING MACHINE, so it is read
+     * like something that arrived over a network. Out of range or absent and the
+     * cadence simply does not move: the previous value stays, which is always
+     * either the default or something the CRM said earlier. Nothing here can make
+     * this machine sample faster than the floor. */
+    private void StoreInterval(int? seconds)
+    {
+        if (!seconds.HasValue) return;
+        if (seconds.Value < MinimumIntervalSeconds || seconds.Value > MaximumIntervalSeconds) return;
+        intervalSeconds = seconds.Value;
+    }
+
+    // The same rule as the uploader, the heartbeat and the quarantine review: the
+    // first occurrence and every change, never the repeats, and a success clears
+    // the memory so the same fault is written again if it comes back.
+    private void ReportChange(string code, Exception exception)
+    {
+        if (string.Equals(lastReportedCode, code, StringComparison.Ordinal)) return;
+        lastReportedCode = code;
+        if (code != null) reporter.LoopFailed(Name, code, exception);
+    }
 }
 
 public sealed class QueueRecoveryLoop : ICollectorLoop

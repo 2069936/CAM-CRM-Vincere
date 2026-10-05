@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Vincere.AutoExport.Agent.Queue;
+using Vincere.AutoExport.Contracts;
 
 namespace Vincere.AutoExport.Agent.Crm;
 
@@ -53,6 +54,61 @@ public interface ICollectorCrmClient
     Task<QuarantineReportOutcome> ReportQuarantineAsync(
         QuarantineReport report,
         CancellationToken cancellationToken = default);
+
+    /* THE TRACKER READING, ON ITS OWN ROUTE. Never a key on the heartbeat: that
+     * endpoint answers 400 for any key it does not know, so an agent that put
+     * accounts on it would silence every heartbeat on the fleet until the CRM
+     * caught up - and the heartbeat is the only thing that says a machine is
+     * alive, which is the very traffic light this exists to build.
+     *
+     * NO RETRY, AND THAT IS NOT AN OVERSIGHT. See the implementation: a sample is
+     * worthless five minutes later, so a failure returns and the next tick carries
+     * a FRESH reading rather than a stale one that finally got through.
+     *
+     * Defaulted so every existing test double of this interface still compiles,
+     * the way SendReportEmailAsync was added. A double that does not override it
+     * reports Unsupported, which is the quietest possible default: the caller goes
+     * silent for a day rather than claiming anything. */
+    Task<AccountSampleReportResult> PostAccountSampleAsync(
+        AccountSampleV1 sample,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(AccountSampleReportResult.Unsupported("not_implemented"));
+}
+
+public enum AccountSampleReportStatus
+{
+    Accepted,
+
+    /// <summary>
+    /// This CRM has no such route. 404 today on every deployment that has not
+    /// merged the tracker, and 405 on one that mounts the action for GET only.
+    /// Neither is a reason to retry, to log an error, or to mark the device; the
+    /// caller waits a day and offers again.
+    /// </summary>
+    Unsupported,
+
+    /// <summary>
+    /// Refused or unreachable this time. Nothing is kept and nothing is retried.
+    /// </summary>
+    Failed,
+}
+
+/// <param name="SampleIntervalSeconds">
+/// How often the CRM wants to be sampled, straight from the settings table it
+/// holds. This is the only channel for it, and it has to ride on a reply rather
+/// than an environment variable because the one person who deploys this cannot
+/// set one. Null when the CRM did not say.
+/// </param>
+public sealed record AccountSampleReportResult(
+    AccountSampleReportStatus Status,
+    int? SampleIntervalSeconds,
+    string Code)
+{
+    public static AccountSampleReportResult Unsupported(string code) =>
+        new(AccountSampleReportStatus.Unsupported, null, code);
+
+    public static AccountSampleReportResult Failed(string code) =>
+        new(AccountSampleReportStatus.Failed, null, code);
 }
 
 public enum QuarantineReportOutcome

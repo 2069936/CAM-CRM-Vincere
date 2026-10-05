@@ -68,7 +68,15 @@ namespace NinjaTrader.NinjaScript.AddOns
         {
             if (server != null)
                 return;
-            var processor = new CaptureRequestProcessor(CaptureAsync, TimeSpan.FromSeconds(25));
+            /* Five seconds for the sample against twenty-five for the close, and
+             * the gap is the point. The close is irreplaceable and worth waiting
+             * for; a tracker reading is worthless five minutes later, so one that
+             * cannot be had quickly should be abandoned rather than waited for. */
+            var processor = new CaptureRequestProcessor(
+                CaptureAsync,
+                TimeSpan.FromSeconds(25),
+                SampleAccountsAsync,
+                TimeSpan.FromSeconds(5));
             server = new CapturePipeServer(processor, diagnostics);
             server.Start();
         }
@@ -122,6 +130,79 @@ namespace NinjaTrader.NinjaScript.AddOns
             {
                 completion.TrySetException(exception);
             }
+        }
+
+        /* THE TRACKER READING, ON THE SAME THREAD AND AT THE SAME PRIORITY.
+         *
+         * It has to be the dispatcher: NinjaTraderFacade's own summary says
+         * "Callers must invoke this facade on NinjaTrader's application
+         * dispatcher", and that is not negotiable for a sample any more than for a
+         * close. DispatcherPriority.Background is what keeps it honest - the work
+         * queues BEHIND render and input, so a sample can never make the Control
+         * Center stutter, it can only ever be made to wait by one. On a terminal
+         * busy enough to delay it past five seconds the processor abandons it and
+         * the tracker degrades to nothing, which is the correct outcome: the desk
+         * loses one dot for ten minutes and the machine loses nothing.
+         *
+         * WHAT MAKES IT CHEAP IS ReadAccountsForSample, not this. That method
+         * takes neither account.Orders nor account.Executions - the two
+         * collections the trading path writes on every fill - and runs no
+         * per-row TypeDescriptor walk. See it for the full list of what it
+         * does not do.
+         *
+         * A MIRROR OF CaptureAsync RATHER THAN A SHARED GENERIC HELPER. The two
+         * are the same twelve lines and factoring them together was tempting.
+         * This file compiles in exactly one place on earth - the self-hosted
+         * Windows runner with NinjaTrader installed - so a refactor of the close's
+         * marshalling to accommodate the tracker is a change to the irreplaceable
+         * path that cannot be compiled where it is written. The duplication is the
+         * cheaper risk, and it is deliberate. */
+        private Task<AccountSampleV1> SampleAccountsAsync(CancellationToken cancellationToken)
+        {
+            if (Application.Current == null)
+                throw new InvalidOperationException("NinjaTrader has no application dispatcher.");
+            var completion = new TaskCompletionSource<AccountSampleV1>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            CancellationTokenRegistration registration = cancellationToken.Register(
+                () => completion.TrySetCanceled());
+            completion.Task.ContinueWith(
+                _ => registration.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            Application.Current.Dispatcher.BeginInvoke(
+                new Action(() => SampleOnDispatcher(completion, cancellationToken)),
+                DispatcherPriority.Background);
+            return completion.Task;
+        }
+
+        private static void SampleOnDispatcher(
+            TaskCompletionSource<AccountSampleV1> completion,
+            CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                completion.TrySetCanceled();
+                return;
+            }
+            try
+            {
+                completion.TrySetResult(BuildAccountSample(DateTimeOffset.Now));
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetException(exception);
+            }
+        }
+
+        /* No capture id, no trading date, no add-on version, no NinjaTrader
+         * version. A sample is not filed against a trading day and is never
+         * replayed, so it needs none of the bookkeeping a close is identified by -
+         * and the heartbeat already tells the CRM what this machine is running. */
+        private static AccountSampleV1 BuildAccountSample(DateTimeOffset sampledAt)
+        {
+            return new AccountSampleBuilder(new NinjaTraderFacade()).Build(
+                new AccountSampleBuildContext { SampledAt = sampledAt });
         }
 
         private static AutoExportSnapshotV1 BuildSnapshot(

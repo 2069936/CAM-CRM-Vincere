@@ -14,11 +14,131 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
     /// facade on NinjaTrader's application dispatcher; returned DTOs no longer hold
     /// live collection enumerators.
     /// </summary>
-    public sealed class NinjaTraderFacade : INinjaTraderFacade
+    public sealed class NinjaTraderFacade : INinjaTraderFacade, IAccountSampleFacade
     {
         public IEnumerable<AccountCaptureSource> ReadAccounts()
         {
             return SnapshotAccounts().Select(MapAccount).ToList();
+        }
+
+        /* THE TRACKER READING. Everything about this method is about what it does
+         * NOT touch, because it runs every ten minutes on a machine trading live
+         * prop-firm accounts, on NinjaTrader's own UI thread.
+         *
+         * IT DOES NOT GO THROUGH SnapshotAccounts(). That property is memoised
+         * for the close and, more importantly, it filters on `isConnected`, so a
+         * disconnected account never reaches a caller. A tracker that inherited
+         * that filter would turn "this account went dark" into an absent row,
+         * which is indistinguishable from an unreachable machine - see
+         * AccountSampleRelevance. So the account list is built here, from
+         * Account.All, under the one lock this read takes.
+         *
+         * IT DOES NOT LOCK account.Orders OR account.Executions. Those are the
+         * two collections the trading path writes to on every fill, and not
+         * touching them is the whole point of having a second command.
+         *
+         * IT DOES NOT CALL MapAccount. That reads ~31 account values by
+         * enumerating the whole AccountItem enum, to fill a dictionary this sample
+         * does not carry. Two Get calls answer the traffic light, so two is what it
+         * makes - counted by a test rather than asserted here.
+         *
+         * IT DOES NOT CALL MapStrategy, AND TOUCHES NO PER-ROW REFLECTION.
+         * MapStrategy runs ReadParameters and ReadExtraValues per strategy, which is
+         * a custom type descriptor answering platform code property by property -
+         * exactly the work the summary below warns can stop a capture "being
+         * something that merely fails" and start it "being something that can stall
+         * the terminal it is reading". This reads one string per strategy.
+         *
+         * It does still go through PublicString ONCE PER ACCOUNT, for
+         * ConnectionStatus, and that does reach TypeDescriptor. Deliberate: the
+         * close reads that same field the same way, because it is not reliably a
+         * plain string across the NinjaTrader versions on this fleet, and matching
+         * the close is worth more than saving one lookup against a handful of
+         * accounts. The cost that mattered was per ORDER and per FILL, not per
+         * account.
+         *
+         * The one lock it does take beyond Account.All is account.Strategies, for
+         * the copy and nothing after it, the same discipline ReadStrategies and
+         * ReadOwnership keep. That collection changes when the desk enables or
+         * disables an algorithm, not on every trade. */
+        public IEnumerable<AccountSampleCaptureSource> ReadAccountsForSample()
+        {
+            List<Account> all;
+            lock (Account.All)
+                all = Account.All.ToList();
+
+            var rows = new List<AccountSampleCaptureSource>(all.Count);
+            foreach (Account account in all)
+            {
+                if (!AccountSampleRelevance.IsRelevant(account.Name))
+                    continue;
+
+                Currency denomination = account.Denomination;
+                decimal? realized = AccountValue(account, AccountItem.RealizedProfitLoss, denomination);
+                decimal? unrealized = AccountValue(account, AccountItem.UnrealizedProfitLoss, denomination);
+                string status = PublicString(account, "ConnectionStatus");
+                rows.Add(new AccountSampleCaptureSource
+                {
+                    AccountName = account.Name,
+                    ConnectionName = ConnectionName(account),
+                    Connected = String.Equals(status, "Connected", StringComparison.OrdinalIgnoreCase),
+                    Status = status,
+                    RealizedPnl = realized,
+                    UnrealizedPnl = unrealized,
+                    // The same rule MapAccount uses: a total only exists when both
+                    // halves do. Adding a null as a zero would publish a confident
+                    // figure about a number half of which was never reported.
+                    TotalPnl = realized.HasValue && unrealized.HasValue ? realized + unrealized : null,
+                    StrategyStates = ReadStrategyStates(account),
+                });
+            }
+            return rows;
+        }
+
+        /// <summary>
+        /// Each strategy's State word, and nothing else about it.
+        ///
+        /// Null when the collection could not be read, which StrategyLiveCount
+        /// keeps distinct from an account holding no strategies: the first means
+        /// nobody looked, the second means nothing is on, and they lead to
+        /// different actions.
+        /// </summary>
+        private static List<string> ReadStrategyStates(Account account)
+        {
+            List<StrategyBase> strategies;
+            try
+            {
+                lock (account.Strategies)
+                    strategies = account.Strategies.ToList();
+            }
+            catch
+            {
+                return null;
+            }
+
+            var states = new List<string>(strategies.Count);
+            foreach (StrategyBase strategy in strategies)
+            {
+                /* AGAINST THE DECLARED MEMBER, NOT THROUGH PublicString.
+                 *
+                 * The reflection helpers exist for members some NinjaTrader
+                 * version on the fleet may not expose, and State is not one of
+                 * them: MapStrategy has always bound strategy.State directly, so
+                 * every version this add-on loads on already answers it.
+                 *
+                 * And PublicString would defeat the purpose of this whole method.
+                 * It calls PublicValue, which calls TypeDescriptor.GetProperties -
+                 * a custom type descriptor running platform code to enumerate
+                 * every property - and it would do that once per strategy. That is
+                 * the per-row reflection the second command exists to avoid.
+                 *
+                 * Convert.ToString rather than .ToString() because it is null-safe:
+                 * the member is a non-nullable enum on the real platform but a
+                 * plain string on the test stubs, and an unset one there must read
+                 * as unmeasured rather than throw. */
+                states.Add(Convert.ToString(strategy.State, CultureInfo.InvariantCulture));
+            }
+            return states;
         }
 
         public IEnumerable<StrategyCaptureSource> ReadStrategies()
