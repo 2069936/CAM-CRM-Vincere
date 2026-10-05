@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_TRACKER_ATTENTION_STATES,
+  ACCOUNT_TRACKER_STATES,
   accountRunStateCopy,
   accountTrackerHeadline,
   classifyAccountSample,
@@ -270,6 +271,128 @@ describe('the day this merges, with no agent in the world sampling', () => {
           trackerMinAgentVersion,
         });
         expect(absence, `${agentVersion} / ${trackerMinAgentVersion}`).not.toContain(verdict.state);
+      }
+    }
+  });
+
+  /* ── EVERY STATE, NOT THE ONES THAT WERE BROKEN ─────────────────────────────
+   *
+   * THE DEFECT, AND IT IS THE SAME DEFECT AS BEFORE ARRIVING AT THE STATES THE
+   * LAST FIX DID NOT TRY. `offline` and `revoked` were returned as
+   * `trackerResult('offline')` with no extra, so `ageMinutes`, `sampledAt` and
+   * `runState` all came back null - while AccountTrackerPanel's row reads the money
+   * off `sample.totalPnl`, which is a different path and does not go through the
+   * verdict at all. One row therefore printed, on one line:
+   *
+   *   CLIENT PAGE  Offline   $1,024   never      "The VPS has stopped reporting heartbeats."
+   *   OVERVIEW     Live      $1,024   4m ago     "Sampled 4 minutes ago."
+   *
+   * `never` and `$1,024` about the same sample, on the same line, with a reading
+   * four minutes old sitting in the table. The test that was supposed to make this
+   * impossible existed and was green: it tried six row shapes against six values of
+   * min_agent_version, all with a healthy device, so it covered the state the last
+   * round had just fixed and none of the three it had not.
+   *
+   * WHICH IS WHY THIS ONE IS DRIVEN OFF ACCOUNT_TRACKER_STATES. The scenario table
+   * must cover every state the classifier can return, asserted as a set equality,
+   * so a state added later with no scenario fails here by name instead of shipping
+   * behind a green test named for the invariant it breaks.
+   *
+   * THE INVARIANT, AND WHY IT IS NOT "THE TWO SCREENS AGREE ON EVERYTHING". They
+   * must not. `state`, `label` and `detail` are the client page's to decide and it
+   * is right that they differ - the machine not answering outranks the reading it
+   * left behind, and that extra fact is what having the device is for. What may
+   * never differ is WHEN THE SAMPLE WAS READ, because that is a property of the
+   * sample. A screen holding the row cannot answer "never" about a row it is
+   * printing money from. */
+  it('agrees with the overview about the READING in every one of its states', () => {
+    const readable = sample();
+    const scenarios = {
+      live: { device: device(), sample: readable, deviceHasSamples: true, trackerMinAgentVersion: '1.2.0' },
+      disconnected: {
+        device: device(),
+        sample: sample({ connected: false, status: 'ConnectionLost' }),
+        deviceHasSamples: true,
+        trackerMinAgentVersion: '1.2.0',
+      },
+      sample_stale: {
+        device: device(),
+        sample: sample({ sampledAt: '2026-10-05T14:20:00.000Z' }),
+        deviceHasSamples: true,
+        trackerMinAgentVersion: '1.2.0',
+      },
+      /* THE TWO THAT WERE WRONG. Both carry a readable, four-minute-old sample:
+         that is the whole point, because a state reached WITHOUT a reading cannot
+         expose this and the committed cases all had healthy devices. */
+      offline: {
+        device: device({ lastSeenAt: '2026-10-05T14:20:00.000Z' }),
+        sample: readable,
+        deviceHasSamples: true,
+        trackerMinAgentVersion: '1.2.0',
+      },
+      revoked: {
+        device: device({ status: 'revoked', revokedAt: '2026-10-04T00:00:00.000Z' }),
+        sample: readable,
+        deviceHasSamples: true,
+        trackerMinAgentVersion: '1.2.0',
+      },
+      /* And the two beside them that have the same shape and were never asked
+         either - a paused VPS and a client whose VPS has been unpaired while its
+         last readings are still in the table. */
+      paused: {
+        device: device({ status: 'paused' }),
+        sample: readable,
+        deviceHasSamples: true,
+        trackerMinAgentVersion: '1.2.0',
+      },
+      not_installed: {
+        device: null, sample: readable, deviceHasSamples: true, trackerMinAgentVersion: '1.2.0',
+      },
+      /* The four where there is genuinely no reading, so null is the true answer
+         and the assertion below checks that it is null on BOTH screens rather than
+         skipping them. */
+      tracker_off: {
+        device: device(), sample: null, deviceHasSamples: false, trackerMinAgentVersion: null,
+      },
+      tracker_unsupported: {
+        device: device({ agentVersion: '1.0.0' }),
+        sample: null,
+        deviceHasSamples: false,
+        trackerMinAgentVersion: '1.2.0',
+      },
+      never_sampled: {
+        device: device(), sample: null, deviceHasSamples: true, trackerMinAgentVersion: '1.2.0',
+      },
+    };
+
+    // Exhaustive BY CONSTRUCTION: a state added to the classifier and not here
+    // fails this line, which is the only version that does not rely on memory.
+    expect(Object.keys(scenarios).sort()).toEqual([...ACCOUNT_TRACKER_STATES].sort());
+
+    for (const [state, input] of Object.entries(scenarios)) {
+      const clientPage = classifyAccountTracker({ now: NOW, staleSeconds: STALE_SECONDS, ...input });
+      const overview = classifyAccountSample({
+        now: NOW, sample: input.sample, staleSeconds: STALE_SECONDS,
+      });
+      // The scenario reaches the state it is named for, or it is proving nothing.
+      expect(clientPage.state, `${state} scenario`).toBe(state);
+
+      /* THE THREE FACTS THAT BELONG TO THE SAMPLE, on every state. When there is a
+         reading both screens must report the same one; when there is none both must
+         say null, and `sampledAt` null is what the panel renders as "never". */
+      for (const fact of ['ageMinutes', 'sampledAt', 'runState']) {
+        expect(clientPage[fact], `${state}.${fact}`).toBe(overview[fact]);
+      }
+
+      /* AND THE ONE THAT MAKES IT A CONTRADICTION RATHER THAN A DISCREPANCY: a
+         sample readable enough to price is readable enough to date. This is the
+         exact line the panel prints - money off `sample.totalPnl`, age off
+         `verdict.sampledAt` - so a null age beside a figure is the bug itself. */
+      if (typeof input.sample?.totalPnl === 'number') {
+        expect(clientPage.sampledAt, `${state} prints money, so it must print an age`)
+          .toBe(input.sample.sampledAt);
+        expect(Number.isFinite(clientPage.ageMinutes), `${state} age is a number`).toBe(true);
+        expect(clientPage.runState, `${state} run state`).toBe(input.sample.runState);
       }
     }
   });

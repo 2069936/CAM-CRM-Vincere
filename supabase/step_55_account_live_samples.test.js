@@ -56,13 +56,44 @@ function functionDefinition(name) {
 /* The objects step 55 references and does not create, in the shape production has
  * them: the three Supabase roles, Supabase's own default grants on public (which
  * is why step 51 had to REVOKE rather than simply not grant), `auth.uid()`, the
- * four tables the policies reach, and step 52's two helpers. */
+ * four tables the policies reach, and step 52's two helpers.
+ *
+ * THE DEFAULT PRIVILEGE LINE IS `grant all`, AND IT HAS TO BE, because that is
+ * what Supabase sets and the difference is not cosmetic. This file previously
+ * wrote `grant select, insert, update, delete`, which is the set a reader expects
+ * "everything the browser could do" to mean, and it is four of eight. Measured on
+ * the real project:
+ *
+ *   default privileges in schema public:
+ *     anon=arwdDxtm/postgres   authenticated=arwdDxtm/postgres
+ *
+ * The letters are INSERT, SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER,
+ * MAINTAIN - and the same `alter default privileges ... grant all` reproduces that
+ * ACL byte for byte on the PostgreSQL 18 this file boots. The missing four are the
+ * dangerous ones, and TRUNCATE is the dangerous one of those: it is NOT SUBJECT TO
+ * ROW LEVEL SECURITY AT ALL, so every policy step 52 and step 53 installed is a
+ * statement about rows that a TRUNCATE never asks. It empties the table.
+ *
+ * A harness that models the world as safer than it is makes every assertion in it
+ * a decoration: under the old four-privilege line no assertion in this file COULD
+ * have seen a grant hole, because the hole was not granted in the first place.
+ *
+ * AND `service_role` IS ON THE LINE TOO, which it was not before and which is the
+ * same failure in the other direction. Supabase's own statement names four roles -
+ * `grant all on tables to postgres, anon, authenticated, service_role` - and with
+ * service_role missing here it held NOTHING on the two new tables, so a revoke one
+ * role too far was invisible to this file. It is not a hypothetical: the client
+ * page's panel reads both tables through server/autoCollection/admin/
+ * ingest-status.js:143,163, which runs on the service role. A migration that
+ * revoked from `anon, authenticated, service_role` would have 500'd that route on
+ * every load with this suite green. `postgres` is omitted only because PGlite runs
+ * as that role already and granting a role to itself is a no-op. */
 const PREREQUISITES = `
 create role anon nologin;
 create role authenticated nologin;
 create role service_role nologin bypassrls;
 alter default privileges in schema public
-  grant select, insert, update, delete on tables to anon, authenticated;
+  grant all on tables to anon, authenticated, service_role;
 
 create schema if not exists auth;
 create function auth.uid() returns uuid language sql stable as $$
@@ -194,6 +225,53 @@ async function asAnon(statement, params) {
   }
 }
 
+/* THE REFUSAL, OR THE SENTENCE THAT SAYS THERE WAS NONE.
+ *
+ * `attempt.error` is null when the statement went through, and `.toMatch(/.../)` on
+ * null fails with `TypeError: .toMatch() expects to receive a string, but got
+ * object` - which is a red test that tells the reader nothing. Measured against the
+ * three-verb lockdown: four of the tests below failed with exactly that line and
+ * not one of them said that a CAM had just emptied the table.
+ *
+ * With this, the same four read
+ *
+ *   AssertionError: gray truncates account_live_samples: expected
+ *     '(no error - it went through)' to match /permission denied for table .../
+ *
+ * which is the defect, in the failure, in the words the migration header uses. */
+function refusalOf(attempt) {
+  return attempt.error ?? '(no error - it went through)';
+}
+
+/* THE SAME THING, COMMITTED, for the statements whose whole point is the effect.
+ *
+ * `asSession` and `asAnon` roll back, which is right for them: they assert on the
+ * refusal text or on what a RETURNING clause handed back, and rolling back keeps
+ * one test from leaking into the next.
+ *
+ * TRUNCATE has no RETURNING and nothing to inspect but the table afterwards, so
+ * under a rollback "the rows are still there" is true whatever the database
+ * decided - the assertion would be measuring the harness. Measured: the control
+ * below, which GRANTS truncate back and expects the table to empty, read 1 row
+ * instead of 0 under `asSession`, because the rollback had put the rows back. The
+ * one place in this file where the proof has to survive the transaction. */
+async function asRoleCommitting(role, statement, authUserId) {
+  await db.exec('begin');
+  try {
+    if (authUserId !== undefined) {
+      await db.query('select set_config($1, $2, true)', ['request.jwt.claim.sub', authUserId || '']);
+    }
+    await db.exec(`set local role ${role}`);
+    await db.query(statement);
+    return { error: null };
+  } catch (error) {
+    return { error: String(error.message || error) };
+  } finally {
+    // `reset` on the way out of each test is what keeps this from leaking.
+    await db.exec('commit');
+  }
+}
+
 /** Any role, by name, so "who may call this function" can be asked rather than read. */
 async function asRole(role, statement, params) {
   await db.exec('begin');
@@ -218,6 +296,51 @@ async function asRole(role, statement, params) {
 async function heartbeatFingerprint() {
   return one(`select coalesce(string_agg(device::text, '|' order by device.id), '<no devices>')
     from public.ingest_devices as device`);
+}
+
+/* EVERY COLUMN OF EVERY ROW OF EVERY TABLE IN `public`, AS ONE STRING.
+ *
+ * This is the behavioural form of "the migration destroys no data", and it exists
+ * because the textual form could not be fixed. The claim used to be
+ * `expect(sql).not.toMatch(/truncate/)` - a bare substring, meant to say "this
+ * migration truncates nothing". It cannot tell `revoke truncate` from
+ * `truncate table`, so adding the revoke the two tables NEED turned the suite red
+ * and a textual test stood in front of a security fix.
+ *
+ * Asked this way the word is irrelevant, which is the point: the question is not
+ * whether a string appears in the file, it is whether the rows are still there
+ * afterwards. And it is every table rather than the two new ones, because
+ * `truncate public.ingest_devices` would pass a check scoped to this feature while
+ * un-pairing the whole fleet. */
+async function databaseFingerprint() {
+  const { rows } = await db.query(
+    `select tablename from pg_tables where schemaname = 'public' order by tablename`);
+  const parts = [];
+  for (const { tablename } of rows) {
+    parts.push(`${tablename}: ${await one(
+      `select coalesce(string_agg(t::text, '|' order by t::text), '<empty>')
+       from public.${tablename} as t`)}`);
+  }
+  return parts.join('\n');
+}
+
+/* WHAT A ROLE ACTUALLY HOLDS ON A TABLE, AS A COMPLEMENT RATHER THAN A LIST.
+ *
+ * Every privilege assertion in this file used to name the privileges it cared
+ * about - INSERT, UPDATE, DELETE - and a named list can only ever be as complete
+ * as the person writing it. Supabase grants EIGHT (`arwdDxtm`), the committed
+ * revoke took three, and no assertion here could see the five that were left
+ * because none of them was asked about.
+ *
+ * `aclexplode` is the other direction: it reports what IS granted, so the
+ * assertion is `exactly SELECT` and there is no list to go stale. A ninth
+ * privilege in a future PostgreSQL is covered the day it exists. */
+async function privilegesHeldOn(role, table) {
+  return one(
+    `select coalesce(string_agg(distinct entry.privilege_type, ',' order by entry.privilege_type), '<none>')
+     from pg_catalog.pg_class as rel, aclexplode(rel.relacl) as entry
+     where rel.relname = $1 and rel.relnamespace = 'public'::regnamespace
+       and entry.grantee = $2::regrole`, [table, role]);
 }
 
 /** The whole table emptied, so each behavioural test starts from nothing. */
@@ -288,11 +411,32 @@ describe('step 55 is the one that runs last', () => {
     expect(runbook).toContain('55 degrades gracefully');
   });
 
-  it('adds without dropping or rewriting anything', () => {
+  it('adds without dropping or rewriting anything, as far as reading the file can tell', () => {
     expect(sql).toContain('create table if not exists public.account_live_samples');
     expect(sql).toContain('create table if not exists public.account_tracker_settings');
+
+    /* AND `truncate` IS NOT IN THIS LIST ANY MORE, which is the whole lesson of
+     * the group. It used to be `expect(sql).not.toMatch(/truncate/)`: a bare
+     * substring standing in for "this migration truncates nothing". It cannot tell
+     * `revoke truncate` from `truncate table`, and the two new tables NEED
+     * `revoke truncate` - Supabase hands it to anon and authenticated on every new
+     * table in public and TRUNCATE ignores row level security entirely. So the
+     * correct security fix turned this assertion red:
+     *
+     *   AssertionError: expected ' begin; create table if not exists pu…'
+     *     not to match /truncate/
+     *   ❯ supabase/step_55_account_live_samples.test.js:315:21
+     *
+     * A textual test standing in front of a security fix. The answer is not a
+     * cleverer regex - `/truncate\s+table/` would pass today and says nothing about
+     * what the file DOES. The claim is "applying this file destroys no data", which
+     * is a claim about behaviour, and it is now asked of a database with rows in it:
+     * see 'DESTROYS NO DATA' below.
+     *
+     * THESE THREE ARE A CHEAP FIRST LOOK AND NOT THE GUARD, the same way the
+     * heartbeat's three string checks are. All three pass on a file of nothing but
+     * comments and none of them can see dynamic SQL. */
     expect(sql).not.toMatch(/drop table/);
-    expect(sql).not.toMatch(/truncate/);
     expect(sql).not.toMatch(/drop function/);
     expect(sql).not.toMatch(/drop policy/);
     // No existing table is touched at all. The whole point of a new table with
@@ -910,6 +1054,52 @@ describe('record_account_live_sample', () => {
    * policy - and the full suite stayed 4024 passed. Measured: 1 row before the
    * re-run, 0 rows after. Pedro re-runs steps he is not sure landed; this file's
    * own runbook entry says so. */
+  /* ── DESTROYS NO DATA, ASKED OF A DATABASE WITH ROWS IN IT ──────────────────
+   *
+   * THIS IS THE REPLACEMENT FOR `expect(sql).not.toMatch(/truncate/)`, and it is
+   * here because that assertion could not be repaired. It was a bare substring
+   * meaning "this migration truncates nothing"; it cannot tell `revoke truncate`
+   * from `truncate table`; the two new tables need `revoke truncate` because
+   * Supabase grants TRUNCATE to anon and authenticated on every new table in
+   * `public` and TRUNCATE is not subject to row level security; so writing the
+   * correct security fix turned the suite red at that line.
+   *
+   * The claim it was reaching for is a claim about what applying the file DOES. So:
+   * rows in every table, apply the file, every row still there. Now the word
+   * `truncate` appearing in a revoke is irrelevant - which is the point - and a
+   * `truncate table` placed anywhere in the file fails this instead, as does a
+   * `delete from`, a dynamic `execute`, a destructive trigger, or a `drop table`
+   * followed by a `create table` that a text search would read as additive.
+   *
+   * EVERY TABLE, not the two new ones. `truncate public.ingest_devices` un-pairs
+   * the whole fleet and would pass any check scoped to this feature. */
+  it('DESTROYS NO DATA: every row of every table in public survives applying the file', async () => {
+    await reset();
+    const firstSeen = minutesAgo(40);
+    await send(world.grayDevice, firstSeen, [
+      { accountName: 'KEEP-ME', connected: true, totalPnl: 250, strategyCount: 3, enabledStrategyCount: 1 },
+      { accountName: 'GONE-DARK', connected: false },
+    ]);
+    await db.query(`insert into public.account_live_samples
+      (device_id, client_id, account_name, connected, sampled_at)
+      values ($1, $2, 'BIRCH-KEEP', true, $3::timestamptz)`,
+    [world.birchDevice, world.birchClient, firstSeen]);
+    await db.exec(`update public.account_tracker_settings
+      set sample_interval_seconds = 900, stale_sample_seconds = 2400, min_agent_version = '1.4.0' where id`);
+
+    const before = await databaseFingerprint();
+    // Every table has to have something in it, or "the rows survived" is vacuous
+    // for the empty ones and a truncate there would go unnoticed.
+    for (const line of before.split('\n')) expect(line, line).not.toMatch(/: <empty>$/);
+
+    // Twice, exactly as it stands on disk. Pedro re-runs steps he is not sure landed.
+    await db.exec(raw);
+    await db.exec(raw);
+
+    expect(await databaseFingerprint()).toBe(before);
+    await reset();
+  });
+
   it('PRESERVES the rows and their clocks when the file is applied again over data', async () => {
     await reset();
     const firstSeen = minutesAgo(40);
@@ -1118,16 +1308,21 @@ describe('who can read and write a live sample', () => {
       .toBe(true);
     expect(await one("select count(*)::int from public.account_live_samples where account_name = 'FORGED'"))
       .toBe(0);
-    // Asked of the catalogue as well, because that is the thing a later migration
-    // or a blanket grant changes.
+    /* Asked of the catalogue as well, because that is the thing a later migration
+     * or a blanket grant changes - AND ASKED AS A COMPLEMENT RATHER THAN A LIST.
+     *
+     * This loop used to name INSERT, UPDATE and DELETE. Supabase grants eight
+     * (`arwdDxtm`), so naming three meant five privileges nothing in this file
+     * could see, and four of them were still granted: TRUNCATE, TRIGGER,
+     * REFERENCES, MAINTAIN. A named list is only ever as complete as the person
+     * writing it, and step 51's own list already forgot MAINTAIN.
+     *
+     * So: exactly SELECT, and nothing else, with no list to go stale. SELECT has to
+     * be there or the overview loses its one-request read of a whole book. */
     for (const role of ['anon', 'authenticated']) {
-      for (const privilege of ['INSERT', 'UPDATE', 'DELETE']) {
-        expect(await one('select has_table_privilege($1, $2, $3)',
-          [role, 'public.account_live_samples', privilege]), `${role} ${privilege}`).toBe(false);
+      for (const table of ['account_live_samples', 'account_tracker_settings']) {
+        expect(await privilegesHeldOn(role, table), `${role} on ${table}`).toBe('SELECT');
       }
-      // And SELECT is untouched, or the overview loses its one-request read.
-      expect(await one('select has_table_privilege($1, $2, $3)',
-        [role, 'public.account_live_samples', 'SELECT']), `${role} SELECT`).toBe(true);
     }
   });
 
@@ -1263,6 +1458,192 @@ describe('who can read and write a live sample', () => {
       expect(attempt.error).toMatch(/permission denied for table account_tracker_settings/);
     }
     expect(await one('select count(*)::int from public.account_tracker_settings')).toBe(1);
+  });
+
+  /* ── TRUNCATE, TRIGGER, REFERENCES: THE THREE NOBODY THINKS OF ───────────────
+   *
+   * THE DEFECT: the lockdown was `revoke insert, update, delete` and stopped. There
+   * are EIGHT privileges on a table and Supabase's default privileges grant all of
+   * them - measured on this project, `anon=arwdDxtm/postgres` and
+   * `authenticated=arwdDxtm/postgres` - so three verbs revoked left five, four of
+   * them real: TRUNCATE, TRIGGER, REFERENCES, MAINTAIN. The ACL the shipped file
+   * actually produced, with the default privileges modelled the way Supabase sets
+   * them, was `anon=rDxtm/postgres,authenticated=rDxtm/postgres`.
+   *
+   * AND TRUNCATE IS NOT SUBJECT TO ROW LEVEL SECURITY. That is what makes this
+   * different in kind from every other denial in this file rather than one more
+   * verb on a list. The restrictive policies, step 52's policies, step 53's
+   * policies - all of them are statements about which ROWS a session may touch, and
+   * a TRUNCATE asks none of them. Measured against the shipped file, as a signed-in
+   * CAM on its own assigned client, with all four restrictive policies in place:
+   *
+   *   gray truncates account_live_samples     -> (no error - it went through)
+   *   rows in account_live_samples after:     <empty>
+   *   gray truncates account_tracker_settings -> (no error - it went through)
+   *   settings rows after:                    0
+   *   anon truncates account_live_samples     -> (no error - it went through)
+   *   gray creates a trigger on the table     -> (no error - it went through)
+   *
+   * So there is no second layer to fall back on here and the revoke is the whole of
+   * the control - which is also why this is asked by DOING it as each role rather
+   * than by reading a policy, because a policy test about TRUNCATE proves nothing
+   * whatever it says. Step 51's header is the instruction: "may only SELECT" has to
+   * be true rather than nearly true. */
+  describe('the three privileges that are not INSERT, UPDATE or DELETE', () => {
+    beforeAll(reset);
+
+    it('TRUNCATE is refused to both browser roles on both tables, and the rows are still there', async () => {
+      await reset();
+      await send(world.grayDevice, minutesAgo(5), [
+        { accountName: 'GRAY-1', connected: true, totalPnl: 1024.31, strategyCount: 2, enabledStrategyCount: 2 },
+      ]);
+      await db.query(`insert into public.account_live_samples
+        (device_id, client_id, account_name, connected, sampled_at)
+        values ($1, $2, 'BIRCH-1', true, $3::timestamptz)`,
+      [world.birchDevice, world.birchClient, minutesAgo(5)]);
+
+      for (const table of ['account_live_samples', 'account_tracker_settings']) {
+        // A CAM on its own client, a Manager who can see everything, and the
+        // anonymous key: TRUNCATE does not consult a predicate, so "its own" is
+        // not the question and all three have to be asked.
+        for (const [who, attempt] of [
+          ['gray', await asRoleCommitting('authenticated', `truncate table public.${table}`, AUTH_GRAY)],
+          ['manager', await asRoleCommitting('authenticated', `truncate table public.${table}`, AUTH_MANAGER)],
+          ['anon', await asRoleCommitting('anon', `truncate table public.${table}`)],
+        ]) {
+          expect(refusalOf(attempt), `${who} truncates ${table}`)
+            .toMatch(new RegExp(`permission denied for table ${table}`));
+        }
+      }
+
+      // The rows, which is what the privilege was going to take.
+      expect(await one(`select string_agg(account_name, ',' order by account_name)
+        from public.account_live_samples`)).toBe('BIRCH-1,GRAY-1');
+      expect(await one('select count(*)::int from public.account_tracker_settings')).toBe(1);
+      await reset();
+    });
+
+    /* THE CONTROL, and the reason it has to exist: defence in depth that is only
+       ever tested behind the outer layer is not tested. Here it proves the opposite
+       of what the DELETE control proves - that there is NO second layer. With
+       TRUNCATE granted back and every restrictive policy left exactly as the file
+       created it, the table empties. So the revoke is the thing holding, and no
+       policy could be written that would hold instead. */
+    it('and the revoke is the only thing holding: granted back, every policy is powerless', async () => {
+      await reset();
+      await send(world.grayDevice, minutesAgo(5), [
+        { accountName: 'GRAY-1', connected: true, totalPnl: 1024.31, strategyCount: 2, enabledStrategyCount: 2 },
+      ]);
+      expect(await one('select count(*)::int from public.account_live_samples')).toBe(1);
+      // The four restrictive denials are all still in place - unchanged, asserted.
+      expect(await one(`select count(*)::int from pg_catalog.pg_policies
+        where schemaname = 'public' and permissive = 'RESTRICTIVE'
+          and tablename in ('account_live_samples', 'account_tracker_settings')`)).toBe(4);
+
+      await db.exec('grant truncate on public.account_live_samples to authenticated');
+      try {
+        const attempt = await asRoleCommitting(
+          'authenticated', 'truncate table public.account_live_samples', AUTH_GRAY);
+        expect(attempt.error).toBe(null);
+        // The hole, reproduced: RLS was never asked.
+        expect(await one('select count(*)::int from public.account_live_samples')).toBe(0);
+      } finally {
+        await db.exec(raw);
+      }
+      // And once the file has run again, the same statement is refused.
+      await send(world.grayDevice, minutesAgo(5), [
+        { accountName: 'GRAY-1', connected: true, totalPnl: 1024.31, strategyCount: 2, enabledStrategyCount: 2 },
+      ]);
+      expect(refusalOf(await asRoleCommitting(
+        'authenticated', 'truncate table public.account_live_samples', AUTH_GRAY)))
+        .toMatch(/permission denied for table account_live_samples/);
+      expect(await one('select count(*)::int from public.account_live_samples')).toBe(1);
+      await reset();
+    });
+
+    it('TRIGGER is refused: no session can attach code to somebody else\'s write', async () => {
+      /* Worse than any single write, which is step 51's reasoning for naming it.
+         A trigger on this table runs as part of the ingest route's own upsert -
+         inside the SECURITY DEFINER function, as the owner. */
+      await db.exec(`create or replace function public.tracker_trigger_probe() returns trigger
+        language plpgsql as $$ begin return new; end $$`);
+      await db.exec('grant execute on function public.tracker_trigger_probe() to anon, authenticated');
+      for (const table of ['account_live_samples', 'account_tracker_settings']) {
+        const statement = `create trigger probe_${table} before insert on public.${table}
+          for each row execute function public.tracker_trigger_probe()`;
+        expect(refusalOf(await asSession(AUTH_GRAY, statement)), `gray triggers ${table}`)
+          .toMatch(new RegExp(`permission denied for table ${table}`));
+        expect(refusalOf(await asAnon(statement)), `anon triggers ${table}`)
+          .toMatch(new RegExp(`permission denied for table ${table}`));
+      }
+      // Nothing attached, asked of the catalogue rather than inferred from the errors.
+      expect(await one(`select count(*)::int from pg_catalog.pg_trigger
+        where not tgisinternal and tgrelid in
+          ('public.account_live_samples'::regclass, 'public.account_tracker_settings'::regclass)`)).toBe(0);
+    });
+
+    it('REFERENCES is refused: no foreign key can be pointed at these rows', async () => {
+      /* "How a table nobody audits starts deciding whether a user can be deleted",
+         in step 51's words. Here it would decide whether the retention sweep can
+         remove a sample: a foreign key pointing at account_live_samples turns the
+         sweep's bounded DELETE into a constraint violation the ingest route reports
+         as a failed sample, every ten minutes, on a machine that is working.
+
+         Granted CREATE on the schema inside the test, and rolled back with it, so
+         that what is being measured is the REFERENCES privilege and not the fact
+         that a browser role cannot create a table in `public` either. Without
+         isolating it the refusal reads `permission denied for schema public` and
+         proves nothing about this table. */
+      for (const table of ['account_live_samples', 'account_tracker_settings']) {
+        await db.exec('begin');
+        try {
+          await db.exec('grant create on schema public to authenticated');
+          await db.query('select set_config($1, $2, true)', ['request.jwt.claim.sub', AUTH_GRAY]);
+          await db.exec('set local role authenticated');
+          let error = null;
+          try {
+            await db.exec(`create table public.tracker_fk_probe (
+              id integer primary key, points_at uuid references public.${table}(id))`);
+          } catch (caught) { error = String(caught.message || caught); }
+          expect(refusalOf({ error }), `gray points a foreign key at ${table}`)
+            .toMatch(new RegExp(`permission denied for table ${table}`));
+        } finally {
+          await db.exec('rollback');
+        }
+      }
+    });
+
+    /* THE COMPLEMENT, SAID ONCE FOR BOTH TABLES AND BOTH ROLES. Not a list of
+       privileges to deny - a list is what shipped and a list is what went stale -
+       but "exactly SELECT", read back out of the ACL. A ninth privilege in a future
+       PostgreSQL is covered by this the day it exists, which is the property the
+       enumerated form could not have. */
+    it('holds exactly SELECT and nothing else, which is the claim and not a list of denials', async () => {
+      for (const role of ['anon', 'authenticated']) {
+        for (const table of ['account_live_samples', 'account_tracker_settings']) {
+          expect(await privilegesHeldOn(role, table), `${role} on ${table}`).toBe('SELECT');
+        }
+      }
+      /* AND THE SERVICE ROLE IS UNTOUCHED, which is the other way to break this and
+         the reason `service_role` is on the prerequisites' default-privilege line.
+         A revoke one role too far would 500 the client page on every load:
+         server/autoCollection/admin/ingest-status.js:143,163 reads both tables
+         directly on the service role. Asked as the complement again, so a revoke of
+         any single privilege from it fails here rather than only the one named. */
+      for (const table of ['account_live_samples', 'account_tracker_settings']) {
+        expect(await privilegesHeldOn('service_role', table), `service_role on ${table}`)
+          .toBe('DELETE,INSERT,MAINTAIN,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE');
+      }
+    });
+
+    it('and the file says the other thirty-two tables are a known gap, not an oversight', () => {
+      /* Measured across the whole production database: `authenticated` can TRUNCATE
+         32 of 37 tables, and the five it cannot are app_users and the four ingest
+         tables. Not this file's to fix, and a reader who finds the revoke here and
+         assumes the rest of the database is in the same shape would be wrong. */
+      expect(raw).toMatch(/THE OTHER THIRTY-TWO TABLES/);
+      expect(raw).toMatch(/TRUNCATE IS NOT SUBJECT TO ROW LEVEL SECURITY/);
+    });
   });
 
   it('names both halves of the denial on both tables, as RESTRICTIVE and for the right verb', async () => {

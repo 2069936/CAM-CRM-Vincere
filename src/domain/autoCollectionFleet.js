@@ -345,6 +345,32 @@ export const ACCOUNT_TRACKER_ATTENTION_STATES = Object.freeze(
   new Set(['disconnected', 'sample_stale', 'never_sampled']),
 );
 
+/* EVERY STATE classifyAccountTracker CAN RETURN, enumerated here so the agreement
+ * test can be exhaustive BY CONSTRUCTION rather than by somebody remembering.
+ *
+ * This list exists because of how the two-screens defect was fixed the first time.
+ * The version-gate case was found, a test was written that rendered that row
+ * through both screens at six row shapes and six versions - and `offline` and
+ * `revoked`, which have the same shape and the same bug, were simply not among the
+ * cases it tried. They shipped broken behind a green test named for the invariant
+ * they violate.
+ *
+ * A state added to classifyAccountTracker and not to the agreement test now fails
+ * that test by name. That is the only version of this that does not depend on the
+ * next person noticing. */
+export const ACCOUNT_TRACKER_STATES = Object.freeze([
+  'not_installed',
+  'revoked',
+  'paused',
+  'tracker_off',
+  'offline',
+  'tracker_unsupported',
+  'never_sampled',
+  'sample_stale',
+  'disconnected',
+  'live',
+]);
+
 /** The three words and the tooltip behind them, for whichever panel is asking. */
 export function accountRunStateCopy(runState) {
   const [label, detail] = ACCOUNT_RUN_STATES[runState] || ACCOUNT_RUN_STATES.unmeasured;
@@ -471,9 +497,6 @@ export function classifyAccountTracker({
 } = {}) {
   const current = validDate(now);
   if (!current) return trackerResult('never_sampled');
-  if (!device) return trackerResult('not_installed');
-  if (device.status === 'revoked' || device.revokedAt) return trackerResult('revoked');
-  if (device.status !== 'active') return trackerResult('paused');
 
   /* THE READING, TAKEN THROUGH THE SAME FUNCTION THE OVERVIEW RUNS, before any
    * question that could talk over it. `never_sampled` out of there means there is
@@ -482,6 +505,36 @@ export function classifyAccountTracker({
    * and the device has to answer instead. */
   const verdict = classifyAccountSample({ now, sample, staleSeconds });
   const reading = verdict.state === 'never_sampled' ? null : verdict;
+
+  /* AND THE READING'S OWN FACTS TRAVEL WITH EVERY STATE, WHICH IS A SEPARATE
+   * THING FROM WHICH STATE IS CHOSEN.
+   *
+   * THE DEFECT: `offline` and `revoked` were returned as `trackerResult('offline')`
+   * with no extra, so `ageMinutes`, `sampledAt` and `runState` all came back null -
+   * while AccountTrackerPanel's row reads the money straight off `sample.totalPnl`
+   * on a different path. One row, a 2-minute-old sample carrying $1,024.31 and a
+   * 40-minute-old heartbeat, printed `$1,024` and `never` on the SAME LINE, and
+   * the overview printed "Sampled 2 minutes ago" for it.
+   *
+   * `state`, `label` and `detail` are the client page's to decide, and it is
+   * RIGHT that they differ: the machine not answering outranks the reading it left
+   * behind, and that extra fact is what having the device is for. But when the
+   * sample was read is a property OF THE SAMPLE. It does not become unknown
+   * because the machine has since gone quiet, and a screen holding the row cannot
+   * answer "never" about a row it is printing money from.
+   *
+   * So the device-level states below carry the reading's three facts and override
+   * only the words. The states that mean there is no reading pass nothing, because
+   * for them null is the true answer - and they are reachable only when `reading`
+   * is null anyway, which the agreement test asserts for every state rather than
+   * trusting this comment. */
+  const readingFacts = reading
+    ? { ageMinutes: reading.ageMinutes, sampledAt: reading.sampledAt, runState: reading.runState }
+    : {};
+
+  if (!device) return trackerResult('not_installed', readingFacts);
+  if (device.status === 'revoked' || device.revokedAt) return trackerResult('revoked', readingFacts);
+  if (device.status !== 'active') return trackerResult('paused', readingFacts);
 
   /* ── THE VERSION GATE, EVALUATED HERE AND IN NO OTHER LINE OF THIS FILE ──
    *
@@ -511,7 +564,7 @@ export function classifyAccountTracker({
    * device is for. */
   const lastSeen = validDate(device.lastSeenAt);
   if (!lastSeen || current.getTime() - lastSeen.getTime() > offlineMinutes * 60_000) {
-    return trackerResult('offline');
+    return trackerResult('offline', readingFacts);
   }
 
   if (reading) return reading;

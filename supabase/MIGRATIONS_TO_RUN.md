@@ -260,15 +260,37 @@ the device-scoped sweep at the end of the function, on the
 `retention_days` horizon.
 
 **Nobody signed in may write to either table, and that is two layers rather than
-one.** `revoke insert, update, delete from anon, authenticated`, the way step 51
-closed `app_users`, plus a RESTRICTIVE policy per verb. The two fail in different
-directions and you want both: a revoked privilege answers `permission denied for
-table` whatever any policy says, and a RESTRICTIVE policy is what survives a
-re-run of 52, which hands every `client_id` table a permissive `for all` with
-read AND write. SELECT stays on both tables, or the overview loses its
-one-request read of the whole book. DELETE needs its own policy, because `with
-check` does not govern DELETE: a delete makes no new row for a check to refuse
-and is judged by `using` alone.
+one.** `revoke all from anon, authenticated` then `grant select` back — the way
+step 51 closed `app_users`, but as a complement rather than a list — plus a
+RESTRICTIVE policy per verb. The two fail in different directions and you want
+both: a revoked privilege answers `permission denied for table` whatever any
+policy says, and a RESTRICTIVE policy is what survives a re-run of 52, which
+hands every `client_id` table a permissive `for all` with read AND write. SELECT
+stays on both tables, or the overview loses its one-request read of the whole
+book. DELETE needs its own policy, because `with check` does not govern DELETE: a
+delete makes no new row for a check to refuse and is judged by `using` alone.
+
+**And it is `revoke all`, not three named verbs, because TRUNCATE ignores row
+level security.** Supabase's default privileges on `public` are `grant all` —
+`anon=arwdDxtm/postgres`, `authenticated=arwdDxtm/postgres`, which is eight
+privileges and not four. `revoke insert, update, delete` leaves TRUNCATE, TRIGGER,
+REFERENCES and MAINTAIN, and a TRUNCATE consults no policy at all: it empties the
+table in one statement. Measured before the fix — a signed-in CAM truncated both
+tables, and so did the anonymous key. Naming the verbs is also what goes stale:
+PostgreSQL 17 added MAINTAIN, so the six-verb form leaves `MAINTAIN,SELECT` behind,
+which is what `app_users` carries today. `revoke all` then `grant select` says the
+intended thing instead, needs no version-gated keyword, and leaves exactly
+`anon=r/postgres,authenticated=r/postgres`.
+
+**The same hole is open on 32 other tables, and 55 does not close them.**
+Measured across the whole database: `authenticated` can TRUNCATE 32 of the 37
+tables in `public`. The only five it cannot are `app_users` (step 51) and the four
+`ingest%` tables. Step 55 closes it for its own two tables and no others — a known
+gap, written down so nobody reads the careful revoke in 55 and assumes the rest of
+the database matches. Closing the other 32 is its own migration and needs a
+table-by-table reading of what each one's browser path actually requires; a blanket
+statement written without that reading would take SELECT off something the CRM
+reads and break a screen instead of protecting a table.
 
 **Re-running 55 is safe with data in the table, and it will fix one thing if you
 ran an earlier copy.** `run_state` shipped with three words and folded

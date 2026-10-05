@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AccountTrackerPanel from './AccountTrackerPanel';
+import { ACCOUNT_TRACKER_STATES } from '../domain/autoCollectionFleet';
 import AutoCollectionCard from './AutoCollectionCard';
 
 /* WHAT A CAM MUST BE ABLE TO TELL APART WITHOUT LEAVING THE SCREEN.
@@ -190,6 +191,90 @@ describe('the day this merges, with no collector sampling anywhere', () => {
     const absent = renderToStaticMarkup(<AccountTrackerPanel tracker={null} device={device()} now={() => NOW} />);
     expect(absent).toContain('Migration step 55 has not been run');
     expect(absent).not.toContain('No collector build sends live samples yet');
+  });
+});
+
+/* ── THE ROW ITSELF, IN EVERY STATE, BECAUSE THIS IS WHERE IT WAS VISIBLE ─────
+ *
+ * The domain test asserts that the two screens agree about the reading. This one
+ * asserts the thing a CAM would have seen, which is narrower and more damning: the
+ * row prints the money off `sample.totalPnl` and the age off `verdict.sampledAt`,
+ * two different paths, so for `offline`, `revoked`, `paused` and `not_installed`
+ * one line read
+ *
+ *   APEX-1   Offline   running-badge-suppressed   $1,024   never
+ *
+ * `never` beside `$1,024`, from a sample four minutes old. Measured through this
+ * component before the fix, all four states.
+ *
+ * DRIVEN OFF ACCOUNT_TRACKER_STATES so it cannot go stale the way the last one
+ * did: a state added to the classifier with no scenario here fails by name. */
+describe('every state, rendered, with one readable sample in the table', () => {
+  const scenarios = {
+    live: {},
+    disconnected: { tracker: tracker({ accounts: [sample({ connected: false, status: 'ConnectionLost' })] }) },
+    sample_stale: { tracker: tracker({ accounts: [sample({ sampledAt: '2026-10-05T14:20:00.000Z' })] }) },
+    // The four that were wrong, each with a four-minute-old sample sitting in the
+    // table - which is the condition the committed cases never set up.
+    offline: { device: device({ lastSeenAt: '2026-10-05T14:20:00.000Z' }) },
+    revoked: { device: device({ status: 'revoked', revokedAt: '2026-10-04T00:00:00.000Z' }) },
+    paused: { device: device({ status: 'paused' }) },
+    not_installed: { device: null },
+    // And the three where there is genuinely no reading, so `never` is correct and
+    // no figure is printed either.
+    tracker_off: { tracker: tracker({ accounts: [], deviceHasSamples: false, minAgentVersion: null }) },
+    tracker_unsupported: {
+      tracker: tracker({ accounts: [], deviceHasSamples: false }),
+      device: device({ agentVersion: '1.0.0' }),
+    },
+    never_sampled: { tracker: tracker({ accounts: [], deviceHasSamples: true }) },
+  };
+
+  it('covers every state the classifier can return', () => {
+    expect(Object.keys(scenarios).sort()).toEqual([...ACCOUNT_TRACKER_STATES].sort());
+  });
+
+  it('never prints a figure and "never" on the same row', () => {
+    for (const [state, props] of Object.entries(scenarios)) {
+      const html = markup(props);
+      expect(html, state).toContain(`tracker-${state}`);
+      const printsAFigure = html.includes('$293');
+      if (printsAFigure) {
+        /* The row is pricing a sample, so it knows when that sample was read. A
+           screen cannot answer "never" about a row it is printing money from. */
+        expect(html, `${state} prints $293 and "never"`).not.toContain('>never<');
+        expect(html, `${state} age`).toMatch(/>(just now|\d+[mhd] ago)</);
+      } else {
+        // No reading, so "never" is the true answer and the panel says it.
+        expect(html, `${state} has no figure, so it says never`).toContain('>never<');
+      }
+    }
+  });
+
+  it('keeps each state\'s own sentence, which is the half that is allowed to differ', () => {
+    /* The reading travelling with the verdict must not have flattened the words.
+       The machine not answering outranks the reading it left behind, and that is
+       the one thing the client page says that the overview cannot. */
+    expect(markup(scenarios.offline)).toContain('stopped reporting heartbeats');
+    expect(markup(scenarios.revoked)).toContain('access was revoked');
+    expect(markup(scenarios.paused)).toContain('intentionally paused');
+    expect(markup(scenarios.not_installed)).toContain('No VPS is paired');
+    // And none of them claims the sample is current, which would be the opposite
+    // error: carrying the age must not turn an offline machine into a live one.
+    for (const state of ['offline', 'revoked', 'paused', 'not_installed']) {
+      expect(markup(scenarios[state]), state).not.toContain('Sampled 4 minutes ago');
+    }
+  });
+
+  it('still refuses to show a run state for a machine that has stopped answering', () => {
+    /* The run badge is shown only for `live` and `disconnected`, deliberately: a
+       silent account's last known "running" is a claim about a machine that has
+       stopped answering and the desk would read it as now. Carrying `runState`
+       through on the verdict must not have switched that badge back on. */
+    expect(markup(scenarios.live)).toContain('running');
+    for (const state of ['offline', 'revoked', 'paused', 'not_installed', 'sample_stale']) {
+      expect(markup(scenarios[state]), state).not.toMatch(/badge [a-z-]*">running</);
+    }
   });
 });
 

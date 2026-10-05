@@ -115,6 +115,26 @@
 -- a screen is indistinguishable from "this client has no accounts". The one
 -- state the desk most needs to see would be the one state a CAM could erase.
 --
+-- AND NEITHER A POLICY NOR A DELETE DENIAL REACHES TRUNCATE. Supabase's default
+-- privileges on `public` are `grant all` - measured, `anon=arwdDxtm/postgres` and
+-- `authenticated=arwdDxtm/postgres` - and TRUNCATE is not subject to row level
+-- security at all. Every policy above and below is a statement about which ROWS a
+-- session may touch; a TRUNCATE asks none of them and empties the table. So the
+-- lockdown further down is `revoke all` then `grant select`, and the revoke is the
+-- WHOLE of the control for TRUNCATE, TRIGGER and REFERENCES rather than one layer
+-- of two. See the long note beside it for what was measured.
+--
+-- THE SAME HOLE IS OPEN ON THIRTY-TWO OTHER TABLES, and this file does not close
+-- it. Measured across the production database: `authenticated` can TRUNCATE 32 of
+-- 37 tables, and the only five it cannot are `app_users` (step 51 revoked it there)
+-- and the four `ingest%` tables. Step 55 closes it for its own two tables and no
+-- others. That is a KNOWN GAP, not an oversight, and it is written down here so the
+-- next reader does not infer from the careful revoke below that the rest of the
+-- database is in the same shape. Closing the other 32 is its own migration: it
+-- needs a table-by-table reading of what each one's browser path actually requires,
+-- and a blanket statement written without that reading would take SELECT off
+-- something the CRM reads and break a screen instead of protecting a table.
+--
 -- EVERY TUNABLE IS A COLUMN, NOT AN ENVIRONMENT VARIABLE. Pedro cannot set one
 -- in Vercel; a merge to main is the whole deployment. So the interval, the
 -- staleness horizon, the throttle, the retention window and the first agent
@@ -614,12 +634,58 @@ alter table public.account_tracker_settings enable row level security;
 -- ---------------------------------------------------------------------------
 -- AND THE GRANT, WHICH IS A SECOND LAYER AND NOT A RESTATEMENT OF THE FIRST.
 --
--- Supabase's own default privileges grant SELECT, INSERT, UPDATE and DELETE on
--- every new table in `public` to `anon` and `authenticated` - which is why step
--- 51 had to REVOKE rather than simply not grant. The restrictive policies below
--- are the layer that survives step 52 re-writing the permissive ones. This is the
--- layer that survives the policies themselves being wrong, and the two fail in
--- different directions:
+-- Supabase's default privileges on `public` are `grant all`, not the four verbs a
+-- reader expects. Measured on this project:
+--
+--   default privileges in schema public:
+--     anon=arwdDxtm/postgres   authenticated=arwdDxtm/postgres
+--
+-- a INSERT, r SELECT, w UPDATE, d DELETE, D TRUNCATE, x REFERENCES, t TRIGGER,
+-- m MAINTAIN. Eight, and `revoke insert, update, delete` - which is what this file
+-- shipped with - takes three. So both new tables handed `anon` and `authenticated`
+-- TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, and TRUNCATE is the one that matters:
+--
+--   TRUNCATE IS NOT SUBJECT TO ROW LEVEL SECURITY AT ALL. Every policy below, and
+--   every policy step 52 and step 53 installed, is a statement about which ROWS a
+--   session may touch. A TRUNCATE asks none of them. It empties the table. So the
+--   restrictive denials are not a second layer here, the way they are for DELETE -
+--   there IS no second layer for TRUNCATE, and the revoke is the whole of it.
+--
+-- Measured against this file as it shipped, with the default privileges set the way
+-- Supabase sets them, as a signed-in CAM on its own assigned client:
+--
+--   account_live_samples ACL: anon=rDxtm/postgres,authenticated=rDxtm/postgres
+--   gray truncates account_live_samples     -> (no error - it went through)
+--   rows in account_live_samples after:     <empty>
+--   gray truncates account_tracker_settings -> (no error - it went through)
+--   settings rows after:                    0
+--   anon truncates account_live_samples     -> (no error - it went through)
+--   gray creates a trigger on the table     -> (no error - it went through)
+--
+-- That is step 51's lesson arriving a fourth time. Its header is the instruction:
+-- "may only SELECT" has to be TRUE and not NEARLY TRUE.
+--
+-- AND IT IS `revoke all` RATHER THAN THE SIX VERBS NAMED, which is a deliberate
+-- departure from step 51's form and the reason is step 51 itself. Enumerating
+-- leaves whatever the list forgot, and the list already forgot one: PostgreSQL 17
+-- added MAINTAIN, so `revoke insert, update, delete, truncate, trigger, references`
+-- leaves `MAINTAIN,SELECT` behind - measured - and app_users carries that today.
+-- `revoke all` then `grant select` says the intended thing instead of a list that
+-- has to be revisited every time PostgreSQL adds a letter, needs no version-gated
+-- keyword to be written here, and leaves an ACL that can be ASSERTED as a
+-- complement - exactly SELECT and nothing else - rather than one privilege at a
+-- time. After this file: anon=r/postgres,authenticated=r/postgres.
+--
+-- THE OTHER THIRTY-TWO TABLES. This closes the hole for these two only. Measured
+-- across the whole production database: `authenticated` can TRUNCATE 32 of 37
+-- tables, and the only five it cannot are app_users (step 51) and the four ingest
+-- tables. That is a known gap and not an oversight, and it is not this file's to
+-- close - a blanket revoke across every existing table is its own migration with
+-- its own reading of what each table's browser path actually needs. Whoever reads
+-- this next: the gap is real, it is measured, and it is still open.
+--
+-- The two layers below still fail in different directions, which is why both are
+-- here for the verbs RLS does reach:
 --
 --   * A RESTRICTIVE policy cannot make a DELETE RAISE. For DELETE, `using` is a
 --     FILTER: `using (false)` means no row is visible to delete, so the statement
@@ -634,17 +700,21 @@ alter table public.account_tracker_settings enable row level security;
 -- Overview reads account_live_samples directly under step 52's predicate - one
 -- PostgREST request for a whole book, no serverless invocations - and the screens
 -- read stale_sample_seconds so that the number is not copied into JavaScript.
--- Revoking SELECT would take the feature away.
+-- Revoking SELECT would take the feature away. It is granted back on the line
+-- after the revoke, and the order matters: the other way round grants nothing.
 --
 -- The service role is unaffected: its grants are separate and it is BYPASSRLS, so
 -- the ingest route keeps writing exactly as before. The function is SECURITY
 -- DEFINER and runs as the owner, so its own upsert and its retention sweep are
 -- unaffected too.
 --
--- Idempotent: revoking a privilege that is already absent is a no-op.
+-- Idempotent: revoking a privilege that is already absent is a no-op, and the
+-- grant that follows is the same grant every time.
 -- ---------------------------------------------------------------------------
-revoke insert, update, delete on public.account_live_samples from anon, authenticated;
-revoke insert, update, delete on public.account_tracker_settings from anon, authenticated;
+revoke all on public.account_live_samples from anon, authenticated;
+revoke all on public.account_tracker_settings from anon, authenticated;
+grant select on public.account_live_samples to anon, authenticated;
+grant select on public.account_tracker_settings to anon, authenticated;
 
 do $account_tracker_policies$
 begin
