@@ -192,6 +192,7 @@ import AccountTypeMismatchPanel from "./components/AccountTypeMismatchPanel";
 import ConfigDriftPanel from "./components/ConfigDriftPanel";
 import DeskConfigOutlierPanel from "./components/DeskConfigOutlierPanel";
 import SimulationReportSection from "./components/SimulationReportSection";
+import EvaluationsReportSection from "./components/EvaluationsReportSection";
 import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
 import ReportSheetActions from "./components/ReportSheetActions";
@@ -217,8 +218,10 @@ import {
 } from "./components/OverviewCharts";
 import { parseTradovateCsv, summarizeTradovateAccount } from "./domain/tradovateImport";
 import { parseBenchmarkCsv, summarizeBenchmarkImport } from "./domain/algorithmBenchmark";
-import { REPORT_FIELDS, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
+import { REPORT_FIELDS, REPORT_SEGMENT_TILES, DEFAULT_REPORT_CONFIG, SIMPLIFIED_REPORT_CONFIG, resolveReportConfig, hasClientOverride } from "./domain/reportConfig";
 import { buildReportReasons } from "./domain/reportReasons";
+import { describeSilentReportFields } from "./domain/reportFieldPreview";
+import { buildProgressToTargetRows, PROGRESS_STATE } from "./domain/progressToTarget";
 import ClientKindBadge from "./components/ClientKindBadge";
 import ClientRowLabel from "./components/ClientRowLabel";
 import {
@@ -7618,6 +7621,17 @@ function MonthlyReportPanel({ client, month, onClose }) {
   );
 }
 
+/**
+ * The report designer.
+ *
+ * `silentFields` is what each toggle would produce for THIS client and THIS
+ * close, from describeSilentReportFields — present only for the fields that would
+ * print nothing. A CAM turned a section on, nothing appeared, and the product
+ * said nothing; nine of the fourteen fields can do that. The drawer carries
+ * `.no-print` and the print stylesheet hides it, so these sentences reach the CAM
+ * and never the client, which is right: "no account on this client is set to
+ * simulation" is a fact about the desk's data entry, not about the client's day.
+ */
 function ReportDesignDrawer({
   draft,
   setField,
@@ -7627,6 +7641,7 @@ function ReportDesignDrawer({
   clientName,
   onApplyPreset,
   onSave,
+  silentFields = {},
 }) {
   return (
     <div className="report-design-drawer no-print">
@@ -7662,13 +7677,21 @@ function ReportDesignDrawer({
 
       <div className="report-design-fields">
         {REPORT_FIELDS.map((field) => (
-          <label key={field.key} className="report-design-toggle">
+          <label
+            key={field.key}
+            className={silentFields[field.key] ? "report-design-toggle is-silent" : "report-design-toggle"}
+          >
             <input
               type="checkbox"
               checked={Boolean(draft[field.key])}
               onChange={(e) => setField(field.key, e.target.checked)}
             />
             <span>{field.label}</span>
+            {/* Only where the toggle would print nothing. A toggle that works
+                needs no caption, and fourteen captions would be noise. */}
+            {silentFields[field.key] ? (
+              <small className="report-design-silent">{silentFields[field.key]}</small>
+            ) : null}
           </label>
         ))}
       </div>
@@ -7698,7 +7721,25 @@ function ReportDesignDrawer({
   );
 }
 
-function ReportPanel({
+/**
+ * The client's daily report sheet.
+ *
+ * EXPORTED FOR ONE REASON, and it is worth stating because the comment this
+ * replaces argued the opposite. The PDF is `sheetRef.current.outerHTML` posted to
+ * /api/report/pdf, so the only question that matters about any section on this
+ * sheet is whether it is INSIDE that div, and that is a question about a rendered
+ * document. Asserting it on App.jsx as text did not answer it: a verifier moved
+ * the evaluations mount out of the sheet and into the enclosing `.report-overlay`
+ * — still on screen, gone from every PDF, which is the CAM's original complaint
+ * verbatim — and the gate test passed, along with all 4,440 others.
+ *
+ * `export` is the whole seam. No prop, no branch and no code path changes for it;
+ * `src/reportEvaluationsMount.test.jsx` renders this component with its real
+ * props and walks the DOM that comes out. That file is also where the handoff is
+ * asserted — the rows appearing ONCE on the page rather than a filter expression
+ * appearing in this file.
+ */
+export function ReportPanel({
   client,
   dailyImport,
   camConfig,
@@ -7735,6 +7776,53 @@ function ReportPanel({
   );
   const [draft, setDraft] = useState(savedConfig);
   const cfg = designOpen ? draft : savedConfig;
+  /* WHAT EACH TOGGLE WOULD ACTUALLY PRODUCE for this client and this close.
+   *
+   * Computed from the same `report`, `reasons` and `performanceHistory` the sheet
+   * below renders from, so the drawer cannot promise a section the sheet then
+   * withholds. Only the fields that would print nothing come back. */
+  const silentFields = useMemo(
+    () => describeSilentReportFields({ report, cfg, history: performanceHistory, reasons }),
+    [report, cfg, performanceHistory, reasons],
+  );
+  /* The rows the progress table can honestly draw. The arithmetic lives in
+   * src/domain/progressToTarget.js, where it can be asserted: it was eleven lines
+   * inside this JSX and two of them were wrong on 78 of the 233 rows the book
+   * draws. */
+  const progressRows = useMemo(
+    () => buildProgressToTargetRows(report, client?.dailyImports || []),
+    [report, client],
+  );
+  /* THE TILES THAT WILL ACTUALLY BE DRAWN, decided before the <section> that
+   * holds them rather than inside it.
+   *
+   * It used to be filtered in place, so the strip's element was emitted whenever
+   * the toggle was on and only its CHILDREN were filtered away. That leaves an
+   * empty <section class="report-metrics report-segments"> on the sheet and in
+   * the PDF: 0 children, 0px tall, and still 12px of top and bottom margin under
+   * print media, about 3.2mm of a client's paper spent on nothing. It was
+   * already reachable before this change — 38 closes on the book have no tileable
+   * account at all, 14 of them a client's latest — and the evaluations handoff
+   * below opens a second way in, on 31 more closes where the Evaluations tile was
+   * the only one there. Computing the list first makes the empty case visible to
+   * the sheet AND to describeSilentReportFields, which reads the same rule. */
+  const segmentTiles = useMemo(
+    () => REPORT_SEGMENT_TILES
+      /* ONE BLOCK OWNS THE EVALUATION FIGURE.
+       *
+       * This tile has always been here, so it stays while the Evaluations section
+       * is off — a CAM who changed nothing sees yesterday's report. With the
+       * section on, the tile would state a different number for the same pool on
+       * the same page: it covers `evalStandard` only, which is 39 of the 203
+       * evaluation rows on the book's latest closes, while the section covers all
+       * 203 (the other 164 are Bullet Bot, which has a segment of its own and
+       * never had a tile). Two figures for one pool is the defect the simulation
+       * block was separated to avoid, so the section takes the tile over rather
+       * than sitting beside it. */
+      .filter(({ key }) => !(key === "evalStandard" && cfg.showEvaluations))
+      .filter(({ key }) => report.segments[key].count > 0),
+    [report, cfg.showEvaluations],
+  );
   const setField = (key, value) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
   const [saveStatus, setSaveStatus] = useState("idle");
@@ -7892,6 +7980,7 @@ function ReportPanel({
             camName={camName}
             clientName={report.clientName}
             onApplyPreset={(preset) => setDraft(preset)}
+            silentFields={silentFields}
             onSave={() => {
               onSaveConfig?.(draftScope, draft);
               setDesignOpen(false);
@@ -7964,16 +8053,12 @@ function ReportPanel({
         </section>
         ) : null}
 
-        {cfg.showSegmentTiles ? (
+        {/* No tile left to draw means no strip. An empty bordered-off row of
+            nothing is the silent-empty-shell defect this change exists to
+            remove, and it costs the client 3.2mm of paper to say nothing. */}
+        {cfg.showSegmentTiles && segmentTiles.length ? (
         <section className="report-metrics report-segments">
-          {[
-            { key: "funded", label: "Funded" },
-            { key: "evalStandard", label: "Evaluations" },
-            { key: "cashIra", label: "Cash - IRA" },
-            { key: "cashStraight", label: "Cash - Straight" },
-            { key: "cashLegacy", label: "Cash (unclassified)" },
-          ]
-            .filter(({ key }) => report.segments[key].count > 0)
+          {segmentTiles
             .map(({ key, label }) => (
               <div key={key}>
                 <span>{label} · {report.segments[key].count} acct</span>
@@ -7986,7 +8071,25 @@ function ReportPanel({
         </section>
         ) : null}
 
-        {cfg.showProgressToTarget ? (
+        {/* PROGRESS AGAINST A START THAT IS ACTUALLY KNOWN.
+            Two defects, both measured on the book and both reaching clients
+            today, because SIMPLIFIED_REPORT_CONFIG sets this true:
+
+            1. `startBalance` defaulted to 0, so an account sitting untouched at
+               its opening balance read as nearly finished. Of the 233 rows this
+               table draws on the book's latest closes, 78 have no stored start
+               and 70 of those 78 printed 90% or more. The earliest close on
+               record is the account's opening size as closely as anything here
+               knows it (propFirmRules.firstObservedBalance), so that is the
+               fallback; where there is no start at all the cell says so instead
+               of printing a percentage against zero.
+            2. The <h2> and the column headings were emitted unconditionally
+               while the body was filtered, so 214 of the book's 477 closes
+               (44.9%) printed a heading over an empty table. A section with
+               nothing in it is withheld, and the report designer now states, per
+               toggle, what this would contain for this client and why it is
+               empty — which is the half of the fix the CAM needed. */}
+        {cfg.showProgressToTarget && progressRows.length ? (
           <section className="report-section">
             <h2>Progress to target</h2>
             <table className="report-table">
@@ -7999,29 +8102,44 @@ function ReportPanel({
                 </tr>
               </thead>
               <tbody>
-                {[...report.grouped.funded, ...report.grouped.evaluations]
-                  .filter((row) => Number(row.meta?.targetProfit) > 0)
-                  .map((row) => {
-                    const start = Number(row.meta?.startBalance || 0);
-                    const target = Number(row.meta?.targetProfit || 0);
-                    const bal = Number(row.accountBalance || 0);
-                    const gained = bal - start;
-                    const need = target - start;
-                    const pct = need > 0 ? Math.max(0, Math.min(100, Math.round((gained / need) * 100))) : 0;
-                    return (
-                      <tr key={row.accountName}>
-                        <td>{row.meta?.alias || row.accountName}</td>
-                        <td>{formatCurrency(bal)}</td>
-                        <td>{formatCurrency(target)}</td>
-                        <td>
+                {progressRows.map((entry) => (
+                  <tr key={entry.accountName}>
+                    <td>{entry.label}</td>
+                    <td>{formatCurrency(entry.balance)}</td>
+                    <td>{formatCurrency(entry.target)}</td>
+                    <td>
+                      {entry.state === PROGRESS_STATE.MEASURED ? (
+                        <>
                           <div className="report-progress">
-                            <span className="report-progress-bar" style={{ width: `${pct}%` }} />
-                            <span className="report-progress-label">{pct}%</span>
+                            <span className="report-progress-bar" style={{ width: `${entry.percent}%` }} />
+                            <span className="report-progress-label">{entry.percent}%</span>
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          {/* THE START IS HALF THE DENOMINATOR AND IT IS OFTEN A
+                              GUESS. The percentage is
+                              `(balance - start) / (target - start)`, and the
+                              start is recovered from the earliest close on record
+                              wherever Start Bal $ is blank — the recovery this
+                              branch added, and the thing the fix to the
+                              90%-for-nothing defect rests on. Measured over all
+                              477 closes: 797 of the 1,623 percentages this table
+                              draws sit on a recovered start and 826 on a stored
+                              one. Unlabelled, all 1,623 read alike, and this
+                              section is `true` in SIMPLIFIED_REPORT_CONFIG, so it
+                              reaches clients from a config nobody touched. */}
+                          {entry.startSource === "observed" ? (
+                            <small className="muted">start taken from its earliest close</small>
+                          ) : null}
+                        </>
+                      ) : (
+                        <small className="muted">
+                          {entry.state === PROGRESS_STATE.NO_START
+                            ? "No starting balance on record and no earlier close to take one from, so a percentage cannot be shown."
+                            : "The target on record is not above this account's starting balance, so a percentage cannot be shown."}
+                        </small>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </section>
@@ -8040,7 +8158,14 @@ function ReportPanel({
           </p>
         ) : null}
 
-        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy", "unclassified"].map((group) =>
+        {/* THE SAME ROWS MUST NOT PRINT TWICE ON ONE PAGE.
+            With the Evaluations section on, it owns those rows; the table keeps
+            every other pool untouched. With it off — the default — this list is
+            exactly what it has always been, which is how a CAM who changed
+            nothing sees yesterday's report. */}
+        {cfg.showAccountTable ? ["evaluations", "funded", "cashIra", "cashStraight", "cashLegacy", "unclassified"]
+          .filter((group) => !(group === "evaluations" && cfg.showEvaluations))
+          .map((group) =>
           report.grouped[group].length ? (
             <section className="report-section" key={group}>
               <h2>{GROUP_LABELS[group]}</h2>
@@ -8141,6 +8266,22 @@ function ReportPanel({
         */}
         {cfg.showSimulation ? (
           <SimulationReportSection simulation={report.simulation} />
+        ) : null}
+
+        {/*
+          Below the money for the same reason the simulation block is: an
+          evaluation is challenge capital and its profit is not the client's money
+          (report.js:432-453), so nothing above this can be read as including it.
+          Its figures reach neither `report.totals` nor the segment tiles — the
+          tile for `evalStandard` above is suppressed while this is on, so one
+          block owns the figure instead of two stating it differently.
+
+          Off by default (reportConfig.js showEvaluations: false). While it is
+          off, the evaluations group stays inside the per-account table exactly
+          where it has always been.
+        */}
+        {cfg.showEvaluations ? (
+          <EvaluationsReportSection evaluations={report.evaluations} />
         ) : null}
 
         {cfg.showFlags && report.openFlags.length ? (

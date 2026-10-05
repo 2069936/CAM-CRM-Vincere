@@ -22,10 +22,14 @@
  *
  * It runs four halves:
  *
- *   THE BOOK. Boots the CRM against public/local-snapshot.json, opens each
+ *   THE BOOK, TWICE. Boots the CRM against public/local-snapshot.json, opens each
  *   listed client's close through the real UI, captures the live `.report-sheet`
- *   exactly as the Download button would send it, POSTs it to the endpoint and
- *   measures where the ink landed on the PDF that comes back. It fails on:
+ *   exactly as the Download button would send it — once as the default report and
+ *   once with the Evaluations section ticked in the Design drawer, because that
+ *   section is off by default and the block it draws is taller than the table
+ *   group it replaces — POSTs both to the endpoint and measures where the ink
+ *   landed on the PDFs that come back. Unmeasured, the toggle cost Harper Juniper
+ *   a third sheet holding 9mm of ink and the footer line. It fails on:
  *       * a sheet left more than 75mm blank while a later sheet still has content
  *       * a sheet whose only content is the footer line
  *       * a heading that renders under print media but is missing from the PDF
@@ -331,11 +335,36 @@ async function requestReportPdf(endpoint, { html, title }) {
  * Half one: the book, through the real UI and then the real endpoint.
  * ------------------------------------------------------------------ */
 
+/**
+ * Every client's sheet twice: as the default report, and with the Evaluations
+ * section ticked in the Design drawer.
+ *
+ * WHY THE SECOND ONE EXISTS. The section is off by default, so the default half
+ * below cannot see it at all — and the block it draws is taller than the table
+ * group it replaces. Measured when it shipped: Harper Juniper's close went from
+ * two sheets to three with the toughest one holding 9mm of ink and the footer
+ * line, which is the failure this script already names. Nothing in the fast suite
+ * can catch that (printLayout.book.test.js models the default DOM and its POOLS
+ * list is hardcoded), so the only guard is paper, and paper is here.
+ *
+ * The toggle is ticked and the sheet captured WITH THE DRAWER OPEN, because that
+ * is the live preview a CAM reads and `cfg` only follows the draft while the
+ * drawer is open. The drawer is `.no-print`, so it travels up inside the posted
+ * DOM and the print block drops it — which the CHROME_ON_PAPER check below
+ * verifies on the delivered bytes, "Done designing" among the labels it looks for.
+ */
 async function captureReports(page) {
   const captured = {};
   await page.waitForSelector('.client-search', { timeout: 60000 });
   await page.waitForFunction(() => document.querySelectorAll('.client-link').length > 5, null, { timeout: 60000 });
+  const sheetHtml = () => page.locator('.report-sheet').first().evaluate((node) => node.outerHTML);
   for (const name of CLIENTS) {
+    // The sidebar search is scoped to the CURRENT CAM and selecting a client
+    // switches it, so the page is reloaded between clients rather than searched
+    // from whatever book the last selection left behind.
+    await page.goto(page.url().replace(/#.*$/, ''), { waitUntil: 'load' });
+    await page.waitForSelector('.client-search', { timeout: 60000 });
+    await page.waitForFunction(() => document.querySelectorAll('.client-link').length > 5, null, { timeout: 60000 });
     await page.fill('.client-search', '');
     await page.fill('.client-search', name);
     await page.waitForSelector('.client-link-search', { timeout: 15000 });
@@ -356,7 +385,15 @@ async function captureReports(page) {
     await page.waitForTimeout(500);
     // outerHTML of the live sheet: byte for byte what
     // src/domain/reportPdfDownload.js sends.
-    captured[name] = await page.locator('.report-sheet').first().evaluate((node) => node.outerHTML);
+    captured[name] = { off: await sheetHtml() };
+
+    await page.getByRole('button', { name: /Design/ }).first().click();
+    await page.waitForSelector('.report-design-drawer', { timeout: 10000 });
+    const toggle = page.locator('.report-design-toggle', { hasText: 'Evaluations section' }).first();
+    await toggle.locator('input[type="checkbox"]').check();
+    await page.waitForTimeout(500);
+    captured[name].on = await sheetHtml();
+
     await page.locator('.report-close-button').click();
     await page.waitForTimeout(200);
   }
@@ -395,15 +432,20 @@ async function probePrintMedia(browser, assetOrigin, css, html) {
   return seen;
 }
 
-async function measureBook(browser, endpoint, assetOrigin, cssPath, captured) {
-  console.log('\nTHE BOOK — every report through /api/report/pdf at Letter/12mm');
+async function measureBook(browser, endpoint, assetOrigin, cssPath, captured, state) {
+  const label = state === 'on'
+    ? 'THE BOOK, EVALUATIONS SECTION ON — the same reports with the toggle ticked'
+    : 'THE BOOK — every report through /api/report/pdf at Letter/12mm';
+  console.log(`\n${label}`);
   console.log('-'.repeat(78));
   console.log('  client            sheets   KB    used/blank mm per sheet');
   let sheets = 0;
   let midReportBlank = 0;
   let totalBytes = 0;
   const offences = [];
-  for (const [name, html] of Object.entries(captured)) {
+  for (const [name, states] of Object.entries(captured)) {
+    const html = states[state];
+    if (!html) { report(`${name} captured with the Evaluations toggle ${state}`, false); continue; }
     const title = `${name} - ${DATE} daily report`;
     const onPaper = await probePrintMedia(browser, assetOrigin, cssPath, html);
     const answer = await requestReportPdf(endpoint, { html, title });
@@ -422,7 +464,7 @@ async function measureBook(browser, endpoint, assetOrigin, cssPath, captured) {
       offences.push(`${name}: Content-Disposition is "${answer.disposition}", not the name the desk files by`);
     }
 
-    if (KEEP) fs.writeFileSync(path.join(WORK, `${slug(name)}.pdf`), answer.bytes);
+    if (KEEP) fs.writeFileSync(path.join(WORK, `${slug(name)}-evaluations-${state}.pdf`), answer.bytes);
     totalBytes += answer.bytes.length;
 
     const pages = readPrintedPages(answer.bytes).map((sheet) => ({ ...pageSpace(sheet), text: sheet.text }));
@@ -461,8 +503,9 @@ async function measureBook(browser, endpoint, assetOrigin, cssPath, captured) {
   console.log(`  ${sheets} sheets, ${midReportBlank.toFixed(0)}mm blank on sheets that still had content queued behind them`);
   console.log(`  ${(totalBytes / 1024).toFixed(0)} KB delivered, mean ${(totalBytes / 1024 / (count || 1)).toFixed(1)} KB a report`);
   for (const offence of offences) console.log(`  ! ${offence}`);
-  report('no sheet is left substantially empty while content waits on the next', !offences.length, offences.length ? `${offences.length} offence(s)` : `${sheets} sheets`);
-  report('the corpus wastes less than a sheet in total', midReportBlank <= ALLOWED_CORPUS_BLANK_MM,
+  const suffix = state === 'on' ? ', with the Evaluations section on' : '';
+  report(`no sheet is left substantially empty while content waits on the next${suffix}`, !offences.length, offences.length ? `${offences.length} offence(s)` : `${sheets} sheets`);
+  report(`the corpus wastes less than a sheet in total${suffix}`, midReportBlank <= ALLOWED_CORPUS_BLANK_MM,
     `${midReportBlank.toFixed(0)}mm of ${ALLOWED_CORPUS_BLANK_MM}mm budget, against 1,031mm before the change`);
 }
 
@@ -602,8 +645,10 @@ async function main() {
     report('opened every listed client through the real UI', Object.keys(captured).length === CLIENTS.length,
       `${Object.keys(captured).length}/${CLIENTS.length} on ${DATE}`);
     if (KEEP) {
-      for (const [name, html] of Object.entries(captured)) {
-        fs.writeFileSync(path.join(WORK, `${slug(name)}.html`), html);
+      for (const [name, states] of Object.entries(captured)) {
+        for (const [state, html] of Object.entries(states)) {
+          fs.writeFileSync(path.join(WORK, `${slug(name)}-evaluations-${state}.html`), html);
+        }
       }
     }
   }
@@ -621,7 +666,14 @@ async function main() {
   const endpoint = await startReportEndpoint({ assetOrigin: assets.origin, browser });
   const blocked = await startReportEndpoint({ assetOrigin: assets.origin, browser, blockFonts: true });
   try {
-    if (runBook) await measureBook(browser, endpoint.origin, assets.origin, cssPath, captured);
+    if (runBook) {
+      await measureBook(browser, endpoint.origin, assets.origin, cssPath, captured, 'off');
+      // The same corpus with the one toggle a CAM ticks. The default half above
+      // cannot see this section at all, and the block it draws is taller than the
+      // table group it replaces: unmeasured, it cost Harper Juniper a third sheet
+      // holding 9mm of ink and the footer line.
+      await measureBook(browser, endpoint.origin, assets.origin, cssPath, captured, 'on');
+    }
     await sweepBoundary(endpoint.origin);
     await verifyFontGuard(blocked.origin);
     await verifyName(endpoint.origin);

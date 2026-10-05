@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS, isCashType } from '../domain/reconcile';
 import { normalizePropFirm, plansFor, resolveAccountLimits } from '../domain/propFirmRules';
+import { SIMULATION_MODES, classifyAccountNature } from '../domain/simulationAccounts';
 
 const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.UNASSIGNED,
@@ -32,6 +33,42 @@ function typeOptionsFor(accountType) {
   if (accountType === ACCOUNT_TYPES.SIMULATION) return [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.SIMULATION];
   return ACCOUNT_TYPE_OPTIONS;
 }
+
+/* THE CAM'S SIMULATION OVERRIDE, which nothing in src/ rendered until now.
+ *
+ * `SIMULATION_MODES` has existed since step 36, `accountPatchToDb` maps
+ * `simulationMode -> simulation_mode`, `RECLASSIFYING_FIELDS` lists it, and
+ * `classifyAccountNature` consults it before every other signal — but no
+ * component ever put the key in a patch, so the whole ladder was uncorrectable.
+ * That is why a CAM could turn the report's simulation section on and watch
+ * nothing happen: the toggle was never the problem, the absence of any way to
+ * mark an account was. The two routes that looked like a way in are circular —
+ * `typeOptionsFor` offers the Simulation type only on rows that already hold it,
+ * and `buildVisibleTabs` offers the Simulation tab only to clients who already
+ * have one.
+ *
+ * AUTO is the ABSENCE of an opinion, not a third value, so it is labelled for
+ * what it does: the automatic ladder runs and the cell says what it decided. The
+ * labels avoid the word "Simulation" on purpose, because the account TYPE select
+ * two cells to the left uses it for a different question and the two must not
+ * read as the same control.
+ *
+ * Changing this moves the account between desk segments and re-splits every close
+ * the client ever had (supabaseStore.js recomputes the live/simulated split per
+ * close from the account's current record), which is the point: a CAM correcting
+ * a misclassification fixes the history, not only tomorrow.
+ */
+const SIMULATION_MODE_OPTIONS = [
+  { value: SIMULATION_MODES.AUTO, label: 'Automatic' },
+  { value: SIMULATION_MODES.SIMULATION, label: 'Simulated funds' },
+  { value: SIMULATION_MODES.LIVE, label: 'Real money' },
+];
+
+const NATURE_WORDS = {
+  live: 'real money',
+  simulation: 'simulated funds',
+  undetermined: 'undetermined',
+};
 
 const STATUS_OPTIONS = Object.values(ACCOUNT_STATUSES);
 const PAYOUT_OPTIONS = Object.values(PAYOUT_STATES);
@@ -117,6 +154,41 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
   );
 }
 
+/**
+ * Sets the account's nature, and says what the automatic ladder decided when
+ * nobody has set it.
+ *
+ * The caption is the whole reason this is a component: AUTO is not a value, it is
+ * a deferral, and a select sitting on "Automatic" with nothing beside it tells a
+ * CAM nothing about what the report will do. `classifyAccountNature` already
+ * produces the sentence — it is written to be read by a person — so it is shown
+ * rather than paraphrased, and the heuristic ones are marked as guesses because
+ * the module's own header says intent is not in the data and cannot be derived.
+ */
+function SimulationModePicker({ account, onUpdateAccount }) {
+  const mode = account.simulationMode || SIMULATION_MODES.AUTO;
+  const decided = classifyAccountNature(account, { accountName: account.accountName });
+  return (
+    <div className="simulation-mode-picker">
+      <select
+        value={mode}
+        aria-label={`Simulated or real money for ${account.accountName}`}
+        onChange={(event) => onUpdateAccount(account.accountName, { simulationMode: event.target.value })}
+      >
+        {SIMULATION_MODE_OPTIONS.map((option) => (
+          <option key={option.value || 'auto'} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+      {mode === SIMULATION_MODES.AUTO ? (
+        <small className={decided.heuristic ? 'plan-fallback' : 'muted'} title={decided.reason}>
+          {NATURE_WORDS[decided.nature] || decided.nature}
+          {decided.heuristic ? ' · guessed from the name' : ''}
+        </small>
+      ) : null}
+    </div>
+  );
+}
+
 export default function AccountManager({ accounts, snapshots, dailyImports = [], onUpdateAccount, onAddAccount, onRemoveAccount, mode }) {
   const isCash = mode === 'cash';
   const [newName, setNewName] = useState('');
@@ -168,6 +240,7 @@ export default function AccountManager({ accounts, snapshots, dailyImports = [],
             <th>Account</th>
             <th>Type</th>
             <th>Status</th>
+            <th>Sim / Live</th>
             <th>Risk</th>
             {!isCash ? <th>Pass</th> : null}
             {!isCash ? <th>Direction</th> : null}
@@ -208,6 +281,9 @@ export default function AccountManager({ accounts, snapshots, dailyImports = [],
                 >
                   {STATUS_OPTIONS.map((option) => <option key={option}>{option}</option>)}
                 </select>
+              </td>
+              <td>
+                <SimulationModePicker account={account} onUpdateAccount={onUpdateAccount} />
               </td>
               <td>
                 <select
