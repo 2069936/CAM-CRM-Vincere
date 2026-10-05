@@ -427,86 +427,18 @@ public sealed class AccountSampleLoopTests
     }
 
     /* ---------------------------------------------------------------------
-     * The wiring, which is the bug this repo has already paid for once.
+     * The wiring, which is the bug this repo has already paid for once, is in
+     * AgentCompositionTests.
+     *
+     * It used to be three Assert.Contains calls against the text of Program.cs,
+     * and a comment satisfies an Assert.Contains: the registration was commented
+     * out with the asserted string left on the line, the account tracker was
+     * registered on no machine, and 344 of 344 tests passed. The question is
+     * whether the supervisor the host starts HOLDS the loop, which is a question
+     * about a built container. AgentComposition.Register exists so that a test can
+     * build one, and AgentCompositionTests builds it, resolves the Worker and asks
+     * it which loops it is going to run.
      * ------------------------------------------------------------------- */
-
-    /* A LOOP TOOK A STORE AS AN OPTIONAL LAST ARGUMENT, A COMPOSITION ROOT FORGOT
-     * TO PASS IT, IT COMPILED, AND NOTHING FAILED - the heartbeat succeeded, the
-     * mail loop found no secret, and no report was ever sent, forever, with no
-     * error anywhere. Nothing in this suite reads Program.cs, so the comment left
-     * behind is a tombstone rather than a guard.
-     *
-     * These two tests are the guard, and they close the bug class rather than the
-     * instance. An argument that cannot be defaulted cannot be silently omitted;
-     * a by-type registration has no argument list to omit it from. Both halves are
-     * asserted, because either one alone leaves the door open. */
-    [Fact]
-    public void Nothing_the_loop_needs_can_be_quietly_left_out()
-    {
-        ConstructorInfo constructor = Assert.Single(typeof(AccountSampleLoop).GetConstructors());
-
-        Assert.NotEmpty(constructor.GetParameters());
-        Assert.DoesNotContain(
-            constructor.GetParameters(),
-            parameter => parameter.IsOptional || parameter.HasDefaultValue);
-    }
-
-    [Fact]
-    public void Program_registers_the_loop_by_type_rather_than_by_a_hand_written_factory()
-    {
-        string program = ProgramSource();
-
-        // By type: the container fills every argument, so there is no list for a
-        // future dependency to be left off of.
-        Assert.Contains(
-            "AddSingleton<ICollectorLoop, AccountSampleLoop>()",
-            program,
-            StringComparison.Ordinal);
-        // The memory has to be a singleton or the filter forgets on every pass and
-        // silently does nothing - which is this bug's exact shape again.
-        Assert.Contains("AddSingleton<LiveAccountMemory>()", program, StringComparison.Ordinal);
-        // And the sample's pipe client is registered, or the loop cannot resolve.
-        Assert.Contains(
-            "AddSingleton<INinjaTraderAccountSampleClient, CapturePipeClient>()",
-            program,
-            StringComparison.Ordinal);
-    }
-
-    /* EVERY ARGUMENT THE LOOP ASKS FOR IS SOMETHING Program.cs ALREADY REGISTERS.
-     *
-     * This is what makes the by-type registration above safe rather than merely
-     * tidy: a dependency the container does not hold would throw at service start,
-     * on a machine, in front of nobody. Checked against Program.cs's own text so
-     * that adding a parameter of a type nothing registers fails here instead. */
-    [Fact]
-    public void Every_dependency_the_loop_asks_for_is_one_the_container_holds()
-    {
-        string program = ProgramSource();
-        ConstructorInfo constructor = Assert.Single(typeof(AccountSampleLoop).GetConstructors());
-
-        foreach (ParameterInfo parameter in constructor.GetParameters())
-        {
-            string name = parameter.ParameterType.Name;
-            Assert.True(
-                program.Contains($"AddSingleton<{name}>", StringComparison.Ordinal)
-                || program.Contains($"AddSingleton<{name},", StringComparison.Ordinal)
-                || program.Contains($"AddSingleton<{name}>(", StringComparison.Ordinal),
-                $"AccountSampleLoop asks for {name}, which Program.cs does not register.");
-        }
-    }
-
-    // Copied beside the test binary by the csproj, the way Agent.UI.Tests scans the
-    // deep export's sources: a composition root cannot be asserted about if the
-    // suite cannot read it.
-    private static string ProgramSource()
-    {
-        string path = Path.Combine(
-            Path.GetDirectoryName(typeof(AccountSampleLoopTests).Assembly.Location)!,
-            "wiring-scan",
-            "Program.cs");
-        Assert.True(File.Exists(path), $"Program.cs was not copied beside the tests: {path}");
-        return File.ReadAllText(path);
-    }
 
     /* ---------------------------------------------------------------------
      * Fixtures.
