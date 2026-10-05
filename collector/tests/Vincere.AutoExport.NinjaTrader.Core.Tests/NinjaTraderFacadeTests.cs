@@ -10,6 +10,22 @@ using Xunit;
 
 namespace Vincere.AutoExport.NinjaTrader.Core.Tests;
 
+/* NinjaTrader.Cbi.Account.All IS STATIC, AND xUnit RUNS TEST CLASSES IN PARALLEL.
+ *
+ * This class clears that list in its constructor and its Dispose, which is
+ * sufficient while it is the only class touching it. AccountSampleTests now reads
+ * the same list, and in parallel the two clear each other's fixtures mid-test: the
+ * observed failure was an account named "Sparse" from this file turning up in a
+ * sample assertion next door. Naming a collection serialises them. It is the test
+ * harness's version of the memoised snapshotAccounts field the facade itself
+ * keeps - one answer, read once, rather than two readers disagreeing. */
+[CollectionDefinition(NinjaTraderAccountCollection.Name, DisableParallelization = true)]
+public sealed class NinjaTraderAccountCollection
+{
+    public const string Name = "NinjaTrader Account.All";
+}
+
+[Collection(NinjaTraderAccountCollection.Name)]
 public sealed class NinjaTraderFacadeTests : IDisposable
 {
     public NinjaTraderFacadeTests() => Account.All.Clear();

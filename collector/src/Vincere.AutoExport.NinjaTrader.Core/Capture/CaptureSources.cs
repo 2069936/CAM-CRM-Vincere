@@ -11,6 +11,58 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         IEnumerable<ExecutionCaptureSource> ReadExecutions();
     }
 
+    /// <summary>
+    /// The tracker reading, which is a different question from a close and so
+    /// gets a different method rather than a flag on the four above.
+    ///
+    /// A SEPARATE INTERFACE, NOT A FIFTH MEMBER ON <see cref="INinjaTraderFacade"/>.
+    /// This library targets netstandard2.0, which has no default interface
+    /// implementations, so adding a member there would break every existing test
+    /// double of it on a change that none of them care about. NinjaTraderFacade
+    /// implements both; nothing else has to.
+    /// </summary>
+    public interface IAccountSampleFacade
+    {
+        IEnumerable<AccountSampleCaptureSource> ReadAccountsForSample();
+    }
+
+    /// <summary>
+    /// One account as a tracker sees it. Compare with <see cref="AccountCaptureSource"/>,
+    /// which carries seventeen more fields and the whole AccountValues dictionary:
+    /// everything missing here is already in the close, and the desk asked for the
+    /// least data that answers which accounts are alive, which are running, and
+    /// roughly how the day is going.
+    /// </summary>
+    public sealed class AccountSampleCaptureSource
+    {
+        public string AccountName { get; set; }
+        public string ConnectionName { get; set; }
+
+        /// <summary>
+        /// Whether the connection was live. Carried explicitly because this
+        /// sample, unlike the close, keeps disconnected accounts - see
+        /// AccountSampleRelevance.
+        /// </summary>
+        public bool Connected { get; set; }
+
+        public string Status { get; set; }
+        public decimal? RealizedPnl { get; set; }
+        public decimal? UnrealizedPnl { get; set; }
+        public decimal? TotalPnl { get; set; }
+
+        /// <summary>
+        /// Each strategy's State word and nothing else about it. Null means the
+        /// collection could not be read, which <see cref="StrategyLiveCount"/>
+        /// keeps distinct from an account holding none.
+        ///
+        /// The WORDS rather than a count, so the rule that turns them into
+        /// "running" lives in this library where it is unit-testable off Windows,
+        /// instead of inside the net48 add-on assembly that only Windows CI
+        /// compiles.
+        /// </summary>
+        public IEnumerable<string> StrategyStates { get; set; }
+    }
+
     public sealed class SnapshotBuildContext
     {
         public Guid CaptureId { get; set; }

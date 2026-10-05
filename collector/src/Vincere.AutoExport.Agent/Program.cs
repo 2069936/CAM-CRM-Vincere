@@ -42,6 +42,20 @@ builder.Services.AddSingleton<IRosterStore>(new RosterStore(paths.Roster, new Wi
 builder.Services.AddSingleton<IStrategyObservationStore>(
     new StrategyObservationStore(System.IO.Path.Combine(paths.Root, "strategies.json")));
 builder.Services.AddSingleton<INinjaTraderCaptureClient, CapturePipeClient>();
+/* THE TRACKER'S PIPE CLIENT, DELIBERATELY A SECOND INSTANCE OF THE SAME CLASS.
+ *
+ * CapturePipeClient holds no mutable state - it opens a pipe per call - so the
+ * two instances cost nothing and share nothing. That is the reason to have two:
+ * whatever the tracker does to its client, it provably cannot reach the object
+ * the day's close depends on. Resolving one instance under both interfaces would
+ * have been tidier and would have put the irreplaceable path and the disposable
+ * one on the same object. */
+builder.Services.AddSingleton<INinjaTraderAccountSampleClient, CapturePipeClient>();
+/* Which accounts this machine has seen working. In memory, per process, and a
+ * singleton because it is the memory itself: a new one per resolution would
+ * forget on every pass and the filter would do nothing. LiveAccountMemory says
+ * why it must not survive a restart. */
+builder.Services.AddSingleton<LiveAccountMemory>();
 builder.Services.AddSingleton<ICaptureWorkflow>(provider => new CaptureAndQueueWorkflow(
     provider.GetRequiredService<INinjaTraderCaptureClient>(),
     provider.GetRequiredService<ICollectorQueue>(),
@@ -106,6 +120,22 @@ builder.Services.AddSingleton<QuarantineReviewLoop>(provider => new QuarantineRe
     provider.GetRequiredService<IRedactingLogger>()));
 builder.Services.AddSingleton<IQuarantineReviewer>(provider => provider.GetRequiredService<QuarantineReviewLoop>());
 builder.Services.AddSingleton<ICollectorLoop>(provider => provider.GetRequiredService<QuarantineReviewLoop>());
+/* THE ACCOUNT TRACKER, REGISTERED BY TYPE AND NOT BY FACTORY, ON PURPOSE.
+ *
+ * Three of the loops below are built by a hand-written lambda, because each needs
+ * an argument the container does not hold - a version string, a second DPAPI file,
+ * a queue reader rooted at a path. In that form every argument is typed out by a
+ * person, and an omitted optional one still compiles: that is exactly how the
+ * report-email loop once shipped without the secret store it needed and mailed
+ * nothing, silently, forever, with nothing in the build or the tests to say so.
+ *
+ * This loop needs nothing that is not already a registered service, so it takes
+ * the registration that cannot have that bug. AccountSampleLoop's constructor has
+ * no defaulted parameters either, so the container must satisfy all eight or
+ * resolution throws at startup where somebody will see it. AccountSampleLoopTests
+ * asserts both halves of that - by-type here, and no optional arguments there -
+ * so the next person who adds a dependency cannot quietly reintroduce it. */
+builder.Services.AddSingleton<ICollectorLoop, AccountSampleLoop>();
 builder.Services.AddSingleton<ICollectorLoop, QueueRecoveryLoop>();
 builder.Services.AddSingleton<ICollectorLoop, ScheduledCaptureLoop>();
 builder.Services.AddSingleton<ICollectorLoop, UploadLoop>();

@@ -43,9 +43,17 @@ namespace NinjaTrader.Cbi
         public IList<Order> Orders { get; } = new List<Order>();
         public IList<Execution> Executions { get; } = new List<Execution>();
 
+        /* COUNTED, so "the tracker read is lighter" can be measured instead of
+         * asserted. Each of these is the platform answering for one account value,
+         * and the close asks for roughly thirty of them per account - it enumerates
+         * the whole AccountItem enum to fill a dictionary - where the sample asks
+         * for two. See AccountSampleFacadeTests. */
+        public int GetCalls { get; private set; }
+
         public double Get(AccountItem item, Currency currency)
         {
             _ = currency;
+            GetCalls++;
             return values.TryGetValue(item, out double value) ? value : Double.MinValue;
         }
 

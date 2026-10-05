@@ -19,4 +19,22 @@
     <ProjectReference Include="../../src/Vincere.AutoExport.Contracts/Vincere.AutoExport.Contracts.csproj" />
     <ProjectReference Include="../Vincere.AutoExport.Queue.CrashHost/Vincere.AutoExport.Queue.CrashHost.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- THE COMPOSITION ROOT AS TEXT, BESIDE THE TEST BINARY.
+         Nothing in this suite could read Program.cs, and that is not a cosmetic
+         gap: a loop here once took a store as an optional last argument, a
+         composition root forgot to pass it, it compiled, and the feature did
+         nothing at all - silently, forever - with no error anywhere and no test
+         that could have seen it. The comment left behind in CollectorLoopTests is
+         a tombstone, not a guard.
+
+         Copied rather than compiled, the same way Agent.UI.Tests puts the deep
+         export's sources beside its own binary to count a rule it must find
+         exactly once. A top-level program cannot be called into, so its text is
+         the only thing there is to assert about. -->
+    <None Include="../../src/Vincere.AutoExport.Agent/Program.cs"
+          Link="wiring-scan/Program.cs"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
