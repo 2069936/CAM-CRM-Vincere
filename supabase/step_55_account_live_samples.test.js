@@ -388,17 +388,25 @@ afterAll(async () => { await db?.close?.(); });
 
 /* ── The file, and the runbook it is read from ─────────────────────────────── */
 
-describe('step 55 is the one that runs last', () => {
-  it('appears once, is the highest number, and skips 54 on purpose', () => {
+describe('step 55 is no longer the one that runs last', () => {
+  it('appears once, and 56 now carries the highest-number claim', () => {
+    /* HANDED ON, the way step 52 handed it to 53 and 53 handed it here. The
+     * `Math.max` assertion lives in the newest step's own test, because leaving it
+     * behind makes every later migration look like a break in this one - and that
+     * is exactly what happened: step 56 merged after this file and this assertion
+     * failed, naming 55 as the highest when 56 was. A one-line change, and the
+     * convention working rather than failing.
+     *
+     * 54 is still claimed by an unmerged draft whose own test asserts its number,
+     * so the gap is deliberate and this header has to say so or somebody closes
+     * it. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 55)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(55);
-    // 54 is claimed by an unmerged draft whose own test asserts its number, so
-    // the gap is deliberate and the header has to say so or somebody closes it.
+    expect(Math.max(...numbers)).toBeGreaterThan(55);
     expect(numbers).not.toContain(54);
     expect(raw).toMatch(/WHY 55 AND NOT 54/);
   });
@@ -1257,8 +1265,15 @@ describe('who can read and write a live sample', () => {
     const stranger = await asSession('99999999-9999-4999-8999-999999999999',
       'select account_name from public.account_live_samples');
     expect(stranger.rows).toEqual([]);
+    expect(stranger.error, 'a stranger is filtered by the policy, not refused').toBeNull();
+    /* THE TWO ROLES FAIL DIFFERENTLY AND THE DIFFERENCE IS THE POINT. A signed-in
+     * session with no assigned clients is FILTERED - the grant lets the read
+     * through and the policy admits no row. anon is REFUSED, because the grant is
+     * gone: `expect(rows).toEqual([])` would have passed either way, which is how a
+     * test comes to assert nothing. */
     const anon = await asAnon('select account_name from public.account_live_samples');
     expect(anon.rows).toEqual([]);
+    expect(anon.error).toMatch(/permission denied for table account_live_samples/);
   });
 
   /* ── WHAT A SIGNED-IN SESSION CAN DO TO THIS TABLE, IN BOTH LAYERS ──────────
@@ -1318,11 +1333,21 @@ describe('who can read and write a live sample', () => {
      * writing it, and step 51's own list already forgot MAINTAIN.
      *
      * So: exactly SELECT, and nothing else, with no list to go stale. SELECT has to
-     * be there or the overview loses its one-request read of a whole book. */
-    for (const role of ['anon', 'authenticated']) {
-      for (const table of ['account_live_samples', 'account_tracker_settings']) {
-        expect(await privilegesHeldOn(role, table), `${role} on ${table}`).toBe('SELECT');
-      }
+     * be there or the overview loses its one-request read of a whole book.
+     *
+     * AND NOTHING AT ALL FOR anon, which is a narrowing step 56 made to this file.
+     * The draft granted SELECT to `anon, authenticated` by symmetry with the revoke
+     * and without rechecking it - the same move that put step 51's wrong claim on
+     * app_users. Rechecked: the one browser reader
+     * (loadSupabaseAccountTracker, called from one effect that returns early
+     * without a signed-in client list) always runs as `authenticated`, both SELECT
+     * policies below are `to authenticated`, and the /database probe - the one read
+     * that happens with no session - names neither table. So the anon grant
+     * returned `200 []` and bought nothing, and a dead grant is one a policy added
+     * later turns live by accident. */
+    for (const table of ['account_live_samples', 'account_tracker_settings']) {
+      expect(await privilegesHeldOn('authenticated', table), `authenticated on ${table}`).toBe('SELECT');
+      expect(await privilegesHeldOn('anon', table), `anon on ${table}`).toBe('<none>');
     }
   });
 
@@ -1662,16 +1687,21 @@ describe('who can read and write a live sample', () => {
       }
     });
 
-    /* THE COMPLEMENT, SAID ONCE FOR BOTH TABLES AND BOTH ROLES. Not a list of
-       privileges to deny - a list is what shipped and a list is what went stale -
-       but "exactly SELECT", read back out of the ACL. A ninth privilege in a future
-       PostgreSQL is covered by this the day it exists, which is the property the
-       enumerated form could not have. */
+    /* THE COMPLEMENT, SAID ONCE FOR BOTH TABLES. Not a list of privileges to deny -
+       a list is what shipped and a list is what went stale - but "exactly SELECT",
+       read back out of the ACL. A ninth privilege in a future PostgreSQL is covered
+       by this the day it exists, which is the property the enumerated form could not
+       have.
+       AND EXACTLY NOTHING FOR anon, which step 56 narrowed: the grant below names
+       only `authenticated` now. The note beside that line has the evidence - the one
+       browser reader is behind a session, neither SELECT policy admits anon, and the
+       /database probe names neither table - so the anon half returned `200 []` and
+       bought nothing. Asserted as the complement in both directions, so putting
+       `anon` back without arguing it fails here. */
     it('holds exactly SELECT and nothing else, which is the claim and not a list of denials', async () => {
-      for (const role of ['anon', 'authenticated']) {
-        for (const table of ['account_live_samples', 'account_tracker_settings']) {
-          expect(await privilegesHeldOn(role, table), `${role} on ${table}`).toBe('SELECT');
-        }
+      for (const table of ['account_live_samples', 'account_tracker_settings']) {
+        expect(await privilegesHeldOn('authenticated', table), `authenticated on ${table}`).toBe('SELECT');
+        expect(await privilegesHeldOn('anon', table), `anon on ${table}`).toBe('<none>');
       }
       /* AND THE SERVICE ROLE IS UNTOUCHED, which is the other way to break this and
          the reason `service_role` is on the prerequisites' default-privilege line.

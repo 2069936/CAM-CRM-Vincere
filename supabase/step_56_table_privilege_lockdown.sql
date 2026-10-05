@@ -1,9 +1,21 @@
 -- Step 56: the four privileges row level security cannot see.
 --
--- WHY 54 AND 55 ARE SKIPPED. step_54 is claimed by draft PR 65 (Deep Export)
--- and step_55 by PR 67 (per-account live samples). Neither is merged. This file
--- takes 56 so that whichever of them lands first does not have to renumber, and
--- so that no two unmerged branches claim one number.
+-- WHY 54 IS SKIPPED, AND WHAT HAPPENED TO 55. step_54 is claimed by draft PR 65
+-- (Deep Export) and is still unmerged; 55 by PR 67 (per-account live samples),
+-- WHICH HAS SINCE MERGED. This file took 56 so that neither of them would have
+-- to renumber, and that turned out to matter: 55 landed between this file being
+-- written and this file being merged. Section 2 below is the whole story of what
+-- that cost, and it is the most useful thing in this header - THE MIGRATION
+-- AGAINST STALENESS WENT STALE, because it enumerated what to grant BACK.
+--
+-- AND IT NARROWS ONE DECISION STEP 55 MADE, by name rather than by side effect:
+-- step 55 granted SELECT on account_live_samples and account_tracker_settings to
+-- `anon, authenticated`. This file takes the anon half. The argument is in the
+-- anon section below; the short version is that nothing reads either table
+-- without a session and no policy admits anon to a row of either, so the grant
+-- buys anon nothing and "grant back only what is needed" says it goes. step 55's
+-- own line is edited to say `to authenticated`, so the files agree with each
+-- other rather than one of them being silently overruled two steps later.
 --
 -- ===========================================================================
 -- WHAT IS WRONG, MEASURED ON THIS PROJECT RATHER THAN INFERRED.
@@ -108,12 +120,57 @@
 --        isMissingFunction() is true (:61-67: PGRST202, 404, or /could not find
 --        the function|does not exist/), so never once step 43 has run.
 --
--- AND IT COULD NOT SUCCEED IF IT DID FIRE. Every one of the 23 permissive
--- policies in schema public names `to authenticated`; not one omits its TO
--- clause, which would have defaulted to PUBLIC and quietly included anon. The
--- only policies naming anon are the restrictive `using (false)` denials on the
--- ingest tables. So an anon SELECT on app_users already returns zero rows, and
--- supabaseAuth.js:57 throws 'Unknown username or email.'
+-- AND IT COULD NOT SUCCEED IF IT DID FIRE. EVERY permissive policy in schema
+-- public names `to authenticated` - counted from the catalogue rather than from a
+-- number written here, because a number written here is the defect section 2 is
+-- about. Not one omits its TO clause, which would have defaulted to PUBLIC and
+-- quietly included anon. The only policies naming anon are RESTRICTIVE denials:
+-- the `using (false)` ones on the ingest tables, and the two step 55 added. So an
+-- anon SELECT on app_users already returns zero rows, and supabaseAuth.js:57
+-- throws 'Unknown username or email.'
+--
+-- WHICH IS ALSO THE WHOLE OF THE STEP 55 ARGUMENT, so it is settled here rather
+-- than left as a disagreement between two files. step 55 wrote
+--
+--   grant select on public.account_live_samples    to anon, authenticated;
+--   grant select on public.account_tracker_settings to anon, authenticated;
+--
+-- and this file asserts, in supabase/anon_keeps_the_login_function.test.js, that
+-- NO migration grants a table privilege to anon. Both cannot be right. Four
+-- things were checked rather than preferred, and all four say the anon half goes:
+--
+--   1. THE ONE BROWSER READER IS BEHIND A SESSION. loadSupabaseAccountTracker
+--      (supabaseStore.js:889) is called from exactly one place, the overview
+--      effect at App.jsx:10539-10563, and that effect returns early unless
+--      `trackerScope` is non-empty - a list of client ids derived from
+--      workingClients, which only exists after loadSupabaseCrmState has run for a
+--      signed-in session. The panel is in the browser, and a browser showing it
+--      holds a session, so it reads as `authenticated` and never as anon.
+--   2. NO POLICY ADMITS anon TO A ROW OF EITHER. step_55:730 and :791 are both
+--      `for select to authenticated`. The only anon-facing policies on those two
+--      tables are step 55's own restrictive write and delete denials. So the
+--      grant could not have returned a row even if something had used it: anon
+--      got `200 []`, the same shape step 51 was wrong about on app_users.
+--   3. NOTHING ELSE NAMES THEM FROM THE BROWSER KEY. loadSupabaseDiagnostics
+--      (supabaseStore.js:1797) - the one read that does happen without a session,
+--      because /database renders before App.jsx's session gate - probes twenty
+--      tables and neither of these is among them. The reads in
+--      server/autoCollection/ run on the service role.
+--   4. AND THE GRANT WAS DEAD EITHER WAY, because this file's blanket
+--      `revoke all privileges on all tables in schema public from anon` reaches
+--      it. So the END STATE of the database does not depend on which answer is
+--      taken; what depends on it is whether the two files say the same thing. A
+--      grant that is dead today is one a policy added later turns live by
+--      accident, which is exactly the hazard step 51 left on app_users.
+--
+-- So step 55's two lines become `to authenticated` and this file's invariant
+-- holds as a property of the directory rather than as something step 56 cleans up
+-- afterwards. THAT IS A CHANGE TO A SHIPPED DECISION and it is argued, not
+-- assumed: step 55 is merged, Pedro may already have applied it, the statements
+-- are idempotent, and re-running the edited file removes a privilege nothing uses
+-- and takes nothing else. If it ever turns out that something DOES need to read
+-- the tracker without a session, the fix is one `to anon, authenticated` in step
+-- 55 plus an exception in that test, said out loud in both places.
 --
 -- STEP 51 IS WRONG ABOUT THIS AND IT IS CORRECTED HERE BY NAME. Its header
 -- says, of SELECT on app_users, "Revoking SELECT would lock everyone out."
@@ -150,7 +207,9 @@
 -- ===========================================================================
 -- THE DEFAULT PRIVILEGES, AND THE HALF OF THEM THIS FILE CANNOT REACH.
 --
--- Closing the 33 tables that exist fixes today. It does not fix the next table:
+-- Closing the tables that exist fixes today - however many there are, since
+-- section 2 counts them from the catalogue rather than carrying a number. It does
+-- not fix the next table:
 -- `alter default privileges` is why strategy_templates, ingest_admission_settings
 -- and ingest_quarantine_reports each hold all eight privileges while no caller
 -- in this repository names them at all. They were born that way. So is whatever
@@ -287,100 +346,286 @@ revoke all privileges on all tables in schema public from anon;
 revoke all privileges on all tables in schema public from public;
 
 -- ---------------------------------------------------------------------------
--- 2. authenticated. Revoke everything, then grant back exactly what the
---    browser is measured to use. Six groups, each with its reason.
+-- 2. authenticated. Revoke by CATALOGUE, then grant back by CATALOGUE, with an
+--    explicit EXCEPTION TABLE for the tables that get less than the four verbs.
+--
+-- THE MIGRATION AGAINST STALENESS WENT STALE. That is this file's own argument
+-- arriving from the other side, and it is worth the space rather than a quiet
+-- fix.
+--
+-- The argument at the top of this file is against enumerating what to REMOVE:
+-- step 51 wrote `revoke truncate, trigger, references`, PostgreSQL 17 then
+-- invented MAINTAIN, and app_users carries it today. The first draft of this
+-- file answered that by enumerating what to KEEP - five
+-- `grant ... on public.a, public.b, ... to authenticated` statements naming 33
+-- tables. An enumeration of what to keep goes stale the same way, one direction
+-- over: it goes stale when a TABLE is added rather than when a PRIVILEGE is.
+--
+-- AND IT DID, BEFORE THIS FILE COULD MERGE. step_55 - account_live_samples and
+-- account_tracker_settings - merged after this file was written. The blanket
+-- `revoke all privileges on all tables` above reached both, because it reads the
+-- catalogue and holds no list. The five grant statements had never heard of
+-- them, so neither came back out of this file at all; and the test beside this
+-- file asserted `toHaveLength(37)` against a schema that now holds 39, so a
+-- count had to be edited for a migration that had nothing to do with it. Both
+-- halves of that are the same defect as step 51's, written by somebody who had
+-- just spent a day explaining step 51's.
+--
+-- So the grant-back reads the catalogue too, and the only list left is the
+-- exception table below: what each table gets and WHAT DECIDED IT.
+--
+-- WHY A BLANKET `grant select, insert, update, delete` ON EVERY TABLE WOULD HAVE
+-- BEEN WORSE THAN THE STALE LIST, which is why the exception table is not a
+-- convenience. step_55 deliberately made its two tables read-only for the
+-- browser - `revoke all` then `grant select` - because a CAM able to write
+-- account_live_samples can forge a green light on its own client, and a row it
+-- can delete is an account that disappears from the screen that exists to show
+-- it. This file runs AFTER step 55, so a four-verb loop with no exceptions would
+-- hand INSERT, UPDATE and DELETE straight back and THIS FILE would be the thing
+-- that undid a lockdown three rounds of review produced. The same is true of the
+-- four ingest tables step_28 closed and the two steps 45 and 46 closed: all six
+-- hold nothing today and a loop with no exceptions opens all six.
+--
+-- WHAT HAPPENS TO A TABLE IN NEITHER PLACE - the case that just bit. It gets the
+-- four DML verbs, and this file SAYS SO BY NAME in a NOTICE rather than doing it
+-- quietly. Both halves are deliberate.
+--
+--   THE FOUR VERBS, because that is exactly what section 5 below hands a table
+--   created AFTER this file runs. If an unlisted table got nothing instead, then
+--   whether a table was usable would depend on which side of this migration it
+--   was created on - the database's answer would depend on the order its history
+--   happened to take, which is the same objection section 6 makes to
+--   information_schema. The four are the ones row level security governs, and
+--   since step 44 every new table carries its own RLS and its own policy inline,
+--   so "writable" still means "the rows a policy admits" - which for a table
+--   with RLS and no policy is none. The four privileges this file exists to take
+--   away are never granted, to any table, listed or not.
+--
+--   THE NOTICE, because granting silently is exactly how step 55 would have been
+--   undone, and nothing in the catalogue tells a table nobody has decided about
+--   from a table somebody decided should be read-only. The NOTICE names them, so
+--   a person running this sees a name they did not expect. It is NOT fatal: a
+--   migration that refused to run until somebody edited it would be the stale
+--   list again wearing a different hat, and Pedro re-runs files he is not sure
+--   landed.
+--
+-- THE CLEVER VERSION, REJECTED ON PURPOSE: read each table's CURRENT ACL and
+-- keep whatever narrowing an earlier migration already made - before this file
+-- runs every table holds all eight, so "narrower than eight" does mean somebody
+-- decided. It works, and it makes this file's end state a function of the
+-- database's history rather than of its own text: two clusters with different
+-- pasts would end differently and neither could be predicted by reading this.
+-- The exception table says the same thing where a person can read it.
+--
+-- WHY THE EXCEPTION TABLE LISTS THE SEVEN FULL-DML TABLES TOO, when the default
+-- would give them the same thing: so that ABSENCE from it means "nobody has
+-- decided", and not "four verbs, on purpose". Those are different facts and the
+-- NOTICE above is only worth having if they can be told apart.
 -- ---------------------------------------------------------------------------
 revoke all privileges on all tables in schema public from authenticated;
 
--- All four verbs: every one is exercised.
-grant select, insert, update, delete on
-  public.client_assignments,
-  public.client_coverage,
-  public.daily_imports,
-  public.operational_flags,
-  public.strategy_classifications,
-  public.tasks,
-  public.trading_accounts
-to authenticated;
+do $do$
+declare
+  r record;
+  took_the_default text[];
+  stale text[];
+  disagrees text;
+begin
+  -- A TEMP TABLE RATHER THAN A CTE, because three passes read this list - the
+  -- grant loop, the stale-entry check and the self-check - and a CTE would mean
+  -- writing it three times, which is how two of the three come to disagree. It
+  -- is `on commit drop`, so it lives for this statement and leaves nothing
+  -- behind; a re-run in the same SQL editor session starts from empty.
+  create temp table step_56_exceptions (
+    table_name text primary key,
+    privileges text not null,
+    decided_by text not null
+  ) on commit drop;
 
--- No UPDATE: these are appended to and removed from, never edited in place.
--- executions, orders and strategy_snapshots are the three that appear only
--- behind `.from(table)` at supabaseStore.js:2702/:2742.
-grant select, insert, delete on
-  public.activity_logs,
-  public.client_prop_firms,
-  public.executions,
-  public.orders,
-  public.price_checks,
-  public.strategy_snapshots
-to authenticated;
+  insert into step_56_exceptions (table_name, privileges, decided_by) values
+    -- ALL FOUR VERBS: every one of the four is exercised by the browser.
+    ('client_assignments',       'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
+    ('client_coverage',          'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
+    ('daily_imports',            'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
+    -- operational_flags is insert+delete through `.from(table)` at
+    -- supabaseStore.js:2702/:2742 and update through a literal.
+    ('operational_flags',        'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
+    ('strategy_classifications', 'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
+    ('tasks',                    'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
+    ('trading_accounts',         'select, insert, update, delete', 'step 56, measured on supabaseStore.js'),
 
--- No DELETE: nothing in the browser deletes from these. account_snapshots
--- loses its DELETE safely because deleteSupabaseDailyImport removes only the
--- daily_imports row and the children go by ON DELETE CASCADE, which is a
--- referential action and is not privilege-checked. clients is soft-deleted.
-grant select, insert, update on
-  public.account_snapshots,
-  public.algorithm_benchmarks,
-  public.cam_profiles,
-  public.cam_time_off,
-  public.client_credentials,
-  public.clients,
-  public.daily_sop_checklists,
-  public.log_algo_history,
-  public.reports,
-  public.sop_items,
-  public.sop_sections
-to authenticated;
+    -- NO UPDATE: appended to and removed from, never edited in place. executions,
+    -- orders and strategy_snapshots are three of the four reached only through
+    -- `.from(table)` with a VARIABLE at supabaseStore.js:2702/:2742 - the manual
+    -- close re-upload - so a grep for `.from('name')` cannot see them and
+    -- revoking their DELETE or INSERT breaks every re-upload, on a trading day.
+    ('activity_logs',            'select, insert, delete', 'step 56, measured on supabaseStore.js'),
+    ('client_prop_firms',        'select, insert, delete', 'step 56, measured on supabaseStore.js'),
+    ('executions',               'select, insert, delete', 'step 56, measured on supabaseStore.js:2702/:2742'),
+    ('orders',                   'select, insert, delete', 'step 56, measured on supabaseStore.js:2702/:2742'),
+    ('price_checks',             'select, insert, delete', 'step 56, measured on supabaseStore.js'),
+    ('strategy_snapshots',       'select, insert, delete', 'step 56, measured on supabaseStore.js:2702/:2742'),
 
--- Append-only. client_price_changes has no reader in this repository, and
--- SELECT is kept anyway: step_42 lines 125-127 says a management dashboard is
--- meant to read it and :148 already grants exactly these two. Its insert at
--- supabaseStore.js:2293 is deliberately fire-and-forget - `.then(() => {},
--- () => {})` - so a revoked INSERT here would fail SILENTLY and the revenue
--- movement figures would quietly go empty. That is the worst failure shape in
--- this migration: no error reaches anyone.
-grant select, insert on
-  public.audit_logs,
-  public.client_price_changes,
-  public.payout_events
-to authenticated;
+    -- NO DELETE: nothing in the browser deletes from these. account_snapshots
+    -- loses its DELETE safely because deleteSupabaseDailyImport removes only the
+    -- daily_imports row and the children go by ON DELETE CASCADE, which is a
+    -- referential action and is not privilege-checked. clients is soft-deleted -
+    -- softDeleteSupabaseClient (supabaseStore.js:2334) is an UPDATE - which makes
+    -- step_52's "cam deletes its own clients" policy unreachable. That is correct
+    -- and deliberate: do NOT add delete here to make the policy live again.
+    ('account_snapshots',        'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    -- NOT read-only: saveAlgorithmBenchmarks upserts at supabaseStore.js:3312,
+    -- called from the My Futures Book import. An earlier count got this wrong.
+    ('algorithm_benchmarks',     'select, insert, update', 'step 56, measured on supabaseStore.js:3312'),
+    ('cam_profiles',             'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    ('cam_time_off',             'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    ('client_credentials',       'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    ('clients',                  'select, insert, update', 'step 56, soft-deleted at supabaseStore.js:2334'),
+    ('daily_sop_checklists',     'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    ('log_algo_history',         'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    ('reports',                  'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    -- The SOP tables are NOT uniform. These two are written by the SOP editor;
+    -- sop_templates below is seeded by migration and only read.
+    ('sop_items',                'select, insert, update', 'step 56, measured on supabaseStore.js'),
+    ('sop_sections',             'select, insert, update', 'step 56, measured on supabaseStore.js'),
 
--- Read only.
---   app_users        every write goes through api/admin/users.js on the service
---                    role; this restates step 51's intent in a shape that
---                    cannot go stale, and drops the MAINTAIN it left behind.
---   close_summaries  written by replace_close_summaries, which is SECURITY
---                    DEFINER (step_48:147-204) and so runs as its owner.
---                    Revoking the DML here does not break that write.
---   sop_templates    seeded by migration; the browser only reads it. Note that
---                    sop_sections and sop_items ARE written, above: "the SOP
---                    tables are desk reference" would break the SOP editor.
---   strategy_templates  the one judgement call in this file. No browser caller
---                    names it, so "grant nothing" is defensible. SELECT is
---                    granted because step_52:49 and :264 deliberately left it
---                    the open policy, calling it desk reference a CAM may
---                    legitimately read; revoking the grant would contradict a
---                    decision taken on purpose one migration ago while adding
---                    no safety, since a read is governed by that policy and
---                    cannot destroy anything. If the desk decides a CAM has no
---                    business reading the set-file catalogue, remove it here
---                    and say so in step 52 as well.
-grant select on
-  public.app_users,
-  public.close_summaries,
-  public.sop_templates,
-  public.strategy_templates
-to authenticated;
+    -- APPEND ONLY. client_price_changes has no reader in this repository and
+    -- SELECT is kept anyway: step_42:125-127 says a management dashboard is meant
+    -- to read it and :148 already grants exactly these two. Its insert at
+    -- supabaseStore.js:2293 is deliberately fire-and-forget - `.then(() => {},
+    -- () => {})` - so a revoked INSERT would fail SILENTLY and the revenue
+    -- movement figures would quietly go empty. That is the worst failure shape in
+    -- this migration: no error reaches anyone.
+    ('audit_logs',               'select, insert', 'step 56, measured on supabaseStore.js'),
+    ('client_price_changes',     'select, insert', 'step 42:148, restated - a revoked insert here is SILENT'),
+    ('payout_events',            'select, insert', 'step 56, measured on supabaseStore.js'),
 
--- AND TWO TABLES GET NOTHING BACK: ingest_admission_settings and
--- ingest_quarantine_reports. Both carry a restrictive `deny browser direct
--- access` policy (step_45:490, step_46:266) and no permissive policy at all, so
--- authenticated already reads no row of either. They held all eight anyway,
--- because they were created after step 43 and born with them - which is the
--- clearest illustration in this database of why the default privileges below
--- matter. The four tables step_28 already closed - ingest_batches,
--- ingest_devices, ingest_enrollments, ingest_pair_rate_limits - are left alone.
+    -- READ ONLY.
+    ('app_users',                'select', 'step 51, in a shape that cannot go stale - every write is api/admin/users.js on the service role'),
+    ('close_summaries',          'select', 'step 48:147-204, written by replace_close_summaries, which is SECURITY DEFINER'),
+    ('sop_templates',            'select', 'step 56, seeded by migration and only read'),
+    -- The one judgement call left in this file. No browser caller names
+    -- strategy_templates, so "grant nothing" is defensible; SELECT is granted
+    -- because step_52:49 and :264 deliberately left it the open policy, calling
+    -- it desk reference a CAM may legitimately read. Revoking it would contradict
+    -- a decision taken on purpose one migration ago while adding no safety, since
+    -- a read is governed by that policy and cannot destroy anything.
+    ('strategy_templates',       'select', 'step 52:49 and :264, desk reference a CAM may read'),
+    -- STEP 55'S TWO TABLES, AND THE REASON THIS WHOLE SECTION IS A LOOP. Step 55
+    -- decided these are read-only for the browser and argued it at length; this
+    -- file runs after it and must not be the thing that widens them. Step 55
+    -- granted its SELECT to `anon, authenticated`; step 56 narrows that to
+    -- authenticated and the header says why.
+    ('account_live_samples',     'select', 'step 55:714-717, read-only so a CAM cannot forge a green light'),
+    ('account_tracker_settings', 'select', 'step 55:714-717, read-only - the screens read stale_sample_seconds'),
+
+    -- NOTHING AT ALL. ingest_admission_settings and ingest_quarantine_reports
+    -- each carry a restrictive `deny browser direct access` policy (step_45:490,
+    -- step_46:266) and no permissive policy, so authenticated already reads no
+    -- row of either; they held all eight anyway, because they were created after
+    -- step 43 and born with them. The other four were revoked outright by
+    -- step_28:356-359 and this file leaves them exactly as they are - WHICH IT
+    -- CAN ONLY DO BY NAMING THEM, because the catalogue default would open all
+    -- four.
+    ('ingest_admission_settings', '', 'step 45:490, restrictive deny and no permissive policy'),
+    ('ingest_quarantine_reports', '', 'step 46:266, restrictive deny and no permissive policy'),
+    ('ingest_batches',            '', 'step 28:356-359, revoked outright'),
+    ('ingest_devices',            '', 'step 28:356-359, revoked outright'),
+    ('ingest_enrollments',        '', 'step 28:356-359, revoked outright'),
+    ('ingest_pair_rate_limits',   '', 'step 28:356-359, revoked outright');
+
+  -- THE LOOP. Every base table in public, read from the catalogue, with no list.
+  for r in
+    select c.relname::text as table_name,
+           coalesce(e.privileges, 'select, insert, update, delete') as privileges,
+           (e.table_name is not null) as decided
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    left join step_56_exceptions e on e.table_name = c.relname::text
+    where n.nspname = 'public'
+      and c.relkind in ('r', 'p')
+    order by 1
+  loop
+    if r.privileges <> '' then
+      -- %s and not %I: the privilege list is a literal out of this file, and the
+      -- table name goes through %I so a name needing quotes still works.
+      execute format('grant %s on public.%I to authenticated', r.privileges, r.table_name);
+    end if;
+  end loop;
+
+  -- THE TABLES NOBODY HAS DECIDED ABOUT, named rather than granted in silence.
+  select array_agg(c.relname::text order by c.relname)
+    into took_the_default
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  left join step_56_exceptions e on e.table_name = c.relname::text
+  where n.nspname = 'public' and c.relkind in ('r', 'p') and e.table_name is null;
+
+  if took_the_default is not null then
+    raise notice
+      'step 56: % table(s) are named in no exception row and took the catalogue '
+      'default of select, insert, update, delete: %. None of them can TRUNCATE, '
+      'TRIGGER, REFERENCE or MAINTAIN - that part needs no list. But if one of '
+      'these was meant to be narrower than four verbs, it needs a row in the '
+      'exception table in step_56_table_privilege_lockdown.sql, and this NOTICE '
+      'is the only warning there is.',
+      array_length(took_the_default, 1), array_to_string(took_the_default, ', ');
+  end if;
+
+  -- AN EXCEPTION ROW FOR A TABLE THAT NO LONGER EXISTS is a dead decision, and a
+  -- dead row is how the next reader concludes a table is locked down when nothing
+  -- locked it down. Not fatal - dropping a table must not make an earlier
+  -- migration unrunnable - and the test beside this file fails on it instead.
+  select array_agg(e.table_name order by e.table_name)
+    into stale
+  from step_56_exceptions e
+  where to_regclass(format('public.%I', e.table_name)) is null;
+
+  if stale is not null then
+    raise notice
+      'step 56: % exception row(s) name a table that is not in public: %. '
+      'Each one is a decision about nothing; remove it.',
+      array_length(stale, 1), array_to_string(stale, ', ');
+  end if;
+
+  -- THE LOOP CHECKING ITS OWN WORK, asked of the catalogue. A typo'd privilege
+  -- string is otherwise invisible: `grant selct` raises, but a row that says
+  -- `select, insert` where `select` was meant does not.
+  --
+  -- A WARNING AND NOT AN EXCEPTION, deliberately, and this is the one place in
+  -- this file where that choice is not obvious. Raising here would roll back this
+  -- DO block - the grants - while leaving the committed `revoke all` above in
+  -- place, which is precisely the "privileges taken away and not restored, on a
+  -- trading day" that section 0 exists to prevent. So the database keeps working
+  -- and says what it disagrees with, and the hard version of this assertion lives
+  -- in step_56_table_privilege_lockdown.test.js, which can fail as loudly as it
+  -- likes because nobody's desk depends on it.
+  select string_agg(format('%s wants [%s] and holds [%s]', e.table_name, want.list, got.list), '; '
+                    order by e.table_name)
+    into disagrees
+  from step_56_exceptions e
+  cross join lateral (
+    select coalesce(string_agg(w, ',' order by w), '') as list
+    from unnest(string_to_array(replace(e.privileges, ' ', ''), ',')) w
+    where w <> ''
+  ) want
+  cross join lateral (
+    select coalesce(string_agg(p, ',' order by p), '') as list
+    from unnest(array['delete', 'insert', 'maintain', 'references',
+                      'select', 'trigger', 'truncate', 'update']) p
+    where has_table_privilege('authenticated', format('public.%I', e.table_name), p)
+  ) got
+  where to_regclass(format('public.%I', e.table_name)) is not null
+    and want.list <> got.list;
+
+  if disagrees is not null then
+    raise warning
+      'step 56: the grant loop did not produce what the exception table says: %. '
+      'Every other privilege in this file is still as intended; this names the '
+      'rows that are not.', disagrees;
+  end if;
+end
+$do$;
 
 -- ---------------------------------------------------------------------------
 -- 3. The four function grants steps 52 and 53 did not reach.
@@ -422,10 +667,13 @@ grant execute on function public.login_email_for_username(text) to anon;
 grant execute on function public.current_app_user() to anon;
 
 -- ---------------------------------------------------------------------------
--- 5. Default privileges, so table 38 is not born with the hole.
+-- 5. Default privileges, so the NEXT table is not born with the hole.
 --
 -- anon: nothing, ever. authenticated: the four verbs row level security
--- governs, and none of the four it does not. A new table therefore arrives
+-- governs, and none of the four it does not - the SAME four section 2's loop
+-- gives a table it has never heard of, deliberately, so that a table's
+-- privileges do not depend on which side of this migration it was created on. A
+-- new table therefore arrives
 -- readable and writable by a signed-in session but IMPOSSIBLE to truncate, and
 -- since step 44 every new table carries its own RLS and its own policy inline,
 -- so "readable" still means "the rows a policy admits" - which for a table with

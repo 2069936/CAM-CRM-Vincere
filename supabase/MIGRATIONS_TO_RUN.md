@@ -32,7 +32,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
 | 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts in four words — `running`, `idle`, `no_strategies` (the VPS looked and nothing is loaded) and `unmeasured` (nobody looked) — plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
-| 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back only the DML verbs the browser is measured to use; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty all 32 tables and no policy would see it |
+| 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back by a LOOP over the catalogue with one exception table for the tables that get less than the four DML verbs — every row naming what decided it; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty 32 of the 37 tables and no policy would see it. Also narrows step 55's SELECT grant on the two tracker tables from `anon, authenticated` to `authenticated` |
 
 ## These three groups behave differently
 
@@ -129,9 +129,10 @@ twice to sign in and writes it never, and every write goes through
 is deliberately untouched - revoking it locks every user out of the CRM.
 
 **56 takes away the four privileges row level security cannot govern, and it is
-numbered 56 because 54 and 55 are claimed by branches that have not merged.**
-Draft PR 65 holds step 54 and PR 67 holds step 55; 56 was taken so neither has
-to renumber.
+numbered 56 because 54 and 55 were claimed by branches that had not merged.**
+Draft PR 65 still holds step 54. PR 67 held step 55 and **has since merged** —
+after 56 was written and before 56 could merge, which is the one thing worth
+knowing about this file before reading it.
 
 Every table in this database was born holding all eight privileges for `anon`
 and for `authenticated`, because a Supabase project ships
@@ -154,6 +155,43 @@ security at all:
 So 56 revokes everything from both browser roles and grants back only the verbs
 the browser is measured to use — `anon` gets nothing at all — and then changes
 the default privileges so the next table is not born with the hole.
+
+**And the migration against staleness went stale, which is why its shape changed
+before it merged.** The argument above is against enumerating what to REMOVE;
+56's first draft then enumerated what to KEEP, in five hand-written
+`grant ... on public.a, public.b, ...` statements naming 33 tables. That goes
+stale the same way, one direction over — when a TABLE is added rather than when a
+PRIVILEGE is. Step 55 landed two tables and both came out of 56 holding nothing,
+while a test beside it asserted a hard-coded count of 37 against a schema that
+now holds 39.
+
+Both halves are now read from the catalogue. The revoke always was. The
+grant-back is a loop over every base table in `public`, with one **exception
+table** for the tables that get less than the four DML verbs — and every row in
+it names the migration or the measurement that decided it. The exception table is
+not a convenience: step 55 deliberately made its two tables read-only for the
+browser, 56 runs after 55, so a four-verb loop with no exceptions would have
+handed INSERT, UPDATE and DELETE straight back and 56 would have been the thing
+that undid it. The same is true of the four `ingest%` tables step 28 closed and
+the two steps 45 and 46 closed.
+
+**A table in neither place gets the four DML verbs and 56 says its name in a
+NOTICE.** The four verbs because that is exactly what a table created *after* 56
+gets from the default privileges, so a table's privileges do not depend on which
+side of 56 it was created on; the NOTICE because granting in silence is how step
+55 would have been undone. It is not fatal — a migration that refused to run
+until somebody edited it would be the hand-written list again. If you run 56 and
+see a table name you did not expect in that NOTICE, it needs a row in the
+exception table.
+
+**56 also narrows one decision step 55 made.** Step 55 granted SELECT on
+`account_live_samples` and `account_tracker_settings` to `anon, authenticated`;
+step 55's own line now reads `to authenticated`. Nothing reads either table
+without a session — the overview effect that reads them returns early until it
+has a signed-in client list, both SELECT policies are `to authenticated`, and
+`/database`'s 20-table probe names neither — so the anon half returned `200 []`
+and bought nothing, and 56's blanket revoke took it anyway. The end state is
+unchanged; what changed is that the two files now say the same thing.
 
 **It is safe to run at any time and needs no deploy.** It removes privileges
 nothing in this repository uses. The browser's entire PostgREST surface is

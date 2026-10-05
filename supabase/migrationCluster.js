@@ -296,6 +296,31 @@ async function applyFile(db, name) {
 export const DECLARED_HISTORY_FIXUPS = Object.keys(HISTORY_FIXUPS);
 
 /**
+ * Applies one migration file and returns what it said on the way through.
+ *
+ * WHY A NOTICE IS WORTH CAPTURING. Step 56 grants the four DML verbs to a table
+ * it has never been told about and RAISES A NOTICE naming it, deliberately,
+ * rather than refusing to run - a migration that had to be edited every time a
+ * table landed would be the stale list it exists to replace. That makes the
+ * NOTICE the whole of the warning, and a warning nothing asserts is a comment.
+ *
+ * PGlite passes `onNotice` straight through from the wire protocol, so this is
+ * the real NOTICE the Supabase SQL editor would print, not a reconstruction.
+ *
+ * @param {object} db a cluster from startMigrationCluster.
+ * @param {string} name a migration file name in this directory.
+ * @returns {Promise<string[]>} every NOTICE and WARNING message, in order.
+ */
+export async function applyFileCollectingNotices(db, name) {
+  const notices = [];
+  const fixup = HISTORY_FIXUPS[name];
+  if (fixup) await db.exec(fixup);
+  const sql = readFileSync(new URL(name, import.meta.url), 'utf8');
+  await db.exec(sql, { onNotice: (notice) => notices.push(String(notice.message || '')) });
+  return notices;
+}
+
+/**
  * THE HARNESS VALIDATING ITSELF.
  *
  * Creates a throwaway table and demands that it was born with exactly the ACL

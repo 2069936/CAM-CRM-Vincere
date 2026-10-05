@@ -674,7 +674,10 @@ alter table public.account_tracker_settings enable row level security;
 -- has to be revisited every time PostgreSQL adds a letter, needs no version-gated
 -- keyword to be written here, and leaves an ACL that can be ASSERTED as a
 -- complement - exactly SELECT and nothing else - rather than one privilege at a
--- time. After this file: anon=r/postgres,authenticated=r/postgres.
+-- time. After this file: authenticated=r/postgres, and nothing for anon - the
+-- grant below names only authenticated. The draft that measured
+-- `anon=r/postgres,authenticated=r/postgres` granted SELECT to both; see the
+-- note beside the grant for why the anon half went.
 --
 -- THE OTHER THIRTY-TWO TABLES. This closes the hole for these two only. Measured
 -- across the whole production database: `authenticated` can TRUNCATE 32 of 37
@@ -683,6 +686,16 @@ alter table public.account_tracker_settings enable row level security;
 -- close - a blanket revoke across every existing table is its own migration with
 -- its own reading of what each table's browser path actually needs. Whoever reads
 -- this next: the gap is real, it is measured, and it is still open.
+--
+-- IT IS NOW CLOSED BY step_56_table_privilege_lockdown.sql, which is that
+-- migration, and which reads the catalogue instead of carrying the list of 32
+-- this paragraph counted. Note what it had to do about THESE two tables: step 56
+-- revokes everything from both browser roles on every table and grants back by a
+-- loop, and a loop that granted the four DML verbs to everything would have handed
+-- INSERT, UPDATE and DELETE straight back here and undone the denials above. So
+-- these two tables are named in step 56's exception table, with this file as the
+-- reason. A table added after step 56 that is meant to be narrower than four
+-- verbs needs the same row.
 --
 -- The two layers below still fail in different directions, which is why both are
 -- here for the verbs RLS does reach:
@@ -696,7 +709,8 @@ alter table public.account_tracker_settings enable row level security;
 --     RESTRICTIVE, or naming the right verb - the three things that went wrong
 --     here once already.
 --
--- SELECT STAYS, on both tables, and that is the whole point of the pair: the CAM
+-- SELECT STAYS FOR A SIGNED-IN SESSION, on both tables, and that is the whole
+-- point of the pair: the CAM
 -- Overview reads account_live_samples directly under step 52's predicate - one
 -- PostgREST request for a whole book, no serverless invocations - and the screens
 -- read stale_sample_seconds so that the number is not copied into JavaScript.
@@ -711,10 +725,36 @@ alter table public.account_tracker_settings enable row level security;
 -- Idempotent: revoking a privilege that is already absent is a no-op, and the
 -- grant that follows is the same grant every time.
 -- ---------------------------------------------------------------------------
+-- THE REVOKE NAMES anon AND THE GRANT DOES NOT, which is a narrowing step 56
+-- made to this file after it merged. The original granted SELECT to `anon,
+-- authenticated`, by symmetry with the revoke above and without rechecking it -
+-- the same way step 51 arrived at its claim about app_users. Rechecked:
+--
+--   * The only browser reader is loadSupabaseAccountTracker
+--     (src/domain/supabaseStore.js:889), called from one effect
+--     (src/App.jsx:10539-10563) that returns early unless it already has a list
+--     of client ids - which only exists for a signed-in session. The panel is in
+--     the browser and a browser showing it holds a session, so this reads as
+--     `authenticated`, never as anon.
+--   * Neither SELECT policy below admits anon: both are `for select to
+--     authenticated`. The only anon-facing policies here are the restrictive
+--     denials. So the anon grant returned `200 []` and never a row.
+--   * loadSupabaseDiagnostics - the one read that happens with no session,
+--     because /database renders before the session gate - probes twenty tables
+--     and neither of these is one of them.
+--
+-- A grant that is dead today is one a policy added later turns live by accident.
+-- step_56_table_privilege_lockdown.sql revokes every table privilege from anon
+-- anyway, so this line changes no end state once 56 has run; what it changes is
+-- that the two files now say the same thing, and that the invariant in
+-- supabase/anon_keeps_the_login_function.test.js - no migration grants a table
+-- privilege to anon - holds by reading the directory rather than by trusting a
+-- later step to clean up. If something ever does need the tracker without a
+-- session, put `anon` back here and say so in that test.
 revoke all on public.account_live_samples from anon, authenticated;
 revoke all on public.account_tracker_settings from anon, authenticated;
-grant select on public.account_live_samples to anon, authenticated;
-grant select on public.account_tracker_settings to anon, authenticated;
+grant select on public.account_live_samples to authenticated;
+grant select on public.account_tracker_settings to authenticated;
 
 do $account_tracker_policies$
 begin

@@ -33,6 +33,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   BEYOND_RLS_FOUR,
   DML_FOUR,
+  applyFileCollectingNotices,
   migrationFilesInOrder,
   one,
   privilegesOn,
@@ -102,15 +103,42 @@ const EXPECTED = {
   close_summaries: 'S', // written by a SECURITY DEFINER rpc, not by the browser
   sop_templates: 'S',
   strategy_templates: 'S',
+  /* STEP 55'S PAIR, AND THE REASON THIS WHOLE FILE CHANGED SHAPE. step 55 merged
+   * between step 56 being written and step 56 being merged. Step 56's first draft
+   * granted back through five hand-written per-table lists, which had never heard
+   * of these two, so both came out of it holding nothing - and a four-verb loop
+   * over the catalogue would have gone the other way and handed back the INSERT,
+   * UPDATE and DELETE step 55 spent three rounds of review revoking. They are
+   * read-only for the browser because a CAM able to write account_live_samples can
+   * forge a green light on its own client. */
+  account_live_samples: 'S',
+  account_tracker_settings: 'S',
   // nothing at all
   ingest_admission_settings: '',
   ingest_quarantine_reports: '',
-  // and the four step 28 already closed, restated so this map covers all 37
+  // and the four step 28 already closed. Step 56 can only leave them alone by
+  // NAMING them, because its catalogue default would open all four.
   ingest_batches: '',
   ingest_devices: '',
   ingest_enrollments: '',
   ingest_pair_rate_limits: '',
 };
+
+/* The tables step 56's exception table deliberately does NOT narrow: all four
+ * verbs, measured. Derived rather than written twice, so this cannot disagree
+ * with EXPECTED. */
+const FULL_DML_TABLES = Object.entries(EXPECTED)
+  .filter(([, code]) => code === 'SIUD').map(([table]) => table);
+
+/* THE EXCEPTION TABLE, read out of the migration as a list of names.
+ *
+ * The only text-scrape in this file, and it is here to be cross-checked against
+ * the live catalogue rather than believed: a row naming a table that does not
+ * exist is a decision about nothing, and a dead row is how the next reader
+ * concludes a table is locked down when nothing locked it down. The migration
+ * raises a NOTICE for these; this is the half that fails. */
+const EXCEPTION_ROWS = [...sql.matchAll(/^\s*\('(\w+)',\s*'([a-z, ]*)',/gm)]
+  .map((match) => ({ table: match[1], privileges: match[2].trim() }));
 
 const LETTER = { S: 'SELECT', I: 'INSERT', U: 'UPDATE', D: 'DELETE' };
 const expand = (code) => [...code].map((ch) => LETTER[ch]).sort();
@@ -169,16 +197,20 @@ describe('step 56 exists and is the one that runs last', () => {
     expect(Math.max(...numbers)).toBe(56);
   });
 
-  it('says why 54 and 55 were skipped', () => {
-    // Both are claimed by unmerged branches. A reader who finds a gap in the
-    // numbering must not conclude two files were lost.
+  it('says why 54 is skipped, and that 55 merged in between', () => {
+    /* 54 is still claimed by an unmerged branch, so a reader who finds a gap in
+     * the numbering must not conclude a file was lost. 55 is no longer a gap: it
+     * merged after this file was written and before it could merge, which is the
+     * whole reason this file's grant-back is a loop. */
     expect(raw).toMatch(/54 is claimed by draft PR 65/i);
     expect(raw).toMatch(/55 by PR 67/i);
+    expect(raw).toMatch(/THE MIGRATION\s+-- AGAINST STALENESS WENT STALE|MIGRATION AGAINST STALENESS WENT STALE/);
   });
 
   it('is in the runbook table and at the end of the run order', () => {
     expect(runbook).toMatch(/^\| 56 \| `step_56_table_privilege_lockdown\.sql` \|.*\|$/m);
-    expect(runbook).toContain('→ 53 → 56.');
+    // 55 is in the order now. It merged before this file did.
+    expect(runbook).toContain('→ 53 → 55 → 56.');
   });
 });
 
@@ -257,7 +289,19 @@ describe('authenticated cannot do the four things row level security cannot gove
       if (bad.length) offenders.push(`${tablename}: ${bad.join(',')}`);
     }
     expect(offenders).toEqual([]);
-    expect(tables.rows).toHaveLength(37); // 32 + app_users + the 4 ingest tables
+    /* A FLOOR AND NOT AN EQUALITY, and that is a fix rather than a loosening.
+     *
+     * This line read `toHaveLength(37)`. step 55 landed two tables and the number
+     * became 39, so a migration with nothing to do with this one broke this
+     * assertion - the same defect as the hand-written grant list it sat beside,
+     * in the test instead of in the SQL. A count that has to be edited every time
+     * a migration lands is not measuring anything; the loop above already
+     * measured every table the catalogue has.
+     *
+     * The floor is still worth having. It is the guard against the shape where
+     * this whole test passes because the query matched nothing - zero tables,
+     * zero offenders, green. */
+    expect(tables.rows.length).toBeGreaterThan(35);
   });
 
   it('is REFUSED when it tries to truncate, on every table, as the role', async () => {
@@ -351,12 +395,41 @@ describe('authenticated cannot do the four things row level security cannot gove
 
 // ---------------------------------------------------------------------------
 describe('authenticated CAN still do every write the browser actually makes', () => {
-  it('holds exactly the measured grant on each of the 37 tables and nothing more', async () => {
+  it('holds exactly the measured grant on each measured table and nothing more', async () => {
     const got = {};
     for (const table of Object.keys(EXPECTED)) got[table] = (await privilegesOn(after, 'authenticated', table)).sort();
     const want = {};
     for (const [table, code] of Object.entries(EXPECTED)) want[table] = expand(code);
     expect(got).toEqual(want);
+  });
+
+  it('and the map above covers every table in public, counted from the catalogue', async () => {
+    /* THE ASSERTION THAT REPLACES `toHaveLength(37)`, and it does the job that
+     * count was trying to do without being a number anybody has to edit.
+     *
+     * The map is checked for exactness above. This checks it is COMPLETE: every
+     * base table the catalogue has is either in the map, or holds exactly the four
+     * DML verbs - the catalogue default step 56 gives a table it has never heard
+     * of. So a table added by step 57 needs no edit here and is still asserted:
+     * it lands in the second branch, where the assertion is that it got the four
+     * governed verbs and none of the four that are not. */
+    const tables = await after.query(
+      "select tablename from pg_tables where schemaname='public' order by 1",
+    );
+    const wrong = [];
+    for (const { tablename } of tables.rows) {
+      if (Object.hasOwn(EXPECTED, tablename)) continue;
+      const held = await privilegesOn(after, 'authenticated', tablename);
+      if (held.join(',') !== DML_FOUR.slice().sort().join(',')) wrong.push(`${tablename}: ${held.join(',')}`);
+    }
+    expect(wrong).toEqual([]);
+    /* AND NOTHING IS ASSERTED ABOUT HOW MANY TOOK THE DEFAULT, on purpose. Today
+     * it is none, because every table that exists is measured above. Asserting
+     * that it stays none would be `toHaveLength(37)` again: the next migration to
+     * land a table would fail this test for no reason of its own. The invariants
+     * that must never move are asserted over the whole catalogue elsewhere in this
+     * file, and they need no list. */
+    expect(tables.rows.length).toBeGreaterThanOrEqual(Object.keys(EXPECTED).length);
   });
 
   it('every measured verb is permitted when exercised as the role', async () => {
@@ -568,6 +641,229 @@ describe('a table created AFTER the migration is not born with the hole', () => 
       where n.nspname = 'public' and d.defaclobjtype = 'r'
         and pg_get_userbyid(d.defaclrole) = 'supabase_admin'`);
     expect(line).not.toMatch(/anon=/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE REGRESSION THAT JUST HAPPENED, AND THE ONE TEST THAT WOULD HAVE CAUGHT IT.
+//
+// Step 55 merged after this migration was written and before it could merge. The
+// first draft granted back through five hand-written `grant ... on public.a,
+// public.b, ...` statements, so the two new tables came out of it holding
+// nothing; and the obvious fix - a loop granting the four DML verbs to
+// everything - would have gone the other way and handed back the INSERT, UPDATE
+// and DELETE step 55 spent three rounds of review revoking.
+//
+// Nothing in this suite could see either failure, because every assertion about
+// per-table privileges was written against a map of the tables that existed when
+// the map was written. So these tests are about a table step 56 has NEVER HEARD
+// OF, created on the only side of this migration where it is dangerous: BEFORE
+// it, which is where step 55's tables were.
+// ---------------------------------------------------------------------------
+describe('a table step 56 has never heard of, created BEFORE it runs', () => {
+  let db;
+  let notices;
+
+  beforeAll(async () => {
+    /* The step-55 scenario exactly: a table that exists when step 56 runs and is
+     * named nowhere in it. `up_to: 55` then the table then the real file, because
+     * startMigrationCluster cannot interleave and the interleaving is the point. */
+    db = await startMigrationCluster(migrationFilesInOrder({ upTo: 55 }));
+    await db.exec(`create table public.step_55_and_a_half (
+      id uuid primary key default gen_random_uuid(),
+      client_id uuid references public.clients(id) on delete cascade,
+      note text);`);
+    // Born with all eight, which is the hole, and the reason this matters at all.
+    expect(await privilegesOn(db, 'authenticated', 'step_55_and_a_half')).toHaveLength(8);
+    notices = await applyFileCollectingNotices(db, 'step_56_table_privilege_lockdown.sql');
+  }, 120000);
+
+  it('DOES NOT END UP WITH TRUNCATE, which is the whole episode in one assertion', async () => {
+    /* Not the catalogue alone: the role is made to try it. TRUNCATE is not subject
+     * to row level security, so no policy test in this repository says one word
+     * about this table, and the grant is the only thing standing in the way. */
+    const error = await refusalAsRole(db, 'authenticated', 'truncate table public.step_55_and_a_half');
+    expect(error).toMatch(/^permission denied for table step_55_and_a_half/);
+  });
+
+  it('and none of the other three row level security cannot govern either', async () => {
+    const held = await privilegesOn(db, 'authenticated', 'step_55_and_a_half');
+    expect(held.filter((p) => BEYOND_RLS_FOUR.includes(p))).toEqual([]);
+  });
+
+  it('gives anon nothing on it', async () => {
+    expect(await privilegesOn(db, 'anon', 'step_55_and_a_half')).toEqual([]);
+    expect(await refusalAsRole(db, 'anon', 'select * from public.step_55_and_a_half limit 1'))
+      .toMatch(DENIED);
+  });
+
+  it('gives authenticated the four verbs, the same four a table created AFTER gets', async () => {
+    /* The deliberate half of the decision. An unlisted table could have been given
+     * nothing instead, and that was rejected: section 5's `alter default
+     * privileges` hands the four verbs to a table created after this file, so
+     * giving an unlisted table nothing would make a table's privileges depend on
+     * which side of this migration it happened to be created on. */
+    expect(await privilegesOn(db, 'authenticated', 'step_55_and_a_half')).toEqual(DML_FOUR.slice().sort());
+  });
+
+  it('and the migration SAYS SO, by name, in a NOTICE', () => {
+    /* The other half, and the reason the NOTICE is captured rather than described.
+     * Granting in silence is how step 55 would have been undone: nothing in the
+     * catalogue distinguishes a table nobody has decided about from a table
+     * somebody decided should be read-only. So the file names them out loud.
+     *
+     * It is a NOTICE and not an exception deliberately - a migration that refused
+     * to run until somebody edited it would be the hand-written list again, and
+     * Pedro re-runs files he is not sure landed. */
+    const named = notices.filter((n) => /step_55_and_a_half/.test(n));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toMatch(/named in no exception row/i);
+    expect(named[0]).toMatch(/exception table in step_56_table_privilege_lockdown\.sql/);
+  });
+
+  it('and does not warn that the loop disagreed with the exception table', () => {
+    /* The migration checks its own loop row by row and raises a WARNING on a
+     * mismatch. A clean run must produce none - which is also what proves the
+     * check RAN: a deleted check and a passing check both say nothing, so the
+     * assertion below pins the statement's presence and this one pins its silence. */
+    expect(notices.filter((n) => /did not produce what the exception table says/.test(n)))
+      .toEqual([]);
+  });
+
+  it('says nothing about the tables it HAS heard of, so the notice is signal', async () => {
+    /* A notice that fires for all 39 tables every run is a notice nobody reads.
+     * Every table that exists today is named in the exception table, which is why
+     * the only name in it is the one this test invented. */
+    const defaulted = notices.filter((n) => /named in no exception row/i.test(n));
+    expect(defaulted).toHaveLength(1);
+    for (const table of Object.keys(EXPECTED)) {
+      expect(defaulted[0], `${table} is in the exception table and must not be named`)
+        .not.toContain(table);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('the exception table, which is the only list left in the file', () => {
+  it('grants back through a loop over the catalogue, not through a per-table list', () => {
+    /* THE SHAPE, asserted so the five hand-written grant statements cannot come
+     * back. The revoke already had no list; the grant-back is what went stale. */
+    expect(flat).toMatch(/for r in[\s\S]*from pg_class c[\s\S]*loop/);
+    expect(flat).toContain("format('grant %s on public.%i to authenticated'");
+    // Not one `grant <verbs> on public.<table> to authenticated` left anywhere.
+    expect(flat).not.toMatch(/grant\s+[a-z, ]*on\s+public\.\w+[^;]*to authenticated/);
+  });
+
+  it('checks its own loop, and says so rather than failing a trading day over it', () => {
+    /* A TEXT ASSERTION, and the reason is in the migration beside the statement.
+     * Raising there would roll back the DO block - the grants - while leaving the
+     * committed `revoke all` above in place, which is exactly the "privileges taken
+     * away and not restored" that section 0 exists to prevent. So the migration
+     * warns and this file is where the same claim fails hard: the per-row assertion
+     * below is the loud version. These two lines only guarantee the migration's own
+     * half has not been quietly deleted. */
+    expect(flat).toContain('raise warning');
+    expect(flat).toMatch(/did not produce what the exception table says/);
+    expect(flat).toMatch(/has_table_privilege\('authenticated', format\('public\.%i', e\.table_name\), p\)/);
+  });
+
+  it('reads as rows this test can see, so what follows is not asserted against a comment', () => {
+    expect(EXCEPTION_ROWS.length).toBeGreaterThan(30);
+    expect(EXCEPTION_ROWS.map((row) => row.table)).toContain('account_live_samples');
+    expect(EXCEPTION_ROWS.map((row) => row.table)).toContain('ingest_batches');
+  });
+
+  it('names no table that does not exist, because a dead row is a decision about nothing', async () => {
+    /* The migration raises a NOTICE for these and carries on - dropping a table
+     * must not make an earlier migration unrunnable. This is the half that fails,
+     * and it is the right place for it: nobody's desk depends on this file. */
+    const real = new Set((await after.query(
+      "select tablename from pg_tables where schemaname='public'",
+    )).rows.map((row) => row.tablename));
+    expect(EXCEPTION_ROWS.filter((row) => !real.has(row.table)).map((row) => row.table)).toEqual([]);
+  });
+
+  it('and every row produced exactly the privileges it claims', async () => {
+    /* The migration checks this too and raises a WARNING rather than an exception,
+     * because raising there would roll back the grants while leaving the committed
+     * revoke in place - privileges taken away and not restored, on a trading day,
+     * which is what section 0 exists to prevent. So the loud version is here. */
+    const disagrees = [];
+    for (const { table, privileges } of EXCEPTION_ROWS) {
+      const want = privileges ? privileges.split(',').map((p) => p.trim().toUpperCase()).sort() : [];
+      const held = await privilegesOn(after, 'authenticated', table);
+      if (held.join(',') !== want.join(',')) disagrees.push(`${table}: wants ${want} holds ${held}`);
+    }
+    expect(disagrees).toEqual([]);
+  });
+
+  it('names every table that gets the four verbs too, so silence means "nobody decided"', () => {
+    /* Without these seven rows, a table absent from the exception table could mean
+     * either "four verbs on purpose" or "never heard of it", and the NOTICE above
+     * would be worthless. */
+    const four = EXCEPTION_ROWS
+      .filter((row) => row.privileges === 'select, insert, update, delete')
+      .map((row) => row.table).sort();
+    expect(four).toEqual(FULL_DML_TABLES.slice().sort());
+  });
+
+  it('gives a reason on every row, and the reason names a migration or a file', () => {
+    /* `decided_by` is the column that makes this list different from the one it
+     * replaced: a per-table grant with no reason is a line nobody can safely
+     * change. The six rows that grant NOTHING are the ones this matters most for,
+     * because a loop with no exceptions opens all six. */
+    const rows = [...sql.matchAll(/^\s*\('(\w+)',\s*'([a-z, ]*)',\s*'([^']+)'\)/gm)];
+    expect(rows).toHaveLength(EXCEPTION_ROWS.length);
+    for (const [, table, , reason] of rows) {
+      expect(reason, `${table} must say what decided it`).toMatch(/step \d+|supabaseStore\.js/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('step 55 is not undone by the migration that runs after it', () => {
+  /* The failure a careless fix would have shipped. step 55 revoked everything from
+   * both browser roles on its two tables and granted SELECT back, because a CAM
+   * able to write account_live_samples can forge a green light on its own client,
+   * and a row it can delete is an account that vanishes from the screen that exists
+   * to show it. step 56 runs after step 55, so step 56 wins. */
+  for (const table of ['account_live_samples', 'account_tracker_settings']) {
+    it(`${table} still holds exactly SELECT for authenticated, and nothing for anon`, async () => {
+      expect(await privilegesOn(after, 'authenticated', table)).toEqual(['SELECT']);
+      expect(await privilegesOn(after, 'anon', table)).toEqual([]);
+    });
+
+    it(`and a signed-in CAM is still refused every write on ${table}`, async () => {
+      for (const statement of [
+        `insert into public.${table} (${columnOf[table]}) values (null)`,
+        `update public.${table} set ${columnOf[table]} = ${columnOf[table]} where false`,
+        `delete from public.${table} where false`,
+        `truncate table public.${table}`,
+      ]) {
+        expect(
+          await refusalAsRole(after, 'authenticated', statement, { subject: managerId }),
+          statement,
+        ).toMatch(DENIED);
+      }
+    });
+  }
+
+  it('and the anon SELECT step 55 granted is gone from step 55 ITSELF, not only revoked later', () => {
+    /* The two files disagreed: step 55 granted SELECT to anon and the invariant in
+     * anon_keeps_the_login_function.test.js says no migration grants a table
+     * privilege to anon. Settled by narrowing step 55 rather than by excusing it,
+     * because this file's blanket revoke already made the grant dead - and a dead
+     * grant is one a policy added later turns live by accident, which is the hazard
+     * step 51 left on app_users. The evidence is in this file's header: the one
+     * browser reader is behind a session, no policy admits anon to a row, and the
+     * /database probe does not name either table. */
+    const step55 = readFileSync(new URL('./step_55_account_live_samples.sql', import.meta.url), 'utf8')
+      .split('\n').filter((line) => !line.trimStart().startsWith('--')).join('\n');
+    expect(step55).toContain('grant select on public.account_live_samples to authenticated;');
+    expect(step55).toContain('grant select on public.account_tracker_settings to authenticated;');
+    expect(step55).not.toMatch(/grant select on public\.account_\w+ to[^;]*anon/);
+    // The revoke still names anon, which is what actually takes it away.
+    expect(step55).toContain('revoke all on public.account_live_samples from anon, authenticated;');
   });
 });
 
