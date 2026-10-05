@@ -39,7 +39,7 @@ const raw = exists ? readFileSync(migrationUrl, 'utf8') : '';
 /**
  * The statements, with every kind of prose removed.
  *
- * `--` lines, `/* *​/` blocks and the `comment on` statements all go: several of
+ * `--` lines, `/* *\/` blocks and the `comment on` statements all go: several of
  * them explain at length why there is no total and why nothing here reads
  * `account_snapshots`, and a guard that fails on its own explanation teaches
  * people to delete the explanation. The prose is checked separately, against
