@@ -48,13 +48,22 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Pipe
      * through to invalid_request, writes the response and closes the connection
      * normally. That clean refusal IS the version negotiation: there is no
      * handshake, and none is needed, as long as the agent reads the error code
-     * instead of flattening it. */
+     * instead of flattening it.
+     *
+     * "sample_strategies" IS A THIRD COMMAND, NOT A LONGER sample_accounts. It
+     * reads each live strategy's Realized and Unrealized, which is slower than
+     * the account read and can fail on its own. As its own command it has its own
+     * time limit and its own error codes, so a slow P&L read can never spend the
+     * account reading's five seconds or turn into an account failure. It shares
+     * the one gate, so it is never on the dispatcher beside a close either. */
     public sealed class CaptureRequestProcessor
     {
         private readonly Func<CancellationToken, Task<AutoExportSnapshotV1>> capture;
         private readonly Func<CancellationToken, Task<AccountSampleV1>> sampleAccounts;
+        private readonly Func<CancellationToken, Task<StrategySampleV1>> sampleStrategies;
         private readonly TimeSpan captureTimeout;
         private readonly TimeSpan sampleTimeout;
+        private readonly TimeSpan strategySampleTimeout;
         private int captureInProgress;
 
         /// <param name="sampleAccounts">
@@ -69,11 +78,18 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Pipe
         /// for, and a reading that cannot be had in five seconds is telling us
         /// something about the terminal that waiting will not fix.
         /// </param>
+        /// <param name="sampleStrategies">
+        /// The per strategy reading. Optional, and refused with invalid_request
+        /// when absent, exactly as "sample_accounts" is.
+        /// </param>
+        /// <param name="strategySampleTimeout">Five seconds by default, like the account sample.</param>
         public CaptureRequestProcessor(
             Func<CancellationToken, Task<AutoExportSnapshotV1>> capture,
             TimeSpan captureTimeout,
             Func<CancellationToken, Task<AccountSampleV1>> sampleAccounts = null,
-            TimeSpan? sampleTimeout = null)
+            TimeSpan? sampleTimeout = null,
+            Func<CancellationToken, Task<StrategySampleV1>> sampleStrategies = null,
+            TimeSpan? strategySampleTimeout = null)
         {
             this.capture = capture ?? throw new ArgumentNullException(nameof(capture));
             if (captureTimeout <= TimeSpan.Zero)
@@ -83,6 +99,10 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Pipe
             this.sampleTimeout = sampleTimeout ?? TimeSpan.FromSeconds(5);
             if (this.sampleTimeout <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(sampleTimeout));
+            this.sampleStrategies = sampleStrategies;
+            this.strategySampleTimeout = strategySampleTimeout ?? TimeSpan.FromSeconds(5);
+            if (this.strategySampleTimeout <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(strategySampleTimeout));
         }
 
         public async Task<CaptureResponse> ProcessAsync(
@@ -95,10 +115,13 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Pipe
 
             bool isCapture = String.Equals(request.Command, "capture", StringComparison.Ordinal);
             bool isSample = String.Equals(request.Command, "sample_accounts", StringComparison.Ordinal);
+            bool isStrategySample = String.Equals(request.Command, "sample_strategies", StringComparison.Ordinal);
             // A sample asked of an add-on built without the delegate is not a
             // different situation from a sample asked of an add-on built before
             // the command existed, and must not look like one.
-            if (!isCapture && !(isSample && sampleAccounts != null))
+            if (!isCapture
+                && !(isSample && sampleAccounts != null)
+                && !(isStrategySample && sampleStrategies != null))
                 return Failure(requestId, "invalid_request", "The capture request is invalid.");
 
             if (Interlocked.CompareExchange(ref captureInProgress, 1, 0) != 0)
@@ -109,10 +132,18 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Pipe
                 using (CancellationTokenSource timeout =
                     CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
-                    timeout.CancelAfter(isCapture ? captureTimeout : sampleTimeout);
-                    return isCapture
-                        ? await CaptureAsync(requestId, timeout.Token, cancellationToken).ConfigureAwait(false)
-                        : await SampleAsync(requestId, timeout.Token, cancellationToken).ConfigureAwait(false);
+                    if (isCapture)
+                    {
+                        timeout.CancelAfter(captureTimeout);
+                        return await CaptureAsync(requestId, timeout.Token, cancellationToken).ConfigureAwait(false);
+                    }
+                    if (isStrategySample)
+                    {
+                        timeout.CancelAfter(strategySampleTimeout);
+                        return await SampleStrategiesAsync(requestId, timeout.Token, cancellationToken).ConfigureAwait(false);
+                    }
+                    timeout.CancelAfter(sampleTimeout);
+                    return await SampleAsync(requestId, timeout.Token, cancellationToken).ConfigureAwait(false);
                 }
             }
             finally
@@ -193,6 +224,39 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Pipe
                 Ok = true,
                 RequestId = requestId,
                 Sample = sample,
+            };
+        }
+
+        /* ITS OWN ERROR CODES AGAIN, and not the account sample's either. A
+         * strategy read that fails says so as a strategy failure, so nothing on the
+         * agent can mistake it for the account reading having failed. */
+        private async Task<CaptureResponse> SampleStrategiesAsync(
+            Guid requestId,
+            CancellationToken timeoutToken,
+            CancellationToken cancellationToken)
+        {
+            StrategySampleV1 sample;
+            try
+            {
+                sample = await sampleStrategies(timeoutToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return Failure(requestId, "strategy_sample_timeout", "The strategy sample exceeded its time limit.");
+            }
+            catch
+            {
+                return Failure(requestId, "strategy_sample_failed", "NinjaTrader could not read the strategies.");
+            }
+
+            if (sample == null)
+                return Failure(requestId, "strategy_sample_failed", "NinjaTrader returned no strategy sample.");
+
+            return new CaptureResponse
+            {
+                Ok = true,
+                RequestId = requestId,
+                StrategySample = sample,
             };
         }
 

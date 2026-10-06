@@ -63,6 +63,43 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         public IEnumerable<string> StrategyStates { get; set; }
     }
 
+    /// <summary>
+    /// The per strategy reading: each strategy instance with its Realized and
+    /// Unrealized as the Strategies tab shows them.
+    ///
+    /// A THIRD INTERFACE, for the reason <see cref="IAccountSampleFacade"/> is a
+    /// second one: netstandard2.0 has no default interface members, so a new
+    /// member on an existing interface would break every test double of it.
+    /// </summary>
+    public interface IStrategySampleFacade
+    {
+        IEnumerable<StrategySampleCaptureSource> ReadStrategiesForSample();
+    }
+
+    /// <summary>
+    /// One strategy instance as the per strategy reading sees it. Every
+    /// instance the account holds is reported with its State word, and
+    /// <see cref="StrategySampleBuilder"/> keeps only the live ones, so the rule
+    /// that decides "live" stays in this library where it is testable off Windows.
+    /// </summary>
+    public sealed class StrategySampleCaptureSource
+    {
+        public string AccountName { get; set; }
+        public string StrategyId { get; set; }
+        public string StrategyName { get; set; }
+        public string Instrument { get; set; }
+        public string State { get; set; }
+
+        /// <summary>Null when it could not be read. Never a zero standing in for one.</summary>
+        public decimal? RealizedPnl { get; set; }
+
+        /// <summary>
+        /// Zero when the position was read and is flat; null when it could not be
+        /// read at all.
+        /// </summary>
+        public decimal? UnrealizedPnl { get; set; }
+    }
+
     public sealed class SnapshotBuildContext
     {
         public Guid CaptureId { get; set; }

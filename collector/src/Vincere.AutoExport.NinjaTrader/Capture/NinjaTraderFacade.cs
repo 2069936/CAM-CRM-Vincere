@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using NinjaTrader.Cbi;
@@ -14,8 +15,31 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
     /// facade on NinjaTrader's application dispatcher; returned DTOs no longer hold
     /// live collection enumerators.
     /// </summary>
-    public sealed class NinjaTraderFacade : INinjaTraderFacade, IAccountSampleFacade
+    public sealed class NinjaTraderFacade : INinjaTraderFacade, IAccountSampleFacade, IStrategySampleFacade
     {
+        /// <summary>
+        /// How long the per strategy reading may spend reading P&amp;L, across all
+        /// accounts together. The add-on gives the whole command five seconds; this
+        /// keeps the P&amp;L part to two of them.
+        /// </summary>
+        public static readonly TimeSpan DefaultStrategyPnlBudget = TimeSpan.FromSeconds(2);
+
+        private readonly TimeSpan strategyPnlBudget;
+
+        public NinjaTraderFacade()
+            : this(DefaultStrategyPnlBudget)
+        {
+        }
+
+        /// <param name="strategyPnlBudget">
+        /// The P&amp;L read budget for <see cref="ReadStrategiesForSample"/>. Only a
+        /// test passes anything else.
+        /// </param>
+        public NinjaTraderFacade(TimeSpan strategyPnlBudget)
+        {
+            this.strategyPnlBudget = strategyPnlBudget;
+        }
+
         public IEnumerable<AccountCaptureSource> ReadAccounts()
         {
             return SnapshotAccounts().Select(MapAccount).ToList();
@@ -139,6 +163,188 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                 states.Add(Convert.ToString(strategy.State, CultureInfo.InvariantCulture));
             }
             return states;
+        }
+
+        /* THE PER STRATEGY READING: each strategy instance with the Realized and
+         * Unrealized the Strategies tab shows for it.
+         *
+         * THE SAME ACCOUNTS AS ReadAccountsForSample, from Account.All under its
+         * lock, with AccountSampleRelevance dropping the platform's own fixtures.
+         * The agent then keeps only the accounts it is reporting as connected.
+         *
+         * IDENTITY THE WAY THE CLOSE READS IT. The id goes through the same
+         * PublicString(strategy, "StrategyId", "Id") MapStrategy and ReadOwnership
+         * use, the name is strategy.Name like MapStrategy, the instrument is the
+         * first instrument's FullName, so a live row and the close's row for the
+         * same instance carry the same identity.
+         *
+         * ONE LOCK BEYOND Account.All, account.Strategies, for the copy and nothing
+         * after it. account.Orders and account.Executions are never touched.
+         *
+         * P&L IS READ ONLY FOR LIVE INSTANCES AND ONLY INSIDE A BUDGET. The builder
+         * drops the others, so their P&L would be read for nothing. Past the budget
+         * the remaining rows keep their identity and carry null P&L, which the CRM
+         * shows as "not measured": a reading that ran long loses numbers, never
+         * rows, and never holds the dispatcher past the add-on's own limit. */
+        public IEnumerable<StrategySampleCaptureSource> ReadStrategiesForSample()
+        {
+            List<Account> all;
+            lock (Account.All)
+                all = Account.All.ToList();
+
+            Stopwatch elapsed = Stopwatch.StartNew();
+            var rows = new List<StrategySampleCaptureSource>();
+            foreach (Account account in all)
+            {
+                if (!AccountSampleRelevance.IsRelevant(account.Name))
+                    continue;
+
+                List<StrategyBase> strategies;
+                try
+                {
+                    lock (account.Strategies)
+                        strategies = account.Strategies.ToList();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (StrategyBase strategy in strategies)
+                {
+                    StrategySampleCaptureSource row = ReadStrategyForSample(
+                        account,
+                        strategy,
+                        elapsed.Elapsed < strategyPnlBudget);
+                    if (row != null)
+                        rows.Add(row);
+                }
+            }
+            return rows;
+        }
+
+        private static StrategySampleCaptureSource ReadStrategyForSample(
+            Account account,
+            StrategyBase strategy,
+            bool readPnl)
+        {
+            try
+            {
+                object instrument = strategy.Instruments == null
+                    ? null
+                    : strategy.Instruments.FirstOrDefault();
+                string state = Convert.ToString(strategy.State, CultureInfo.InvariantCulture);
+                bool measure = readPnl && StrategyLiveCount.IsLive(state);
+                return new StrategySampleCaptureSource
+                {
+                    AccountName = account.Name,
+                    StrategyId = PublicString(strategy, "StrategyId", "Id"),
+                    StrategyName = strategy.Name,
+                    Instrument = PublicString(instrument, "FullName"),
+                    State = state,
+                    RealizedPnl = measure ? StrategyPnlRead.Realized(strategy) : null,
+                    UnrealizedPnl = measure ? StrategyPnlRead.Unrealized(strategy) : null,
+                };
+            }
+            catch
+            {
+                // One instance that cannot even be named is left out; the rest of
+                // the account still reads.
+                return null;
+            }
+        }
+
+        /* THE TWO NUMBERS THE STRATEGIES TAB SHOWS, READ THROUGH CANDIDATE MEMBERS.
+         *
+         * Realized: strategy.SystemPerformance.RealTimeTrades.TradesPerformance
+         * .Currency.CumProfit, the strategy's own real time trades since it was
+         * enabled. Unrealized: 0 when Position.MarketPosition is Flat, otherwise
+         * Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency, last price),
+         * with the last price from the position's instrument market data.
+         *
+         * BY REFLECTION, NOT AGAINST THE DECLARED TYPES, and on purpose. This file
+         * compiles against NinjaTrader's licensed assemblies only on a VPS and on
+         * the self-hosted runner, and against stubs everywhere else, and which of
+         * these members each platform version on the fleet declares is not visible
+         * from here. A member that is missing, throws, or answers something that is
+         * not a number makes that half null, which reads "not measured" on the
+         * screen. Shipping with nulls is the documented fallback if the release
+         * check on a VPS shows these members do not reproduce the grid: nothing
+         * else breaks.
+         *
+         * Each half has its own try, so a realized figure survives an unreadable
+         * position and the reverse. ReflectedValue is used rather than PublicValue
+         * because it does not walk the type descriptor, which on a NinjaScript
+         * object is platform code answering property by property. */
+        private static class StrategyPnlRead
+        {
+            public static decimal? Realized(StrategyBase strategy)
+            {
+                try
+                {
+                    object value = strategy;
+                    foreach (string member in new[]
+                    {
+                        "SystemPerformance", "RealTimeTrades", "TradesPerformance", "Currency", "CumProfit",
+                    })
+                    {
+                        value = ReflectedValue(value, member);
+                        if (value == null)
+                            return null;
+                    }
+                    return NullableDecimal(value);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            public static decimal? Unrealized(StrategyBase strategy)
+            {
+                try
+                {
+                    object position = ReflectedValue(strategy, "Position");
+                    if (position == null)
+                        return null;
+                    string marketPosition = Convert.ToString(
+                        ReflectedValue(position, "MarketPosition"),
+                        CultureInfo.InvariantCulture);
+                    if (String.IsNullOrWhiteSpace(marketPosition))
+                        return null;
+                    if (String.Equals(marketPosition.Trim(), "Flat", StringComparison.OrdinalIgnoreCase))
+                        return 0m;
+
+                    object lastPrice = position;
+                    foreach (string member in new[] { "Instrument", "MarketData", "Last", "Price" })
+                    {
+                        lastPrice = ReflectedValue(lastPrice, member);
+                        if (lastPrice == null)
+                            return null;
+                    }
+                    double price = Convert.ToDouble(lastPrice, CultureInfo.InvariantCulture);
+                    if (Double.IsNaN(price) || Double.IsInfinity(price) || price <= 0)
+                        return null;
+
+                    foreach (System.Reflection.MethodInfo method in position.GetType().GetMethods())
+                    {
+                        if (!String.Equals(method.Name, "GetUnrealizedProfitLoss", StringComparison.Ordinal))
+                            continue;
+                        System.Reflection.ParameterInfo[] parameters = method.GetParameters();
+                        if (parameters.Length != 2
+                            || !parameters[0].ParameterType.IsEnum
+                            || parameters[1].ParameterType != typeof(double))
+                            continue;
+                        object currency = Enum.Parse(parameters[0].ParameterType, "Currency");
+                        return NullableDecimal(method.Invoke(position, new[] { currency, (object)price }));
+                    }
+                    return null;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
         }
 
         public IEnumerable<StrategyCaptureSource> ReadStrategies()
