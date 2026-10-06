@@ -10322,13 +10322,35 @@ export function buildIncomeProjection(clients = []) {
  *
  * Off screen rather than hidden: `display: none` collapses layout, and a report
  * whose blocks have no height paginates differently once Chromium lays it out.
+ *
+ * AND INVISIBLE, because "off screen" was never true. ReportPanel's root is
+ * `.report-overlay`, which is `position: fixed; inset: 0`, and a fixed box is
+ * placed against the viewport unless an ancestor has a transform, a filter or
+ * paint containment. This host has none, so the overlay ignored `left: -10000px`
+ * and covered the whole window for the frames each client is parked: the full
+ * report modal flashed over the CAM Overview once per client, and a recording
+ * caught it at 30 fps.
+ *
+ * `visibility: hidden` stops it painting and stops it taking clicks, and it is
+ * the one fix that moves nothing, because visibility is not a layout input.
+ * Measured in Chrome on a real 18-account close, it leaves every box in the
+ * sheet where it was. Containing the overlay instead (`contain: layout paint`,
+ * or any transform) also hides it, but it re-parents the overlay onto this
+ * 1024px host: in a 900px window the sheet then lays out at 920px where it was
+ * 872px, and 210 of its 292 boxes move. The HTML does not change today, since
+ * nothing in the sheet measures itself, but that is a fact about today's sheet.
+ *
+ * The style goes on the host and never on the sheet. The host is not part of
+ * the outerHTML that becomes the PDF; a `visibility: hidden` that reached the
+ * sheet would print a blank page. src/reportSheetParking.test.jsx holds both.
  * ------------------------------------------------------------------------- */
-async function renderReportSheetHtml({ client, dailyImport, camProfile }) {
+export async function renderReportSheetHtml({ client, dailyImport, camProfile }) {
   const host = document.createElement("div");
   host.style.position = "fixed";
   host.style.left = "-10000px";
   host.style.top = "0";
   host.style.width = "1024px";
+  host.style.visibility = "hidden";
   document.body.appendChild(host);
   const root = createRoot(host);
   try {
