@@ -13,10 +13,12 @@ function fakeClient({ settings, desk, samples } = {}) {
     asked,
     from(table) {
       asked.from.push(table);
-      const source = table === 'algorithm_live_settings' ? settings : samples;
-      const fallbackData = table === 'algorithm_live_settings'
-        ? { data: [{ min_cohort_accounts: 6, min_cohort_clients: 3, differs_at_spread: '3.0', min_spread_dollars: 50, cycle_tolerance_seconds: 90 }], error: null }
-        : { data: [], error: null };
+      const source = { algorithm_live_settings: settings, algorithm_live_samples: samples }[table];
+      const fallbackData = {
+        algorithm_live_settings: { data: [{ min_cohort_accounts: 6, min_cohort_clients: 3, differs_at_spread: '3.0', min_spread_dollars: 50, cycle_tolerance_seconds: 90 }], error: null },
+        account_tracker_settings: { data: [{ sample_interval_seconds: 900 }], error: null },
+        algorithm_live_samples: { data: [], error: null },
+      }[table];
       const chain = {
         select() { return chain; },
         in(column, values) { asked.inFilter = { column, values }; return chain; },
@@ -94,7 +96,7 @@ describe('loadSupabaseAlgorithmLive', () => {
     expect(result.desk.cohorts[0]).toMatchObject({ status: 'compared', median: -500, spread: 100, nAccounts: 12 });
     expect(result.desk.cohorts[1]).toMatchObject({ status: 'thin', median: null, nAccounts: null });
     expect(result.rows[0]).toMatchObject({ realizedPnl: null, unrealizedPnl: null, cycleStart: null });
-    expect(result.settings).toMatchObject({ minCohortAccounts: 6, differsAtSpread: 3, fallback: false });
+    expect(result.settings).toMatchObject({ minCohortAccounts: 6, differsAtSpread: 3, cycleSeconds: 900, fallback: false });
   });
 
   it('reads a filling marker as filling, and no rows as no cycle', async () => {

@@ -43,6 +43,7 @@ export const FALLBACK_SETTINGS = Object.freeze({
   minCohortClients: 3,
   differsAtSpread: 3,
   minSpreadDollars: 50,
+  cycleSeconds: 600,
   fallback: true,
 });
 
@@ -107,6 +108,7 @@ export function resolveSettings(settings) {
     minCohortClients: pick('minCohortClients'),
     differsAtSpread: pick('differsAtSpread'),
     minSpreadDollars: pick('minSpreadDollars'),
+    cycleSeconds: pick('cycleSeconds'),
     fallback: Boolean(settings.fallback),
   };
 }

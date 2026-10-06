@@ -981,14 +981,17 @@ export function mapAlgorithmLiveDesk(rows = []) {
   };
 }
 
-function mapAlgorithmLiveSettings(row) {
+function mapAlgorithmLiveSettings(row, trackerRow) {
   if (!row) return null;
+  const interval = sampleInteger(trackerRow?.sample_interval_seconds);
   return {
     minCohortAccounts: sampleInteger(row.min_cohort_accounts),
     minCohortClients: sampleInteger(row.min_cohort_clients),
     differsAtSpread: sampleNumber(row.differs_at_spread),
     minSpreadDollars: sampleNumber(row.min_spread_dollars),
     cycleToleranceSeconds: sampleInteger(row.cycle_tolerance_seconds),
+    // The cycle is step 55's interval, not a column of step 57's own.
+    cycleSeconds: interval && interval > 0 ? interval : 600,
     fallback: false,
   };
 }
@@ -1021,6 +1024,9 @@ export async function loadSupabaseAlgorithmLive({ clientIds = null, client = und
   const settingsRead = algorithmLiveSettingsCache
     ? Promise.resolve({ data: [algorithmLiveSettingsCache.raw], error: null })
     : db.from('algorithm_live_settings').select(ALGORITHM_LIVE_SETTINGS_COLUMNS).limit(1);
+  const trackerRead = algorithmLiveSettingsCache
+    ? Promise.resolve({ data: [algorithmLiveSettingsCache.tracker], error: null })
+    : db.from('account_tracker_settings').select('sample_interval_seconds').limit(1);
   const deskRead = db.rpc('algorithm_live_desk');
   const rowsRead = scope && !scope.length
     ? Promise.resolve({ data: [], error: null })
@@ -1030,7 +1036,9 @@ export async function loadSupabaseAlgorithmLive({ clientIds = null, client = und
       return (scope ? query.in('client_id', scope) : query).limit(3000);
     })();
 
-  const [settingsResult, deskResult, rowsResult] = await Promise.all([settingsRead, deskRead, rowsRead]);
+  const [settingsResult, deskResult, rowsResult, trackerResult] = await Promise.all([
+    settingsRead, deskRead, rowsRead, trackerRead,
+  ]);
   for (const result of [settingsResult, deskResult, rowsResult]) {
     if (result?.error && isMissingAlgorithmLive(result.error)) {
       return { available: false, reason: 'not_deployed' };
@@ -1041,8 +1049,9 @@ export async function loadSupabaseAlgorithmLive({ clientIds = null, client = und
 
   let settings = null;
   if (!settingsResult?.error && settingsResult?.data?.[0]) {
-    settings = mapAlgorithmLiveSettings(settingsResult.data[0]);
-    algorithmLiveSettingsCache = { raw: settingsResult.data[0] };
+    const tracker = trackerResult?.error ? null : (trackerResult?.data?.[0] || null);
+    settings = mapAlgorithmLiveSettings(settingsResult.data[0], tracker);
+    if (tracker) algorithmLiveSettingsCache = { raw: settingsResult.data[0], tracker };
   }
 
   return {
