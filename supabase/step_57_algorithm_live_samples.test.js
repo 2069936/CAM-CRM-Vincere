@@ -273,6 +273,27 @@ describe('who holds what', () => {
   });
 });
 
+describe('the lockdown is the file\'s own, not borrowed from step 56', () => {
+  it('applied straight after 55, before 56 has changed the default privileges, it still leaves exactly SELECT', async () => {
+    /* A new table in public is born with all eight privileges for anon and
+     * authenticated. Step 56 changed that default, but a migration must not
+     * depend on running after it: this file revokes and grants for itself. */
+    const early = await startMigrationCluster(
+      migrationFilesInOrder({ upTo: 55 }).concat(['step_57_algorithm_live_samples.sql']));
+    try {
+      for (const table of ['algorithm_live_samples', 'algorithm_live_settings']) {
+        expect(await privilegesOn(early, 'authenticated', table), table).toEqual(['SELECT']);
+        expect(await privilegesOn(early, 'anon', table), table).toEqual([]);
+      }
+      expect(await refusalAsRole(early, 'anon', 'select * from public.algorithm_live_desk()')).toMatch(DENIED);
+      expect(await refusalAsRole(early, 'anon',
+        "select public.record_algorithm_live_sample(gen_random_uuid(), now(), '[]'::jsonb)")).toMatch(DENIED);
+    } finally {
+      await early.close();
+    }
+  }, 120_000);
+});
+
 describe('a re-run of step 56 and step 52 widens nothing', () => {
   let rerun;
   beforeAll(async () => {
@@ -613,6 +634,23 @@ describe('record_algorithm_live_sample', () => {
     await send('G1', iso(new Date(Date.now() - 10_000)), [item()]);
     expect((await storedRows('G1')).map((row) => row.account_name)).toEqual(['SIM-FIXTURE-1']);
     expect((await storedRows('B1')).map((row) => row.account_name)).toEqual(['OLD']);
+  });
+
+  it('never touches the account tracker: its rows survive a strategy post and a refused one', async () => {
+    await resetSamples();
+    await db.exec('delete from public.account_live_samples');
+    const sampled = iso(new Date(Date.now() - 10_000));
+    await one(db, 'select public.record_account_live_sample($1, $2::timestamptz, $3::jsonb)', [
+      world.devices.G1, sampled,
+      JSON.stringify([{ accountName: 'SIM-FIXTURE-1', connected: true, realizedPnl: 1, unrealizedPnl: 2, totalPnl: 3 }]),
+    ]);
+    const fingerprint = () => one(db,
+      "select coalesce(string_agg(t::text, '|' order by t::text), '<empty>') from public.account_live_samples as t");
+    const before = await fingerprint();
+    expect(before).not.toBe('<empty>');
+    await send('G1', sampled, [item()]);
+    expect(await refusalOfSend(world.devices.G1, sampled, [item({ strategyId: '' })])).toMatch(/INVALID_STRATEGY_SAMPLE/);
+    expect(await fingerprint()).toBe(before);
   });
 
   it('refuses NaN and absurd money at the table, whoever writes', async () => {
