@@ -33,6 +33,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
 | 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts in four words — `running`, `idle`, `no_strategies` (the VPS looked and nothing is loaded) and `unmeasured` (nobody looked) — plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
 | 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back by a LOOP over the catalogue with one exception table for the tables that get less than the four DML verbs — every row naming what decided it; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty 32 of the 37 tables and no policy would see it. Also narrows step 55's SELECT grant on the two tracker tables from `anon, authenticated` to `authenticated` |
+| 57 | `step_57_algorithm_live_samples.sql` | `algorithm_live_samples`: the LAST reading of each NinjaTrader strategy instance (Strategies tab Realized plus Unrealized) on each paired VPS, overwritten, with the sample cycle it belongs to; `algorithm_live_settings` (the cohort floors, the cycle tolerance, the differs threshold, the report cap and the retention window); `record_algorithm_live_sample` for the ingest route; and `algorithm_live_desk()`, which returns the desk median per algorithm and instrument as aggregates only, leaving the caller's own clients out | Each algorithm today against the desk, on the CAM overview: the same cycle for desk and client, the sample size beside every figure, and no comparison when the cohort is too thin |
 
 ## These three groups behave differently
 
@@ -106,7 +107,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -420,6 +421,54 @@ nothing on a table that already exists, so the file replaces that one column —
 and only that column, which is derived, so every value is recomputed from the two
 strategy counts the sample carried and no data moves. It prints a NOTICE when it
 does. Your hand edits to `account_tracker_settings` survive a re-run untouched.
+
+**57 degrades gracefully in every order, and it needs 55 and 52 first.** The
+file refuses to run without them and says so: "step 57 needs step 55
+(account_tracker_settings) and step 52 (is_manager): run them first". It reads
+the cycle length from `account_tracker_settings.sample_interval_seconds`, so
+there is one interval for the whole fleet and not two.
+
+The CRM may be deployed before you run it. Until you do, the agents that send
+per strategy readings get 404 `strategy_sample_not_deployed` from
+`POST /api/ingest/strategies`, stop asking for an hour, and keep posting their
+accounts every cycle exactly as today; once you run the file, readings resume
+within the hour. The overview panel says "Migration step 57 has not been run".
+Agents older than 1.2.0 never call the route at all. The account tracker (step
+55's route, function and table) is not touched by anything in this step.
+
+Re-running step 56 BEFORE this file is applied prints the NOTICE "2 exception
+row(s) name a table that is not in public: algorithm_live_samples,
+algorithm_live_settings". That is expected: step 56 already names these two as
+read only, so that whichever order the two files run in, a CAM never gets a
+write on them. After 57 runs, the NOTICE goes away.
+
+What it compares. One reading per strategy instance, Realized plus Unrealized as
+the Strategies tab shows it, gross and counted since the instance was enabled.
+Because that figure is marked to market, desk and client are only ever read from
+the same cycle: the agent samples two seconds after each boundary of the
+`sample_interval_seconds` grid (in UTC), and a reading taken more than
+`cycle_tolerance_seconds` after the boundary, or from a machine whose clock is
+off by more than that, is kept as the last reading but never compared. The
+newest cycle is compared once it is `cycle_tolerance_seconds` old; until then
+the panel says the cycle is still coming in. When you change the interval, for
+one cycle the agents still on the old grid read as off cycle, and it heals on
+the next account post.
+
+Who sees what. A CAM reads its own clients' rows, as everywhere since step 52.
+The desk figure comes only from `algorithm_live_desk()`, which leaves the
+caller's own clients out, needs `min_cohort_accounts` accounts AND
+`min_cohort_clients` clients outside that book before it returns anything, and
+then returns a median and a spread rounded to whole dollars, never a minimum or
+a maximum. Under the floor it returns no numbers and no counts. A Manager sees
+the whole desk. Every tunable is a column on `algorithm_live_settings`; edit it
+in the SQL editor and the CHECK constraints are the review.
+
+Known limits, written down so nobody reads them as faults: after the close the
+strategies are switched off and NinjaTrader removes them, so the comparison
+stops at the last live cycle and the panel says how old it is; an instance
+restarted during the day starts again at 0, so the agent marks it and it is
+never compared; a restart that happened while the agent service itself was
+down is not seen.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of

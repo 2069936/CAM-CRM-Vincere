@@ -524,6 +524,12 @@ begin
     -- authenticated and the header says why.
     ('account_live_samples',     'select', 'step 55:714-717, read-only so a CAM cannot forge a green light'),
     ('account_tracker_settings', 'select', 'step 55:714-717, read-only - the screens read stale_sample_seconds'),
+    -- STEP 57'S PAIR, the same decision for the same reason. Named here before
+    -- step 57 exists, so a re-run of this file before 57 is applied prints the
+    -- "names a table that is not in public" NOTICE for these two; that is
+    -- expected, and the 57 runbook row says so.
+    ('algorithm_live_samples',   'select', 'step 57, read-only so a CAM cannot forge a strategy reading'),
+    ('algorithm_live_settings',  'select', 'step 57, read-only; the screens read the floors'),
 
     -- NOTHING AT ALL. ingest_admission_settings and ingest_quarantine_reports
     -- each carry a restrictive `deny browser direct access` policy (step_45:490,

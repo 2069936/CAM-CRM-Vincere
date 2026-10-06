@@ -114,6 +114,11 @@ const EXPECTED = {
    * forge a green light on its own client. */
   account_live_samples: 'S',
   account_tracker_settings: 'S',
+  /* STEP 57'S PAIR, read-only for the same reason: a CAM able to write
+   * algorithm_live_samples could forge a strategy reading and move the desk
+   * median every other CAM reads. */
+  algorithm_live_samples: 'S',
+  algorithm_live_settings: 'S',
   // nothing at all
   ingest_admission_settings: '',
   ingest_quarantine_reports: '',
@@ -187,15 +192,18 @@ beforeAll(async () => {
 }, 120000);
 
 // ---------------------------------------------------------------------------
-describe('step 56 exists and is the one that runs last', () => {
-  it('is the highest number and appears once', () => {
+describe('step 56 exists and is no longer the one that runs last', () => {
+  it('appears once, and 57 now carries the highest-number claim', () => {
+    /* Handed on the way 55 handed it here: the newest step's own test asserts
+     * it is the highest, and leaving the claim behind would make every later
+     * migration look like a break in this one. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 56)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(56);
+    expect(Math.max(...numbers)).toBeGreaterThan(56);
   });
 
   it('says why 54 is skipped, and that 55 merged in between', () => {
@@ -210,8 +218,8 @@ describe('step 56 exists and is the one that runs last', () => {
 
   it('is in the runbook table and at the end of the run order', () => {
     expect(runbook).toMatch(/^\| 56 \| `step_56_table_privilege_lockdown\.sql` \|.*\|$/m);
-    // 55 is in the order now. It merged before this file did.
-    expect(runbook).toContain('→ 53 → 55 → 56.');
+    // 55 is in the order now. It merged before this file did. And 57 follows.
+    expect(runbook).toMatch(/→ 53 → 55 → 56(?: →|\.)/);
   });
 });
 
