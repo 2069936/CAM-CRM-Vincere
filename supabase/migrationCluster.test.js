@@ -15,7 +15,7 @@
 // own project, and the list of places the harness is allowed to deviate from the
 // files is pinned so it cannot grow quietly.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   ALL_EIGHT,
@@ -117,7 +117,15 @@ describe('the file list is read from the directory, not remembered', () => {
     const numbers = files.slice(1).map((name) => Number(/^step_(\d+)/.exec(name)[1]));
     expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
     expect(numbers).toContain(56);
-    expect(numbers.at(-1)).toBe(58);
+    // The newest step on disk, counted here independently of the function under
+    // test, rather than a number every migration would have to come back and
+    // edit. Which step that is belongs to the newest step's own test.
+    const onDisk = readdirSync(new URL('./', import.meta.url))
+      .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
+      .filter(Boolean)
+      .map((match) => Number(match[1]));
+    expect(numbers.at(-1)).toBe(Math.max(...onDisk));
+    expect(numbers).toHaveLength(onDisk.length);
   });
 
   it('stops where it is told, so a test can show a defect before the fix', () => {
