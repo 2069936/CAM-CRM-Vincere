@@ -75,6 +75,43 @@ public interface INinjaTraderAccountSampleClient
     Task<AccountSampleAttempt> SampleAccountsAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>What asking the add-on for the per strategy reading came to.</summary>
+public enum StrategySampleOutcome
+{
+    /// <summary>A reading was taken.</summary>
+    Sampled,
+
+    /// <summary>
+    /// The add-on does not know "sample_strategies": it predates 1.2.0, or it was
+    /// built without the delegate. The answer changes when a person replaces the
+    /// add-on with NinjaTrader closed, so the caller stops asking for a day. The
+    /// account reading is a different command and is not affected.
+    /// </summary>
+    Unsupported,
+
+    /// <summary>This reading did not happen. The next tick asks again.</summary>
+    Unavailable,
+}
+
+/// <param name="Outcome">What happened.</param>
+/// <param name="Sample">The reading, present only when <see cref="StrategySampleOutcome.Sampled"/>.</param>
+/// <param name="Code">The add-on's own word for a refusal, or this client's for a transport fault. For this machine's log only.</param>
+public sealed record StrategySampleAttempt(
+    StrategySampleOutcome Outcome,
+    StrategySampleV1 Sample,
+    string Code);
+
+/* THE PER STRATEGY READING, AND IT ANSWERS INSTEAD OF THROWING for the reason the
+ * account sample does: it is worthless ten minutes later, never queued, never
+ * retried, so every ordinary failure is a return value. Its own interface rather
+ * than a second method on INinjaTraderAccountSampleClient, so no test double of
+ * the account client has to learn about it and the account loop's account half
+ * cannot reach it by accident. */
+public interface INinjaTraderStrategySampleClient
+{
+    Task<StrategySampleAttempt> SampleStrategiesAsync(CancellationToken cancellationToken = default);
+}
+
 public sealed class NinjaTraderProcessDetector : INinjaTraderProcessDetector
 {
     public bool IsRunning()
@@ -91,7 +128,10 @@ public sealed class NinjaTraderProcessDetector : INinjaTraderProcessDetector
     }
 }
 
-public sealed class CapturePipeClient : INinjaTraderCaptureClient, INinjaTraderAccountSampleClient
+public sealed class CapturePipeClient :
+    INinjaTraderCaptureClient,
+    INinjaTraderAccountSampleClient,
+    INinjaTraderStrategySampleClient
 {
     public const string DefaultPipeName = "Vincere.AutoExport.v1";
     private static readonly UTF8Encoding Utf8WithoutBom = new(false, true);
@@ -287,6 +327,93 @@ public sealed class CapturePipeClient : INinjaTraderCaptureClient, INinjaTraderA
         {
             return Unavailable("sample_failed");
         }
+    }
+
+    /* THE PER STRATEGY READING, OVER THE SAME PIPE AND UNDER THE SAME RULES AS THE
+     * ACCOUNT SAMPLE: five seconds to connect, ten to read, the add-on's own error
+     * code kept rather than flattened, and invalid_request read as Unsupported
+     * because an add-on older than 1.2.0 answers exactly that. It is a separate
+     * method, and not SampleAccountsAsync with a different word, so a change to
+     * how strategies are read cannot alter how accounts are. */
+    public async Task<StrategySampleAttempt> SampleStrategiesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!processDetector.IsRunning())
+            return StrategyUnavailable("ninjatrader_not_running");
+
+        using NamedPipeClientStream pipe = new(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous);
+        using (CancellationTokenSource connectCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            connectCancellation.CancelAfter(connectTimeout);
+            try
+            {
+                await pipe.ConnectAsync(connectCancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return StrategyUnavailable("addon_unavailable");
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or TimeoutException)
+            {
+                return StrategyUnavailable("addon_unavailable");
+            }
+        }
+
+        Guid requestId = Guid.NewGuid();
+        CaptureRequest request = new() { Command = "sample_strategies", RequestId = requestId };
+        using CancellationTokenSource sampleCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        sampleCancellation.CancelAfter(sampleTimeout);
+        try
+        {
+            await WriteFrameAsync(pipe, request, sampleCancellation.Token).ConfigureAwait(false);
+            CaptureResponse response = await ReadResponseAsync(pipe, sampleCancellation.Token).ConfigureAwait(false);
+            return ReadStrategySample(response, requestId);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return StrategyUnavailable("strategy_sample_timeout");
+        }
+        catch (CaptureAttemptException exception)
+        {
+            return StrategyUnavailable(exception.Code);
+        }
+        catch (Exception exception) when (exception is IOException or EndOfStreamException)
+        {
+            return StrategyUnavailable("strategy_sample_failed");
+        }
+    }
+
+    private static StrategySampleAttempt ReadStrategySample(CaptureResponse response, Guid requestId)
+    {
+        if (response.RequestId != requestId)
+            return StrategyUnavailable("contract_mismatch");
+
+        if (!response.Ok)
+        {
+            return string.Equals(response.ErrorCode, "invalid_request", StringComparison.Ordinal)
+                ? new StrategySampleAttempt(StrategySampleOutcome.Unsupported, null, response.ErrorCode)
+                : StrategyUnavailable(response.ErrorCode ?? "strategy_sample_failed");
+        }
+
+        // A reply of the wrong shape is this reading lost and nothing more. It
+        // says nothing about the account sample, which is read separately.
+        StrategySampleV1 sample = response.StrategySample;
+        if (sample == null
+            || sample.SchemaVersion != StrategySampleV1.CurrentSchemaVersion
+            || sample.Strategies == null)
+            return StrategyUnavailable("contract_mismatch");
+
+        return new StrategySampleAttempt(StrategySampleOutcome.Sampled, sample, null);
+    }
+
+    private static StrategySampleAttempt StrategyUnavailable(string code)
+    {
+        return new StrategySampleAttempt(StrategySampleOutcome.Unavailable, null, code);
     }
 
     private static AccountSampleAttempt ReadSample(CaptureResponse response, Guid requestId)

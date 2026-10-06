@@ -73,6 +73,54 @@ public interface ICollectorCrmClient
         AccountSampleV1 sample,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(AccountSampleReportResult.Unsupported("not_implemented"));
+
+    /* THE PER STRATEGY READING, ON A ROUTE OF ITS OWN: POST api/ingest/strategies.
+     * Never inside the account body, whose route answers 400 for a key it does not
+     * know, so a new agent would lose every account row on every cycle; never on the
+     * heartbeat, for the reason the account sample gives.
+     *
+     * Defaulted like the account sample, so every existing test double compiles and
+     * one that does not override it reports Unsupported. */
+    Task<StrategySampleReportResult> PostStrategySampleAsync(
+        StrategySampleV1 sample,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(StrategySampleReportResult.Unsupported("not_implemented"));
+}
+
+public enum StrategySampleReportStatus
+{
+    Accepted,
+
+    /// <summary>
+    /// 404 or 405: a CRM without the route, or with the route and without
+    /// migration 57 (it answers 404 strategy_sample_not_deployed). The caller
+    /// stops offering strategies for an hour, so that applying 57 takes effect
+    /// the same day, and leaves the account sample alone.
+    /// </summary>
+    Unsupported,
+
+    /// <summary>Refused or unreachable this time. Nothing is kept and nothing is retried.</summary>
+    Failed,
+}
+
+/// <param name="Code">Why it was not accepted, for this machine's log.</param>
+/// <param name="Detail">
+/// The CRM's own error word from the reply body, when it gave one. For the log
+/// only: nothing on this machine decides anything from it.
+/// </param>
+public sealed record StrategySampleReportResult(
+    StrategySampleReportStatus Status,
+    string Code,
+    string Detail = null)
+{
+    public static StrategySampleReportResult Accepted() =>
+        new(StrategySampleReportStatus.Accepted, null);
+
+    public static StrategySampleReportResult Unsupported(string code, string detail = null) =>
+        new(StrategySampleReportStatus.Unsupported, code, detail);
+
+    public static StrategySampleReportResult Failed(string code, string detail = null) =>
+        new(StrategySampleReportStatus.Failed, code, detail);
 }
 
 public enum AccountSampleReportStatus

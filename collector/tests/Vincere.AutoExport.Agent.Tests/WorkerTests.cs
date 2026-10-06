@@ -57,6 +57,54 @@ public sealed class WorkerTests
         Assert.True(second.Cancelled);
     }
 
+    /* THE WAIT IS ASKED FOR AFTER THE RUN. The account tracker's wait is "until the
+     * next clock boundary", which is only right if it is measured once the run has
+     * finished, and a cadence the CRM changed during the run must govern the very
+     * next wait. Read before the run, both would be one cycle late. */
+    [Fact]
+    public async Task The_wait_after_a_run_is_the_interval_the_loop_gives_once_the_run_is_over()
+    {
+        using CancellationTokenSource lifetime = new(TimeSpan.FromSeconds(5));
+        RetuningLoop loop = new();
+        RecordingDelay delay = new(lifetime);
+        Worker worker = new(new ICollectorLoop[] { loop }, delay, new RecordingReporter());
+
+        await worker.StartAsync(lifetime.Token);
+        await delay.First.Task.WaitAsync(lifetime.Token);
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal(TimeSpan.FromSeconds(42), delay.Delays[0]);
+    }
+
+    private sealed class RetuningLoop : ICollectorLoop
+    {
+        public string Name => "account-sample";
+        public TimeSpan Interval { get; private set; } = TimeSpan.FromHours(1);
+
+        public Task RunOnceAsync(CancellationToken cancellationToken)
+        {
+            Interval = TimeSpan.FromSeconds(42);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingDelay : ICollectorDelay
+    {
+        private readonly CancellationTokenSource lifetime;
+
+        public RecordingDelay(CancellationTokenSource lifetime) => this.lifetime = lifetime;
+
+        public List<TimeSpan> Delays { get; } = new();
+        public TaskCompletionSource First { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            lock (Delays) Delays.Add(delay);
+            First.TrySetResult();
+            return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
     private sealed class ThrowOnceLoop : ICollectorLoop
     {
         private readonly int expectedRuns;

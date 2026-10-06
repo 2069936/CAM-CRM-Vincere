@@ -165,6 +165,25 @@ public sealed class AgentCompositionTests : IDisposable
      * because the container test above proves the registration resolves TODAY and
      * this proves the next person cannot reintroduce the optional-argument shape
      * that caused the original incident. */
+    /* THE STRATEGY READING GOES THROUGH THE TRACKER'S PIPE CLIENT, never the
+     * close's, and the loop holds the one process-wide restart memory. */
+    [Fact]
+    public void The_strategy_reading_uses_the_trackers_client_and_one_restart_memory()
+    {
+        using ServiceProvider provider = BuildRealContainer();
+
+        INinjaTraderStrategySampleClient strategies = provider.GetRequiredService<INinjaTraderStrategySampleClient>();
+
+        Assert.Same(provider.GetRequiredService<INinjaTraderAccountSampleClient>(), strategies);
+        Assert.NotSame(provider.GetRequiredService<INinjaTraderCaptureClient>(), strategies);
+        AccountSampleLoop loop = Assert.Single(
+            provider.GetServices<ICollectorLoop>().OfType<AccountSampleLoop>());
+        FieldInfo memory = typeof(AccountSampleLoop)
+            .GetField("strategyRuns", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(memory);
+        Assert.Same(provider.GetRequiredService<StrategyRunMemory>(), memory.GetValue(loop));
+    }
+
     [Fact]
     public void Nothing_the_loop_needs_can_be_quietly_left_out()
     {

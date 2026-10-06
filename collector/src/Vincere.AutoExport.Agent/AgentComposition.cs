@@ -88,6 +88,17 @@ public static class AgentComposition
          * have been tidier and would have put the irreplaceable path and the disposable
          * one on the same object. */
         services.AddSingleton<INinjaTraderAccountSampleClient, CapturePipeClient>();
+        /* The per strategy reading goes through the tracker's instance, not the
+         * close's: it is the same disposable kind of read, and the close's client
+         * stays an object nothing else touches. The cast fails at resolution, which
+         * AgentCompositionTests performs, if that registration ever stops being a
+         * CapturePipeClient. */
+        services.AddSingleton<INinjaTraderStrategySampleClient>(provider =>
+            (INinjaTraderStrategySampleClient)provider.GetRequiredService<INinjaTraderAccountSampleClient>());
+        /* Which strategy instances have been switched off and on again today. In
+         * memory and a singleton for the reason LiveAccountMemory is one: a fresh
+         * instance per resolution would forget on every pass. */
+        services.AddSingleton<StrategyRunMemory>();
         /* Which accounts this machine has seen working. In memory, per process, and a
          * singleton because it is the memory itself: a new one per resolution would
          * forget on every pass and the filter would do nothing. LiveAccountMemory says
@@ -168,7 +179,7 @@ public static class AgentComposition
          *
          * This loop needs nothing that is not already a registered service, so it takes
          * the registration that cannot have that bug. AccountSampleLoop's constructor has
-         * no defaulted parameters either, so the container must satisfy all eight or
+         * no defaulted parameters either, so the container must satisfy all ten or
          * resolution throws - and AgentCompositionTests resolves this collection, so it
          * throws there rather than at service start on a VPS in front of nobody. */
         services.AddSingleton<ICollectorLoop, AccountSampleLoop>();
