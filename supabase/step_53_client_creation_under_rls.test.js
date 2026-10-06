@@ -95,9 +95,10 @@ describe('the third arm, and the fact that it closes itself', () => {
   const arm = 'created_by = (select auth.uid()) and not public.client_is_assigned(id)';
 
   it('is on select and on update', () => {
-    // At least twice: once in the select policy, once in the update policy. The
-    // update's WITH CHECK repeats it, so the real count is three.
-    expect((flat.match(new RegExp(arm.replace(/[()]/g, '\\$&'), 'g')) || []).length).toBeGreaterThanOrEqual(2);
+    // Three times: the select policy's USING, the update policy's USING, and
+    // the update's WITH CHECK. Counted as a plain substring, so no character
+    // of the arm is read as regex syntax.
+    expect(flat.split(arm).length - 1).toBe(3);
     const selectPolicy = /create policy "cam sees its own clients" on public\.clients[\s\S]*?;/i.exec(sql)[0];
     const updatePolicy = /create policy "cam updates its own clients" on public\.clients[\s\S]*?;/i.exec(sql)[0];
     expect(selectPolicy.toLowerCase().replace(/\s+/g, ' ')).toContain(arm);
