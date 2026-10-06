@@ -429,6 +429,126 @@ describe('after step 59: log_algo_history_by_family()', () => {
   });
 });
 
+/* ── A CAM moving her own accounts out of her book ────────────────────────── */
+
+describe('after step 59: a CAM cannot move her own accounts outside her book', () => {
+  /* The attack the first draft of this file let through. Who owns a row was
+   * decided when the card was READ, by matching the account name against the
+   * trading_accounts of today, and step 52 lets a CAM rename and delete the
+   * trading accounts of her own clients (the account registry and
+   * deleteSupabaseTradingAccount do it from the browser). Renamed or deleted,
+   * her accounts counted as accounts nobody holds, one owner each, so four of
+   * hers and ONE of Birch's met the floor, and the desk total minus her own
+   * figure, which the log import writes into her client's activity, was
+   * Birch's account to the cent.
+   *
+   * Every family below is four of Gray's accounts and one account of another
+   * book, so it must stay withheld from Gray whatever she does to her own
+   * registry, and every action is hers, as the role, committed. */
+  const MINE = [10, 20, 30, 40];
+  const OUTSIDE = { RenameAfter: ['B2-A', -777.77], DeleteAfter: ['B3-A', -555.55], ClientAfter: ['A1-A', -333.33] };
+
+  async function graysClient(key, accounts) {
+    world.clients[key] = await one(after,
+      "insert into public.clients (name, status, product_key) values ($1, 'Active', $2) returning id", [`Client ${key}`, `pk-${key}`]);
+    await after.query('insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
+      [world.clients[key], world.gray.profile]);
+    for (const account of accounts) {
+      await after.query('insert into public.trading_accounts (client_id, account_name) values ($1, $2)', [world.clients[key], account]);
+    }
+  }
+
+  /** The Manager's import, as the role, in the browser's own upsert shape. */
+  async function managerImports(family, rows) {
+    for (const [account, pnl] of rows) {
+      await committedAsRole(after, 'authenticated', world.managerAuth,
+        `insert into public.log_algo_history (log_date, account_name, family, direction, realized_pnl, round_trips)
+         values ('2026-10-04', $1, $2, 'Long', $3, 1)
+         on conflict (log_date, account_name, family) do update
+           set direction = excluded.direction, realized_pnl = excluded.realized_pnl, round_trips = excluded.round_trips`,
+        [account, family, pnl]);
+    }
+  }
+
+  const accountsOf = (key) => MINE.map((_, i) => `${key}-${String.fromCharCode(65 + i)}`);
+  const hers = (key) => accountsOf(key).map((account, i) => [account, MINE[i]]);
+
+  beforeAll(async () => {
+    for (const family of Object.keys(OUTSIDE)) {
+      const key = `L${family[0]}`;
+      await graysClient(key, accountsOf(key));
+      await managerImports(family, [...hers(key), OUTSIDE[family]]);
+    }
+    await graysClient('LE', accountsOf('LE'));
+    await graysClient('LS', ['LS-A', 'LS-B', 'LS-C', 'LS-D']);
+  }, 60_000);
+
+  it('each family starts withheld from Gray and shown to the Manager', async () => {
+    const gray = await familiesFor(after, world.gray.auth);
+    const manager = await familiesFor(after, world.managerAuth);
+    for (const family of Object.keys(OUTSIDE)) {
+      expect(gray[family].status).toBe('withheld');
+      expect(manager[family].status).toBe('shown');
+    }
+  });
+
+  it('renaming her trading accounts after the import leaves the family withheld', async () => {
+    const renamed = await committedAsRole(after, 'authenticated', world.gray.auth,
+      "update public.trading_accounts set account_name = account_name || '-renamed' where client_id = $1 returning id",
+      [world.clients.LR]);
+    expect(renamed).toHaveLength(4);
+    expect((await familiesFor(after, world.gray.auth)).RenameAfter).toMatchObject({ status: 'withheld', total_pnl: null });
+  });
+
+  it('deleting her trading accounts after the import leaves the family withheld', async () => {
+    const deleted = await committedAsRole(after, 'authenticated', world.gray.auth,
+      'delete from public.trading_accounts where client_id = $1 returning id', [world.clients.LD]);
+    expect(deleted).toHaveLength(4);
+    expect((await familiesFor(after, world.gray.auth)).DeleteAfter).toMatchObject({ status: 'withheld', total_pnl: null });
+  });
+
+  it('a deleted client\'s accounts do not become outside accounts either', async () => {
+    // Nobody signed in can delete a client (step 56 left authenticated no
+    // DELETE on clients), but the desk can from the SQL editor, and the accounts
+    // of a client that no longer exists are still the ones Gray knew.
+    for (const subject of [world.gray.auth, world.managerAuth]) {
+      expect(await refusalAsRole(after, 'authenticated', 'delete from public.clients where id = $1',
+        { subject, params: [world.clients.LC] })).toMatch(DENIED);
+    }
+    const deleted = await after.query('delete from public.clients where id = $1 returning id', [world.clients.LC]);
+    expect(deleted.rows).toHaveLength(1);
+    expect((await familiesFor(after, world.gray.auth)).ClientAfter).toMatchObject({ status: 'withheld', total_pnl: null });
+  });
+
+  it('renaming them BEFORE the import does not make them outside accounts either', async () => {
+    // The import then finds no holder for her four names. An account nobody
+    // held when it was imported is in the desk total and never in the floor.
+    await committedAsRole(after, 'authenticated', world.gray.auth,
+      "update public.trading_accounts set account_name = 'elsewhere-' || account_name where client_id = $1",
+      [world.clients.LE]);
+    await managerImports('RenameBefore', [...hers('LE'), ['U1-A', -111.11]]);
+    expect((await familiesFor(after, world.gray.auth)).RenameBefore).toMatchObject({ status: 'withheld', total_pnl: null });
+    expect((await familiesFor(after, world.managerAuth)).RenameBefore.status).toBe('shown');
+  });
+
+  it('a name two clients hold, one of them hers, never counts as the other one\'s account', async () => {
+    // The desk registered LS-A on a client nobody holds, with the lowest id
+    // there is, so "pick one holder" would pick the outside one.
+    const low = '00000000-0000-0000-0000-000000000001';
+    await after.query("insert into public.clients (id, name, status, product_key) values ($1, 'Client LOW', 'Active', 'pk-low')", [low]);
+    await after.query("insert into public.trading_accounts (client_id, account_name) values ($1, 'ls-a')", [low]);
+    await managerImports('Shared', [['LS-A', 5], ['B2-A', 1], ['B3-A', 1], ['A1-A', 1], ['X1-A', 1]]);
+    expect((await familiesFor(after, world.gray.auth)).Shared.status).toBe('withheld');
+    // The same four outside accounts with a fifth that is plainly outside are shown.
+    await managerImports('Shared', [['U1-A', 1]]);
+    expect((await familiesFor(after, world.gray.auth)).Shared.status).toBe('shown');
+  });
+
+  it('a family with enough accounts of other books is still shown after all of it', async () => {
+    expect((await familiesFor(after, world.gray.auth)).OGX.status).toBe('shown');
+  });
+});
+
 /* ── It stays closed when earlier files are run again ─────────────────────── */
 
 describe('step 59 survives a re-run of the files that wrote the old policy', () => {
