@@ -424,9 +424,14 @@ does. Your hand edits to `account_tracker_settings` survive a re-run untouched.
 
 **57 degrades gracefully in every order, and it needs 55 and 52 first.** The
 file refuses to run without them and says so: "step 57 needs step 55
-(account_tracker_settings) and step 52 (is_manager): run them first". It reads
-the cycle length from `account_tracker_settings.sample_interval_seconds`, so
-there is one interval for the whole fleet and not two.
+(account_tracker_settings) and step 52 (is_manager): run them first". It also
+refuses on a database without step 53's `clients_i_created` or step 28's
+`ingest_enrollments`, which the run order puts long before 55: a CAM's desk
+figure leaves out every client she can influence, meaning the ones assigned to
+her, the ones she created and the ones she enrolled a VPS for, whoever they are
+assigned to today. It reads the cycle length from
+`account_tracker_settings.sample_interval_seconds`, so there is one interval for
+the whole fleet and not two.
 
 The CRM may be deployed before you run it. Until you do, the agents that send
 per strategy readings get 404 `strategy_sample_not_deployed` from

@@ -206,6 +206,20 @@ describe('step 57 is the one that runs last', () => {
       migrationFilesInOrder({ upTo: 53 }).concat(['step_57_algorithm_live_samples.sql']),
     )).rejects.toThrow(/step 57 needs step 55 \(account_tracker_settings\) and step 52 \(is_manager\): run them first/);
   }, 120_000);
+
+  it('refuses to run without what it leaves a CAM\'s influenced clients out by, and says which', async () => {
+    const early = await startMigrationCluster(migrationFilesInOrder({ upTo: 56 }));
+    try {
+      await early.exec('drop function public.clients_i_created() cascade');
+      await expect(applyFileCollectingNotices(early, 'step_57_algorithm_live_samples.sql'))
+        .rejects.toThrow(/step 57 needs step 53 \(clients_i_created\) and step 28 \(ingest_enrollments\): run them first/);
+      // The file is one transaction, so the refusal leaves nothing behind.
+      await early.exec('rollback');
+      expect(await one(early, "select to_regclass('public.algorithm_live_samples')::text")).toBeNull();
+    } finally {
+      await early.close();
+    }
+  }, 120_000);
 });
 
 describe('step 56 re-run before 57 is applied', () => {
@@ -874,5 +888,156 @@ describe('algorithm_live_desk', () => {
     expect(row.n_flat).toBe(3);
     expect(Number(row.median)).toBe(0);
     expect(Number.isInteger(Number(row.spread))).toBe(true);
+  });
+});
+
+/* ── A CAM cannot fill the outside cohort with clients she controls ───────── */
+
+describe('algorithm_live_desk against a CAM who controls clients outside her book', () => {
+  /* THE ATTACK, replayed through the real policies and the real functions. A CAM
+   * may create a client (step 52), assign it to herself (step 53's
+   * clients_i_created arm), get an enrollment code for it (the route checks only
+   * the assignment), pair a VPS with that code and so hold a device credential,
+   * and then delete her own assignment row (step 53's `for all` policy lets
+   * her). Left out of her book only by assigned_client_ids(), those clients'
+   * readings counted as the rest of the desk: with two of them she met the floor
+   * on her own and, placing her values on both sides of one real account, made
+   * the median that account's value to the dollar. */
+
+  /** Runs one statement as `role` with `subject` signed in, and KEEPS its effect. */
+  async function committedAsRole(role, subject, sql, params) {
+    await db.exec('begin');
+    try {
+      await db.query('select set_config($1, $2, true)', ['request.jwt.claim.sub', subject]);
+      await db.exec(`set local role ${role}`);
+      const result = await db.query(sql, params);
+      await db.exec('commit');
+      return result.rows;
+    } catch (error) {
+      await db.exec('rollback');
+      throw error;
+    }
+  }
+
+  async function appUserOf(auth) {
+    return one(db, 'select id from public.app_users where auth_user_id = $1', [auth]);
+  }
+
+  /** A CAM creates a client through the browser, and assigns it to herself. */
+  async function camCreatesClient(cam, key) {
+    const [created] = await committedAsRole('authenticated', cam.auth,
+      "insert into public.clients (name, status, product_key) values ($1, 'Active', $2) returning id",
+      [`Client ${key}`, `pk-${key}`]);
+    await committedAsRole('authenticated', cam.auth,
+      'insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
+      [created.id, cam.profile]);
+    world.clients[key] = created.id;
+    return created.id;
+  }
+
+  /** The enrollment route's call, then the pairing route's: a live device credential. */
+  async function enrollAndPair(key, createdByAppUser) {
+    await db.query(
+      `select * from public.create_ingest_enrollment($1, $2, $3, now() + interval '1 hour', false, 'generated', null)`,
+      [world.clients[key], `code-${key}`, createdByAppUser]);
+    world.devices[key] = await one(db,
+      `select device_id from public.pair_ingest_device_v2($1, $2, $3, $4, '1.2.0', '1.2.0')`,
+      [`code-${key}`, `machine-${key}`, `credential-${key}`, `pfx-${key}`]);
+  }
+
+  async function camDropsHerAssignment(cam, key) {
+    const dropped = await committedAsRole('authenticated', cam.auth,
+      'delete from public.client_assignments where client_id = $1 and cam_profile_id = $2 returning client_id',
+      [world.clients[key], cam.profile]);
+    expect(dropped).toHaveLength(1);
+  }
+
+  async function grayAssigned() {
+    return (await rowsAsRole(db, 'authenticated', 'select public.assigned_client_ids() as id',
+      { subject: world.gray.auth })).map((row) => row.id);
+  }
+
+  it('the full chain: her two paired clients do not count, so one other account is never the median', async () => {
+    await resetSamples();
+    const grayUser = await appUserOf(world.gray.auth);
+    for (const key of ['F1', 'F2']) {
+      await camCreatesClient(world.gray, key);
+      await enrollAndPair(key, grayUser);
+      await camDropsHerAssignment(world.gray, key);
+    }
+    expect(await grayAssigned()).not.toContain(world.clients.F1);
+
+    // The paired device is live: the real ingest function takes its reading.
+    expect((await send('F1', iso(new Date()), [item()])).recorded).toBe(1);
+    await resetSamples();
+
+    // Birch's client B3, one account, that nobody else outside Gray's book runs.
+    const cycle = boundary(1);
+    await reading({ client: 'B3', account: 'TARGET', realized: -1234.56, cycle });
+    await reading({ client: 'F1', account: 'X1', realized: -900_000_000, cycle });
+    await reading({ client: 'F1', account: 'X2', realized: -900_000_000, cycle });
+    await reading({ client: 'F2', account: 'Y1', realized: 900_000_000, cycle });
+    await reading({ client: 'F2', account: 'Y2', realized: 900_000_000, cycle });
+
+    // The readings are in the cycle: the manager's desk has all five.
+    expect(cohort(await desk(world.managerAuth))).toMatchObject({ status: 'compared', n_accounts: 5, n_clients: 3 });
+    expect(Number(cohort(await desk(world.managerAuth)).median)).toBe(-1235);
+
+    // Gray's outside cohort is the one real account, so it says nothing.
+    const gray = cohort(await desk(world.gray.auth));
+    expect(gray).toMatchObject({ status: 'thin', n_accounts: null, median: null });
+
+    // Handing them to another CAM does not put them outside her book either:
+    // step 53 lets her assign a client she created to anyone.
+    for (const key of ['F1', 'F2']) {
+      await committedAsRole('authenticated', world.gray.auth,
+        'insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
+        [world.clients[key], world.birch.profile]);
+    }
+    expect(cohort(await desk(world.gray.auth))).toMatchObject({ status: 'thin', median: null });
+  });
+
+  /* Four genuine outside accounts and one from the client under test: the floor
+   * of five is met only if that client is counted as outside. */
+  async function fourOutsidePlus(key) {
+    await resetSamples();
+    const cycle = boundary(1);
+    for (const [i, client] of ['B1', 'B2', 'B4', 'U1'].entries()) {
+      await reading({ client, account: `REAL-${i}`, realized: -500 - 10 * i, cycle });
+    }
+    await reading({ client: key, account: 'PLACED', realized: -480, cycle });
+    return cohort(await desk(world.gray.auth));
+  }
+
+  it('a client she created stays hers, even paired under someone else\'s code', async () => {
+    await camCreatesClient(world.gray, 'F3');
+    await enrollAndPair('F3', await appUserOf(world.managerAuth));
+    await camDropsHerAssignment(world.gray, 'F3');
+    expect(await grayAssigned()).not.toContain(world.clients.F3);
+    expect(await fourOutsidePlus('F3')).toMatchObject({ status: 'thin', n_accounts: null });
+    // The same five, with an outside client in place of hers, are compared.
+    expect(await fourOutsidePlus('B3')).toMatchObject({ status: 'compared', n_accounts: 5 });
+  });
+
+  it('a client she enrolled stays hers, even one she did not create', async () => {
+    // A client the desk created and assigned to Gray, enrolled by Gray, which
+    // she then drops from her own book.
+    world.clients.E1 = await one(db,
+      "insert into public.clients (name, status, product_key) values ('Client E1', 'Active', 'pk-E1') returning id");
+    await db.query('insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
+      [world.clients.E1, world.gray.profile]);
+    await enrollAndPair('E1', await appUserOf(world.gray.auth));
+    await camDropsHerAssignment(world.gray, 'E1');
+    expect(await grayAssigned()).not.toContain(world.clients.E1);
+    expect(await fourOutsidePlus('E1')).toMatchObject({ status: 'thin', n_accounts: null });
+  });
+
+  it('a manager still sees every one of those clients in the desk figure', async () => {
+    await resetSamples();
+    const cycle = boundary(1);
+    for (const [i, client] of ['F1', 'F2', 'F3', 'E1', 'B1'].entries()) {
+      await reading({ client, account: `M-${i}`, realized: -100 * (i + 1), cycle });
+    }
+    expect(cohort(await desk(world.managerAuth))).toMatchObject({ status: 'compared', n_accounts: 5, n_clients: 5 });
   });
 });

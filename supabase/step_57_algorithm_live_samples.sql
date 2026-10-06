@@ -64,8 +64,27 @@
 --     never a minimum, a maximum or a quantile.
 --   * takes no parameters: only the current cycle can be asked about.
 --
--- The browser has no write path into either table, so a CAM cannot inject rows
--- to probe the median.
+-- WHAT "THE CALLER'S OWN CLIENTS" MEANS. Not only the clients assigned to her
+-- now. The browser has no write path into either table, but the ingest route is
+-- a write path a CAM can reach: she may create a client (step 52), assign it to
+-- herself (step 53), take an enrollment code for it, pair a VPS with that code
+-- and so hold a device credential, and then delete her own assignment row,
+-- which step 53's policy lets her do. Counted by assigned_client_ids() alone,
+-- that client's readings became "the rest of the desk": two of them met the
+-- floor on their own, and values placed on both sides of one real account made
+-- the median that account's value to the dollar. So the set left out for a CAM
+-- is every client she can influence: assigned to her now, created by her
+-- (clients_i_created), or enrolled with a code she issued
+-- (ingest_enrollments.created_by), whoever it is assigned to today. The cost is
+-- that a client she once enrolled and that has since moved to another CAM's
+-- book never counts in her desk figure; it still counts for everyone else.
+--
+-- What this does not close, stated: a CAM who reads the device credential off
+-- a VPS paired under SOMEONE ELSE'S code, for a client assigned to her, can
+-- still hand that client to another CAM (step 53 checks only that the client
+-- is assigned to her when she writes the assignment) and then post as it. That
+-- needs the credential lifted from the machine, and it is a hole in step 53's
+-- assignment policy, raised separately rather than patched here.
 --
 -- RESIDUAL RISK, stated rather than hidden: across consecutive cycles, a median
 -- that moves when one outside account enters or leaves the cohort bounds that
@@ -97,6 +116,13 @@ begin
     or to_regprocedure('public.is_manager()') is null
     or to_regprocedure('public.assigned_client_ids()') is null then
     raise exception 'step 57 needs step 55 (account_tracker_settings) and step 52 (is_manager): run them first';
+  end if;
+  -- The desk function also leaves out the clients the caller created (step 53)
+  -- and the ones she enrolled (step 28). Both are in the run order long before
+  -- 55, so this only fires on a database assembled out of order.
+  if to_regprocedure('public.clients_i_created()') is null
+    or to_regclass('public.ingest_enrollments') is null then
+    raise exception 'step 57 needs step 53 (clients_i_created) and step 28 (ingest_enrollments): run them first';
   end if;
 end
 $step57_guard$;
@@ -523,7 +549,20 @@ begin
     v_mine := array[]::uuid[];
     v_scope := 'desk';
   else
-    v_mine := array(select public.assigned_client_ids());
+    -- EVERY CLIENT THE CALLER CAN INFLUENCE, not only the ones assigned to her
+    -- now. An assignment is a row a CAM can delete herself (step 53), so a
+    -- client she created, or one whose VPS she paired with a code she issued,
+    -- stays in her book here whoever it is assigned to today. See the header.
+    v_mine := array(
+      select public.assigned_client_ids()
+      union
+      select public.clients_i_created()
+      union
+      select enrollment.client_id
+      from public.ingest_enrollments as enrollment
+      join public.app_users as app_user on app_user.id = enrollment.created_by
+      where app_user.auth_user_id = auth.uid()
+    );
     v_scope := 'rest_of_desk';
   end if;
 
