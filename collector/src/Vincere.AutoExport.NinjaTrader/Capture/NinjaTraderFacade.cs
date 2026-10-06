@@ -244,6 +244,7 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                     State = state,
                     RealizedPnl = measure ? StrategyPnlRead.Realized(strategy) : null,
                     UnrealizedPnl = measure ? StrategyPnlRead.Unrealized(strategy) : null,
+                    RealtimeTradeCount = measure ? StrategyPnlRead.RealtimeTradeCount(strategy) : null,
                 };
             }
             catch
@@ -293,6 +294,39 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                             return null;
                     }
                     return NullableDecimal(value);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            /* THE RUN MARKER: strategy.SystemPerformance.RealTimeTrades.Count, the
+             * trades this run has completed. It only grows within a run and starts
+             * again at zero on a re-enable, so a count lower than the previous
+             * reading's is a restart the agent would otherwise miss: most measured
+             * re-enables are a disable and enable inside one minute, which no ten
+             * minute reading sees as an absence. Same member chain as the realized
+             * candidate and the same rule: anything unreadable is null, and a null
+             * makes the agent fall back to absence alone, never to a restart.
+             * The release check on a VPS adds one line for it: disable and enable a
+             * strategy that has traded, and the count read next is 0. If the
+             * platform kept the old run's trades instead, the count would never go
+             * down and nothing would be flagged that absence does not flag today. */
+            public static int? RealtimeTradeCount(StrategyBase strategy)
+            {
+                try
+                {
+                    object value = strategy;
+                    foreach (string member in new[] { "SystemPerformance", "RealTimeTrades", "Count" })
+                    {
+                        value = ReflectedValue(value, member);
+                        if (value == null)
+                            return null;
+                    }
+                    if (!(value is int count) || count < 0)
+                        return null;
+                    return count;
                 }
                 catch
                 {

@@ -98,6 +98,13 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         /// read at all.
         /// </summary>
         public decimal? UnrealizedPnl { get; set; }
+
+        /// <summary>
+        /// How many real time trades this run has completed; null when it could
+        /// not be read. It only grows within a run and starts again at zero on a
+        /// re-enable, which is how the agent sees a restart between two readings.
+        /// </summary>
+        public int? RealtimeTradeCount { get; set; }
     }
 
     public sealed class SnapshotBuildContext

@@ -68,12 +68,24 @@ namespace Vincere.AutoExport.Contracts
         public decimal? UnrealizedPnl { get; set; }
 
         /// <summary>
-        /// When the agent saw this instance come back after it had gone away
-        /// earlier the same day. NinjaTrader resets the figure to zero on a
-        /// re-enable, so a restarted row counts only since then and is never
-        /// compared. The add-on never sets this; the agent fills it in.
+        /// When the agent saw this instance start a new run earlier the same day:
+        /// it came back after a reading that did not hold it, or its real time
+        /// trade count went down between two readings. NinjaTrader resets the
+        /// figure to zero on a re-enable, so a restarted row counts only since then
+        /// and is never compared. The add-on never sets this; the agent fills it in.
         /// </summary>
         [JsonProperty("restartedAt")]
         public DateTimeOffset? RestartedAt { get; set; }
+
+        /// <summary>
+        /// How many real time trades this run of the instance has completed, as the
+        /// add-on read it, or null when it could not be read. PIPE ONLY: the add-on
+        /// sends it so the agent can see a disable and enable that fell between two
+        /// readings (the count only grows within a run, and a re-enable starts it
+        /// again from zero). The agent never posts it, and a null is left out of
+        /// the JSON, so the CRM wire and its shared fixture are unchanged.
+        /// </summary>
+        [JsonProperty("realtimeTradeCount", NullValueHandling = NullValueHandling.Ignore)]
+        public int? RealtimeTradeCount { get; set; }
     }
 }

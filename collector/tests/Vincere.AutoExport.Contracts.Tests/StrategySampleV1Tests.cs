@@ -92,6 +92,31 @@ namespace Vincere.AutoExport.Contracts.Tests
             Assert.Equal(JTokenType.Null, written["restartedAt"].Type);
         }
 
+        /* THE RUN COUNT IS PIPE ONLY. The add-on writes it when it read one; a null
+         * is left out, so a row the agent posts (it never copies the count) is
+         * exactly the fixture's shape. */
+        [Fact]
+        public void The_run_count_travels_when_read_and_is_left_out_when_null()
+        {
+            var row = new StrategySampleRowV1
+            {
+                AccountName = "SIM-FIXTURE-1",
+                StrategyId = "1",
+                StrategyName = "0 - OGX-PF-2.4",
+                Instrument = "MNQ 12-26",
+                RealtimeTradeCount = 4,
+            };
+
+            JObject counted = (JObject)Parse(JsonConvert.SerializeObject(row));
+            row.RealtimeTradeCount = null;
+            JObject uncounted = (JObject)Parse(JsonConvert.SerializeObject(row));
+            StrategySampleRowV1 read = JsonConvert.DeserializeObject<StrategySampleRowV1>(counted.ToString());
+
+            Assert.Equal(4, counted.Value<int>("realtimeTradeCount"));
+            Assert.Null(uncounted.Property("realtimeTradeCount"));
+            Assert.Equal(4, read.RealtimeTradeCount);
+        }
+
         /* AN OLD ADD-ON'S REPLY, AND A NEW ADD-ON'S REPLY TO AN OLD AGENT. Neither
          * side has to know about the other's members for the pipe to keep working. */
         [Fact]

@@ -659,6 +659,66 @@ public sealed class AccountSampleLoopTests
         Assert.Null(third.Single(row => row.StrategyId == "2").RestartedAt);
     }
 
+    /* THE TOGGLE NO ABSENCE SHOWS. A disable and enable inside one cycle leaves the
+     * instance live in both readings; the add-on's run count going from 4 to 0 is
+     * what tells the agent, and the CRM gets the restart time. The count itself is
+     * the add-on talking to the agent and never travels to the CRM. */
+    [Fact]
+    public async Task A_toggle_between_two_readings_is_posted_as_a_restart_and_the_count_stays_behind()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        int trades = 4;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(clock, Counted(StrategyRow("APEX-1111", "1"), trades), Counted(StrategyRow("APEX-1111", "2"), 1)),
+        };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        trades = 0;
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.All(crm.StrategyPosted[0].Strategies, row => Assert.Null(row.RestartedAt));
+        StrategySampleRowV1[] second = crm.StrategyPosted[1].Strategies.ToArray();
+        Assert.Equal(StrategyClock.AddMinutes(10), second.Single(row => row.StrategyId == "1").RestartedAt);
+        Assert.Null(second.Single(row => row.StrategyId == "2").RestartedAt);
+        Assert.All(
+            crm.StrategyPosted.SelectMany(sample => sample.Strategies),
+            row => Assert.Null(row.RealtimeTradeCount));
+    }
+
+    /* A RE-ENABLE WHILE THE STRATEGY PART WAS NOT READING. The accounts failed to
+     * read for a while, so no strategy reading was taken; the strategy was switched
+     * off and on in that gap. Absence never had a chance to show it, but the count
+     * is still lower when readings resume. */
+    [Fact]
+    public async Task A_restart_during_a_gap_in_readings_is_seen_when_they_resume()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        int trades = 3;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(clock, Counted(StrategyRow("APEX-1111", "1"), trades)),
+        };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = new AccountSampleAttempt(AccountSampleOutcome.Unavailable, null, "capture_busy");
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = Sampled(Row("APEX-1111", connected: true));
+        trades = 1;
+        clock = StrategyClock.AddMinutes(20);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, strategies.Calls);
+        Assert.Equal(StrategyClock.AddMinutes(20), Assert.Single(crm.StrategyPosted[1].Strategies).RestartedAt);
+    }
+
     /* A FAILED STRATEGY READING IS NOT AN ABSENCE. A busy pipe between two readings
      * that both hold the instance must not flag it as restarted. */
     [Fact]
@@ -839,6 +899,12 @@ public sealed class AccountSampleLoopTests
         RealizedPnl = -412.5m,
         UnrealizedPnl = 37.5m,
     };
+
+    private static StrategySampleRowV1 Counted(StrategySampleRowV1 row, int? realtimeTradeCount)
+    {
+        row.RealtimeTradeCount = realtimeTradeCount;
+        return row;
+    }
 
     internal static StrategySampleAttempt Strategies(params StrategySampleRowV1[] rows) =>
         Strategies(StrategyClock, rows);

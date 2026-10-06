@@ -28,7 +28,9 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
     /// other account comparison here does, ignoring case; ids compare exactly.
     ///
     /// P&L IS PASSED THROUGH AS READ. Null stays null, because null is "not
-    /// measured" and the CRM shows it as such rather than as a zero.
+    /// measured" and the CRM shows it as such rather than as a zero. The real time
+    /// trade count is passed through the same way: the agent reads a drop in it as
+    /// a restart, so an unread count must stay null and never become a zero.
     /// </summary>
     public sealed class StrategySampleBuilder
     {
@@ -70,6 +72,7 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
                         RealizedPnl = source.RealizedPnl,
                         UnrealizedPnl = source.UnrealizedPnl,
                         RestartedAt = null,
+                        RealtimeTradeCount = source.RealtimeTradeCount,
                     });
                 }
             }

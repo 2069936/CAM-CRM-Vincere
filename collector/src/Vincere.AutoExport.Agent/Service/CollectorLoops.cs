@@ -1294,7 +1294,8 @@ public sealed class AccountSampleLoop : ICollectorLoop
             }
 
             /* Observed BEFORE the connected filter, from every live instance the
-             * add-on reported. Presence is about whether NinjaTrader still holds the
+             * add-on reported, each with its run's trade count when the add-on read
+             * one: a drop in that count is a restart no absence would show. Presence is about whether NinjaTrader still holds the
              * instance, and an account that drops its connection for one reading
              * keeps its strategies; observing the filtered list would mark every
              * one of them as restarted when the connection came back. */
@@ -1302,7 +1303,9 @@ public sealed class AccountSampleLoop : ICollectorLoop
             IReadOnlyDictionary<StrategyInstanceKey, DateTimeOffset?> restarts = strategyRuns.Observe(
                 attempt.Sample.SampledAt,
                 read.Where(row => row != null)
-                    .Select(row => new StrategyInstanceKey(row.AccountName, row.StrategyId)));
+                    .Select(row => new StrategyRunReading(
+                        new StrategyInstanceKey(row.AccountName, row.StrategyId),
+                        row.RealtimeTradeCount)));
 
             List<StrategySampleRowV1> rows = new();
             foreach (StrategySampleRowV1 row in read)
@@ -1321,6 +1324,8 @@ public sealed class AccountSampleLoop : ICollectorLoop
                     RealizedPnl = row.RealizedPnl,
                     UnrealizedPnl = row.UnrealizedPnl,
                     RestartedAt = restartedAt,
+                    // RealtimeTradeCount stays behind: it is the add-on telling the
+                    // agent about runs, and the restart time above is what it means.
                 });
             }
 

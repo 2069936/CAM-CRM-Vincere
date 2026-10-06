@@ -123,6 +123,22 @@ public sealed class StrategySampleBuilderTests
         Assert.All(sample.Strategies, row => Assert.Null(row.RestartedAt));
     }
 
+    // The run count goes through as read: the agent reads a drop in it as a
+    // restart, so an unread count must not turn into a zero on the way.
+    [Fact]
+    public void The_run_count_is_passed_through_and_an_unread_one_stays_null()
+    {
+        StrategySampleCaptureSource counted = Source("SIM-1", "1", "Realtime");
+        counted.RealtimeTradeCount = 4;
+        StrategySampleCaptureSource unread = Source("SIM-1", "2", "Realtime");
+        unread.RealtimeTradeCount = null;
+
+        StrategySampleV1 sample = Build(counted, unread);
+
+        Assert.Equal(4, sample.Strategies[0].RealtimeTradeCount);
+        Assert.Null(sample.Strategies[1].RealtimeTradeCount);
+    }
+
     [Fact]
     public void The_version_and_the_clock_are_set_and_nothing_read_is_an_empty_list()
     {
@@ -321,6 +337,49 @@ public sealed class StrategySampleFacadeTests : IDisposable
         Assert.Equal(37.5m, row.UnrealizedPnl);
     }
 
+    /* THE RUN COUNT: the real time trades this run has completed, read from the
+     * same performance object as the realized figure. A platform without the
+     * member, a stopped instance and a reading past its budget all give null,
+     * which the agent treats as "no evidence", never as a zero. */
+    [Fact]
+    public void Each_live_strategy_reads_its_run_count_and_an_unreadable_one_is_null()
+    {
+        Account account = AccountFixture("SIM-1", connected: true);
+        TestStrategy counted = Strategy("1", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10, Long(1m, 100));
+        counted.SystemPerformance.RealTimeTrades.Count = 4;
+        account.Strategies.Add(counted);
+        account.Strategies.Add(new BareStrategy { StrategyId = "2", Name = "1 - ALPHA-1.2", State = "Realtime" });
+        TestStrategy stopped = Strategy("3", "0 - OGX-PF-2.4", "MNQ 12-26", "Terminated", 10, Long(1m, 100));
+        stopped.SystemPerformance.RealTimeTrades.Count = 4;
+        account.Strategies.Add(stopped);
+        Account.All.Add(account);
+
+        List<StrategySampleCaptureSource> rows = new NinjaTraderFacade().ReadStrategiesForSample().ToList();
+        List<StrategySampleCaptureSource> pastBudget = new NinjaTraderFacade(TimeSpan.Zero).ReadStrategiesForSample().ToList();
+
+        Assert.Equal(4, rows[0].RealtimeTradeCount);
+        Assert.Null(rows[1].RealtimeTradeCount);
+        Assert.Null(rows[2].RealtimeTradeCount);
+        Assert.All(pastBudget, row => Assert.Null(row.RealtimeTradeCount));
+    }
+
+    // A count that is not a whole non-negative number is not a count.
+    [Fact]
+    public void A_run_count_that_is_not_a_count_is_null()
+    {
+        Account account = AccountFixture("SIM-1", connected: true);
+        TestStrategy negative = Strategy("1", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10, Long(1m, 100));
+        negative.SystemPerformance.RealTimeTrades.Count = -1;
+        account.Strategies.Add(negative);
+        account.Strategies.Add(new OddCountStrategy { StrategyId = "2", Name = "1 - ALPHA-1.2", State = "Realtime" });
+        Account.All.Add(account);
+
+        List<StrategySampleCaptureSource> rows = new NinjaTraderFacade().ReadStrategiesForSample().ToList();
+
+        Assert.Null(rows[0].RealtimeTradeCount);
+        Assert.Null(rows[1].RealtimeTradeCount);
+    }
+
     /* THE POSITION IS ASKED IN CURRENCY, AT THE LAST PRICE. A position asked in
      * points or at a stale price would give a plausible number that is not the
      * grid's, which is worse than null. */
@@ -497,6 +556,23 @@ public sealed class StrategySampleFacadeTests : IDisposable
     public sealed class TestTrades
     {
         public TestPerformance TradesPerformance { get; set; }
+        public int Count { get; set; }
+    }
+
+    // A performance object whose trade count answers something that is not an int.
+    private sealed class OddCountStrategy : StrategyBase
+    {
+        public OddPerformance SystemPerformance { get; } = new();
+    }
+
+    public sealed class OddPerformance
+    {
+        public OddTrades RealTimeTrades { get; } = new();
+    }
+
+    public sealed class OddTrades
+    {
+        public string Count => "four";
     }
 
     public sealed class TestPerformance
