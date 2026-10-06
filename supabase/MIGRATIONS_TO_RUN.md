@@ -35,8 +35,8 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back by a LOOP over the catalogue with one exception table for the tables that get less than the four DML verbs — every row naming what decided it; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty 32 of the 37 tables and no policy would see it. Also narrows step 55's SELECT grant on the two tracker tables from `anon, authenticated` to `authenticated` |
 | 57 | `step_57_algorithm_live_samples.sql` | `algorithm_live_samples`: the LAST reading of each NinjaTrader strategy instance (Strategies tab Realized plus Unrealized) on each paired VPS, overwritten, with the sample cycle it belongs to; `algorithm_live_settings` (the cohort floors, the cycle tolerance, the differs threshold, the report cap and the retention window); `record_algorithm_live_sample` for the ingest route; and `algorithm_live_desk()`, which returns the desk median per algorithm and instrument as aggregates only, leaving the caller's own clients out | Each algorithm today against the desk, on the CAM overview: the same cycle for desk and client, the sample size beside every figure, and no comparison when the cohort is too thin |
 | 58 | `step_58_close_summaries_scope.sql` | `replace_close_summaries` recreated with a scope check in front of its delete: a Manager and the service role as before, anyone else only the closes of clients assigned to them, with every row carrying its own close's `client_id`, or the whole call is refused with 42501; `step_48_close_summaries.sql` now carries the same function so a re-run of 48 does not undo it | Closing a CAM's ability to replace or empty another CAM's close summaries through `/rpc/replace_close_summaries`, which since step 52 it could do to rows it cannot even read |
-| 59 | `step_59_log_algo_history_by_family.sql` | step 43's `using (true)` policy on `log_algo_history` replaced by one for Managers, and `log_algo_history_by_family()`, which returns the card's seven numbers per family and withholds from a CAM every family run on fewer accounts, or fewer owners, outside her book than step 57's floors | A CAM no longer reads every book's per account, per family P&L, nor rewrites it. The Stack Playbook "Algo history (from logs)" card keeps its numbers |
-| 60 | `step_60_client_handoff_manager_only.sql` | `my_cam_profile_id()` and four RESTRICTIVE policies on `client_assignments` beside step 53's permissive one: a CAM reads her own clients' rows, inserts only (a client she created that nobody holds, her own profile), and never updates or deletes | Only a Manager moves a client between books. Closes the handoff step 57 names as its residual, and a creator taking back a client a Manager moved away. 58 is skipped on purpose: it is claimed by PR 74 (close summaries scope), not merged when this was written |
+| 59 | `step_59_log_algo_history_by_family.sql` | step 43's `using (true)` policy on `log_algo_history` replaced by one for Managers; `attributed_client_id` on each row, set by a trigger when the row is written to the one client holding that account name then, and never moved after; and `log_algo_history_by_family()`, which returns the card's seven numbers per family and withholds from a CAM every family run on fewer accounts, or fewer clients, outside her book than step 57's floors | A CAM no longer reads every book's per account, per family P&L, nor rewrites it. The Stack Playbook "Algo history (from logs)" card keeps its numbers |
+| 60 | `step_60_client_handoff_manager_only.sql` | `my_cam_profile_id()` and four RESTRICTIVE policies on `client_assignments` beside step 53's permissive one: a CAM reads her own clients' rows, inserts only (a client she created that nobody holds, her own profile), and never updates or deletes | Only a Manager moves a client between books. Closes the handoff step 57 names as its residual, and a creator taking back a client a Manager moved away |
 
 ## These three groups behave differently
 
@@ -570,15 +570,34 @@ with the browser's own upsert, and a signed-in session with no CRM user behind
 it read everything too. After 59 the rows are a Manager's alone, and a CAM gets
 the card from `log_algo_history_by_family()`:
 
-- A family is shown to a CAM when the accounts that ran it outside her book reach
-  `min_cohort_accounts` AND come from `min_cohort_clients` owners, the two floors
-  on `algorithm_live_settings` that step 57 already reads. One floor for every
-  desk aggregate a CAM sees: editing it moves both screens. "Her book" is step
-  57's: assigned to her, created by her, or enrolled with her code. An account no
-  client holds counts as its own owner, so dead accounts still show.
+- A family is shown to a CAM when the accounts that ran it on clients outside
+  her book reach `min_cohort_accounts` AND come from `min_cohort_clients`
+  clients, the two floors on `algorithm_live_settings` that step 57 already
+  reads. One floor for every desk aggregate a CAM sees: editing it moves both
+  screens. "Her book" is step 57's: assigned to her, created by her, or enrolled
+  with her code.
+- Which client a row belongs to is decided once, when the row is written, and
+  stored in `attributed_client_id`: the one client whose trading account had
+  that name at that moment, the match the import itself makes. A CAM cannot
+  move it. The first version of this file decided it when the card was read,
+  from today's trading accounts, and a CAM could rename or delete her own
+  accounts (step 52 lets her, and the browser offers it) so that they counted
+  as somebody else's; measured on the cluster, the desk total minus her own
+  figure was then one account of another book, to the cent. That is closed, and
+  the test beside the file performs that attack as the role.
+- An account no client held when it was imported, or that two clients held,
+  adds to every figure and never to the floor, because it cannot be told apart
+  from one of her own accounts renamed before the upload. A family run only on
+  dead accounts is therefore Withheld for a CAM; the Manager sees it as before.
+  A client deleted from the SQL editor stops counting as an owner too.
 - What is shown is the whole desk, her accounts included, so the figure is the
   Manager's. Under the floor the row reads "Withheld" with no numbers and no
   counts.
+- Left open, and stated: a client only ASSIGNED to her that a Manager moves to
+  another CAM leaves her book, so its accounts, whose history she knew, then
+  count as outside ones. Clearing `created_by` on a client she holds does the
+  same to a client she created, once a Manager moves it. Both need a Manager to
+  act; step 57's median carries the same limit.
 - Aggregated rather than scoped by client because the card exists for accounts
   that no longer belong to anyone, which a per client policy would hide from
   every CAM, and because the only reader never displays a row.
@@ -609,12 +628,26 @@ never updates or deletes. That is everything the product asks of a CAM:
 `transferSupabaseClient` is wired only into the Manager overview. No screen
 changes.
 
+Left open, and stated: a client a CAM created that is left with no assignment
+row at all (a Manager unassigns it without naming anyone) can be taken back by
+that CAM without a Manager, because "held by nobody" is all 60 can check. A
+client moved to another CAM always has a row, so that handoff stays closed.
+
 **60's policies are RESTRICTIVE and step 53's permissive one stays,** because 52
 and 53 can both be re-run and each writes a permissive policy on this table (52's
 loop drops every permissive policy first). A permissive fix in 60 would be undone
 by either, silently. Re-running 52 or 53 after 60 is therefore safe. 60 refuses
 to finish if the table has no permissive policy at all, since a restrictive policy
 alone refuses every row, a Manager's included: run 53 first in that case.
+
+**After 59 runs, see what the backfill attributed,** in the SQL editor as
+yourself (counts only):
+
+    select count(*) filter (where attributed_client_id is not null) as attributed,
+           count(*) as total
+    from public.log_algo_history;
+    -- attributed: the rows whose account one client held when 59 ran. The rest
+    -- are dead or shared account names: in the figures, never in the floor.
 
 **Verify both as a CAM, in the SQL editor,** inside a transaction that is rolled
 back, with a CAM who holds at least one client (the insert below borrows one of
@@ -627,6 +660,8 @@ hers). `auth.uid()` reads the same setting PostgREST sets:
     -- PASS: 0.  FAIL: any other number -> 59 did not apply.
     select family, status, accounts from public.log_algo_history_by_family();
     -- Each family 'shown' with its counts, or 'withheld' with NULLs.
+    update public.log_algo_history set attributed_client_id = null;
+    -- PASS: UPDATE 0 (she reads no row, so she can change none).
     insert into public.client_assignments (client_id, cam_profile_id)
       select a.client_id, p.id
       from public.client_assignments a, public.cam_profiles p

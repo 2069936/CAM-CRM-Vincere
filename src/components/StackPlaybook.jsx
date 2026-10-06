@@ -753,7 +753,7 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
               </p>
               {logAlgoWithheld ? (
                 <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
-                  A withheld algo runs on too few accounts outside your book for its total to be shown without revealing one of them. The figures shown are the whole desk, your accounts included.
+                  A withheld algo runs on too few accounts outside your book for its total to be shown without revealing one of them. Accounts no client held when their log was uploaded add to the figures but do not count toward showing them. The figures shown are the whole desk, your accounts included.
                 </p>
               ) : null}
             </div>

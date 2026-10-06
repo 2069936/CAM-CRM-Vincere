@@ -85,16 +85,20 @@
 -- is assigned to her when she writes the assignment) and then post as it. That
 -- needs the credential lifted from the machine, and it is a hole in step 53's
 -- assignment policy, raised separately rather than patched here. CLOSED BY
--- STEP 60: a CAM can no longer write an assignment for another profile or
--- delete one, so a client assigned to her stays in her book until a Manager
--- moves it.
+-- STEP 60 for a handoff the CAM makes herself: she can no longer write an
+-- assignment for another profile or delete one, so a client assigned to her
+-- stays in her book until a Manager moves it. NOT closed for a Manager's
+-- legitimate move: when a Manager moves a client that was paired under someone
+-- else's code, its device credential still posts readings, and they count as
+-- the desk for the CAM who held it before.
 --
 -- RESIDUAL RISK, stated rather than hidden: across consecutive cycles, a median
 -- that moves when one outside account enters or leaves the cohort bounds that
 -- account's value. That is small next to the existing leak in log_algo_history,
 -- which keeps step 43's full access for every CAM and shows per-account,
 -- per-family P&L desk-wide. CLOSED BY STEP 59, which hands a CAM that history
--- only as family aggregates under these same floors.
+-- only as family aggregates under these same floors, counting each row for the
+-- client it was attributed to when it was written.
 --
 -- EVERY TUNABLE IS A COLUMN, edited in the SQL editor, because Pedro cannot set
 -- an environment variable in Vercel. The CHECK constraints are the only review a

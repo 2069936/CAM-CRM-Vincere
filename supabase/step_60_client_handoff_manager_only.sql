@@ -97,6 +97,16 @@
 -- moved asks a Manager, which the screen already requires. A CAM can no longer
 -- remove herself from a client; neither can she today in the product.
 --
+-- RESIDUAL RISK, stated rather than hidden. "Held by nobody" is read when she
+-- writes, and nothing records that a client was ever held. So a client she
+-- created that is left with NO assignment row at all (a Manager removes the
+-- Owner row without naming a new one) is hers to take again: the creator arm
+-- on clients (step 53) shows it to her and the insert arm here accepts (that
+-- client, her profile), with no Manager asked. Measured on the cluster in
+-- review. A client a Manager moves to another CAM always has a row, so the
+-- handoff in C above stays closed. Closing this one needs a record that the
+-- client has been assigned before, which is a column and a later step.
+--
 -- WHY A HELPER FOR THE PROFILE. `my_cam_profile_id()` reads app_users as a
 -- definer, the way assigned_client_ids() does, so this policy does not depend
 -- on whatever policy app_users carries next, and an Inactive user resolves to
