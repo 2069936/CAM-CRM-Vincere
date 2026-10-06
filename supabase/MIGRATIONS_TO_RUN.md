@@ -32,6 +32,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 52 | `step_52_rls_by_cam.sql` | `is_manager()` and `assigned_client_ids()`, then a real policy on every table that reaches a client: 13 by `client_id`, 4 through `daily_imports`, `clients` by id and `payout_events` by account | Turning step 43's `using (true)` into a CAM seeing only the clients assigned to it |
 | 53 | `step_53_client_creation_under_rls.sql` | `clients.created_by`, the `client_is_assigned` and `clients_i_created` helpers, and a third arm on three of step 52's policies | Letting a CAM create a client again: step 52 made the `RETURNING` on the insert unreadable to its own author |
 | 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts in four words — `running`, `idle`, `no_strategies` (the VPS looked and nothing is loaded) and `unmeasured` (nobody looked) — plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
+| 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back by a LOOP over the catalogue with one exception table for the tables that get less than the four DML verbs — every row naming what decided it; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty 32 of the 37 tables and no policy would see it. Also narrows step 55's SELECT grant on the two tracker tables from `anon, authenticated` to `authenticated` |
 
 ## These three groups behave differently
 
@@ -105,7 +106,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -126,6 +127,125 @@ removes privileges the application never uses: the browser reads `app_users`
 twice to sign in and writes it never, and every write goes through
 `api/admin/users.js` on the service role, which grants do not constrain. SELECT
 is deliberately untouched - revoking it locks every user out of the CRM.
+
+**56 takes away the four privileges row level security cannot govern, and it is
+numbered 56 because 54 and 55 were claimed by branches that had not merged.**
+Draft PR 65 still holds step 54. PR 67 held step 55 and **has since merged** —
+after 56 was written and before 56 could merge, which is the one thing worth
+knowing about this file before reading it.
+
+Every table in this database was born holding all eight privileges for `anon`
+and for `authenticated`, because a Supabase project ships
+`alter default privileges in schema public grant all on tables`. Nobody granted
+them and nobody reviewed them. Four of the eight are not subject to row level
+security at all:
+
+- **TRUNCATE** empties a table in one statement without consulting a single
+  policy. Verified by doing it as the `authenticated` role against a cluster
+  carrying every migration in this directory: `truncate table public.orders`
+  **succeeded**. Steps 52 and 53 would have watched a CAM empty `clients`,
+  `trading_accounts`, `orders`, `executions` and `client_credentials`.
+- **TRIGGER** attaches code that runs on somebody else's writes.
+- **REFERENCES** lets an unaudited table decide whether a row may be deleted.
+- **MAINTAIN** is PostgreSQL 17's addition, and it is the proof that this had to
+  be done by revoking everything rather than by naming what to remove: step 51
+  wrote `revoke truncate, trigger, references on app_users`, MAINTAIN did not
+  exist yet, and `authenticated` still holds it on `app_users` today.
+
+So 56 revokes everything from both browser roles and grants back only the verbs
+the browser is measured to use — `anon` gets nothing at all — and then changes
+the default privileges so the next table is not born with the hole.
+
+**And the migration against staleness went stale, which is why its shape changed
+before it merged.** The argument above is against enumerating what to REMOVE;
+56's first draft then enumerated what to KEEP, in five hand-written
+`grant ... on public.a, public.b, ...` statements naming 33 tables. That goes
+stale the same way, one direction over — when a TABLE is added rather than when a
+PRIVILEGE is. Step 55 landed two tables and both came out of 56 holding nothing,
+while a test beside it asserted a hard-coded count of 37 against a schema that
+now holds 39.
+
+Both halves are now read from the catalogue. The revoke always was. The
+grant-back is a loop over every base table in `public`, with one **exception
+table** for the tables that get less than the four DML verbs — and every row in
+it names the migration or the measurement that decided it. The exception table is
+not a convenience: step 55 deliberately made its two tables read-only for the
+browser, 56 runs after 55, so a four-verb loop with no exceptions would have
+handed INSERT, UPDATE and DELETE straight back and 56 would have been the thing
+that undid it. The same is true of the four `ingest%` tables step 28 closed and
+the two steps 45 and 46 closed.
+
+**A table in neither place gets the four DML verbs and 56 says its name in a
+NOTICE.** The four verbs because that is exactly what a table created *after* 56
+gets from the default privileges, so a table's privileges do not depend on which
+side of 56 it was created on; the NOTICE because granting in silence is how step
+55 would have been undone. It is not fatal — a migration that refused to run
+until somebody edited it would be the hand-written list again. If you run 56 and
+see a table name you did not expect in that NOTICE, it needs a row in the
+exception table.
+
+**56 also narrows one decision step 55 made.** Step 55 granted SELECT on
+`account_live_samples` and `account_tracker_settings` to `anon, authenticated`;
+step 55's own line now reads `to authenticated`. Nothing reads either table
+without a session — the overview effect that reads them returns early until it
+has a signed-in client list, both SELECT policies are `to authenticated`, and
+`/database`'s 20-table probe names neither — so the anon half returned `200 []`
+and bought nothing, and 56's blanket revoke took it anyway. The end state is
+unchanged; what changed is that the two files now say the same thing.
+
+**It is safe to run at any time and needs no deploy.** It removes privileges
+nothing in this repository uses. The browser's entire PostgREST surface is
+`src/domain/supabaseStore.js` and `src/domain/supabaseAuth.js`; everything under
+`api/` and `server/` runs on the service role, which is BYPASSRLS and whose
+grants 56 does not touch.
+
+**Two things will look like breakage and are not.** The login screen will log
+two console errors on every fresh tab, because `src/App.jsx:14032` and `:14051`
+load `strategy_classifications` and `log_algo_history` from effects with no
+session guard: today they get `200 []`, after 56 they get `42501` and the
+existing `.catch(console.error)` prints it. Nothing user-visible changes. And
+`/database` will report "Needs attention", because `DatabaseCheck` renders
+before the `if (!session)` gate and its 20-table probe now gets `permission
+denied` instead of a count of 0. That page only ever told the truth signed in.
+
+**Verify it, SIGNED OUT.** A probe carrying an `Authorization` header proves
+nothing: `authenticated` holds the same EXECUTE grant on the sign-in function,
+so the test passes whether or not `anon` still has it. No header, that is the
+whole point:
+
+    curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/login_email_for_username" \
+      -H "apikey: $VITE_SUPABASE_PUBLISHABLE_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"p_username":"<an active username>"}'
+    # PASS: a quoted email string.
+    # FAIL: 401/403, or {"code":"42501"} -> username sign-in is broken for everyone.
+
+Then the negative, which must stay closed and should change shape:
+
+    curl -s "$SUPABASE_URL/rest/v1/clients?select=id&limit=1" \
+      -H "apikey: $VITE_SUPABASE_PUBLISHABLE_KEY"
+    # Before 56: []        the grant allowed the read, no policy admitted anon to a row.
+    # After 56:  {"code":"42501", ... "permission denied for table clients"}
+    # Both are closed. `[]` turning into 42501 is the proof the migration ran.
+
+**If username sign-in ever fails after this, sign in with your email address.**
+`src/domain/supabaseAuth.js:42` short-circuits before any network call when the
+input contains `@`, so an email sign-in works with every `anon` privilege
+revoked. The login field is labelled "Username" and mentions none of this. Then
+restore the one grant:
+`grant execute on function public.login_email_for_username(text) to anon;`
+
+**One half of 56 may not apply, and it says so when it runs.** There are two
+default-privilege lines, one owned by `postgres` and one owned by
+`supabase_admin`. 56 changes the first and attempts the second inside an
+exception handler, so it cannot fail on it. `alter default privileges for role
+supabase_admin` requires membership in `supabase_admin`, and the SQL editor's
+`postgres` is not a member — a non-member is refused with `permission denied to
+change default privileges`. Watch for the NOTICE. If it says the
+`supabase_admin` line was **not** changed, a table created *by* `supabase_admin`
+is still born holding all eight; no migration in this directory creates tables
+that way, and closing it needs a session as `supabase_admin`, which the SQL
+editor does not give you. Everything else in 56 will have applied.
 
 **47 is easier to run before the deploy, and no longer has to be.** It was
 written as a must: the strategy insert named `ran` and `ran_basis`
