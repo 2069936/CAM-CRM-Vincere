@@ -146,6 +146,27 @@ describe('the figures', () => {
     expect(panelText(container)).not.toContain('Differs from the desk');
   });
 
+  it('the floors it prints are the settings table\'s, not the defaults', async () => {
+    const { container } = await show({
+      load: async () => live({
+        settings: { ...SETTINGS, minCohortAccounts: 8, minCohortClients: 4 },
+        cohorts: [compared({ status: 'thin', nAccounts: null, nClients: null, median: null, spread: null, nFlat: null })],
+      }),
+    });
+    expect(panelText(container)).toContain(
+      'Not compared: fewer than 8 accounts from 4 clients outside your book ran it in this cycle.');
+    expect(panelText(container)).not.toContain('fewer than 5 accounts');
+  });
+
+  it('names the cycle length the settings carry, not a fixed ten minutes', async () => {
+    const five = await show({ load: async () => live({ settings: { ...SETTINGS, cycleSeconds: 300 } }) });
+    expect(panelText(five.container)).toContain('read on the same 5 minute cycle for everyone');
+    expect(panelText(five.container)).not.toContain('ten minute');
+    five.unmount();
+    const hour = await show({ load: async () => live({ settings: { ...SETTINGS, cycleSeconds: 3600 } }) });
+    expect(panelText(hour.container)).toContain('read on the same 60 minute cycle for everyone');
+  });
+
   it('a manager reads the floor as "on the desk"', async () => {
     const { container } = await show({
       isManager: true,
@@ -219,6 +240,29 @@ describe('the feedback loop', () => {
     expect(entry.text.endsWith('sizing is 4 on this one')).toBe(true);
     expect(entry).not.toHaveProperty('logDate');
     expect(entry).not.toHaveProperty('logPnl');
+  });
+
+  it('a note on an account read outside the cycle carries no desk median', async () => {
+    const onLogClientActivity = vi.fn();
+    const onAddClientTask = vi.fn();
+    await show({
+      onLogClientActivity,
+      onAddClientTask,
+      load: async () => live({ rows: [sample({ cycleStart: null, sampledAt: '2026-10-06T14:14:00.000Z' })] }),
+    });
+    fireEvent.click(screen.getByText('Note what you found'));
+    fireEvent.change(screen.getByLabelText('What you found'), { target: { value: 'late VPS clock' } });
+    await act(async () => { fireEvent.click(screen.getByText('Save note')); });
+    fireEvent.click(screen.getByText('Add a follow up task'));
+    const noteText = onLogClientActivity.mock.calls[0][1].text;
+    const taskText = onAddClientTask.mock.calls[0][1].text;
+    for (const text of [noteText, taskText]) {
+      expect(text.startsWith('[algorithm live] OGX_PF MNQ, ACC-1, read at ')).toBe(true);
+      expect(text).toMatch(/outside the \d\d:\d\d cycle: -\$1,200, not compared\./);
+      expect(text).not.toContain('desk median');
+      expect(text).not.toContain('-$500');
+    }
+    expect(noteText.endsWith('late VPS clock')).toBe(true);
   });
 
   it('"Add a follow up task" carries the same prefix', async () => {

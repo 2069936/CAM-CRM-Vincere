@@ -444,12 +444,36 @@ export function reviewNotePrefix({ algorithm, instrumentRoot, accountName }) {
  * The activity entry text for a note taken from the comparison. Plain text, no
  * logDate and no logPnl: an activity entry carrying either becomes a point on
  * the client's equity curve, and this is a note, not a result.
+ *
+ * The note is what the loop reads back the next time this account differs, so
+ * it says "against desk median" ONLY for an account that was compared with that
+ * median, in that cycle. An account read outside the cycle says when it was
+ * read; a restarted one says since when its figure counts; one not measured
+ * carries no figure at all. A record that put a reading from 10:14 beside the
+ * 10:10 median would be the cycle mixing the whole design refuses.
  */
 export function reviewNoteText({ account, desk, cycleStart, note = '' }) {
-  const deskPart = desk?.status === 'compared'
-    ? `against desk median ${wholeDollars(desk.median)} (${desk.nAccounts} accounts, ${desk.nClients} clients)`
-    : 'not compared with the desk';
-  const text = `${reviewNotePrefix(account)} cycle ${cycleClock(cycleStart)}: ${wholeDollars(account.value)} ${deskPart}.`;
+  const prefix = reviewNotePrefix(account);
+  const cycle = cycleClock(cycleStart);
+  let body;
+  switch (account?.status) {
+    case 'compared':
+      body = `cycle ${cycle}: ${wholeDollars(account.value)} against desk median ${wholeDollars(desk?.median)} (${desk?.nAccounts} accounts, ${desk?.nClients} clients).`;
+      break;
+    case 'off_cycle':
+    case 'not_in_cycle':
+      body = `read at ${cycleClock(account.sampledAt)}, outside the ${cycle} cycle: ${wholeDollars(account.value)}, not compared.`;
+      break;
+    case 'restarted':
+      body = `cycle ${cycle}: ${wholeDollars(account.value)} since a restart at ${cycleClock(account.restartedAt)}, not compared.`;
+      break;
+    case 'unmeasured':
+      body = `cycle ${cycle}: not measured, not compared.`;
+      break;
+    default:
+      body = `cycle ${cycle}: ${wholeDollars(account?.value)}, not compared with the desk.`;
+  }
+  const text = `${prefix} ${body}`;
   const extra = String(note || '').trim();
   return extra ? `${text} ${extra}` : text;
 }

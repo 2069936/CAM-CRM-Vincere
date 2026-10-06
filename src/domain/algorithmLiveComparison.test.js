@@ -3,6 +3,7 @@ import {
   DIFFERS_WORD,
   buildAlgorithmLiveComparison,
   configIndexFromOutliers,
+  cycleClock,
   previousReviewNote,
   reviewNotePrefix,
   reviewNoteText,
@@ -167,6 +168,28 @@ describe('an account against its cohort', () => {
     expect(exact.spread).toBe(0);
   });
 
+  it('the minimum spread is the setting, not the fallback', () => {
+    // 450 off a cohort spread of 100, with the floor at 200: 450 / 200 = 2.25.
+    const account = onlyAccount(build({
+      desk: desk([cohort({ spread: 100 })]),
+      rows: [row({ realizedPnl: -950, unrealizedPnl: 0 })],
+      settings: { ...SETTINGS, minSpreadDollars: 200 },
+    }));
+    expect(account.distance).toBe(-450);
+    expect(account.spread).toBe(2.3);
+    expect(account.differs).toBe(false);
+  });
+
+  it('a cohort spread under the floor is raised to the floor, not taken as it is', () => {
+    // 100 off a cohort spread of 20, floor 50: 100 / 50 = 2, not 100 / 20 = 5.
+    const account = onlyAccount(build({
+      desk: desk([cohort({ spread: 20 })]),
+      rows: [row({ realizedPnl: -600, unrealizedPnl: 0 })],
+    }));
+    expect(account.spread).toBe(2);
+    expect(account.differs).toBe(false);
+  });
+
   it('the differs threshold is the setting', () => {
     const rows = [row({ realizedPnl: -800, unrealizedPnl: 0 })];
     expect(onlyAccount(build({ desk: desk(), rows })).differs).toBe(true);
@@ -216,16 +239,25 @@ describe('ordering', () => {
   });
 
   it('inside an algorithm, compared rows first by spread, then the rest by client and account', () => {
+    /* Median -500, spread 100. The three compared accounts sit on both sides of
+     * the median, so ordering them by value, in either direction, gives an order
+     * that is not the spread order. */
     const result = build({
       desk: desk(),
       rows: [
-        row({ clientId: 'c-cedar', accountName: 'Z', realizedPnl: -450, unrealizedPnl: 0 }),
+        // 400 below the median: 4 spreads.
+        row({ clientId: 'c-cedar', accountName: 'Z', realizedPnl: -900, unrealizedPnl: 0 }),
         row({ clientId: 'c-ash', accountName: 'B', cycleStart: null }),
-        row({ clientId: 'c-birch', accountName: 'Y', realizedPnl: -900, unrealizedPnl: 0 }),
+        // 600 above the median: 6 spreads, the farthest, and the best figure.
+        row({ clientId: 'c-birch', accountName: 'Y', realizedPnl: 100, unrealizedPnl: 0 }),
+        // 300 above: 3 spreads.
+        row({ clientId: 'c-cedar', accountName: 'X', realizedPnl: -200, unrealizedPnl: 0 }),
         row({ clientId: 'c-ash', accountName: 'A', realizedPnl: null }),
       ],
     });
-    expect(result.algorithms[0].accounts.map((a) => a.accountName)).toEqual(['Y', 'Z', 'A', 'B']);
+    const accounts = result.algorithms[0].accounts;
+    expect(accounts.map((a) => a.accountName)).toEqual(['Y', 'Z', 'X', 'A', 'B']);
+    expect(accounts.slice(0, 3).map((a) => a.spread)).toEqual([6, 4, 3]);
   });
 
   it('algorithms are alphabetical, then by root, and say where else they run', () => {
@@ -317,7 +349,7 @@ describe('the configuration beside the number', () => {
 
 describe('the feedback note', () => {
   const account = {
-    algorithm: 'OGX_PF', instrumentRoot: 'MNQ', accountName: 'ACC-1', value: -1200,
+    algorithm: 'OGX_PF', instrumentRoot: 'MNQ', accountName: 'ACC-1', value: -1200, status: 'compared',
   };
   const deskFigure = { status: 'compared', median: -500, nAccounts: 12, nClients: 8 };
 
@@ -325,6 +357,67 @@ describe('the feedback note', () => {
     const text = reviewNoteText({ account, desk: deskFigure, cycleStart: '2026-10-06T14:10:00', note: ' sizing is 4 ' });
     expect(text.startsWith(reviewNotePrefix(account))).toBe(true);
     expect(text).toBe('[algorithm live] OGX_PF MNQ, ACC-1, cycle 14:10: -$1,200 against desk median -$500 (12 accounts, 8 clients). sizing is 4');
+  });
+
+  /* A note is the record the loop reads back next time, so it may say "against
+   * desk median" only for an account that WAS compared with that median, in that
+   * cycle. Every other account says what it is and when it was read. */
+  function accountWith(rowOverrides, cohorts = [cohort()]) {
+    return build({ desk: desk(cohorts), rows: [row({ realizedPnl: -1100, unrealizedPnl: -100, ...rowOverrides })] })
+      .algorithms[0];
+  }
+  function noteFor(entry, note = '') {
+    return reviewNoteText({ account: entry.accounts[0], desk: entry.desk, cycleStart: CYCLE, note });
+  }
+  const clock = cycleClock(CYCLE);
+  const prefix = reviewNotePrefix({ algorithm: 'OGX_PF', instrumentRoot: 'MNQ', accountName: 'ACC-1' });
+
+  it('a compared account carries the desk median and the counts', () => {
+    const entry = accountWith({});
+    expect(entry.accounts[0].status).toBe('compared');
+    expect(noteFor(entry)).toBe(`${prefix} cycle ${clock}: -$1,200 against desk median -$500 (12 accounts, 8 clients).`);
+  });
+
+  it('an off cycle account says when it was read and that it was not compared', () => {
+    const sampledAt = '2026-10-06T14:14:00.000Z';
+    const entry = accountWith({ cycleStart: null, sampledAt });
+    expect(entry.accounts[0].status).toBe('off_cycle');
+    const text = noteFor(entry, 'checked');
+    expect(text).toBe(`${prefix} read at ${cycleClock(sampledAt)}, outside the ${clock} cycle: -$1,200, not compared. checked`);
+    expect(text).not.toContain('desk median');
+    expect(text).not.toContain('-$500');
+  });
+
+  it('an account from an older cycle says when it was read and that it was not compared', () => {
+    const sampledAt = '2026-10-06T14:00:02.000Z';
+    const entry = accountWith({ cycleStart: OLDER, sampledAt });
+    expect(entry.accounts[0].status).toBe('not_in_cycle');
+    const text = noteFor(entry);
+    expect(text).toBe(`${prefix} read at ${cycleClock(sampledAt)}, outside the ${clock} cycle: -$1,200, not compared.`);
+    expect(text).not.toContain('desk median');
+  });
+
+  it('a restarted account says since when it counts and that it was not compared', () => {
+    const restartedAt = '2026-10-06T13:40:00.000Z';
+    const entry = accountWith({ restartedAt });
+    expect(entry.accounts[0].status).toBe('restarted');
+    const text = noteFor(entry);
+    expect(text).toBe(`${prefix} cycle ${clock}: -$1,200 since a restart at ${cycleClock(restartedAt)}, not compared.`);
+    expect(text).not.toContain('desk median');
+  });
+
+  it('an unmeasured account writes no figure at all', () => {
+    const entry = accountWith({ unrealizedPnl: null });
+    expect(entry.accounts[0].status).toBe('unmeasured');
+    const text = noteFor(entry);
+    expect(text).toBe(`${prefix} cycle ${clock}: not measured, not compared.`);
+    expect(text).not.toMatch(/\$/);
+  });
+
+  it('an account in a thin cohort keeps its figure and says it was not compared', () => {
+    const entry = accountWith({}, [cohort({ status: 'thin', nAccounts: null, nClients: null, median: null, spread: null })]);
+    expect(entry.accounts[0].status).toBe('cohort_thin');
+    expect(noteFor(entry)).toBe(`${prefix} cycle ${clock}: -$1,200, not compared with the desk.`);
   });
 
   it('finds the newest earlier Review note for the same account, algorithm and root only', () => {

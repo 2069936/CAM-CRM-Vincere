@@ -177,7 +177,7 @@ export default function AlgorithmLivePanel({
           {scopeIsDesk
             ? 'The desk figure counts every client on the desk.'
             : 'The desk figure leaves out your own clients, so it is the rest of the desk.'}
-          {' '}Realized plus open, as the Strategies tab shows it, read on the same ten minute cycle for everyone.
+          {' '}{`Realized plus open, as the Strategies tab shows it, read on the same ${cycleWords(settings.cycleSeconds)} cycle for everyone.`}
           {settings.fallback ? ' The floors below are the defaults, because the settings could not be read.' : ''}
         </p>
         {stale ? (
@@ -274,6 +274,13 @@ function ageWords(seconds) {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
+/* The cycle is step 55's sample_interval_seconds, 300 to 3600, so the copy
+ * names whatever the settings say rather than a fixed ten minutes. */
+function cycleWords(seconds) {
+  const value = Number(seconds) > 0 ? Number(seconds) : 600;
+  return value % 60 === 0 ? `${value / 60} minute` : `${value} second`;
 }
 
 function deskWords(entry, { settings, scopeIsDesk }) {
