@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  applyFileCollectingNotices,
   migrationFilesInOrder,
   one,
   privilegesOn,
@@ -149,11 +150,15 @@ async function seedGraysOtherClients(db, w) {
 }
 
 // Family -> [account, date, direction, realized, round trips]. Each family is
-// built to sit on one side of the floor (5 accounts and 3 owners outside the
-// caller's book, the defaults) for a named CAM and not for another.
+// built to sit on one side of the floor (5 accounts and 3 clients outside the
+// caller's book, the defaults) for a named CAM and not for another. A DEAD-
+// account is one no client holds: it adds to every figure and never to the
+// floor.
 const HISTORY = {
-  // Outside Gray: B1-A B2-A B3-A A1-A DEAD-1 DEAD-2, six accounts, six owners.
+  // Outside Gray: B1-A B2-A B3-A A1-A U1-A, five accounts on five clients,
+  // plus two dead accounts in the figures.
   OGX: [
+    ['U1-A', '2026-10-03', 'Long', 12, 1],
     ['G1-A', '2026-10-01', 'Long', 100, 3], ['B1-A', '2026-10-01', 'Long', -200.25, 4],
     ['B2-A', '2026-10-01', 'Short', 50.5, 1], ['B3-A', '2026-10-02', 'Mixed', 25, 2],
     ['A1-A', '2026-10-02', 'Long', 10, 1], ['DEAD-1', '2026-10-02', 'Short', -5.75, null],
@@ -166,7 +171,7 @@ const HISTORY = {
     ['B1-C', '2026-10-01', 'Short', -90, 2], ['B1-D', '2026-10-01', 'Long', 15, 1],
     ['B1-E', '2026-10-01', 'Long', 20, 1], ['G1-A', '2026-10-01', 'Short', -1, 1],
   ],
-  // Accounts nobody holds: each is its own owner, so dead history still shows.
+  // Accounts nobody holds: no owner, so they never meet the floor for a CAM.
   DeadOnly: [
     ['DEAD-3', '2026-09-01', 'Long', 1, 1], ['DEAD-4', '2026-09-01', 'Long', 2, 1],
     ['DEAD-5', '2026-09-01', 'Long', 3, 1], ['DEAD-6', '2026-09-01', 'Short', 4, 1],
@@ -178,19 +183,19 @@ const HISTORY = {
   Assigned: [
     ['G1-A', '2026-10-01', 'Long', 1, 1], ['B2-A', '2026-10-01', 'Long', 1, 1],
     ['B3-A', '2026-10-01', 'Long', 1, 1], ['U1-A', '2026-10-01', 'Long', 1, 1],
-    ['DEAD-11', '2026-10-01', 'Long', 1, 1],
+    ['X1-A', '2026-10-01', 'Long', 1, 1], ['DEAD-11', '2026-10-01', 'Long', 1, 1],
   ],
   // Same shape with the client Gray CREATED, now held by Birch.
   Created: [
     ['CR-A', '2026-10-01', 'Long', 1, 1], ['B2-A', '2026-10-01', 'Long', 1, 1],
     ['B3-A', '2026-10-01', 'Long', 1, 1], ['U1-A', '2026-10-01', 'Long', 1, 1],
-    ['DEAD-9', '2026-10-01', 'Long', 1, 1],
+    ['X1-A', '2026-10-01', 'Long', 1, 1],
   ],
   // Same shape with the client Gray ENROLLED, now held by Birch.
   Enrolled: [
     ['EN-A', '2026-10-01', 'Long', 1, 1], ['B2-A', '2026-10-01', 'Long', 1, 1],
     ['B3-A', '2026-10-01', 'Long', 1, 1], ['U1-A', '2026-10-01', 'Long', 1, 1],
-    ['DEAD-10', '2026-10-01', 'Long', 1, 1],
+    ['X1-A', '2026-10-01', 'Long', 1, 1],
   ],
   // An empty family is Unknown to the browser.
   '': [['DEAD-12', null, 'Long', 9, 1], ['', '2026-10-01', 'Short', 1, null]],
@@ -362,9 +367,19 @@ describe('after step 59: log_algo_history_by_family()', () => {
     const gray = await familiesFor(after, world.gray.auth);
     const manager = await familiesFor(after, world.managerAuth);
     expect(gray.OGX.status).toBe('shown');
-    // Her own G1-A is in the total: the number is the Manager's, not "the rest".
+    // Her own G1-A and the two dead accounts are in the total: the number is
+    // the Manager's, not "the rest".
     expect(gray.OGX).toEqual(manager.OGX);
-    expect(gray.DeadOnly.status).toBe('shown');
+    expect(gray.OGX.accounts).toBe(8);
+  });
+
+  it('withholds a family run only on accounts no client held when they were imported', async () => {
+    // Indistinguishable from her own accounts renamed before the import, so
+    // they never make the floor; the Manager still reads the family.
+    for (const cam of [world.gray, world.birch, world.ash]) {
+      expect((await familiesFor(after, cam.auth)).DeadOnly.status).toBe('withheld');
+    }
+    expect((await familiesFor(after, world.managerAuth)).DeadOnly).toMatchObject({ status: 'shown', accounts: 5 });
   });
 
   it('withholds a family whose outside accounts all belong to one client', async () => {
@@ -425,7 +440,7 @@ describe('after step 59: log_algo_history_by_family()', () => {
       family: 'Thin', withheld: true, totalPnl: null, roundTrips: null,
       byDirection: { Long: null, Short: null, Mixed: null }, accounts: null, days: null,
     });
-    expect(families.find((row) => row.family === 'OGX')).toMatchObject({ withheld: false, accounts: 7 });
+    expect(families.find((row) => row.family === 'OGX')).toMatchObject({ withheld: false, accounts: 8 });
   });
 });
 
@@ -549,6 +564,62 @@ describe('after step 59: a CAM cannot move her own accounts outside her book', (
   });
 });
 
+/* ── The owner of a row is fixed when it is written ───────────────────────── */
+
+describe('after step 59: who owns a row is the database\'s answer, made once', () => {
+  const ownerOf = async (account, family) => one(after,
+    'select attributed_client_id from public.log_algo_history where account_name = $1 and family = $2', [account, family]);
+
+  it('a payload naming another owner is ignored, on insert and on update', async () => {
+    await committedAsRole(after, 'authenticated', world.managerAuth,
+      `insert into public.log_algo_history (log_date, account_name, family, direction, realized_pnl, round_trips, attributed_client_id)
+       values ('2026-10-04', 'LS-B', 'Payload', 'Long', 1, 1, $1)`, [world.clients.B2]);
+    expect(await ownerOf('LS-B', 'Payload')).toBe(world.clients.LS);
+    await committedAsRole(after, 'authenticated', world.managerAuth,
+      "update public.log_algo_history set attributed_client_id = $1 where account_name = 'LS-B' and family = 'Payload'",
+      [world.clients.B2]);
+    expect(await ownerOf('LS-B', 'Payload')).toBe(world.clients.LS);
+  });
+
+  it('a re-import after she renamed her accounts keeps the owner the first import found', async () => {
+    // LR's accounts were renamed by Gray in the attack above; the log still
+    // carries the old names, and the Manager uploads the same day again.
+    await committedAsRole(after, 'authenticated', world.managerAuth,
+      `insert into public.log_algo_history (log_date, account_name, family, direction, realized_pnl, round_trips)
+       values ('2026-10-04', 'LR-A', 'RenameAfter', 'Long', 11, 1)
+       on conflict (log_date, account_name, family) do update set realized_pnl = excluded.realized_pnl`);
+    expect(await ownerOf('LR-A', 'RenameAfter')).toBe(world.clients.LR);
+    expect((await familiesFor(after, world.gray.auth)).RenameAfter.status).toBe('withheld');
+  });
+});
+
+/* ── The rows already there when the file runs ────────────────────────────── */
+
+describe('step 59 on a database that already holds history', () => {
+  it('attributes every existing row by the registry of that moment, and a re-run moves none', async () => {
+    // The cluster stopped at 58, its rows written with no owner, then this file.
+    await applyFileCollectingNotices(before, 'step_59_log_algo_history_by_family.sql');
+    const mismatched = `select count(*)::int as n from public.log_algo_history h
+      left join public.trading_accounts t on lower(t.account_name) = lower(h.account_name)
+      where h.attributed_client_id is distinct from t.client_id`;
+    expect(await one(before, mismatched)).toBe(0);
+    expect(await one(before, 'select count(*)::int from public.log_algo_history where attributed_client_id is not null'))
+      .toBeGreaterThan(20);
+    expect((await familiesFor(before, world.before.gray.auth)).OGX.status).toBe('shown');
+    expect((await familiesFor(before, world.before.gray.auth)).Thin.status).toBe('withheld');
+
+    // Gray renames her account, the file runs again: G1-A keeps its owner.
+    await committedAsRole(before, 'authenticated', world.before.gray.auth,
+      "update public.trading_accounts set account_name = 'moved' where account_name = 'G1-A'");
+    await applyFileCollectingNotices(before, 'step_59_log_algo_history_by_family.sql');
+    expect(await one(before,
+      "select count(distinct attributed_client_id)::int from public.log_algo_history where account_name = 'G1-A'")).toBe(1);
+    expect(await one(before,
+      "select bool_and(attributed_client_id = $1) from public.log_algo_history where account_name = 'G1-A'",
+      [world.before.clients.G1])).toBe(true);
+  }, 60_000);
+});
+
 /* ── It stays closed when earlier files are run again ─────────────────────── */
 
 describe('step 59 survives a re-run of the files that wrote the old policy', () => {
@@ -585,11 +656,13 @@ describe('the statements', () => {
     expect(flat).toContain('grant execute on function public.log_algo_history_by_family() to authenticated');
   });
 
-  it('writes no row and drops no table', () => {
+  it('deletes no row, drops no table, and its one update fills the new column', () => {
     // String literals out first: the settings table's comment carries an
     // example `update ... set` for Pedro, which is text and not a statement.
     const statements = flat.replace(/'(?:[^']|'')*'/g, "''");
     expect(statements).not.toMatch(/\bdrop table\b|\bdelete from\b|\btruncate\b/);
-    expect(statements).not.toMatch(/\bupdate public\.\w+ set\b/);
+    const updates = statements.match(/\bupdate public\.[^;]*;/g) || [];
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatch(/^update public\.log_algo_history as h set attributed_client_id = .* where h\.attributed_client_id is null/);
   });
 });
