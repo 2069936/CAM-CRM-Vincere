@@ -923,6 +923,136 @@ export async function loadSupabaseAccountTracker({ clientIds = null } = {}) {
   }
 }
 
+/* ── The live per algorithm comparison (step 57) ───────────────────────── */
+
+export const ALGORITHM_LIVE_SAMPLE_COLUMNS = 'client_id, account_name, strategy_id, strategy_name, '
+  + 'algorithm, instrument, instrument_root, realized_pnl, unrealized_pnl, restarted_at, sampled_at, cycle_start';
+
+const ALGORITHM_LIVE_SETTINGS_COLUMNS = 'min_cohort_accounts, min_cohort_clients, differs_at_spread, '
+  + 'min_spread_dollars, cycle_tolerance_seconds';
+
+/**
+ * Step 57 not run yet: the table (PGRST205, 42P01) or the function (PGRST202,
+ * 42883) is missing. That is a state the panel names, not an error.
+ */
+export function isMissingAlgorithmLive(error) {
+  const code = String(error?.code || '');
+  if (['PGRST205', '42P01', 'PGRST202', '42883'].includes(code)) return true;
+  return /does not exist/i.test(String(error?.message || ''));
+}
+
+export function mapAlgorithmLiveSample(row = {}) {
+  return {
+    clientId: row.client_id,
+    accountName: row.account_name,
+    strategyId: row.strategy_id,
+    strategyName: row.strategy_name || '',
+    algorithm: row.algorithm,
+    instrument: row.instrument || '',
+    instrumentRoot: row.instrument_root,
+    // NULL IS NOT MEASURED. Number('') is 0, so the empty string is tested for.
+    realizedPnl: sampleNumber(row.realized_pnl),
+    unrealizedPnl: sampleNumber(row.unrealized_pnl),
+    restartedAt: row.restarted_at || null,
+    sampledAt: row.sampled_at || null,
+    cycleStart: row.cycle_start || null,
+  };
+}
+
+export function mapAlgorithmLiveDesk(rows = []) {
+  const list = Array.isArray(rows) ? rows : [];
+  return {
+    available: true,
+    cycleStart: list.find((row) => row?.cycle_start)?.cycle_start || null,
+    scope: list.find((row) => row?.scope)?.scope || null,
+    filling: list.some((row) => row?.status === 'filling'),
+    cohorts: list
+      .filter((row) => row?.algorithm && row?.instrument_root)
+      .map((row) => ({
+        algorithm: row.algorithm,
+        instrumentRoot: row.instrument_root,
+        status: row.status === 'compared' ? 'compared' : 'thin',
+        nAccounts: sampleInteger(row.n_accounts),
+        nClients: sampleInteger(row.n_clients),
+        median: sampleNumber(row.median),
+        spread: sampleNumber(row.spread),
+        nFlat: sampleInteger(row.n_flat),
+      })),
+  };
+}
+
+function mapAlgorithmLiveSettings(row) {
+  if (!row) return null;
+  return {
+    minCohortAccounts: sampleInteger(row.min_cohort_accounts),
+    minCohortClients: sampleInteger(row.min_cohort_clients),
+    differsAtSpread: sampleNumber(row.differs_at_spread),
+    minSpreadDollars: sampleNumber(row.min_spread_dollars),
+    cycleToleranceSeconds: sampleInteger(row.cycle_tolerance_seconds),
+    fallback: false,
+  };
+}
+
+/* The floors change by hand edit in the SQL editor, a few times a year at most,
+ * so one read per session. A failed read is not cached. */
+let algorithmLiveSettingsCache = null;
+
+/** For tests only: forget the cached settings. */
+export function resetAlgorithmLiveSettingsCache() {
+  algorithmLiveSettingsCache = null;
+}
+
+/**
+ * Everything the live comparison needs, in three requests and no serverless
+ * invocation: the floors, the desk figure from algorithm_live_desk() (the only
+ * place a CAM can get a desk number from, as aggregates), and the viewer's own
+ * readings under step 52's policy, every cycle, so the domain can tell an
+ * account in the compared cycle from one that is not.
+ *
+ * @returns {Promise<{available: boolean, reason?: string, desk?: object, rows?: object[], settings?: object|null}>}
+ *   available:false when step 57 has not run (or there is no database). Any
+ *   other failure THROWS, so the panel says it could not read, never zeros.
+ */
+export async function loadSupabaseAlgorithmLive({ clientIds = null, client = undefined } = {}) {
+  const db = client === undefined ? (isSupabaseConfigured ? supabase : null) : client;
+  if (!db) return { available: false, reason: 'not_configured' };
+  const scope = Array.isArray(clientIds) ? [...new Set(clientIds.filter(Boolean))] : null;
+
+  const settingsRead = algorithmLiveSettingsCache
+    ? Promise.resolve({ data: [algorithmLiveSettingsCache.raw], error: null })
+    : db.from('algorithm_live_settings').select(ALGORITHM_LIVE_SETTINGS_COLUMNS).limit(1);
+  const deskRead = db.rpc('algorithm_live_desk');
+  const rowsRead = scope && !scope.length
+    ? Promise.resolve({ data: [], error: null })
+    : (() => {
+      const query = db.from('algorithm_live_samples').select(ALGORITHM_LIVE_SAMPLE_COLUMNS);
+      // Bounded, not paged: one row per live instance, a few hundred desk wide.
+      return (scope ? query.in('client_id', scope) : query).limit(3000);
+    })();
+
+  const [settingsResult, deskResult, rowsResult] = await Promise.all([settingsRead, deskRead, rowsRead]);
+  for (const result of [settingsResult, deskResult, rowsResult]) {
+    if (result?.error && isMissingAlgorithmLive(result.error)) {
+      return { available: false, reason: 'not_deployed' };
+    }
+  }
+  if (deskResult?.error) throw new Error(`algorithm_live_desk: ${deskResult.error.message}`);
+  if (rowsResult?.error) throw new Error(`algorithm_live_samples: ${rowsResult.error.message}`);
+
+  let settings = null;
+  if (!settingsResult?.error && settingsResult?.data?.[0]) {
+    settings = mapAlgorithmLiveSettings(settingsResult.data[0]);
+    algorithmLiveSettingsCache = { raw: settingsResult.data[0] };
+  }
+
+  return {
+    available: true,
+    desk: mapAlgorithmLiveDesk(deskResult?.data),
+    rows: (rowsResult?.data || []).filter((row) => row?.client_id).map(mapAlgorithmLiveSample),
+    settings,
+  };
+}
+
 export function isMissingCloseSummaries(error) {
   const message = error?.message || '';
   return error?.code === 'PGRST205'
