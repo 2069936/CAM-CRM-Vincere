@@ -32,18 +32,26 @@
 //      accounts the CRM loads (from 764 trading_accounts rows), 312 carry a
 //      stored value and 302 of the 311 with a start to compare against sit at
 //      or above it.
-//      Not one stored value matches any amount the amount-unit writer could have
-//      produced, so no production row needs converting — see the migration note
-//      in propFirmRules.resolveAccountLimits.
+//      Those counts are public/local-snapshot.json, whose last close is
+//      2026-07-30: the day BEFORE the plan picker started writing the amount
+//      (2c9a698, 2026-07-31). So the fixture cannot show whether the amount
+//      writer landed a row. Production was counted instead, read only, on
+//      2026-10-06: 8 of 726 positive targets sit under 10,000. One is an amount
+//      beyond doubt and step 61 converts it; the other seven cannot be told
+//      apart and storedTarget.js makes every reader refuse them. That file
+//      names all eight.
 //   2. It is what the CAM is asked to type. The Target $ input in
 //      AccountManager.jsx carries `placeholder="e.g. 52000"`.
 //   3. It is what the readers want. `balance >= target` and `(balance - start) /
 //      (target - start)` both need a balance; only two readers divide a weekly
-//      PnL by the field, and those want the remaining profit, which is now
-//      `resolveAccountLimits().targetProfitAmount` — computed by
-//      `profitNeededFor()`, which lives in propFirmRules.js rather than here
-//      because this module imports reconcile.js and propFirmRules.js is loaded
-//      directly by the Node ESM server entrypoints.
+//      PnL by the field, and those want the remaining profit. Both get it from
+//      App.jsx's `profitNeededForAccount()`, which calls `profitNeededFor()`
+//      with the stored start or the size inferred from the current balance.
+//      `resolveAccountLimits().targetProfitAmount` is the same function over
+//      the resolver's own start (stored, then earliest close, then size), and
+//      neither column reads it. `profitNeededFor()` lives in propFirmRules.js
+//      rather than here because this module imports reconcile.js and
+//      propFirmRules.js is loaded directly by the Node ESM server entrypoints.
 //   4. A balance needs no second number to be meaningful. An amount is only
 //      interpretable beside a start balance, and start balance is blank on 78 of
 //      the 233 rows the report draws — so storing the amount would make the
@@ -64,10 +72,12 @@
  * server/tests/api/entrypointsLoadUnderNode.test.js. */
 import { ACCOUNT_TYPES, isCashType, isSimulationAccountType } from './reconcile.js';
 
-export const STANDARD_ACCOUNT_SIZES = [50000, 100000, 150000];
+/* The size inference moved to storedTarget.js, which has no imports, so that
+ * reconcile.js can judge a stored target without importing this module (which
+ * imports reconcile.js). Re-exported so every existing caller is unchanged. */
+import { STANDARD_ACCOUNT_SIZES, inferStartingBalance } from './storedTarget.js';
 
-// How far a live balance can drift from its starting size and still be inferred.
-const INFER_BAND = 0.2;
+export { STANDARD_ACCOUNT_SIZES, inferStartingBalance };
 
 // Absolute target balance per starting size. Standard = Funded + normal
 // Evaluation; Bullet Bot evaluations pass at a lower target. Only sizes with a
@@ -76,18 +86,6 @@ const TARGET_TABLE = {
   standard: { 50000: 54100, 100000: 107300, 150000: 159000 },
   bulletBot: { 50000: 53000 },
 };
-
-// Snap a current balance to the standard starting size within INFER_BAND, or
-// null when it is not close enough to any (e.g. a cash account, or a balance in
-// the gap between sizes).
-export function inferStartingBalance(currentBalance) {
-  const balance = Number(currentBalance);
-  if (!Number.isFinite(balance) || balance <= 0) return null;
-  for (const size of STANDARD_ACCOUNT_SIZES) {
-    if (Math.abs(balance - size) <= size * INFER_BAND) return size;
-  }
-  return null;
-}
 
 // The absolute target balance for an account of this type and starting size.
 // Cash accounts have no target. Sizes/types without a known rule return null.

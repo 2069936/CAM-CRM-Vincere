@@ -21,6 +21,7 @@
 
 import { ACCOUNT_TYPES } from './reconcile';
 import { inferStartingBalance, targetForAccount } from './accountTargets';
+import { usableStoredTarget } from './storedTarget';
 
 function normalizeDirection(value) {
   const v = String(value || '').toLowerCase();
@@ -143,7 +144,7 @@ export function buildBulletBotAccountRecords(clients = [], {
         if (!record) {
           record = blankRecord(client, meta, snapshot.accountName, dailyImport.date);
           record.firstBalance = Number(snapshot.accountBalance);
-          record.target = Number(meta.targetProfit) || 0;
+          record.target = usableStoredTarget(meta) || 0;
           if (record.target > 0) {
             record.targetSource = 'account';
           } else if (inferTargets) {
@@ -172,7 +173,7 @@ export function buildBulletBotAccountRecords(clients = [], {
           || (snapshot.strategies || []).some((s) => Number(s.realized || 0) !== 0);
         if (traded) record.fired = true;
 
-        const target = Number(meta.targetProfit) || record.target;
+        const target = usableStoredTarget(meta) || record.target;
         if (target > 0) record.target = target;
         if (target > 0 && !record.passDate && Number(snapshot.accountBalance) >= target) {
           record.passDate = dailyImport.date;
@@ -187,7 +188,7 @@ export function buildBulletBotAccountRecords(clients = [], {
         if (accounts.has(key)) continue;
         const record = blankRecord(client, meta, accountName, '');
         record.lastDate = '';
-        record.target = Number(meta.targetProfit) || 0;
+        record.target = usableStoredTarget(meta) || 0;
         if (record.target > 0) record.targetSource = 'account';
         accounts.set(key, record);
       }

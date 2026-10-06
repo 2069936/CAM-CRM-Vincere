@@ -134,6 +134,7 @@ import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImpor
 import { buildBatchImportPlan } from "./domain/batchImport";
 import { classificationDefaults, inferStartingBalance } from "./domain/accountTargets";
 import { profitNeededFor } from "./domain/propFirmRules";
+import { usableStoredTarget } from "./domain/storedTarget";
 import {
   parseNinjaTraderLogFile,
   summarizeLogByAccount,
@@ -860,8 +861,10 @@ export function buildClientOverview(client, dailyImport) {
       const startingBalance =
         Number(meta.startBalance || 0) ||
         (Number(snapshot.accountBalance || 0) >= 90000 ? 100000 : 50000);
+      // A stored target that is not above a known start counts as none
+      // (storedTarget.js), so it takes the same default an empty one does.
       const target =
-        Number(meta.targetProfit || 0) ||
+        usableStoredTarget(meta) ||
         startingBalance + (meta.accountType === "Funded" ? 2000 : 3000);
       const progress = Math.max(
         0,
@@ -1481,7 +1484,9 @@ export function buildPayoutAlerts(client, dailyImport) {
     const meta = ciMeta(registry, snap.accountName);
     if (meta.accountType !== "Funded") continue;
     if (meta.status === "Failed" || meta.status === "Inactive") continue;
-    const target = Number(meta.targetProfit || 0);
+    // Not above a known start, or no start to judge it by: no target, so no
+    // alert. 3,000 on a 50k would otherwise be "ready" on the day it opened.
+    const target = usableStoredTarget(meta);
     if (!target) continue;
     const balance = Number(snap.accountBalance || 0);
     // Progress is measured from the account's starting balance, not from zero.
@@ -1502,6 +1507,10 @@ export function buildPayoutAlerts(client, dailyImport) {
         balance,
         profit,
         target,
+        // The profit the target asks for. `target` is a BALANCE, so "how much
+        // is left" is `target - balance` or `needed - profit`, never
+        // `target - profit`.
+        needed,
         pct: Math.round((profit / needed) * 100),
         payoutState: meta.payoutState || "Not requested",
         ready: balance >= target,
@@ -1873,7 +1882,7 @@ export function buildAllFundedAccounts(clients = [], camProfiles = []) {
       const buffer = ddLimit > 0 ? ddLimit - Math.abs(rawDD) : rawDD;
       const bufferPct =
         ddLimit > 0 ? Math.round((buffer / ddLimit) * 100) : null;
-      const target = Number(meta.targetProfit || 0);
+      const target = usableStoredTarget(meta) || 0;
       const start = Number(meta.startBalance || 0);
       const balance = Number(snap.accountBalance || 0);
       const profit = start ? balance - start : null;
@@ -8136,9 +8145,9 @@ export function ReportPanel({
                               wherever Start Bal $ is blank — the recovery this
                               branch added, and the thing the fix to the
                               90%-for-nothing defect rests on. Measured over all
-                              477 closes: 797 of the 1,623 percentages this table
+                              477 closes: 769 of the 1,595 percentages this table
                               draws sit on a recovered start and 826 on a stored
-                              one. Unlabelled, all 1,623 read alike, and this
+                              one. Unlabelled, all 1,595 read alike, and this
                               section is `true` in SIMPLIFIED_REPORT_CONFIG, so it
                               reaches clients from a config nobody touched. */}
                           {entry.startSource === "observed" ? (
@@ -8149,7 +8158,9 @@ export function ReportPanel({
                         <small className="muted">
                           {entry.state === PROGRESS_STATE.NO_START
                             ? "No starting balance on record and no earlier close to take one from, so a percentage cannot be shown."
-                            : "The target on record is not above this account's starting balance, so a percentage cannot be shown."}
+                            : entry.state === PROGRESS_STATE.NO_TARGET
+                              ? "Target not set: the value on record cannot be read without a starting balance, so a percentage cannot be shown."
+                              : "The target on record is not above this account's starting balance, so a percentage cannot be shown."}
                         </small>
                       )}
                     </td>
@@ -8592,7 +8603,7 @@ function OnboardingChecklist({ client, onSwitchTab }) {
     },
     {
       done: Object.values(registry).some(
-        (m) => m.accountType === "Funded" && m.targetProfit,
+        (m) => m.accountType === "Funded" && usableStoredTarget(m),
       ),
       label: "Set payout target on funded accounts",
       detail:
@@ -9911,8 +9922,8 @@ export function buildPortfolioInsights(clients) {
           clientName: client.name,
           accountAlias: a.alias,
           message: a.ready
-            ? `Target reached - ${formatCurrency(a.profit)} profit vs ${formatCurrency(a.target)} goal. Request payout.`
-            : `${a.pct}% of payout target - ${formatCurrency(a.target - a.profit)} remaining`,
+            ? `Target reached - ${formatCurrency(a.profit)} profit vs ${formatCurrency(a.needed)} needed. Request payout.`
+            : `${a.pct}% of payout target - ${formatCurrency(a.target - a.balance)} remaining`,
           // Closest to the money first. A ready account is at or past 100 by
           // construction, so it leads without needing a separate rule.
           urgency: Number(a.pct) || 0,
@@ -9922,7 +9933,7 @@ export function buildPortfolioInsights(clients) {
             { label: "Target", value: formatCurrency(a.target) },
             {
               label: "Remaining",
-              value: a.ready ? "reached" : formatCurrency(a.target - a.profit),
+              value: a.ready ? "reached" : formatCurrency(a.target - a.balance),
               tone: a.ready ? "good" : "",
             },
           ],
@@ -10283,7 +10294,7 @@ export function buildIncomeProjection(clients = []) {
     for (const snap of latest.snapshots || []) {
       const meta = ciMeta(registry, snap.accountName);
       if (meta.accountType !== "Funded") continue;
-      const target = Number(meta.targetProfit || 0);
+      const target = usableStoredTarget(meta) || 0;
       const start = Number(meta.startBalance || 0);
       const balance = Number(snap.accountBalance || 0);
       if (!target || !start) continue;
@@ -10402,7 +10413,7 @@ export async function renderReportSheetHtml({ client, dailyImport, camProfile })
  */
 export function profitNeededForAccount(meta, snapshot) {
   return profitNeededFor(
-    meta?.targetProfit,
+    usableStoredTarget(meta),
     Number(meta?.startBalance || 0) || inferStartingBalance(snapshot?.accountBalance),
   );
 }
@@ -10414,8 +10425,8 @@ export function profitNeededForAccount(meta, snapshot) {
  * buildCamFundedRows. Shared because both used to divide by `meta.targetProfit`
  * directly, and that is a BALANCE, so every figure came out at a fraction of
  * the real one: on the book's latest closes, a median of 1/13 across the 56
- * funded rows with a target, a start and a week that moved, and 10 of 64 such
- * rows rounded to 0%. Null rather
+ * funded rows with a target, a start and a week that moved, and 10 of those 56
+ * rounded to 0%. Null rather
  * than a guess when there is no start to subtract, so the column prints nothing
  * instead of a balance-scale number.
  *
@@ -10503,7 +10514,7 @@ export function buildCamFundedRows(clients = []) {
           pct,
           weeklyPnl,
           // The balance that passes, same unit as the stored column.
-          target: Number(a.targetProfit || 0),
+          target: usableStoredTarget(a) || 0,
           // And the profit still to be made, which is what `pct` is measured
           // against. Both are exposed so a consumer cannot pick the wrong one
           // without naming it.

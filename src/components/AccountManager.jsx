@@ -3,6 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS, isCashType } from '../domain/reconcile';
 import { normalizePropFirm, plansFor, resolveAccountLimits } from '../domain/propFirmRules';
 import { SIMULATION_MODES, classifyAccountNature } from '../domain/simulationAccounts';
+import { storedTargetStatus, STORED_TARGET } from '../domain/storedTarget';
 
 const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.UNASSIGNED,
@@ -157,6 +158,23 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
       </small>
     </div>
   );
+}
+
+/**
+ * Says so when the Target $ on this row is one no screen will use: at or below
+ * the start, or with no start and no standard size behind it (storedTarget.js).
+ * Every progress cell shows "Target not set" for such a row, and this is where
+ * the CAM can see why and fix it.
+ */
+function UnusedTargetNote({ account }) {
+  const status = storedTargetStatus(account);
+  if (status.state === STORED_TARGET.NOT_ABOVE_START) {
+    return <small className="plan-fallback">Not used: not above the start balance</small>;
+  }
+  if (status.state === STORED_TARGET.NO_START) {
+    return <small className="plan-fallback">Not used: set Start Bal $ first</small>;
+  }
+  return null;
 }
 
 /**
@@ -360,12 +378,15 @@ export default function AccountManager({ accounts, snapshots, dailyImports = [],
               {!isCash ? (
                 <td>
                   {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
-                    <input
-                      type="number"
-                      value={account.targetProfit ?? ''}
-                      placeholder="e.g. 52000"
-                      onChange={(event) => onUpdateAccount(account.accountName, { targetProfit: event.target.value })}
-                    />
+                    <>
+                      <input
+                        type="number"
+                        value={account.targetProfit ?? ''}
+                        placeholder="e.g. 52000"
+                        onChange={(event) => onUpdateAccount(account.accountName, { targetProfit: event.target.value })}
+                      />
+                      <UnusedTargetNote account={account} />
+                    </>
                   )}
                 </td>
               ) : null}

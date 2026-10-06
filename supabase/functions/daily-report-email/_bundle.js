@@ -1827,6 +1827,75 @@ function withStrategyRan(strategies = [], executions = [], { evidenceComplete = 
 	});
 }
 //#endregion
+//#region src/domain/storedTarget.js
+var STANDARD_ACCOUNT_SIZES = [
+	5e4,
+	1e5,
+	15e4
+];
+var INFER_BAND = .2;
+function inferStartingBalance(currentBalance) {
+	const balance = Number(currentBalance);
+	if (!Number.isFinite(balance) || balance <= 0) return null;
+	for (const size of STANDARD_ACCOUNT_SIZES) if (Math.abs(balance - size) <= size * INFER_BAND) return size;
+	return null;
+}
+/** Why a stored target is or is not used. */
+var STORED_TARGET = {
+	/** Above a known start: the reader uses it. */
+	USABLE: "usable",
+	/** Nothing stored. */
+	NONE: "none",
+	/** At or below the start it is judged against. */
+	NOT_ABOVE_START: "not-above-start",
+	/** No stored start, and the value implies no standard size. */
+	NO_START: "no-start"
+};
+var positive$1 = (value) => {
+	if (value === "" || value == null) return null;
+	const n = Number(value);
+	return Number.isFinite(n) && n > 0 ? n : null;
+};
+/**
+* The verdict on one account's stored target.
+*
+* @param {object} meta a registry entry (`targetProfit`, `startBalance`)
+* @returns {{ target: number|null, stored: number|null, judgedAgainst: number|null, state: string }}
+*   `target` is the balance a reader may use, null when it may not.
+*/
+function storedTargetStatus(meta) {
+	const stored = positive$1(meta?.targetProfit);
+	if (stored == null) return {
+		target: null,
+		stored: null,
+		judgedAgainst: null,
+		state: STORED_TARGET.NONE
+	};
+	const judgedAgainst = positive$1(meta?.startBalance) ?? inferStartingBalance(stored);
+	if (judgedAgainst == null) return {
+		target: null,
+		stored,
+		judgedAgainst: null,
+		state: STORED_TARGET.NO_START
+	};
+	if (stored <= judgedAgainst) return {
+		target: null,
+		stored,
+		judgedAgainst,
+		state: STORED_TARGET.NOT_ABOVE_START
+	};
+	return {
+		target: stored,
+		stored,
+		judgedAgainst,
+		state: STORED_TARGET.USABLE
+	};
+}
+/** The stored target balance when a reader may use it, null otherwise. */
+function usableStoredTarget(meta) {
+	return storedTargetStatus(meta).target;
+}
+//#endregion
 //#region src/domain/simulationAccounts.js
 /** The nature of the money in an account. Never inferred as a silent default. */
 var ACCOUNT_NATURES = {
@@ -2638,7 +2707,7 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 				message: `${meta.alias} has $${Math.round(rawDD)} of trailing drawdown buffer remaining.`
 			}));
 		}
-		const targetProfit = isRealMoney ? Number(meta.targetProfit) : NaN;
+		const targetProfit = isRealMoney ? usableStoredTarget(meta) ?? NaN : NaN;
 		if (meta.accountType === ACCOUNT_TYPES.FUNDED && Number.isFinite(targetProfit) && targetProfit > 0 && Number(account.accountBalance) >= targetProfit && meta.payoutState === PAYOUT_STATES.NOT_REQUESTED) flags.push(makeFlag({
 			type: "Payout eligible",
 			severity: "Warning",
@@ -4284,12 +4353,6 @@ function buildClientSegments(client, dailyImport) {
 }
 //#endregion
 //#region src/domain/accountTargets.js
-var STANDARD_ACCOUNT_SIZES = [
-	5e4,
-	1e5,
-	15e4
-];
-var INFER_BAND = .2;
 var TARGET_TABLE = {
 	standard: {
 		5e4: 54100,
@@ -4298,12 +4361,6 @@ var TARGET_TABLE = {
 	},
 	bulletBot: { 5e4: 53e3 }
 };
-function inferStartingBalance(currentBalance) {
-	const balance = Number(currentBalance);
-	if (!Number.isFinite(balance) || balance <= 0) return null;
-	for (const size of STANDARD_ACCOUNT_SIZES) if (Math.abs(balance - size) <= size * INFER_BAND) return size;
-	return null;
-}
 function targetForAccount(accountType, startingBalance) {
 	if (isCashType(accountType)) return null;
 	if (isSimulationAccountType(accountType)) return null;
@@ -4370,10 +4427,16 @@ var positive = (value) => {
 * header on why the firm-rule fallback is refused.
 */
 function evaluationTargetFor(meta, startBalance) {
-	const stored = positive(meta?.targetProfit);
-	if (stored) return {
-		target: stored,
+	const gate = storedTargetStatus(meta);
+	if (gate.target) return {
+		target: gate.target,
 		source: "stored"
+	};
+	if (gate.state !== STORED_TARGET.NONE) return {
+		target: null,
+		source: null,
+		refused: gate.state,
+		stored: gate.stored
 	};
 	const size = inferStartingBalance(startBalance);
 	const standard = size != null ? targetForAccount(meta?.accountType, size) : null;
@@ -4399,7 +4462,7 @@ function evaluationProgressFor(row, dailyImports = []) {
 	const observedStart = storedStart ? null : firstObservedBalance(row?.accountName, dailyImports);
 	const start = storedStart || positive(observedStart);
 	const startSource = storedStart ? "stored" : start ? "observed" : null;
-	const { target, source: targetSource } = evaluationTargetFor(row?.meta, start);
+	const { target, source: targetSource, refused, stored } = evaluationTargetFor(row?.meta, start);
 	const balance = Number(row?.accountBalance || 0);
 	const base = {
 		start,
@@ -4407,6 +4470,12 @@ function evaluationProgressFor(row, dailyImports = []) {
 		target,
 		targetSource,
 		percent: null
+	};
+	if (refused === STORED_TARGET.NOT_ABOVE_START) return {
+		...base,
+		target: stored,
+		targetSource: "stored",
+		state: EVALUATION_PROGRESS.TARGET_NOT_ABOVE_START
 	};
 	if (!target) return {
 		...base,

@@ -51,6 +51,7 @@ import {
   buildIncomeProjection,
   buildCamFundedRows,
   buildManagerEvaluationRows,
+  buildPortfolioInsights,
   weeklyTargetPct,
 } from '../App';
 
@@ -389,13 +390,156 @@ describe('the two writers agree on the unit', () => {
     }
   });
 
-  it('the published amount would have read as already passed, which is the defect', () => {
-    // Not an assertion about current behaviour — a demonstration of what the
-    // old writer produced, so the numbers in this file's header stay checkable.
+  it('the published amount, already stored, no longer reads as passed', () => {
+    // This used to demonstrate the defect: 3,000 on a 50k start, at its opening
+    // balance, raised "Payout eligible". The writers no longer produce it, but
+    // production still held one such row (step 61 converts it), and a reader
+    // must refuse it rather than wait for the migration.
     expect(PUBLISHED_AMOUNT).toBeLessThan(SIZE);
     const account = accountFixture({ targetProfit: PUBLISHED_AMOUNT });
     const reader = READERS.find((r) => r.name === 'reconcile · Payout eligible flag');
     // An account that has made nothing, sitting at its opening balance.
-    expect(reader.reached(account, SIZE)).toBe(true);
+    expect(reader.reached(account, SIZE)).toBe(false);
+  });
+});
+
+// ───────────────── STORED TARGETS NO READER MAY USE ─────────────────
+//
+// The writers above cannot produce these any more. Production still holds
+// them, counted read only on 2026-10-06 (8 of 726 positive targets under
+// 10,000, src/domain/storedTarget.js names each):
+//
+//   AMOUNT    3,000 on a stored 50,000 start (the Bullet Bot row step 61
+//             converts). Read at the opening balance: the account made nothing.
+//   NO_START  4,000 with no stored start (the six Funded rows). Read with a close
+//             AT 4,000 and an earliest close of 3,500, so a reader that falls
+//             back to the earliest close finds a start and a "reached" account.
+//
+// The rule is that a stored target is used only above a known start, and a
+// reader given one that is not says "target not set" rather than "reached" or
+// 100%. Each pair below said "reached" or 100% BEFORE this change; the readers
+// that already refused these shapes (buildPayoutAlerts, passProgress,
+// buildAllFundedAccounts, buildIncomeProjection, weeklyTargetPct and both
+// Target % columns) are not repeated here, because a test that cannot fail on
+// the old code proves nothing about the new one.
+
+const UNUSABLE = {
+  AMOUNT: {
+    meta: { targetProfit: 3000, startBalance: 50000 },
+    balance: 50000,
+  },
+  NO_START: {
+    meta: { targetProfit: 4000, startBalance: '' },
+    balance: 4000,
+    firstClose: 3500,
+  },
+};
+
+/** The client's history for the readers that take a start from the earliest close. */
+function historyFor(account, shape) {
+  return [{
+    date: '2026-08-03',
+    snapshots: [{ accountName: account.accountName, accountBalance: shape.firstClose ?? shape.balance }],
+  }];
+}
+
+const REFUSING = [
+  { reader: 'reconcile · Payout eligible flag', shapes: ['AMOUNT', 'NO_START'] },
+  { reader: 'reconcile · Evaluation target reached flag', shapes: ['AMOUNT', 'NO_START'] },
+  { reader: 'bulletBotStats · passed', shapes: ['AMOUNT', 'NO_START'] },
+  // The two Dashboard cells are read below by what they print instead: a cell
+  // that refuses has no progress bar left to read a verdict from.
+];
+
+describe('a stored target that is not above a known start is not a target', () => {
+  for (const { reader: name, shapes } of REFUSING) {
+    const reader = READERS.find((r) => r.name === name);
+    for (const shapeName of shapes) {
+      const shape = UNUSABLE[shapeName];
+      it(`${name}: ${shapeName} is not reached`, () => {
+        const account = accountFixture({ accountType: reader.accountType ?? ACCOUNT_TYPES.FUNDED, ...shape.meta });
+        expect(reader.reached(account, shape.balance)).toBe(false);
+      });
+    }
+  }
+
+  for (const title of ['Funded', 'Bullet Bot']) {
+    for (const shapeName of Object.keys(UNUSABLE)) {
+      it(`Dashboard ${title} cell: ${shapeName} says "Target not set", not a percentage`, () => {
+        const shape = UNUSABLE[shapeName];
+        const account = accountFixture({
+          accountType: title === 'Funded' ? ACCOUNT_TYPES.FUNDED : ACCOUNT_TYPES.EVALUATION_BULLET,
+          ...shape.meta,
+        });
+        const client = clientWith(account, shape.balance);
+        render(
+          <Dashboard
+            dailyImport={client.dailyImports[0]}
+            client={client}
+            title={title}
+            mode={title === 'Funded' ? 'funded' : 'evaluations'}
+            rows={[{ accountName: account.accountName, accountBalance: shape.balance, weeklyPnl: 0, grossRealizedPnl: 0, strategies: [], meta: account }]}
+            onUpdateAccount={() => {}}
+          />,
+        );
+        const cell = document.querySelector('.target-not-set');
+        const progress = document.querySelector('.target-cell');
+        cleanup();
+        expect(progress).toBeNull();
+        expect(cell?.textContent).toBe('Target not set');
+      });
+    }
+  }
+
+  it('evaluationProgressFor: NO_START is "no target", not reached against its earliest close', () => {
+    const account = accountFixture({ accountType: ACCOUNT_TYPES.EVALUATION_BULLET, ...UNUSABLE.NO_START.meta });
+    const progress = evaluationProgressFor(reportRow(account, UNUSABLE.NO_START.balance), historyFor(account, UNUSABLE.NO_START));
+    expect(progress.state).toBe(EVALUATION_PROGRESS.NO_TARGET);
+    expect(progress.percent).toBeNull();
+  });
+
+  it('buildProgressToTargetRows: NO_START keeps its row and prints no percentage', () => {
+    const account = accountFixture({ ...UNUSABLE.NO_START.meta });
+    const rows = buildProgressToTargetRows(
+      { grouped: { funded: [reportRow(account, UNUSABLE.NO_START.balance)], evaluations: [] } },
+      historyFor(account, UNUSABLE.NO_START),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].percent).toBeNull();
+  });
+});
+
+describe('the gate does not hide a target that is fine', () => {
+  // The other half: refusing too much would blank the 105 fixture rows that
+  // carry a balance target and no stored start. Each must still read.
+  const FINE = [
+    // A written balance with no stored start: judged against the size it implies.
+    { label: '54,100 with no stored start', meta: { targetProfit: 54100, startBalance: '' }, at: 54100, below: 50000 },
+    // The production Funded row above its own small start.
+    { label: '8,000 on a 6,000 start', meta: { targetProfit: 8000, startBalance: 6000 }, at: 8000, below: 6000 },
+  ];
+  for (const fine of FINE) {
+    for (const name of ['reconcile · Payout eligible flag', 'Dashboard · funded target cell']) {
+      const reader = READERS.find((r) => r.name === name);
+      it(`${name}: ${fine.label} is reached at the target and not below it`, () => {
+        const account = accountFixture(fine.meta);
+        expect(reader.reached(account, fine.at)).toBe(true);
+        expect(reader.reached(account, fine.below)).toBe(false);
+      });
+    }
+  }
+});
+
+describe('the payout insight measures what is left from the balance', () => {
+  /* buildPortfolioInsights printed `target - profit` as "remaining", and target
+   * is a BALANCE: 50k account, target 54,100, balance 53,800 read "$50,300
+   * remaining" when $300 is. */
+  it('says $300 remaining at 53,800 of 54,100', () => {
+    const account = accountFixture({ targetProfit: 54100 });
+    const insight = buildPortfolioInsights([clientWith(account, 53800)])
+      .find((entry) => entry.type === 'Payout Opportunity');
+    expect(insight).toBeDefined();
+    expect(insight.facts.find((fact) => fact.label === 'Remaining').value).toBe('$300');
+    expect(insight.message).toContain('$300 remaining');
   });
 });

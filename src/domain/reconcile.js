@@ -10,6 +10,7 @@ import { carryForwardLots } from './carryForwardLots.js';
 import { joinDerivedStrategies } from './joinDerivedStrategies.js';
 import { ranAnswerIsKnown, strategyRan, withStrategyRan } from './strategyRan.js';
 import { fillsLoadedFor } from './closeLoadState.js';
+import { usableStoredTarget } from './storedTarget.js';
 import {
   ACCOUNT_NATURES,
   SIMULATION_ACCOUNT_TYPE,
@@ -785,7 +786,10 @@ export function reconcileDailyImport({
     // reached in one is not an event. Guarded by nature rather than by type
     // because a stale 'Funded' type left on an account the platform now reports
     // as simulated would otherwise queue a payout request against play money.
-    const targetProfit = isRealMoney ? Number(meta.targetProfit) : Number.NaN;
+    // And a stored target that is not above a known start is no target at all:
+    // 3,000 on a 50k start would flag "reached" on the day the account opens
+    // (storedTarget.js holds the rule and the production rows it is for).
+    const targetProfit = isRealMoney ? (usableStoredTarget(meta) ?? Number.NaN) : Number.NaN;
     if (
       meta.accountType === ACCOUNT_TYPES.FUNDED &&
       Number.isFinite(targetProfit) && targetProfit > 0 &&

@@ -56,6 +56,7 @@
 import { inferStartingBalance, targetForAccount } from './accountTargets.js';
 import { firstObservedBalance } from './propFirmRules.js';
 import { strategyRan } from './strategyRan.js';
+import { storedTargetStatus, STORED_TARGET } from './storedTarget.js';
 
 /** True for both evaluation types, and for neither funded nor cash nor sim. */
 export function isEvaluationType(accountType) {
@@ -107,8 +108,15 @@ const positive = (value) => {
  * header on why the firm-rule fallback is refused.
  */
 export function evaluationTargetFor(meta, startBalance) {
-  const stored = positive(meta?.targetProfit);
-  if (stored) return { target: stored, source: 'stored' };
+  /* A stored value is only a target when it sits above a known start
+   * (storedTarget.js). One that does not is NOT replaced by the standard table:
+   * somebody typed it, it is wrong, and the row says which of the two ways it
+   * is wrong instead of quietly showing a different number. */
+  const gate = storedTargetStatus(meta);
+  if (gate.target) return { target: gate.target, source: 'stored' };
+  if (gate.state !== STORED_TARGET.NONE) {
+    return { target: null, source: null, refused: gate.state, stored: gate.stored };
+  }
   const size = inferStartingBalance(startBalance);
   const standard = size != null ? targetForAccount(meta?.accountType, size) : null;
   if (standard) return { target: standard, source: 'inferred' };
@@ -129,10 +137,14 @@ export function evaluationProgressFor(row, dailyImports = []) {
   const start = storedStart || positive(observedStart);
   const startSource = storedStart ? 'stored' : (start ? 'observed' : null);
 
-  const { target, source: targetSource } = evaluationTargetFor(row?.meta, start);
+  const { target, source: targetSource, refused, stored } = evaluationTargetFor(row?.meta, start);
   const balance = Number(row?.accountBalance || 0);
 
   const base = { start, startSource, target, targetSource, percent: null };
+  // A stored target at or below its own start: the existing sentence for it.
+  if (refused === STORED_TARGET.NOT_ABOVE_START) {
+    return { ...base, target: stored, targetSource: 'stored', state: EVALUATION_PROGRESS.TARGET_NOT_ABOVE_START };
+  }
   if (!target) return { ...base, state: EVALUATION_PROGRESS.NO_TARGET };
   if (!start) return { ...base, state: EVALUATION_PROGRESS.NO_START };
   // A target not above the start cannot be a denominator. Printing 100% would

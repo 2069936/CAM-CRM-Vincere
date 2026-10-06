@@ -183,10 +183,9 @@ afterAll(async () => { await db?.close?.(); });
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
 describe('step 57 exists and is no longer the one that runs last', () => {
-  it('appears once, 60 now carries the highest-number claim, and 54 is still a deliberate gap', () => {
-    /* Handed on the way 56 handed it here: the newest step's own test says it
-     * is the newest, and leaving the claim behind would make every later
-     * migration look like a break in this one. */
+  it('appears once, 61 now carries the highest-number claim, and 54 is still a deliberate gap', () => {
+    /* Handed on the way 56 handed it here: the newest step's own test asserts
+     * it is the highest. */
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
@@ -196,11 +195,11 @@ describe('step 57 exists and is no longer the one that runs last', () => {
     expect(numbers).not.toContain(54);
   });
 
-  it('is in the runbook table, in the run order, and says how it degrades', () => {
+  it('is in the runbook table, in the run order after 56, and says how it degrades', () => {
     expect(runbook).toMatch(/^\| 57 \| `step_57_algorithm_live_samples\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 57 | `step_57_algorithm_live_samples.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 56 | `step_56_table_privilege_lockdown.sql`'));
-    expect(runbook).toContain('→ 55 → 56 → 57 →');
+    expect(runbook).toMatch(/→ 55 → 56 → 57(?: →|\.)/);
     expect(runbook).toContain('57 degrades gracefully');
   });
 

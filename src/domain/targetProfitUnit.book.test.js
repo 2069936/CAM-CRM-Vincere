@@ -24,6 +24,7 @@ import {
   ruleFor,
 } from './propFirmRules';
 import { ACCOUNT_TYPES } from './reconcile';
+import { storedTargetStatus, STORED_TARGET } from './storedTarget';
 
 const snapshot = JSON.parse(
   readFileSync(new URL('../../public/local-snapshot.json', import.meta.url), 'utf8'),
@@ -105,12 +106,23 @@ describe('the stored column is uniformly balances, which is why balance won', ()
   });
 });
 
-describe('no production row needs converting, which is why no migration ships', () => {
+describe('the fixture cannot answer the migration question, so production was asked', () => {
+  /* This file's book ends on 2026-07-30. The plan picker began writing the
+   * AMOUNT on 2026-07-31 (2c9a698), and no row here even carries a
+   * prop_firm_plan key. So a zero below says the fixture predates the bug, not
+   * that production is clean. Production was counted read only on 2026-10-06:
+   * 8 of 726 positive targets under 10,000, one of them an amount beyond doubt.
+   * Step 61 converts that one; storedTarget.js makes every reader refuse the
+   * other seven. */
+  it('carries no prop_firm_plan on any of its 764 rows', () => {
+    const raw = snapshot.tables.trading_accounts;
+    expect(raw).toHaveLength(764);
+    expect(raw.filter((row) => Object.hasOwn(row, 'prop_firm_plan'))).toHaveLength(0);
+  });
+
   it('finds not one stored value equal to a published amount for its own size', () => {
-    // The migration question. An amount-unit write would have been exactly
-    // `rule.profitTarget` or `genericProfitTarget(size)`. If any stored value
-    // matched one of those AND sat below its start, a migration would be needed
-    // and this count would be non-zero.
+    // An amount-unit write would have been exactly `rule.profitTarget` or
+    // `genericProfitTarget(size)`, sitting below its start.
     const convertible = rows.filter((row) => {
       const stored = pos(row.meta.targetProfit);
       const anchor = anchorFor(row);
@@ -243,5 +255,21 @@ describe('what the amount-unit reading was worth', () => {
     // target is a full-size one. The unit is right and the start is junk; both
     // print ~0% either way, so this change neither causes nor fixes them.
     expect(pairs.filter((entry) => entry.amount >= 40000)).toHaveLength(2);
+  });
+});
+
+describe('what the stored-target gate refuses on this book', () => {
+  it('refuses 6 of the 312 stored targets, all Funded, all with no stored start', () => {
+    // storedTarget.js: a stored target is used only above a known start. On this
+    // book that removes six, every one a value with no start beside it that
+    // implies no standard size (five under 10,000, one a full size below its own
+    // balance). None of the 201 with a stored start is refused.
+    const stored = rows.filter((row) => pos(row.meta.targetProfit));
+    const refused = stored.filter((row) => storedTargetStatus(row.meta).state !== STORED_TARGET.USABLE);
+    expect(stored).toHaveLength(312);
+    expect(refused).toHaveLength(6);
+    expect(refused.filter((row) => storedTargetStatus(row.meta).state === STORED_TARGET.NO_START)).toHaveLength(6);
+    expect(refused.filter((row) => row.meta.accountType === ACCOUNT_TYPES.FUNDED)).toHaveLength(6);
+    expect(refused.filter((row) => pos(row.meta.targetProfit) < 10000)).toHaveLength(5);
   });
 });

@@ -324,18 +324,20 @@ export function ruleFor(firm, size, plan = null, rules = PROP_FIRM_RULES) {
  * `limits.targetProfit` is now `undefined`, which fails loudly, instead of a
  * number in the wrong unit, which does not.
  *
- * NO MIGRATION IS REQUIRED and none is shipped. Measured over the 685 accounts
- * the CRM loads from the book's 764 trading_accounts rows: 312 carry a stored
- * target, 302 of the 311 with a start to compare against sit at or above it, and
- * ZERO equal any amount this function could have produced for
- * their firm, plan and size — so the amount-unit write path never landed a row.
- * (The nine stored values below their own start match no published amount either;
- * they are targets typed below the start, a separate and still-open defect, and a
- * migration that scaled them up would be inventing numbers.) Had a conversion
- * been needed, the predicate would have been "equals the published amount for
- * this account's size and is below its start", which is self-disarming: a
- * converted row becomes `size + amount`, which is above the start, so a second
- * run selects nothing.
+ * WHAT WAS ALREADY STORED IN THE WRONG UNIT. The fixture this was first measured
+ * on (public/local-snapshot.json, last close 2026-07-30) predates the plan
+ * picker's amount write (2c9a698, 2026-07-31), so it could not answer that.
+ * Production was counted read only on 2026-10-06: 8 of 726 positive targets sit
+ * under 10,000. Step 61 converts the one that is an amount beyond doubt (3,000
+ * on a stored 50,000 start becomes 53,000), with the predicate "positive, below
+ * a stored start and no more than a fifth of it". That predicate is
+ * self-disarming: a converted row sits above its start, so a second run selects
+ * nothing. The other seven cannot be told apart from a balance, so no number is
+ * invented for them; storedTarget.js makes every reader refuse them instead.
+ *
+ * This resolver does not apply that gate. It feeds the plan picker, which only
+ * writes when the stored target is empty, and summarizeRuleCoverage, which reads
+ * only the drawdown; neither makes a "reached" claim.
  */
 export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_FIRM_RULES } = {}) {
   const firm = normalizePropFirm(account?.connection);

@@ -37,6 +37,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 58 | `step_58_close_summaries_scope.sql` | `replace_close_summaries` recreated with a scope check in front of its delete: a Manager and the service role as before, anyone else only the closes of clients assigned to them, with every row carrying its own close's `client_id`, or the whole call is refused with 42501; `step_48_close_summaries.sql` now carries the same function so a re-run of 48 does not undo it | Closing a CAM's ability to replace or empty another CAM's close summaries through `/rpc/replace_close_summaries`, which since step 52 it could do to rows it cannot even read |
 | 59 | `step_59_log_algo_history_by_family.sql` | step 43's `using (true)` policy on `log_algo_history` replaced by one for Managers; `attributed_client_id` on each row, set by a trigger when the row is written to the one client holding that account name then, and never moved after; and `log_algo_history_by_family()`, which returns the card's seven numbers per family and withholds from a CAM every family run on fewer accounts, or fewer clients, outside her book than step 57's floors | A CAM no longer reads every book's per account, per family P&L, nor rewrites it. The Stack Playbook "Algo history (from logs)" card keeps its numbers |
 | 60 | `step_60_client_handoff_manager_only.sql` | `my_cam_profile_id()` and four RESTRICTIVE policies on `client_assignments` beside step 53's permissive one: a CAM reads her own clients' rows, inserts only (a client she created that nobody holds, her own profile), and never updates or deletes | Only a Manager moves a client between books. Closes the handoff step 57 names as its residual, and a creator taking back a client a Manager moved away |
+| 61 | `step_61_target_profit_amount_to_balance.sql` | `target_profit_before_step_61` on `trading_accounts`, and every `target_profit` that is a profit AMOUNT beyond doubt (positive, below a stored start and no more than a fifth of it) rewritten as the BALANCE `start_balance + amount`. On production that is 1 row of 726 | An evaluation that has made nothing no longer reads as passed. |
 
 ## These three groups behave differently
 
@@ -110,7 +111,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -671,6 +672,30 @@ hers). `auth.uid()` reads the same setting PostgREST sets:
     --       "assignments: a cam assigns only a new client, to itself"
     -- FAIL: INSERT 0 1 -> 60 did not apply.  INSERT 0 0 -> she holds no client.
     rollback;
+
+**61 is a data fix, and it runs best AFTER the deploy of PR 78.** It needs
+nothing but `trading_accounts`, so it does not depend on 58, 59 or 60 and they
+do not depend on it. PR 78 stops the plan picker from writing a profit amount
+into `target_profit`; running 61 after that deploy means no new amount can land
+behind it. Running it before is not harmful, only incomplete, and running it
+again is safe: a converted row sits above its start and is never selected
+twice. The file prints how many rows it converted
+("step 61: converted N target(s) from a profit amount to a balance").
+
+What it does to the 8 production rows under 10,000, counted read only on
+2026-10-06 (prop_firm_plan is empty on all 726 rows with a target):
+
+- 1 Evaluation - Bullet Bot, target 3,000, start 50,000: becomes 53,000, the
+  Bullet Bot 50k target. The 3,000 is kept in `target_profit_before_step_61`.
+- 1 Funded, target 8,000, start 6,000: untouched. It is above its start, so it
+  already reads as a balance.
+- 6 Funded, target 4,000, no start: untouched. Nothing says whether 4,000 is a
+  balance or an amount. The app (PR 78) shows them as "Target not set" and no
+  flag or alert calls them reached. Setting Start Bal $ or the target balance in
+  the Account Registry fixes each one; the registry marks them "Not used".
+
+The undo and the two read only checks are in the file's header. Before the
+deploy the column is simply unread: nothing in the app selects it.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of
