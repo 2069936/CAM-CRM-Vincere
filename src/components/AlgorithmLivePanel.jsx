@@ -178,7 +178,8 @@ export default function AlgorithmLivePanel({
             ? 'The desk figure counts every client on the desk.'
             : 'The desk figure leaves out your own clients, so it is the rest of the desk.'}
           {' '}{`Realized plus open, as the Strategies tab shows it, read on the same ${cycleWords(settings.cycleSeconds)} cycle for everyone.`}
-          {settings.fallback ? ' The floors below are the defaults, because the settings could not be read.' : ''}
+          {' A strategy switched off and on between two readings is not always seen as restarted; when it is not, its figure counts only since it came back on.'}
+          {settings.fallback ? ' The floors this panel uses are the defaults, because the settings could not be read.' : ''}
         </p>
         {stale ? (
           <p className="muted">

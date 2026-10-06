@@ -470,10 +470,16 @@ in the SQL editor and the CHECK constraints are the review.
 
 Known limits, written down so nobody reads them as faults: after the close the
 strategies are switched off and NinjaTrader removes them, so the comparison
-stops at the last live cycle and the panel says how old it is; an instance
-restarted during the day starts again at 0, so the agent marks it and it is
-never compared; a restart that happened while the agent service itself was
-down is not seen.
+stops at the last live cycle and the panel says how old it is. An instance
+restarted during the day starts again at 0. The agent marks it as restarted,
+and a marked row is never compared, when the instance is missing from a
+reading or its run's real time trade count goes down between two readings.
+It does NOT see a restart when the strategy is switched off and on before the
+old run's first real time trade, when the new run has already made as many
+trades as the old one by the next reading, on an add-on that cannot read the
+count, or while the agent service itself is down. Such a row is compared with
+a figure that counts only since it came back on, and the panel says so in its
+basis line.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of

@@ -201,6 +201,20 @@ describe('the figures', () => {
   });
 });
 
+describe('what the basis line owns up to', () => {
+  it('says a quick off and on can go unseen, because the agent cannot always tell', async () => {
+    const { container } = await show();
+    expect(panelText(container)).toContain(
+      'A strategy switched off and on between two readings is not always seen as restarted; when it is not, its figure counts only since it came back on.',
+    );
+  });
+
+  it('says when the floors are the defaults, without a verdict word', async () => {
+    const { container } = await show({ load: async () => live({ settings: { ...SETTINGS, fallback: true } }) });
+    expect(panelText(container)).toContain('The floors this panel uses are the defaults, because the settings could not be read.');
+  });
+});
+
 describe('the words', () => {
   it('has no verdict word and no dash used as punctuation, in any state it renders', async () => {
     const states = [
@@ -209,6 +223,7 @@ describe('the words', () => {
       live({ rows: [sample({ realizedPnl: null }), sample({ accountName: 'OFF', cycleStart: null }), sample({ accountName: 'R', restartedAt: '2026-10-06T13:40:00Z' })] }),
       { available: false, reason: 'not_deployed' },
       live({ rows: [], desk: { cycleStart: null } }),
+      live({ settings: { ...SETTINGS, fallback: true } }),
     ];
     for (const state of states) {
       const { container, unmount } = await show({ load: async () => state });
