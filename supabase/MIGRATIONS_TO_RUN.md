@@ -35,6 +35,8 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back by a LOOP over the catalogue with one exception table for the tables that get less than the four DML verbs — every row naming what decided it; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty 32 of the 37 tables and no policy would see it. Also narrows step 55's SELECT grant on the two tracker tables from `anon, authenticated` to `authenticated` |
 | 57 | `step_57_algorithm_live_samples.sql` | `algorithm_live_samples`: the LAST reading of each NinjaTrader strategy instance (Strategies tab Realized plus Unrealized) on each paired VPS, overwritten, with the sample cycle it belongs to; `algorithm_live_settings` (the cohort floors, the cycle tolerance, the differs threshold, the report cap and the retention window); `record_algorithm_live_sample` for the ingest route; and `algorithm_live_desk()`, which returns the desk median per algorithm and instrument as aggregates only, leaving the caller's own clients out | Each algorithm today against the desk, on the CAM overview: the same cycle for desk and client, the sample size beside every figure, and no comparison when the cohort is too thin |
 | 58 | `step_58_close_summaries_scope.sql` | `replace_close_summaries` recreated with a scope check in front of its delete: a Manager and the service role as before, anyone else only the closes of clients assigned to them, with every row carrying its own close's `client_id`, or the whole call is refused with 42501; `step_48_close_summaries.sql` now carries the same function so a re-run of 48 does not undo it | Closing a CAM's ability to replace or empty another CAM's close summaries through `/rpc/replace_close_summaries`, which since step 52 it could do to rows it cannot even read |
+| 59 | `step_59_log_algo_history_by_family.sql` | step 43's `using (true)` policy on `log_algo_history` replaced by one for Managers, and `log_algo_history_by_family()`, which returns the card's seven numbers per family and withholds from a CAM every family run on fewer accounts, or fewer owners, outside her book than step 57's floors | A CAM no longer reads every book's per account, per family P&L, nor rewrites it. The Stack Playbook "Algo history (from logs)" card keeps its numbers |
+| 60 | `step_60_client_handoff_manager_only.sql` | `my_cam_profile_id()` and four RESTRICTIVE policies on `client_assignments` beside step 53's permissive one: a CAM reads her own clients' rows, inserts only (a client she created that nobody holds, her own profile), and never updates or deletes | Only a Manager moves a client between books. Closes the handoff step 57 names as its residual, and a creator taking back a client a Manager moved away. 58 is skipped on purpose: it is claimed by PR 74 (close summaries scope), not merged when this was written |
 
 ## These three groups behave differently
 
@@ -108,7 +110,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -552,6 +554,89 @@ and the rollback is what puts them back.
     -- PASS: ERROR 42501 replace_close_summaries refused: 1 of the 1 closes named
     --       are not on a client assigned to you. Nothing was replaced.
     -- FAIL: a number. The old body is still installed; run 58.
+
+**59 and 60 close the two holes step 52 left. Neither needs a deploy first and
+neither depends on the other, or on 58 (PR 74's close summaries step, which was
+open when these were written and may land on either side).** 59 reads step 57's
+floors and refuses to run without 57, saying so; 60 needs only 52 and 53. Both
+were measured before they were written, as the role on the migration cluster
+with every step through 57 applied and `request.jwt.claim.sub` set to a CAM.
+
+**59: the log history.** `log_algo_history` kept step 43's `for all using (true)`
+through 52 and 56, because 52 narrows tables that carry a `client_id` and this
+one carries an account name. Measured: a CAM read every row of every book (an
+account belonging to another CAM's client, its family and its P&L), rewrote one
+with the browser's own upsert, and a signed-in session with no CRM user behind
+it read everything too. After 59 the rows are a Manager's alone, and a CAM gets
+the card from `log_algo_history_by_family()`:
+
+- A family is shown to a CAM when the accounts that ran it outside her book reach
+  `min_cohort_accounts` AND come from `min_cohort_clients` owners, the two floors
+  on `algorithm_live_settings` that step 57 already reads. One floor for every
+  desk aggregate a CAM sees: editing it moves both screens. "Her book" is step
+  57's: assigned to her, created by her, or enrolled with her code. An account no
+  client holds counts as its own owner, so dead accounts still show.
+- What is shown is the whole desk, her accounts included, so the figure is the
+  Manager's. Under the floor the row reads "Withheld" with no numbers and no
+  counts.
+- Aggregated rather than scoped by client because the card exists for accounts
+  that no longer belong to anyone, which a per client policy would hide from
+  every CAM, and because the only reader never displays a row.
+
+The deploy may land either side. Before 59 runs, the new build finds no function
+(PGRST202) and aggregates the rows in the browser exactly as it did before.
+After 59 runs and before the deploy, the old build's `select *` returns `[]` to a
+CAM and the card is hidden for CAMs until the deploy; the Manager's card is
+unchanged throughout. The load now waits for a session and reloads when the
+signed-in user changes, so step 56's two console errors on the login screen
+become one (`strategy_classifications`), and a Manager's history no longer stays
+on screen for the next user of the same tab.
+
+**60: who may move a client.** Step 53's assignment policy asked only whether
+the session may touch the CLIENT, never which profile the row names, and its
+verb was ALL. Measured: a CAM handed a client she holds to another CAM and
+deleted her own row; and a CAM who created a client took it back after a
+Manager moved it, reading first whom it had gone to and then deleting that CAM's
+row. That handoff is the residual step 57's header names: a client assigned to
+her but paired under someone else's code leaves every set
+`algorithm_live_desk()` excludes for her, and the device on that VPS can then
+post readings that count as the rest of the desk.
+
+After 60 a CAM reads the assignment rows of her own clients, inserts exactly one
+kind of row (a client she created that nobody holds yet, her own profile), and
+never updates or deletes. That is everything the product asks of a CAM:
+`createSupabaseClient` assigns the new client to the workspace's own CAM, and
+`transferSupabaseClient` is wired only into the Manager overview. No screen
+changes.
+
+**60's policies are RESTRICTIVE and step 53's permissive one stays,** because 52
+and 53 can both be re-run and each writes a permissive policy on this table (52's
+loop drops every permissive policy first). A permissive fix in 60 would be undone
+by either, silently. Re-running 52 or 53 after 60 is therefore safe. 60 refuses
+to finish if the table has no permissive policy at all, since a restrictive policy
+alone refuses every row, a Manager's included: run 53 first in that case.
+
+**Verify both as a CAM, in the SQL editor,** inside a transaction that is rolled
+back, with a CAM who holds at least one client (the insert below borrows one of
+hers). `auth.uid()` reads the same setting PostgREST sets:
+
+    begin;
+    select set_config('request.jwt.claim.sub', '<a CAM''s auth user id>', true);
+    set local role authenticated;
+    select count(*) from public.log_algo_history;
+    -- PASS: 0.  FAIL: any other number -> 59 did not apply.
+    select family, status, accounts from public.log_algo_history_by_family();
+    -- Each family 'shown' with its counts, or 'withheld' with NULLs.
+    insert into public.client_assignments (client_id, cam_profile_id)
+      select a.client_id, p.id
+      from public.client_assignments a, public.cam_profiles p
+      where a.cam_profile_id = public.my_cam_profile_id()
+        and p.id <> a.cam_profile_id
+      limit 1;
+    -- PASS: new row violates row-level security policy
+    --       "assignments: a cam assigns only a new client, to itself"
+    -- FAIL: INSERT 0 1 -> 60 did not apply.  INSERT 0 0 -> she holds no client.
+    rollback;
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of

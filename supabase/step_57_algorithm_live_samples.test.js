@@ -182,11 +182,11 @@ afterAll(async () => { await db?.close?.(); });
 
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
-describe('step 57 is no longer the one that runs last', () => {
-  it('appears once, 58 now carries the highest-number claim, and 54 is still a deliberate gap', () => {
-    /* Handed on the way 55 handed it to 56 and 56 to here: the newest step's
-     * own test asserts it is the highest, and leaving the claim behind would
-     * make every later migration look like a break in this one. */
+describe('step 57 exists and is no longer the one that runs last', () => {
+  it('appears once, 60 now carries the highest-number claim, and 54 is still a deliberate gap', () => {
+    /* Handed on the way 56 handed it here: the newest step's own test says it
+     * is the newest, and leaving the claim behind would make every later
+     * migration look like a break in this one. */
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
@@ -200,8 +200,7 @@ describe('step 57 is no longer the one that runs last', () => {
     expect(runbook).toMatch(/^\| 57 \| `step_57_algorithm_live_samples\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 57 | `step_57_algorithm_live_samples.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 56 | `step_56_table_privilege_lockdown.sql`'));
-    // 58 follows now.
-    expect(runbook).toMatch(/→ 55 → 56 → 57(?: →|\.)/);
+    expect(runbook).toContain('→ 55 → 56 → 57 →');
     expect(runbook).toContain('57 degrades gracefully');
   });
 
@@ -906,7 +905,14 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
    * her). Left out of her book only by assigned_client_ids(), those clients'
    * readings counted as the rest of the desk: with two of them she met the floor
    * on her own and, placing her values on both sides of one real account, made
-   * the median that account's value to the dollar. */
+   * the median that account's value to the dollar.
+   *
+   * SINCE STEP 60 SHE CANNOT DROP THE ROW HERSELF. Only a Manager deletes or
+   * hands off an assignment now, so the clients below leave her book the one
+   * way that remains, a Manager moving them, and the exclusion this describe
+   * tests is exactly what still matters after that: a client she created or
+   * enrolled stays hers whoever holds it. Each step first asserts her own
+   * attempt is refused, so the replay still says which hole step 60 closed. */
 
   /** Runs one statement as `role` with `subject` signed in, and KEEPS its effect. */
   async function committedAsRole(role, subject, sql, params) {
@@ -949,8 +955,13 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
       [`code-${key}`, `machine-${key}`, `credential-${key}`, `pfx-${key}`]);
   }
 
-  async function camDropsHerAssignment(cam, key) {
-    const dropped = await committedAsRole('authenticated', cam.auth,
+  /** Her own delete finds nothing since step 60; a Manager's removes the row. */
+  async function assignmentLeavesHerBook(cam, key) {
+    const own = await committedAsRole('authenticated', cam.auth,
+      'delete from public.client_assignments where client_id = $1 and cam_profile_id = $2 returning client_id',
+      [world.clients[key], cam.profile]);
+    expect(own).toHaveLength(0);
+    const dropped = await committedAsRole('authenticated', world.managerAuth,
       'delete from public.client_assignments where client_id = $1 and cam_profile_id = $2 returning client_id',
       [world.clients[key], cam.profile]);
     expect(dropped).toHaveLength(1);
@@ -967,7 +978,7 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
     for (const key of ['F1', 'F2']) {
       await camCreatesClient(world.gray, key);
       await enrollAndPair(key, grayUser);
-      await camDropsHerAssignment(world.gray, key);
+      await assignmentLeavesHerBook(world.gray, key);
     }
     expect(await grayAssigned()).not.toContain(world.clients.F1);
 
@@ -991,10 +1002,14 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
     const gray = cohort(await desk(world.gray.auth));
     expect(gray).toMatchObject({ status: 'thin', n_accounts: null, median: null });
 
-    // Handing them to another CAM does not put them outside her book either:
-    // step 53 lets her assign a client she created to anyone.
+    // Handing them to another CAM does not put them outside her book either.
+    // Since step 60 only a Manager can: Gray's own attempt is refused.
     for (const key of ['F1', 'F2']) {
-      await committedAsRole('authenticated', world.gray.auth,
+      await expect(committedAsRole('authenticated', world.gray.auth,
+        'insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
+        [world.clients[key], world.birch.profile]))
+        .rejects.toThrow(/row-level security policy "assignments: a cam assigns only a new client, to itself"/);
+      await committedAsRole('authenticated', world.managerAuth,
         'insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
         [world.clients[key], world.birch.profile]);
     }
@@ -1026,7 +1041,7 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
   it('a client she created stays hers, even paired under someone else\'s code', async () => {
     await camCreatesClient(world.gray, 'F3');
     await enrollAndPair('F3', await appUserOf(world.managerAuth));
-    await camDropsHerAssignment(world.gray, 'F3');
+    await assignmentLeavesHerBook(world.gray, 'F3');
     expect(await grayAssigned()).not.toContain(world.clients.F3);
     expect(await fourOutsidePlus('F3')).toMatchObject({ status: 'thin', n_accounts: null });
     // The same five, with an outside client in place of hers, are compared.
@@ -1043,7 +1058,7 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
     await db.query('insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)',
       [world.clients.E1, world.gray.profile]);
     await enrollAndPair('E1', await appUserOf(world.gray.auth));
-    await camDropsHerAssignment(world.gray, 'E1');
+    await assignmentLeavesHerBook(world.gray, 'E1');
     expect(await grayAssigned()).not.toContain(world.clients.E1);
     expect(await fourOutsidePlus('E1')).toMatchObject({ status: 'thin', n_accounts: null });
 

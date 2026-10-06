@@ -14271,15 +14271,23 @@ export default function App() {
   }
 
   // Team-wide algo history derived from NinjaTrader logs (incl. dead accounts).
+  //
+  // KEYED ON WHO IS SIGNED IN, and emptied first. Since step 59 the answer
+  // depends on the caller: a Manager gets every family, a CAM gets the families
+  // run on enough accounts outside her book. With `[]` deps this read ran once,
+  // as anon on the login screen, and its result outlived a sign out, so a
+  // Manager's full history stayed in state for the CAM who signed in next in
+  // the same tab, and a fresh sign in showed nothing until a refresh.
   const [logAlgoHistory, setLogAlgoHistory] = useState([]);
   useEffect(() => {
-    if (!isSupabaseConfigured) return;
+    setLogAlgoHistory([]);
+    if (!isSupabaseConfigured || !session?.id) return;
     let cancelled = false;
     loadLogAlgoHistory()
       .then((rows) => { if (!cancelled) setLogAlgoHistory(rows); })
       .catch((error) => console.error("[CRM] Failed to load log algo history:", error));
     return () => { cancelled = true; };
-  }, []);
+  }, [session?.id, session?.role, session?.camProfileId]);
 
   /**
    * Re-read the whole database and replace the screen with it.

@@ -605,4 +605,35 @@ describe('the algorithm temperature panel on the playbook', () => {
     // And never the word the CAM reads as a prop firm breach.
     expect(panel.textContent).not.toMatch(/drawdown/i);
   });
+
+  it('34. prints a family step 59 withheld as withheld, never as a flat row', () => {
+    /* Rows as loadLogAlgoHistory hands them over: already one per family. A
+     * withheld family carries nulls, and formatting a null as money would print
+     * the $0 a flat algo prints. */
+    renderPlaybook(tenCloseClient(), {
+      logAlgoHistory: [
+        { family: 'OGX', withheld: false, totalPnl: 1250.5, roundTrips: 40, byDirection: { Long: 900, Short: 350.5, Mixed: 0 }, accounts: 12, days: 9 },
+        { family: 'Thin', withheld: true, totalPnl: null, roundTrips: null, byDirection: { Long: null, Short: null, Mixed: null }, accounts: null, days: null },
+      ],
+    });
+    fireEvent.click(screen.getByText('Algo history (from logs)'));
+    const table = screen.getByText('Round trips').closest('table');
+    const rows = [...table.querySelectorAll('tbody tr')];
+    expect(rows.map((tr) => tr.querySelector('strong').textContent)).toEqual(['OGX', 'Thin']);
+    expect(rows[0].querySelectorAll('td')).toHaveLength(7);
+    expect(rows[0].textContent).toContain('12');
+    expect(rows[1].textContent).toBe('ThinWithheld: too few accounts outside your book run it');
+    expect(rows[1].textContent).not.toMatch(/\$|0\.00/);
+    expect(table.closest('section').textContent).toContain('A withheld algo runs on too few accounts outside your book');
+  });
+
+  it('35. says nothing about withholding when nothing was withheld', () => {
+    renderPlaybook(tenCloseClient(), {
+      logAlgoHistory: [
+        { family: 'OGX', withheld: false, totalPnl: 10, roundTrips: 1, byDirection: { Long: 10, Short: 0, Mixed: 0 }, accounts: 6, days: 1 },
+      ],
+    });
+    fireEvent.click(screen.getByText('Algo history (from logs)'));
+    expect(screen.getByText('Round trips').closest('section').textContent).not.toContain('withheld');
+  });
 });

@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ArrowRight, Clock, ChevronDown } from 'lucide-react';
 import { ACCOUNT_TYPES, ACCOUNT_STATUSES, RISK_LEVELS } from '../domain/reconcile';
 import { groupStrategiesBySignature, detectVersionMismatches, classifyStrategy } from '../domain/strategyClassification';
-import { aggregateLogFamilyHistory } from '../domain/ninjaTraderLog';
 import { buildAccountLifecycle } from '../domain/accountLifecycle';
 import { strategyRan } from '../domain/strategyRan';
 import { buildAccountEquitySeries, buildComboByFirm } from '../domain/stackAnalytics';
@@ -396,7 +395,11 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
     }),
     [teamClients, basis, level, perf.window.from, perf.window.to],
   );
-  const logAlgoAgg = aggregateLogFamilyHistory(logAlgoHistory);
+  // Already one row per family: loadLogAlgoHistory reads the aggregate step 59
+  // returns, or computes the same one from the rows on a database without it.
+  // A CAM may get a family back withheld, its figures null.
+  const logAlgoAgg = logAlgoHistory;
+  const logAlgoWithheld = logAlgoAgg.some((row) => row.withheld);
   const sigGroups = groupStrategiesBySignature(teamClients);
   const classByKey = Object.fromEntries(classifications.map((c) => [c.key, c]));
   const mismatches = detectVersionMismatches(teamClients, classifications);
@@ -727,7 +730,12 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                   </tr>
                 </thead>
                 <tbody>
-                  {logAlgoAgg.map((row) => (
+                  {logAlgoAgg.map((row) => (row.withheld ? (
+                    <tr key={row.family}>
+                      <td><strong>{row.family}</strong></td>
+                      <td className="muted" colSpan={6}>Withheld: too few accounts outside your book run it</td>
+                    </tr>
+                  ) : (
                     <tr key={row.family}>
                       <td><strong>{row.family}</strong></td>
                       <td className={row.totalPnl >= 0 ? 'positive' : 'negative'}>{row.totalPnl >= 0 ? '+' : ''}{fmt(row.totalPnl)}</td>
@@ -737,12 +745,17 @@ export default function StackPlaybook({ client, dailyImport, onUpdateAccount, al
                       <td className="muted">{row.days}</td>
                       <td className="muted">{row.roundTrips}</td>
                     </tr>
-                  ))}
+                  )))}
                 </tbody>
               </table>
               <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
                 Derived from NinjaTrader logs (executions x contract value) — realized PnL only, no balances. Includes accounts that no longer exist; no client assignment needed. Upload logs in Data Tools to grow it.
               </p>
+              {logAlgoWithheld ? (
+                <p className="muted" style={{ fontSize: 12, padding: '4px 0 0' }}>
+                  A withheld algo runs on too few accounts outside your book for its total to be shown without revealing one of them. The figures shown are the whole desk, your accounts included.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </section>
