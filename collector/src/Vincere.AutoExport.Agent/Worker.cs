@@ -68,10 +68,19 @@ public sealed class Worker : BackgroundService
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            TimeSpan nextDelay = loop.Interval;
+            TimeSpan nextDelay;
             try
             {
                 await loop.RunOnceAsync(cancellationToken).ConfigureAwait(false);
+                /* READ AFTER THE RUN, NOT BEFORE IT. A loop whose wait depends on
+                 * what the run learned, or on what time the run finished, has to be
+                 * asked once the run is over: the account tracker aligns its next
+                 * reading to a clock boundary measured from now, and takes a cadence
+                 * the CRM changed during this run into account on this wait rather
+                 * than the one after. Every other loop answers a constant, for which
+                 * the order changes nothing. Inside the try, so a getter that threw
+                 * would cost this loop the failure delay and never the service. */
+                nextDelay = loop.Interval;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

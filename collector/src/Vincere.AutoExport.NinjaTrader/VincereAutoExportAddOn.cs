@@ -71,11 +71,15 @@ namespace NinjaTrader.NinjaScript.AddOns
             /* Five seconds for the sample against twenty-five for the close, and
              * the gap is the point. The close is irreplaceable and worth waiting
              * for; a tracker reading is worthless five minutes later, so one that
-             * cannot be had quickly should be abandoned rather than waited for. */
+             * cannot be had quickly should be abandoned rather than waited for.
+             * The per strategy reading gets its own five seconds, with its P&L
+             * reads held to two of them inside NinjaTraderFacade. */
             var processor = new CaptureRequestProcessor(
                 CaptureAsync,
                 TimeSpan.FromSeconds(25),
                 SampleAccountsAsync,
+                TimeSpan.FromSeconds(5),
+                SampleStrategiesAsync,
                 TimeSpan.FromSeconds(5));
             server = new CapturePipeServer(processor, diagnostics);
             server.Start();
@@ -188,6 +192,51 @@ namespace NinjaTrader.NinjaScript.AddOns
             try
             {
                 completion.TrySetResult(BuildAccountSample(DateTimeOffset.Now));
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetException(exception);
+            }
+        }
+
+        /* THE PER STRATEGY READING, MARSHALLED EXACTLY LIKE THE ACCOUNT SAMPLE: the
+         * application dispatcher at Background priority, so it queues behind render
+         * and input and can be made to wait but never makes the terminal wait. A
+         * mirror of SampleAccountsAsync for the reason that one mirrors CaptureAsync:
+         * this file compiles only where NinjaTrader is installed, and a shared helper
+         * would change the paths that already work in a place nobody can compile. */
+        private Task<StrategySampleV1> SampleStrategiesAsync(CancellationToken cancellationToken)
+        {
+            if (Application.Current == null)
+                throw new InvalidOperationException("NinjaTrader has no application dispatcher.");
+            var completion = new TaskCompletionSource<StrategySampleV1>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            CancellationTokenRegistration registration = cancellationToken.Register(
+                () => completion.TrySetCanceled());
+            completion.Task.ContinueWith(
+                _ => registration.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            Application.Current.Dispatcher.BeginInvoke(
+                new Action(() => SampleStrategiesOnDispatcher(completion, cancellationToken)),
+                DispatcherPriority.Background);
+            return completion.Task;
+        }
+
+        private static void SampleStrategiesOnDispatcher(
+            TaskCompletionSource<StrategySampleV1> completion,
+            CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                completion.TrySetCanceled();
+                return;
+            }
+            try
+            {
+                completion.TrySetResult(new StrategySampleBuilder(new NinjaTraderFacade()).Build(
+                    new StrategySampleBuildContext { SampledAt = DateTimeOffset.Now }));
             }
             catch (Exception exception)
             {

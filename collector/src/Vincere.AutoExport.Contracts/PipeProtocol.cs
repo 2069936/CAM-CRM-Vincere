@@ -50,6 +50,15 @@ namespace Vincere.AutoExport.Contracts
         public AccountSampleV1 Sample { get; set; }
 
         /// <summary>
+        /// The per strategy reading, when the command was "sample_strategies".
+        /// Omitted when null for the same reason as <see cref="Sample"/>: a close's
+        /// response and an account sample's response stay byte for byte what they
+        /// were, and an agent that predates this member never sees it.
+        /// </summary>
+        [JsonProperty("strategySample", NullValueHandling = NullValueHandling.Ignore)]
+        public StrategySampleV1 StrategySample { get; set; }
+
+        /// <summary>
         /// The add-on's own word for what went wrong. Worth saying out loud
         /// because the daily capture path throws this away and reports
         /// "capture_failed" for every refusal: see CapturePipeClient. The account

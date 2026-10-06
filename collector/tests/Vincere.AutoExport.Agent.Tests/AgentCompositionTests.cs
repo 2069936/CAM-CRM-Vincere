@@ -102,9 +102,9 @@ public sealed class AgentCompositionTests : IDisposable
     /* EVERY LOOP THE CONTAINER HOLDS IS ONE THE SUPERVISOR WILL ACTUALLY RUN.
      *
      * Worker's constructor refuses a loop whose Interval is not positive, and it
-     * reads Interval OUTSIDE its try block on every iteration, so a loop with a
-     * bad interval does not fail by itself - it stops the host and takes the
-     * heartbeat down with it. Resolving the real Worker from the real container is
+     * hands Interval to its delay after every run, where a negative value throws
+     * outside any catch, so a loop with a bad interval does not fail by itself -
+     * it stops the host and takes the heartbeat down with it. Resolving the real Worker from the real container is
      * what proves the real intervals pass that gate. */
     [Fact]
     public void Resolving_the_real_container_is_what_proves_the_intervals_the_supervisor_demands()
@@ -165,6 +165,25 @@ public sealed class AgentCompositionTests : IDisposable
      * because the container test above proves the registration resolves TODAY and
      * this proves the next person cannot reintroduce the optional-argument shape
      * that caused the original incident. */
+    /* THE STRATEGY READING GOES THROUGH THE TRACKER'S PIPE CLIENT, never the
+     * close's, and the loop holds the one process-wide restart memory. */
+    [Fact]
+    public void The_strategy_reading_uses_the_trackers_client_and_one_restart_memory()
+    {
+        using ServiceProvider provider = BuildRealContainer();
+
+        INinjaTraderStrategySampleClient strategies = provider.GetRequiredService<INinjaTraderStrategySampleClient>();
+
+        Assert.Same(provider.GetRequiredService<INinjaTraderAccountSampleClient>(), strategies);
+        Assert.NotSame(provider.GetRequiredService<INinjaTraderCaptureClient>(), strategies);
+        AccountSampleLoop loop = Assert.Single(
+            provider.GetServices<ICollectorLoop>().OfType<AccountSampleLoop>());
+        FieldInfo memory = typeof(AccountSampleLoop)
+            .GetField("strategyRuns", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(memory);
+        Assert.Same(provider.GetRequiredService<StrategyRunMemory>(), memory.GetValue(loop));
+    }
+
     [Fact]
     public void Nothing_the_loop_needs_can_be_quietly_left_out()
     {

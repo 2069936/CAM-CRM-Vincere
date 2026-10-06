@@ -139,7 +139,7 @@ public sealed class AccountSampleLoopTests
         await harness.Loop.RunOnceAsync(CancellationToken.None);
 
         Assert.Equal(2, crm.Posted.Count);
-        Assert.Equal(TimeSpan.FromSeconds(900), harness.Loop.Interval);
+        Assert.Equal(TimeSpan.FromSeconds(900), harness.Loop.Cadence);
     }
 
     [Fact]
@@ -303,7 +303,7 @@ public sealed class AccountSampleLoopTests
     {
         Harness harness = new(new FakeSampleClient(), new RecordingSampleCrm());
 
-        Assert.Equal(TimeSpan.FromMinutes(10), harness.Loop.Interval);
+        Assert.Equal(TimeSpan.FromMinutes(10), harness.Loop.Cadence);
     }
 
     [Fact]
@@ -320,7 +320,7 @@ public sealed class AccountSampleLoopTests
 
         // Worker re-reads Interval on every iteration, which is what makes a column
         // edited in the SQL editor take effect on a running service.
-        Assert.Equal(TimeSpan.FromMinutes(30), harness.Loop.Interval);
+        Assert.Equal(TimeSpan.FromMinutes(30), harness.Loop.Cadence);
     }
 
     /* A NUMBER THAT ARRIVED OVER A NETWORK DECIDES HOW OFTEN A TRADING MACHINE IS
@@ -345,14 +345,14 @@ public sealed class AccountSampleLoopTests
 
         await harness.Loop.RunOnceAsync(CancellationToken.None);
 
-        Assert.Equal(TimeSpan.FromMinutes(10), harness.Loop.Interval);
+        Assert.Equal(TimeSpan.FromMinutes(10), harness.Loop.Cadence);
     }
 
-    /* WHY THAT MATTERS MORE THAN IT LOOKS. Worker.SuperviseAsync reads Interval
-     * OUTSIDE its try block, and the host's default behaviour for an unhandled
-     * exception in a BackgroundService is to stop. A getter that threw, or returned
-     * zero or a negative, would take down the scheduler, the uploader and the
-     * heartbeat with it - and the heartbeat is the only thing that says a machine is
+    /* WHY THAT MATTERS MORE THAN IT LOOKS. Worker.SuperviseAsync hands Interval
+     * straight to its delay, and a negative delay throws outside any catch; the
+     * host's default behaviour for an unhandled exception in a BackgroundService is
+     * to stop. A getter that returned zero or a negative would take down the
+     * scheduler, the uploader and the heartbeat with it - and the heartbeat is the only thing that says a machine is
      * alive. Losing the fleet's traffic light in order to build one. Worker's own
      * constructor refuses a loop whose Interval is not positive, so this asserts
      * what that constructor demands, after every value the CRM might send. */
@@ -373,9 +373,12 @@ public sealed class AccountSampleLoopTests
             TimeSpan interval = harness.Loop.Interval;
             Assert.True(interval > TimeSpan.Zero, $"{seconds} produced {interval}");
             Assert.InRange(
-                interval,
+                harness.Loop.Cadence,
                 TimeSpan.FromSeconds(AccountSampleLoop.MinimumIntervalSeconds),
                 TimeSpan.FromSeconds(AccountSampleLoop.MaximumIntervalSeconds));
+            // The wait is to the next boundary, so never more than one cadence
+            // plus the alignment slack.
+            Assert.InRange(interval, TimeSpan.FromSeconds(1), harness.Loop.Cadence + TimeSpan.FromSeconds(5));
 
             // And the supervisor itself accepts it, which is the real contract.
             _ = new Worker(new[] { (ICollectorLoop)harness.Loop }, new ImmediateDelay(), harness.Reporter);
@@ -417,9 +420,13 @@ public sealed class AccountSampleLoopTests
         TimeSpan interval = harness.Loop.Interval;
 
         Assert.InRange(
-            interval,
+            harness.Loop.Cadence,
             TimeSpan.FromSeconds(AccountSampleLoop.MinimumIntervalSeconds),
             TimeSpan.FromSeconds(AccountSampleLoop.MaximumIntervalSeconds));
+        Assert.InRange(
+            interval,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(AccountSampleLoop.MaximumIntervalSeconds + 5));
         // Worker's constructor is the contract that matters: it refuses a loop whose
         // Interval is not positive, and an Interval that threw or went negative at
         // runtime would stop the host and take the heartbeat down with it.
@@ -439,6 +446,484 @@ public sealed class AccountSampleLoopTests
      * build one, and AgentCompositionTests builds it, resolves the Worker and asks
      * it which loops it is going to run.
      * ------------------------------------------------------------------- */
+
+    /* ---------------------------------------------------------------------
+     * The per strategy reading, which rides this loop's tick and must never cost
+     * the account rows anything.
+     * ------------------------------------------------------------------- */
+
+    private static readonly DateTimeOffset StrategyClock = new(2026, 10, 5, 10, 10, 2, TimeSpan.FromHours(-4));
+
+    [Fact]
+    public async Task The_strategies_are_read_and_posted_after_the_accounts_are_posted()
+    {
+        RecordingSampleCrm crm = new();
+        FakeStrategyClient strategies = new() { Next = () => Strategies(StrategyRow("APEX-1111", "1")) };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "accounts-pipe", "accounts-post", "strategies-pipe", "strategies-post" }, harness.Calls);
+        StrategySampleV1 posted = Assert.Single(crm.StrategyPosted);
+        Assert.Equal(1, posted.SchemaVersion);
+        // The add-on's clock, untouched: the CRM files the reading under the cycle
+        // this falls in, so a re-stamp would move it to another cycle.
+        Assert.Equal(StrategyClock, posted.SampledAt);
+        StrategySampleRowV1 row = Assert.Single(posted.Strategies);
+        Assert.Equal(-412.5m, row.RealizedPnl);
+        Assert.Equal(37.5m, row.UnrealizedPnl);
+        Assert.Equal("0 - OGX-PF-2.4", row.StrategyName);
+        Assert.Equal("MNQ 12-26", row.Instrument);
+        Assert.Empty(harness.Reporter.Codes);
+    }
+
+    /* THE STRATEGY HALF THROWING COSTS THE STRATEGIES AND NOTHING ELSE. The account
+     * post has happened once, nothing reaches the supervisor (which would rerun the
+     * whole tick in five seconds and post the accounts again), and the account
+     * half's log memory is untouched: the same account fault on the next tick is
+     * still a repeat and is not written again. */
+    [Fact]
+    public async Task A_strategy_client_that_throws_leaves_the_account_half_exactly_as_it_was()
+    {
+        RecordingSampleCrm crm = new() { Result = AccountSampleReportResult.Failed("account_sample_timeout") };
+        FakeStrategyClient strategies = new() { Next = () => throw new InvalidOperationException("pipe broke") };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, crm.Posted.Count);
+        Assert.Equal(new[] { "account_sample_timeout", "strategy_sample_failed" }, harness.Reporter.Codes);
+        Assert.DoesNotContain("account_sample_failed", harness.Reporter.Codes);
+        Assert.Null(harness.State.Snapshot().LastErrorCode);
+    }
+
+    [Fact]
+    public async Task A_strategy_post_that_throws_is_caught_the_same_way()
+    {
+        RecordingSampleCrm crm = new() { StrategyFailure = new StrategyPostExploded() };
+        FakeStrategyClient strategies = new() { Next = () => Strategies(StrategyRow("APEX-1111", "1")) };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        Exception escaped = await Record.ExceptionAsync(() => harness.Loop.RunOnceAsync(CancellationToken.None));
+
+        Assert.Null(escaped);
+        Assert.Single(crm.Posted);
+        Assert.Equal(new[] { "strategy_sample_failed" }, harness.Reporter.Codes);
+    }
+
+    /* A CRM WITHOUT THE ROUTE, OR WITHOUT MIGRATION 57, SILENCES THE STRATEGIES FOR
+     * AN HOUR AND THE ACCOUNTS NOT AT ALL. Reusing the account silence here would
+     * cost the tracker a day of account rows for a feature that is not deployed. */
+    [Fact]
+    public async Task A_strategies_404_silences_only_the_strategies_and_only_for_an_hour()
+    {
+        RecordingSampleCrm crm = new() { StrategyResult = StrategySampleReportResult.Unsupported("strategy_sample_unsupported") };
+        FakeStrategyClient strategies = new() { Next = () => Strategies(StrategyRow("APEX-1111", "1")) };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        harness.Clock.Now = Now.Plus(Duration.FromMinutes(10));
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        harness.Clock.Now = Now.Plus(Duration.FromMinutes(50));
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        // The accounts went out on every tick.
+        Assert.Equal(3, crm.Posted.Count);
+        // The strategies were asked once in the hour.
+        Assert.Equal(1, strategies.Calls);
+        Assert.Single(crm.StrategyPosted);
+        (string level, string code, string message) line = Assert.Single(harness.Logger.Entries);
+        Assert.Equal("INFO", line.level);
+        Assert.Equal("strategy_sample_unsupported", line.code);
+        Assert.Empty(harness.Reporter.Codes);
+
+        // An hour on, they are offered again, so applying 57 shows the same day.
+        harness.Clock.Now = Now.Plus(Duration.FromMinutes(61));
+        crm.StrategyResult = StrategySampleReportResult.Accepted();
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(4, crm.Posted.Count);
+        Assert.Equal(2, crm.StrategyPosted.Count);
+        Assert.Equal(TimeSpan.FromHours(1), AccountSampleLoop.StrategyCrmUnsupportedBackoff);
+    }
+
+    /* AN ADD-ON OLDER THAN 1.2.0 IS ASKED FOR STRATEGIES ONCE A DAY, AND KEEPS
+     * ANSWERING FOR ACCOUNTS EVERY TICK. */
+    [Fact]
+    public async Task An_addon_too_old_for_strategies_keeps_sampling_accounts()
+    {
+        RecordingSampleCrm crm = new();
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => new StrategySampleAttempt(StrategySampleOutcome.Unsupported, null, "invalid_request"),
+        };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        harness.Clock.Now = Now.Plus(Duration.FromHours(23));
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, pipe.Calls);
+        Assert.Equal(2, crm.Posted.Count);
+        Assert.Equal(1, strategies.Calls);
+        (string level, string code, string message) line = Assert.Single(harness.Logger.Entries);
+        Assert.Equal("strategy_sample_addon_unsupported", line.code);
+        Assert.Contains("account tracker is unaffected", line.message, StringComparison.Ordinal);
+
+        harness.Clock.Now = Now.Plus(Duration.FromHours(25));
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(2, strategies.Calls);
+    }
+
+    /* ONLY THE CONNECTED ACCOUNTS THIS TICK REPORTS. A dark account's strategies,
+     * and strategies on an account the tracker does not report at all, stay home. */
+    [Fact]
+    public async Task Only_strategies_on_connected_reported_accounts_are_posted()
+    {
+        RecordingSampleCrm crm = new();
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(
+                StrategyRow("APEX-1111", "1"),
+                StrategyRow("APEX-2222", "2"),
+                StrategyRow("DEMO5289161", "3"),
+                StrategyRow("apex-1111 ", "4")),
+        };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(
+            Row("APEX-1111", connected: true),
+            Row("APEX-2222", connected: true),
+            Row("DEMO5289161", connected: false)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        // APEX-2222 goes dark: it is still reported as an account, but its
+        // strategies are not compared.
+        pipe.Next = Sampled(
+            Row("APEX-1111", connected: true),
+            Row("APEX-2222", connected: false),
+            Row("DEMO5289161", connected: false));
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "1", "2", "4" }, crm.StrategyPosted[0].Strategies.Select(row => row.StrategyId));
+        Assert.Equal(new[] { "1", "4" }, crm.StrategyPosted[1].Strategies.Select(row => row.StrategyId));
+    }
+
+    [Fact]
+    public async Task No_connected_account_or_no_account_reading_means_no_strategy_reading()
+    {
+        RecordingSampleCrm crm = new();
+        FakeStrategyClient strategies = new() { Next = () => Strategies(StrategyRow("APEX-1111", "1")) };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(1, strategies.Calls);
+
+        pipe.Next = Sampled(Row("APEX-1111", connected: false));
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = new AccountSampleAttempt(AccountSampleOutcome.Unavailable, null, "capture_busy");
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, strategies.Calls);
+        Assert.Single(crm.StrategyPosted);
+    }
+
+    /* THE RESTART TIME IS FILLED BY THE AGENT. Live, missing from one successful
+     * reading, live again: the row carries the time of the reading it came back in. */
+    [Fact]
+    public async Task A_strategy_that_went_away_and_came_back_is_posted_with_its_restart_time()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        bool present = true;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => present
+                ? Strategies(clock, StrategyRow("APEX-1111", "1"), StrategyRow("APEX-1111", "2"))
+                : Strategies(clock, StrategyRow("APEX-1111", "2")),
+        };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        present = false;
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        present = true;
+        clock = StrategyClock.AddMinutes(20);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.All(crm.StrategyPosted[0].Strategies, row => Assert.Null(row.RestartedAt));
+        StrategySampleRowV1[] third = crm.StrategyPosted[2].Strategies.ToArray();
+        Assert.Equal(StrategyClock.AddMinutes(20), third.Single(row => row.StrategyId == "1").RestartedAt);
+        Assert.Null(third.Single(row => row.StrategyId == "2").RestartedAt);
+    }
+
+    /* THE TOGGLE NO ABSENCE SHOWS. A disable and enable inside one cycle leaves the
+     * instance live in both readings; the add-on's run count going from 4 to 0 is
+     * what tells the agent, and the CRM gets the restart time. The count itself is
+     * the add-on talking to the agent and never travels to the CRM. */
+    [Fact]
+    public async Task A_toggle_between_two_readings_is_posted_as_a_restart_and_the_count_stays_behind()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        int trades = 4;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(clock, Counted(StrategyRow("APEX-1111", "1"), trades), Counted(StrategyRow("APEX-1111", "2"), 1)),
+        };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        trades = 0;
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.All(crm.StrategyPosted[0].Strategies, row => Assert.Null(row.RestartedAt));
+        StrategySampleRowV1[] second = crm.StrategyPosted[1].Strategies.ToArray();
+        Assert.Equal(StrategyClock.AddMinutes(10), second.Single(row => row.StrategyId == "1").RestartedAt);
+        Assert.Null(second.Single(row => row.StrategyId == "2").RestartedAt);
+        Assert.All(
+            crm.StrategyPosted.SelectMany(sample => sample.Strategies),
+            row => Assert.Null(row.RealtimeTradeCount));
+    }
+
+    /* A RE-ENABLE WHILE THE STRATEGY PART WAS NOT READING. The accounts failed to
+     * read for a while, so no strategy reading was taken; the strategy was switched
+     * off and on in that gap. Absence never had a chance to show it, but the count
+     * is still lower when readings resume. */
+    [Fact]
+    public async Task A_restart_during_a_gap_in_readings_is_seen_when_they_resume()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        int trades = 3;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(clock, Counted(StrategyRow("APEX-1111", "1"), trades)),
+        };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = new AccountSampleAttempt(AccountSampleOutcome.Unavailable, null, "capture_busy");
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = Sampled(Row("APEX-1111", connected: true));
+        trades = 1;
+        clock = StrategyClock.AddMinutes(20);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, strategies.Calls);
+        Assert.Equal(StrategyClock.AddMinutes(20), Assert.Single(crm.StrategyPosted[1].Strategies).RestartedAt);
+    }
+
+    /* A FAILED STRATEGY READING IS NOT AN ABSENCE. A busy pipe between two readings
+     * that both hold the instance must not flag it as restarted. */
+    [Fact]
+    public async Task A_failed_strategy_reading_in_between_does_not_make_a_restart()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        bool fail = false;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => fail
+                ? new StrategySampleAttempt(StrategySampleOutcome.Unavailable, null, "capture_busy")
+                : Strategies(clock, StrategyRow("APEX-1111", "1")),
+        };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        fail = true;
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        fail = false;
+        clock = StrategyClock.AddMinutes(20);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Null(Assert.Single(crm.StrategyPosted[1].Strategies).RestartedAt);
+        // And the failure was reported under a strategy code.
+        Assert.Equal(new[] { "strategy_capture_busy" }, harness.Reporter.Codes);
+    }
+
+    /* A CONNECTION THAT DROPS FOR ONE READING IS NOT A RESTART. NinjaTrader keeps
+     * the instance and its figure across a dropped connection, so presence is
+     * judged from everything the add-on reported, before the connected filter.
+     * Judged after it, every strategy on that account would come back flagged as
+     * restarted and drop out of the comparison for the rest of the day. */
+    [Fact]
+    public async Task A_strategy_on_an_account_that_dropped_its_connection_for_a_reading_has_not_restarted()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(clock, StrategyRow("APEX-1111", "1"), StrategyRow("APEX-2222", "2")),
+        };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(
+            Row("APEX-1111", connected: true),
+            Row("APEX-2222", connected: true)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = Sampled(Row("APEX-1111", connected: true), Row("APEX-2222", connected: false));
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = Sampled(Row("APEX-1111", connected: true), Row("APEX-2222", connected: true));
+        clock = StrategyClock.AddMinutes(20);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        StrategySampleRowV1 back = crm.StrategyPosted[2].Strategies.Single(row => row.StrategyId == "2");
+        Assert.Null(back.RestartedAt);
+    }
+
+    [Fact]
+    public async Task More_strategy_rows_than_the_route_takes_are_not_posted_and_the_accounts_still_are()
+    {
+        RecordingSampleCrm crm = new();
+        StrategySampleRowV1[] many = Enumerable.Range(0, AccountSampleLoop.MaximumStrategyRows + 1)
+            .Select(i => StrategyRow("APEX-1111", i.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .ToArray();
+        StrategySampleRowV1[] exactly = many.Take(AccountSampleLoop.MaximumStrategyRows).ToArray();
+        bool tooMany = true;
+        FakeStrategyClient strategies = new() { Next = () => Strategies(tooMany ? many : exactly) };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        tooMany = false;
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, crm.Posted.Count);
+        Assert.Equal(AccountSampleLoop.MaximumStrategyRows, Assert.Single(crm.StrategyPosted).Strategies.Count);
+        Assert.Equal(new[] { "strategy_sample_too_large" }, harness.Reporter.Codes);
+    }
+
+    [Fact]
+    public async Task A_refused_strategy_post_is_reported_under_its_own_code_with_the_crms_word()
+    {
+        RecordingSampleCrm crm = new()
+        {
+            StrategyResult = StrategySampleReportResult.Failed("strategy_sample_http_400", "invalid_strategy_sample"),
+        };
+        FakeStrategyClient strategies = new() { Next = () => Strategies(StrategyRow("APEX-1111", "1")) };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        // Tried again next tick, no backoff, written once.
+        Assert.Equal(2, crm.StrategyPosted.Count);
+        Assert.Equal(new[] { "strategy_sample_http_400" }, harness.Reporter.Codes);
+        Assert.Equal("The CRM answered: invalid_strategy_sample", Assert.Single(harness.Logger.Entries).Message);
+    }
+
+    /* ---------------------------------------------------------------------
+     * The aligned wait. Every machine wakes two seconds after the same UTC
+     * boundaries, so desk and client are read in the same cycle.
+     * ------------------------------------------------------------------- */
+
+    [Fact]
+    public void The_wait_runs_to_two_seconds_after_the_next_boundary()
+    {
+        Harness harness = new(new FakeSampleClient(), new RecordingSampleCrm());
+        // 10:13:27 in New York, 14:13:27 UTC, with the default ten minutes.
+        harness.Clock.Now = Instant.FromUtc(2026, 10, 5, 14, 13, 27);
+
+        // 10:20:00 is 6 min 33 s away, plus the 2 s lead.
+        Assert.Equal(TimeSpan.FromMinutes(6) + TimeSpan.FromSeconds(33 + 2), harness.Loop.Interval);
+    }
+
+    // Exactly on a boundary, the next boundary is the next one, not this one.
+    [Fact]
+    public void Exactly_on_a_boundary_the_wait_is_a_whole_cycle_and_never_zero()
+    {
+        Harness harness = new(new FakeSampleClient(), new RecordingSampleCrm());
+        harness.Clock.Now = Instant.FromUtc(2026, 10, 5, 14, 20, 0);
+
+        Assert.Equal(TimeSpan.FromSeconds(600 + 2), harness.Loop.Interval);
+    }
+
+    /* THE GRID IS UTC SECONDS, SO EVERY MACHINE AGREES FOR ANY INTERVAL. Three
+     * readings taken at different moments inside one cycle all wake for the same
+     * next boundary, and a retuned cadence aligns to its own grid. */
+    [Fact]
+    public async Task Machines_reading_anywhere_in_a_cycle_wake_at_the_same_moment()
+    {
+        Harness harness = new(new FakeSampleClient(), new RecordingSampleCrm());
+        Instant[] moments =
+        {
+            Instant.FromUtc(2026, 10, 5, 14, 10, 3),
+            Instant.FromUtc(2026, 10, 5, 14, 14, 59),
+            Instant.FromUtc(2026, 10, 5, 14, 19, 59),
+        };
+
+        foreach (Instant moment in moments)
+        {
+            harness.Clock.Now = moment;
+            Assert.Equal(Instant.FromUtc(2026, 10, 5, 14, 20, 2), moment.Plus(Duration.FromTimeSpan(harness.Loop.Interval)));
+        }
+
+        RecordingSampleCrm crm = new() { Result = new AccountSampleReportResult(AccountSampleReportStatus.Accepted, 300, null) };
+        Harness retuned = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm);
+        await retuned.Loop.RunOnceAsync(CancellationToken.None);
+        retuned.Clock.Now = Instant.FromUtc(2026, 10, 5, 14, 13, 27);
+        Assert.Equal(Instant.FromUtc(2026, 10, 5, 14, 15, 2), retuned.Clock.Now.Plus(Duration.FromTimeSpan(retuned.Loop.Interval)));
+    }
+
+    [Fact]
+    public void A_clock_that_throws_still_leaves_a_wait_the_supervisor_accepts()
+    {
+        AccountSampleLoop loop = new(
+            new FakeSampleClient(),
+            new RecordingSampleCrm(),
+            new FixedTokenStore("t"),
+            new ThrowingClock(),
+            new CollectorState(),
+            new LiveAccountMemory(),
+            new RecordingSampleReporter(),
+            new RecordingSampleLogger(),
+            new FakeStrategyClient(),
+            new StrategyRunMemory());
+
+        Assert.Equal(TimeSpan.FromSeconds(AccountSampleLoop.DefaultIntervalSeconds), loop.Interval);
+    }
+
+    private static StrategySampleRowV1 StrategyRow(string account, string id) => new()
+    {
+        AccountName = account,
+        StrategyId = id,
+        StrategyName = "0 - OGX-PF-2.4",
+        Instrument = "MNQ 12-26",
+        RealizedPnl = -412.5m,
+        UnrealizedPnl = 37.5m,
+    };
+
+    private static StrategySampleRowV1 Counted(StrategySampleRowV1 row, int? realtimeTradeCount)
+    {
+        row.RealtimeTradeCount = realtimeTradeCount;
+        return row;
+    }
+
+    internal static StrategySampleAttempt Strategies(params StrategySampleRowV1[] rows) =>
+        Strategies(StrategyClock, rows);
+
+    private static StrategySampleAttempt Strategies(DateTimeOffset sampledAt, params StrategySampleRowV1[] rows) =>
+        new(
+            StrategySampleOutcome.Sampled,
+            new StrategySampleV1 { SchemaVersion = 1, SampledAt = sampledAt, Strategies = rows.ToList() },
+            null);
+
+    internal sealed class ThrowingClock : ICollectorClock
+    {
+        public Instant GetCurrentInstant() => throw new InvalidOperationException("clock unavailable");
+        public DateTimeOffset GetCurrentDateTimeOffset() => throw new InvalidOperationException("clock unavailable");
+    }
+
+    private sealed class StrategyPostExploded : Exception
+    {
+    }
 
     /* ---------------------------------------------------------------------
      * Fixtures.
@@ -469,17 +954,25 @@ public sealed class AccountSampleLoopTests
         EnabledStrategyCount = connected ? 1 : 0,
     };
 
-    private sealed class Harness
+    internal sealed class Harness
     {
         public Harness(
             FakeSampleClient pipe,
             RecordingSampleCrm crm,
-            string token = "a-device-token")
+            string token = "a-device-token",
+            FakeStrategyClient strategies = null)
         {
             Clock = new SettableClock(Now);
             State = new CollectorState();
             Reporter = new RecordingSampleReporter();
             Logger = new RecordingSampleLogger();
+            // The strategy half answers "unavailable" by default, which is what an
+            // account-only test would see from a busy pipe: no post, one strategy
+            // line, and nothing about the accounts.
+            Strategies = strategies ?? new FakeStrategyClient();
+            pipe.Log = Calls;
+            crm.Calls = Calls;
+            Strategies.Log = Calls;
             Loop = new AccountSampleLoop(
                 pipe,
                 crm,
@@ -488,9 +981,13 @@ public sealed class AccountSampleLoopTests
                 State,
                 new LiveAccountMemory(),
                 Reporter,
-                Logger);
+                Logger,
+                Strategies,
+                new StrategyRunMemory());
         }
 
+        public FakeStrategyClient Strategies { get; }
+        public List<string> Calls { get; } = new();
         public AccountSampleLoop Loop { get; }
         public SettableClock Clock { get; }
         public CollectorState State { get; }
@@ -498,7 +995,25 @@ public sealed class AccountSampleLoopTests
         public RecordingSampleLogger Logger { get; }
     }
 
-    private sealed class FakeSampleClient : INinjaTraderAccountSampleClient
+    internal sealed class FakeStrategyClient : INinjaTraderStrategySampleClient
+    {
+        // An add-on with nothing live: a successful reading of no strategies, which
+        // posts nothing and reports nothing, so a test about accounts sees only
+        // accounts.
+        public Func<StrategySampleAttempt> Next { get; set; } = () => Strategies();
+
+        public int Calls { get; private set; }
+        public List<string> Log { get; set; }
+
+        public Task<StrategySampleAttempt> SampleStrategiesAsync(CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            Log?.Add("strategies-pipe");
+            return Task.FromResult(Next());
+        }
+    }
+
+    internal sealed class FakeSampleClient : INinjaTraderAccountSampleClient
     {
         private Exception failure;
 
@@ -506,6 +1021,7 @@ public sealed class AccountSampleLoopTests
             new(AccountSampleOutcome.Unavailable, null, "addon_unavailable");
 
         public int Calls { get; private set; }
+        public List<string> Log { get; set; }
 
         public static FakeSampleClient Returning(AccountSampleAttempt attempt) => new() { Next = attempt };
 
@@ -514,12 +1030,13 @@ public sealed class AccountSampleLoopTests
         public Task<AccountSampleAttempt> SampleAccountsAsync(CancellationToken cancellationToken = default)
         {
             Calls++;
+            Log?.Add("accounts-pipe");
             if (failure != null) throw failure;
             return Task.FromResult(Next);
         }
     }
 
-    private sealed class RecordingSampleCrm : ICollectorCrmClient
+    internal sealed class RecordingSampleCrm : ICollectorCrmClient
     {
         public List<AccountSampleV1> Posted { get; } = new();
 
@@ -530,8 +1047,26 @@ public sealed class AccountSampleLoopTests
             AccountSampleV1 sample,
             CancellationToken cancellationToken = default)
         {
+            Calls.Add("accounts-post");
             Posted.Add(sample);
             return Task.FromResult(Result);
+        }
+
+        public List<string> Calls { get; set; } = new();
+        public List<StrategySampleV1> StrategyPosted { get; } = new();
+
+        public StrategySampleReportResult StrategyResult { get; set; } = StrategySampleReportResult.Accepted();
+
+        public Exception StrategyFailure { get; set; }
+
+        public Task<StrategySampleReportResult> PostStrategySampleAsync(
+            StrategySampleV1 sample,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add("strategies-post");
+            StrategyPosted.Add(sample);
+            if (StrategyFailure != null) throw StrategyFailure;
+            return Task.FromResult(StrategyResult);
         }
 
         public Task<PairingResult> PairAsync(string enrollmentCode, string agentVersion, string addonVersion, CancellationToken cancellationToken = default) => throw new NotSupportedException();
@@ -540,7 +1075,7 @@ public sealed class AccountSampleLoopTests
         public Task<QuarantineReportOutcome> ReportQuarantineAsync(QuarantineReport report, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
-    private sealed class FixedTokenStore : IDeviceTokenStore
+    internal sealed class FixedTokenStore : IDeviceTokenStore
     {
         private string value;
         public FixedTokenStore(string value) => this.value = value;
@@ -549,7 +1084,7 @@ public sealed class AccountSampleLoopTests
         public Task DeleteTokenAsync(CancellationToken cancellationToken = default) { value = null; return Task.CompletedTask; }
     }
 
-    private sealed class SettableClock : ICollectorClock
+    internal sealed class SettableClock : ICollectorClock
     {
         public SettableClock(Instant now) => Now = now;
         public Instant Now { get; set; }
@@ -557,7 +1092,7 @@ public sealed class AccountSampleLoopTests
         public DateTimeOffset GetCurrentDateTimeOffset() => Now.ToDateTimeOffset();
     }
 
-    private sealed class RecordingSampleReporter : IServiceReporter
+    internal sealed class RecordingSampleReporter : IServiceReporter
     {
         public List<string> Loops { get; } = new();
         public List<string> Codes { get; } = new();
@@ -569,7 +1104,7 @@ public sealed class AccountSampleLoopTests
         }
     }
 
-    private sealed class RecordingSampleLogger : IRedactingLogger
+    internal sealed class RecordingSampleLogger : IRedactingLogger
     {
         public List<(string Level, string EventCode, string Message)> Entries { get; } = new();
 
@@ -579,7 +1114,7 @@ public sealed class AccountSampleLoopTests
         }
     }
 
-    private sealed class ImmediateDelay : ICollectorDelay
+    internal sealed class ImmediateDelay : ICollectorDelay
     {
         public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken) => Task.CompletedTask;
     }

@@ -88,6 +88,17 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
             "Finalized",
         };
 
+        /// <summary>
+        /// Whether one State word is a strategy working the market. The same list
+        /// <see cref="Tally"/> counts with, so the account light and the per
+        /// strategy reading can never disagree about what "live" means. An unknown
+        /// or missing word is not live.
+        /// </summary>
+        public static bool IsLive(string state)
+        {
+            return Contains(LiveStates, state);
+        }
+
         /// <param name="states">
         /// Each strategy's State word, in the order NinjaTrader listed them. Null
         /// means the collection could not be read at all, which is not the same as

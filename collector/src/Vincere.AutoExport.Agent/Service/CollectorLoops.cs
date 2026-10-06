@@ -933,6 +933,24 @@ public sealed class ReportEmailLoop : ICollectorLoop
  * Each is a 404-shaped answer, each gets one INFO line and twenty-four hours of
  * quiet, and neither is a fault. Collapsing them into one timer would let a CRM
  * deploy be hidden behind an add-on's silence for a day.
+ *
+ * THE PER STRATEGY READING RIDES THE SAME TICK, AFTER THE ACCOUNTS AND APART FROM
+ * THEM. Once the account post has been answered, whatever the answer, the loop
+ * asks the add-on for each live strategy's Realized and Unrealized and posts them
+ * to api/ingest/strategies. It runs only after a tick that read the accounts and
+ * found at least one connected, and only for those connected accounts. Everything
+ * about it is separate from the account half: its own pipe command, its own
+ * route, its own two silences, its own log memory, and its own try. An add-on too
+ * old for it, a CRM without the route or without migration 57, a timeout, a 400,
+ * an exception in its own code: each of those costs the strategy reading and
+ * nothing else, because by the time it runs the account rows are already posted.
+ *
+ * THE TICK IS ALIGNED TO THE CLOCK, because the desk compares a client's figure
+ * with the desk's figure for the SAME ten minutes. Those figures are marked to
+ * market and move with the price even when nobody trades, so two machines read at
+ * different minutes are not comparable. Every machine therefore wakes two seconds
+ * after the same UTC boundaries, floor(unix seconds / interval) * interval, and the
+ * CRM files each reading under the boundary it was taken next to. See Interval.
  * ------------------------------------------------------------------------- */
 public sealed class AccountSampleLoop : ICollectorLoop
 {
@@ -952,6 +970,23 @@ public sealed class AccountSampleLoop : ICollectorLoop
     public const int MinimumIntervalSeconds = 300;
     public const int MaximumIntervalSeconds = 3600;
 
+    /* How long after the boundary the loop wakes. A timer that fires a little
+     * early must still land after the boundary, or its reading would be filed
+     * under the previous cycle. The CRM accepts a reading as on cycle up to its
+     * cycle_tolerance_seconds (90 by default) after the boundary. */
+    public const int AlignmentLeadSeconds = 2;
+
+    /* THE STRATEGY ROUTE'S SILENCE IS AN HOUR, NOT A DAY. Its usual cause is a CRM
+     * that has merged the route before Pedro has applied migration 57 by hand, and
+     * a day of silence would keep the feature dark until tomorrow after he does. An
+     * hour is one post per machine per hour against a 404, which costs nothing. */
+    public static readonly TimeSpan StrategyCrmUnsupportedBackoff = TimeSpan.FromHours(1);
+
+    /* The route's own ceiling. A reading larger than this is not sent at all: the
+     * CRM would refuse it, and a machine with more than a thousand live strategies
+     * is something to look at, not to post. */
+    public const int MaximumStrategyRows = 1000;
+
     private readonly INinjaTraderAccountSampleClient sampleClient;
     private readonly ICollectorCrmClient crm;
     private readonly IDeviceTokenStore tokenStore;
@@ -960,6 +995,8 @@ public sealed class AccountSampleLoop : ICollectorLoop
     private readonly LiveAccountMemory liveAccounts;
     private readonly IServiceReporter reporter;
     private readonly IRedactingLogger logger;
+    private readonly INinjaTraderStrategySampleClient strategyClient;
+    private readonly StrategyRunMemory strategyRuns;
     private readonly SemaphoreSlim gate = new(1, 1);
 
     /* Read by the supervisor on every iteration, from a thread that is not this
@@ -970,6 +1007,16 @@ public sealed class AccountSampleLoop : ICollectorLoop
     private bool addonUnsupportedLogged;
     private bool crmUnsupportedLogged;
     private string lastReportedCode;
+
+    /* The strategy half's own state, deliberately never shared with the fields
+     * above. Reusing addonUnsupportedUntil or crmUnsupportedUntil here would let a
+     * strategies 404 silence the account tracker for a day. */
+    private Instant? strategyAddonUnsupportedUntil;
+    private Instant? strategyCrmUnsupportedUntil;
+    private bool strategyAddonUnsupportedLogged;
+    private bool strategyCrmUnsupportedLogged;
+    private string lastReportedStrategyCode;
+    private string lastStrategyDetailLogged;
 
     /* EVERY ARGUMENT IS REQUIRED, AND THAT IS THE POINT.
      *
@@ -990,7 +1037,9 @@ public sealed class AccountSampleLoop : ICollectorLoop
         CollectorState state,
         LiveAccountMemory liveAccounts,
         IServiceReporter reporter,
-        IRedactingLogger logger)
+        IRedactingLogger logger,
+        INinjaTraderStrategySampleClient strategyClient,
+        StrategyRunMemory strategyRuns)
     {
         this.sampleClient = sampleClient ?? throw new ArgumentNullException(nameof(sampleClient));
         this.crm = crm ?? throw new ArgumentNullException(nameof(crm));
@@ -1000,37 +1049,67 @@ public sealed class AccountSampleLoop : ICollectorLoop
         this.liveAccounts = liveAccounts ?? throw new ArgumentNullException(nameof(liveAccounts));
         this.reporter = reporter ?? throw new ArgumentNullException(nameof(reporter));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.strategyClient = strategyClient ?? throw new ArgumentNullException(nameof(strategyClient));
+        this.strategyRuns = strategyRuns ?? throw new ArgumentNullException(nameof(strategyRuns));
     }
 
     public string Name => "account-sample";
 
+    /// <summary>
+    /// The cycle length the CRM asked for, clamped to the table's own bounds.
+    /// What <see cref="Interval"/> aligns to; the delay until the next reading is
+    /// at most this plus a few seconds.
+    /// </summary>
+    public TimeSpan Cadence => TimeSpan.FromSeconds(
+        Math.Clamp(intervalSeconds, MinimumIntervalSeconds, MaximumIntervalSeconds));
+
     /* THIS GETTER CAN STOP THE ENTIRE SERVICE IF IT MISBEHAVES, so it is written
      * to be incapable of it.
      *
-     * Worker.SuperviseAsync reads Interval on every iteration and reads it OUTSIDE
-     * its try block, and the host's default behaviour for an unhandled exception
-     * in a BackgroundService is to stop. So a getter that threw - or returned zero
-     * or a negative - would not cost this loop, it would take down the scheduler,
-     * the uploader and the heartbeat with it. The heartbeat is the only thing that
+     * Worker.SuperviseAsync reads Interval after every run and hands it straight
+     * to its delay, where a negative value throws outside any catch, and the
+     * host's default behaviour for an unhandled exception in a BackgroundService
+     * is to stop. So a getter that returned zero or a negative would not cost
+     * this loop, it would take down the scheduler, the uploader and the heartbeat
+     * with it. The heartbeat is the only thing that
      * says a machine is alive, so the failure mode is losing the whole fleet's
      * traffic light in order to build one.
      *
-     * Hence: a volatile int clamped between two constants. No I/O, no parse, no
-     * options file, no nullable arithmetic - nothing that can fail. The CRM's value
-     * is validated when it arrives, and clamped AGAIN here, because the thing that
-     * must never be wrong is what this returns. It is also what lets the cadence
-     * change without a restart: the supervisor re-reads it every pass.
+     * Hence: a volatile int clamped between two constants, and the clock. No I/O,
+     * no parse, no options file, no allocation. The CRM's value is validated when
+     * it arrives, and clamped AGAIN here, because the thing that must never be
+     * wrong is what this returns. It is also what lets the cadence change without
+     * a restart: the supervisor re-reads it every pass.
      *
-     * The catch cannot currently fire and is kept anyway. The cost of being wrong
-     * about that is the entire service, which is not a bet worth winning. */
+     * IT ANSWERS "HOW LONG UNTIL TWO SECONDS AFTER THE NEXT BOUNDARY", not "how
+     * long is the cycle". The boundaries are floor(unix seconds / interval) *
+     * interval in UTC, the same grid on every machine for any interval, and the
+     * next one is strictly after now: a reading that finishes exactly on a
+     * boundary waits a whole cycle rather than reading the same cycle twice. A
+     * boundary that was missed (a slow pipe, NinjaTrader closed) is not chased;
+     * the loop simply waits for the next one. The supervisor reads this AFTER the
+     * run, so a cadence the CRM changed during the run applies to the very next
+     * wait, and an agent still on the old grid heals within one cycle.
+     *
+     * Clamped to [one second, cycle plus five seconds], so the supervisor can
+     * neither spin nor sleep past a boundary, whatever the clock says. The catch
+     * is the fallback for a clock that throws. The cost of being wrong about that
+     * is the entire service, which is not a bet worth winning. */
     public TimeSpan Interval
     {
         get
         {
             try
             {
-                return TimeSpan.FromSeconds(
-                    Math.Clamp(intervalSeconds, MinimumIntervalSeconds, MaximumIntervalSeconds));
+                long cycleTicks = Math.Clamp(intervalSeconds, MinimumIntervalSeconds, MaximumIntervalSeconds)
+                    * TimeSpan.TicksPerSecond;
+                long nowTicks = clock.GetCurrentInstant().ToUnixTimeTicks();
+                long intoCycle = ((nowTicks % cycleTicks) + cycleTicks) % cycleTicks;
+                long untilNext = cycleTicks - intoCycle + AlignmentLeadSeconds * TimeSpan.TicksPerSecond;
+                return TimeSpan.FromTicks(Math.Clamp(
+                    untilNext,
+                    TimeSpan.TicksPerSecond,
+                    cycleTicks + 5 * TimeSpan.TicksPerSecond));
             }
             catch
             {
@@ -1093,6 +1172,15 @@ public sealed class AccountSampleLoop : ICollectorLoop
              * forty leftovers from connections that no longer exist. */
             IList<AccountSampleRowV1> accounts = liveAccounts.Retain(attempt.Sample.Accounts);
 
+            // The accounts the strategy half may speak about: the ones this tick
+            // is reporting as connected. A strategy on a dark account is not news
+            // the desk can compare.
+            HashSet<string> connectedNames = new(StringComparer.OrdinalIgnoreCase);
+            foreach (AccountSampleRowV1 account in accounts)
+            {
+                if (account.Connected) connectedNames.Add(account.AccountName.Trim());
+            }
+
             /* Nothing to say. A machine whose only accounts are leftovers, or one
              * read before any connection came up. Silent rather than an empty
              * report: no row would be written either way, and an ordinary reason
@@ -1128,7 +1216,7 @@ public sealed class AccountSampleLoop : ICollectorLoop
                     addonUnsupportedUntil = null;
                     addonUnsupportedLogged = false;
                     ReportChange(null, null);
-                    return;
+                    break;
 
                 case AccountSampleReportStatus.Unsupported:
                     crmUnsupportedUntil = now + Duration.FromTimeSpan(UnsupportedBackoff);
@@ -1141,12 +1229,17 @@ public sealed class AccountSampleLoop : ICollectorLoop
                             "The CRM does not accept account samples yet. The tracker will offer one "
                             + "again in 24 hours.");
                     }
-                    return;
+                    break;
 
                 default:
                     ReportChange(result.Code ?? "account_sample_failed", null);
-                    return;
+                    break;
             }
+
+            /* The account half is finished and its rows are posted, or refused, as
+             * they would have been without this line. Only then the strategies. */
+            if (connectedNames.Count > 0)
+                await RunStrategyPartAsync(now, connectedNames, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1162,6 +1255,161 @@ public sealed class AccountSampleLoop : ICollectorLoop
     }
 
     private static bool Waiting(Instant? until, Instant now) => until.HasValue && now < until.Value;
+
+    /* THE STRATEGY HALF. It never throws, short of the service stopping, and it
+     * never writes to the account half's fields: every outcome is reported through
+     * ReportStrategyChange under a strategy_ code. */
+    private async Task RunStrategyPartAsync(
+        Instant now,
+        HashSet<string> connectedNames,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (Waiting(strategyAddonUnsupportedUntil, now) || Waiting(strategyCrmUnsupportedUntil, now)) return;
+
+            StrategySampleAttempt attempt = await strategyClient
+                .SampleStrategiesAsync(cancellationToken).ConfigureAwait(false);
+
+            if (attempt.Outcome == StrategySampleOutcome.Unsupported)
+            {
+                strategyAddonUnsupportedUntil = now + Duration.FromTimeSpan(UnsupportedBackoff);
+                if (!strategyAddonUnsupportedLogged)
+                {
+                    strategyAddonUnsupportedLogged = true;
+                    logger.Write(
+                        "INFO",
+                        "strategy_sample_addon_unsupported",
+                        "The NinjaTrader AddOn on this machine is older than the per strategy reading "
+                        + "and cannot answer it. The account tracker is unaffected. It will ask again "
+                        + "in 24 hours; replacing the AddOn needs NinjaTrader closed.");
+                }
+                return;
+            }
+
+            if (attempt.Outcome != StrategySampleOutcome.Sampled)
+            {
+                ReportStrategyChange(StrategyCode(attempt.Code, "strategy_sample_unavailable"), null);
+                return;
+            }
+
+            /* Observed BEFORE the connected filter, from every live instance the
+             * add-on reported, each with its run's trade count when the add-on read
+             * one: a drop in that count is a restart no absence would show. Presence is about whether NinjaTrader still holds the
+             * instance, and an account that drops its connection for one reading
+             * keeps its strategies; observing the filtered list would mark every
+             * one of them as restarted when the connection came back. */
+            IList<StrategySampleRowV1> read = attempt.Sample.Strategies;
+            IReadOnlyDictionary<StrategyInstanceKey, DateTimeOffset?> restarts = strategyRuns.Observe(
+                attempt.Sample.SampledAt,
+                read.Where(row => row != null)
+                    .Select(row => new StrategyRunReading(
+                        new StrategyInstanceKey(row.AccountName, row.StrategyId),
+                        row.RealtimeTradeCount)));
+
+            List<StrategySampleRowV1> rows = new();
+            foreach (StrategySampleRowV1 row in read)
+            {
+                if (row == null || string.IsNullOrWhiteSpace(row.AccountName)) continue;
+                if (!connectedNames.Contains(row.AccountName.Trim())) continue;
+                restarts.TryGetValue(
+                    new StrategyInstanceKey(row.AccountName, row.StrategyId),
+                    out DateTimeOffset? restartedAt);
+                rows.Add(new StrategySampleRowV1
+                {
+                    AccountName = row.AccountName,
+                    StrategyId = row.StrategyId,
+                    StrategyName = row.StrategyName,
+                    Instrument = row.Instrument,
+                    RealizedPnl = row.RealizedPnl,
+                    UnrealizedPnl = row.UnrealizedPnl,
+                    RestartedAt = restartedAt,
+                    // RealtimeTradeCount stays behind: it is the add-on telling the
+                    // agent about runs, and the restart time above is what it means.
+                });
+            }
+
+            if (rows.Count == 0)
+            {
+                ReportStrategyChange(null, null);
+                return;
+            }
+
+            if (rows.Count > MaximumStrategyRows)
+            {
+                ReportStrategyChange("strategy_sample_too_large", null);
+                return;
+            }
+
+            StrategySampleReportResult result = await crm.PostStrategySampleAsync(
+                new StrategySampleV1
+                {
+                    SchemaVersion = attempt.Sample.SchemaVersion,
+                    // The machine's own clock at the moment it read, untouched: the
+                    // CRM files the reading under the cycle this time falls in.
+                    SampledAt = attempt.Sample.SampledAt,
+                    Strategies = rows,
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            switch (result.Status)
+            {
+                case StrategySampleReportStatus.Accepted:
+                    strategyCrmUnsupportedUntil = null;
+                    strategyCrmUnsupportedLogged = false;
+                    strategyAddonUnsupportedUntil = null;
+                    strategyAddonUnsupportedLogged = false;
+                    ReportStrategyChange(null, null);
+                    return;
+
+                case StrategySampleReportStatus.Unsupported:
+                    strategyCrmUnsupportedUntil = now + Duration.FromTimeSpan(StrategyCrmUnsupportedBackoff);
+                    if (!strategyCrmUnsupportedLogged)
+                    {
+                        strategyCrmUnsupportedLogged = true;
+                        logger.Write(
+                            "INFO",
+                            "strategy_sample_unsupported",
+                            "The CRM does not accept per strategy readings yet (route or migration 57 "
+                            + "missing). The account tracker is unaffected. It will offer one again in an hour.");
+                    }
+                    return;
+
+                default:
+                    ReportStrategyChange(StrategyCode(result.Code, "strategy_sample_failed"), null);
+                    // The CRM's own word, once per change, so a 400 says which
+                    // rule it broke without the screen having to be opened.
+                    if (!string.IsNullOrWhiteSpace(result.Detail)
+                        && !string.Equals(lastStrategyDetailLogged, result.Detail, StringComparison.Ordinal))
+                    {
+                        lastStrategyDetailLogged = result.Detail;
+                        logger.Write("INFO", "strategy_sample_refused", "The CRM answered: " + result.Detail);
+                    }
+                    return;
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException
+            || !cancellationToken.IsCancellationRequested)
+        {
+            ReportStrategyChange("strategy_sample_failed", exception);
+        }
+    }
+
+    // Every strategy code carries the strategy_ prefix, so a line in this machine's
+    // log can never be read as the account reading having failed.
+    private static string StrategyCode(string code, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return fallback;
+        return code.StartsWith("strategy_", StringComparison.Ordinal) ? code : "strategy_" + code;
+    }
+
+    private void ReportStrategyChange(string code, Exception exception)
+    {
+        if (string.Equals(lastReportedStrategyCode, code, StringComparison.Ordinal)) return;
+        lastReportedStrategyCode = code;
+        if (code == null) lastStrategyDetailLogged = null;
+        else reporter.LoopFailed(Name, code, exception);
+    }
 
     /* THE ONE NUMBER THE CRM GETS TO CHANGE ON A TRADING MACHINE, so it is read
      * like something that arrived over a network. Out of range or absent and the

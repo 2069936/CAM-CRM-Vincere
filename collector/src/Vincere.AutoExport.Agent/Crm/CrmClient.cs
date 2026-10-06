@@ -629,6 +629,67 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         }
     }
 
+    /* THE PER STRATEGY READING, POSTED ONCE AND FORGOTTEN, under the account
+     * sample's rules: Newtonsoft, uncompressed, one attempt, ten seconds, no retry.
+     *
+     * The status is the whole answer. 2xx is Accepted. 404 and 405 are Unsupported:
+     * a CRM that has not merged the route answers 404 not_found, and one that has
+     * merged it before migration 57 was applied answers 404
+     * strategy_sample_not_deployed; both mean "not yet" and neither is a fault.
+     * Anything else is Failed under strategy_sample_http_{status}, so the log says
+     * which status without this machine guessing what it means.
+     *
+     * THE REPLY NEVER CHANGES THE CADENCE. The cycle length is learned from the
+     * account sample's reply only, so there is one clock and not two. The body is
+     * read, under the same size cap as every other reply, for the CRM's error word
+     * and for nothing else. */
+    public async Task<StrategySampleReportResult> PostStrategySampleAsync(
+        StrategySampleV1 sample,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sample);
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(sample, Formatting.None));
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(
+                HttpMethod.Post,
+                "api/ingest/strategies",
+                requestBytes,
+                authenticated: true,
+                contentEncoding: null,
+                cancellationToken,
+                timeout: AccountSampleRequestTimeout).ConfigureAwait(false);
+            byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken).ConfigureAwait(false);
+
+            if (response.IsSuccessStatusCode)
+                return StrategySampleReportResult.Accepted();
+
+            string detail = ReadErrorCode(responseBytes);
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+                return StrategySampleReportResult.Unsupported("strategy_sample_unsupported", detail);
+
+            return StrategySampleReportResult.Failed(
+                "strategy_sample_http_" + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture),
+                detail);
+        }
+        catch (HttpRequestException)
+        {
+            return StrategySampleReportResult.Failed("strategy_sample_unreachable");
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return StrategySampleReportResult.Failed("strategy_sample_timeout");
+        }
+        catch (CrmClientException exception)
+        {
+            return StrategySampleReportResult.Failed(exception.Code);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
     public void Dispose()
     {
         httpClient.Dispose();
@@ -699,9 +760,9 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     }
 
     /// <param name="timeout">
-    /// Overrides the client's own request timeout for this call. Only the account
-    /// sample passes it: every other route here is worth waiting the full thirty
-    /// seconds for, and a tracker reading is not.
+    /// Overrides the client's own request timeout for this call. Only the two
+    /// tracker readings pass it: every other route here is worth waiting the full
+    /// thirty seconds for, and a tracker reading is not.
     /// </param>
     private async Task<HttpResponseMessage> SendAsync(
         HttpMethod method,
