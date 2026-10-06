@@ -1066,11 +1066,12 @@ public sealed class AccountSampleLoop : ICollectorLoop
     /* THIS GETTER CAN STOP THE ENTIRE SERVICE IF IT MISBEHAVES, so it is written
      * to be incapable of it.
      *
-     * Worker.SuperviseAsync reads Interval on every iteration and reads it OUTSIDE
-     * its try block, and the host's default behaviour for an unhandled exception
-     * in a BackgroundService is to stop. So a getter that threw - or returned zero
-     * or a negative - would not cost this loop, it would take down the scheduler,
-     * the uploader and the heartbeat with it. The heartbeat is the only thing that
+     * Worker.SuperviseAsync reads Interval after every run and hands it straight
+     * to its delay, where a negative value throws outside any catch, and the
+     * host's default behaviour for an unhandled exception in a BackgroundService
+     * is to stop. So a getter that returned zero or a negative would not cost
+     * this loop, it would take down the scheduler, the uploader and the heartbeat
+     * with it. The heartbeat is the only thing that
      * says a machine is alive, so the failure mode is losing the whole fleet's
      * traffic light in order to build one.
      *

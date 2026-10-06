@@ -348,11 +348,11 @@ public sealed class AccountSampleLoopTests
         Assert.Equal(TimeSpan.FromMinutes(10), harness.Loop.Cadence);
     }
 
-    /* WHY THAT MATTERS MORE THAN IT LOOKS. Worker.SuperviseAsync reads Interval
-     * OUTSIDE its try block, and the host's default behaviour for an unhandled
-     * exception in a BackgroundService is to stop. A getter that threw, or returned
-     * zero or a negative, would take down the scheduler, the uploader and the
-     * heartbeat with it - and the heartbeat is the only thing that says a machine is
+    /* WHY THAT MATTERS MORE THAN IT LOOKS. Worker.SuperviseAsync hands Interval
+     * straight to its delay, and a negative delay throws outside any catch; the
+     * host's default behaviour for an unhandled exception in a BackgroundService is
+     * to stop. A getter that returned zero or a negative would take down the
+     * scheduler, the uploader and the heartbeat with it - and the heartbeat is the only thing that says a machine is
      * alive. Losing the fleet's traffic light in order to build one. Worker's own
      * constructor refuses a loop whose Interval is not positive, so this asserts
      * what that constructor demands, after every value the CRM might send. */
@@ -686,6 +686,37 @@ public sealed class AccountSampleLoopTests
         Assert.Null(Assert.Single(crm.StrategyPosted[1].Strategies).RestartedAt);
         // And the failure was reported under a strategy code.
         Assert.Equal(new[] { "strategy_capture_busy" }, harness.Reporter.Codes);
+    }
+
+    /* A CONNECTION THAT DROPS FOR ONE READING IS NOT A RESTART. NinjaTrader keeps
+     * the instance and its figure across a dropped connection, so presence is
+     * judged from everything the add-on reported, before the connected filter.
+     * Judged after it, every strategy on that account would come back flagged as
+     * restarted and drop out of the comparison for the rest of the day. */
+    [Fact]
+    public async Task A_strategy_on_an_account_that_dropped_its_connection_for_a_reading_has_not_restarted()
+    {
+        RecordingSampleCrm crm = new();
+        DateTimeOffset clock = StrategyClock;
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(clock, StrategyRow("APEX-1111", "1"), StrategyRow("APEX-2222", "2")),
+        };
+        FakeSampleClient pipe = FakeSampleClient.Returning(Sampled(
+            Row("APEX-1111", connected: true),
+            Row("APEX-2222", connected: true)));
+        Harness harness = new(pipe, crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = Sampled(Row("APEX-1111", connected: true), Row("APEX-2222", connected: false));
+        clock = StrategyClock.AddMinutes(10);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+        pipe.Next = Sampled(Row("APEX-1111", connected: true), Row("APEX-2222", connected: true));
+        clock = StrategyClock.AddMinutes(20);
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        StrategySampleRowV1 back = crm.StrategyPosted[2].Strategies.Single(row => row.StrategyId == "2");
+        Assert.Null(back.RestartedAt);
     }
 
     [Fact]

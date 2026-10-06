@@ -102,9 +102,9 @@ public sealed class AgentCompositionTests : IDisposable
     /* EVERY LOOP THE CONTAINER HOLDS IS ONE THE SUPERVISOR WILL ACTUALLY RUN.
      *
      * Worker's constructor refuses a loop whose Interval is not positive, and it
-     * reads Interval OUTSIDE its try block on every iteration, so a loop with a
-     * bad interval does not fail by itself - it stops the host and takes the
-     * heartbeat down with it. Resolving the real Worker from the real container is
+     * hands Interval to its delay after every run, where a negative value throws
+     * outside any catch, so a loop with a bad interval does not fail by itself -
+     * it stops the host and takes the heartbeat down with it. Resolving the real Worker from the real container is
      * what proves the real intervals pass that gate. */
     [Fact]
     public void Resolving_the_real_container_is_what_proves_the_intervals_the_supervisor_demands()
