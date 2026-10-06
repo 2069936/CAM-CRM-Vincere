@@ -127,7 +127,12 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
       propFirmPlan: plan,
       // Only filled from the rule when the desk has not typed its own number.
       ...(account.maxDrawdownLimit ? {} : { maxDrawdownLimit: next.maxDrawdownLimit ?? '' }),
-      ...(account.targetProfit ? {} : { targetProfit: next.targetProfit ?? '' }),
+      // `targetBalance`, not the firm's published profit amount. target_profit is
+      // an absolute balance (accountTargets.js says why), and the Target $ input
+      // two columns over asks the CAM for one. Writing the amount here put 3,000
+      // in a column every reader compares against a balance, so picking a plan on
+      // a 50k evaluation made it read as already passed.
+      ...(account.targetProfit ? {} : { targetProfit: next.targetBalance ?? '' }),
     });
   };
 

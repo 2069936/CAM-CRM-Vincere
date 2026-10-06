@@ -25,10 +25,11 @@
 // already has it on would see change shape.
 //
 // `targetProfit` IS AN ABSOLUTE BALANCE here, the same unit evaluationReport.js
-// is arranged around and the same unit App.jsx has always compared against. Do
-// not reach for `resolveAccountLimits().targetProfit`: on the 94 book accounts
-// with nothing stored it returns a profit AMOUNT under 10,000 in a field of the
-// same name, and every one of those accounts' balances already exceeds it.
+// is arranged around and the same unit App.jsx has always compared against.
+// accountTargets.js holds the argument for that unit. If a derived target is
+// ever wanted here, `resolveAccountLimits().targetBalance` is the field in this
+// unit; `targetProfitAmount` beside it is the profit still to be made, which is
+// what a weekly PnL is divided by, never what a balance is compared against.
 
 import { firstObservedBalance } from './propFirmRules.js';
 

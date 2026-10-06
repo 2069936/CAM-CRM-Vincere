@@ -8,9 +8,11 @@
 // The one asserted hardest is the unit confusion, because it is the only defect
 // here that would be silent, plausible and wrong on a third of the book: the
 // stored `targetProfit` is an absolute target BALANCE, while
-// `resolveAccountLimits().targetProfit` falls back to a profit AMOUNT. A
-// comparison against the wrong one declares a third of the evaluation book
-// finished and looks exactly like the comparison two other modules already make.
+// `resolveAccountLimits().targetProfit` used to fall back to a profit AMOUNT. A
+// comparison against the wrong one declared a third of the evaluation book
+// finished and looked exactly like the comparison two other modules already
+// make. That field is gone (targetBalance and targetProfitAmount replaced it),
+// and the test below keeps it gone.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -72,23 +74,27 @@ describe('the target is a BALANCE, never a profit amount', () => {
       .toEqual({ target: 53000, source: 'inferred' });
   });
 
-  it('refuses the resolver, whose fallback is a profit amount in the same field', () => {
-    /* THE TRAP, pinned so nobody "simplifies" this file into it.
+  it('the resolver no longer offers a profit amount under the target\'s name', () => {
+    /* THE TRAP, pinned so it cannot come back.
      *
      * resolveAccountLimits is the function that looks like the right
-     * abstraction. With nothing stored it returns `rule.profitTarget` — 3,000 on
-     * a Legends 50k — in a field named `targetProfit`, which is the same name the
-     * stored absolute balance uses. On the book all 198 stored values on
-     * evaluation accounts are >= 40,000 and all 94 resolver-supplied ones are
-     * under 10,000, and on every one of those 94 the current balance already
-     * exceeds the number. */
+     * abstraction. It used to return, with nothing stored, `rule.profitTarget`
+     * (3,000 on a Legends 50k) in a field named `targetProfit`, the same name the
+     * stored absolute balance uses, and a balance of 51,000 read as finished
+     * against it. The field is gone: the resolver now answers with
+     * `targetBalance`, in the stored column's unit, and `targetProfitAmount`, the
+     * profit still to be made. */
     const account = { accountName: 'ROME7045', accountType: ACCOUNT_TYPES.EVALUATION_STANDARD, connection: 'Legends', startBalance: 50000 };
     const limits = resolveAccountLimits(account, { dailyImports: [] });
     expect(limits.targetSource).toBe('firm-rule');
-    expect(limits.targetProfit).toBe(3000);
-    // A balance of 51,000 is 1,000 into a 4,100 challenge. Against the resolver's
-    // number it would read as finished.
-    expect(51000 >= limits.targetProfit).toBe(true);
+    expect(limits).not.toHaveProperty('targetProfit');
+    // A balance of 51,000 is 1,000 into the challenge, whichever table it is
+    // measured against, and the resolver's number no longer calls it finished.
+    expect(limits.targetBalance).toBeGreaterThan(51000);
+    expect(51000 >= limits.targetBalance).toBe(false);
+    expect(limits.targetProfitAmount).toBe(limits.targetBalance - 50000);
+    // The section itself still reads the standard table, not the resolver's
+    // tightest rule guess, and calls the account on its way.
     const progress = evaluationProgressFor(row({ meta: account }), []);
     expect(progress.target).toBe(54100);
     expect(progress.state).toBe(EVALUATION_PROGRESS.BELOW);

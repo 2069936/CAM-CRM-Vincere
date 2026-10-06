@@ -33,16 +33,17 @@
 // around. `trading_accounts.target_profit` stores an absolute target BALANCE:
 // all 198 stored values on evaluation accounts are >= 40,000 (min 52,999, max
 // 107,300), which is what App.jsx's progress table and bulletBotStats.js already
-// compare a balance against. `resolveAccountLimits().targetProfit` returns that
-// same stored value when there is one and otherwise falls back to
-// `rule.profitTarget` or `genericProfitTarget(size)`, which are profit AMOUNTS:
-// all 94 accounts that take that fallback get a number under 10,000, and on
-// every one of those 94 the current balance already exceeds it. Reading that
-// field here would have declared 94 of 289 evaluations (32.5%) finished. The
-// function that looks like the right abstraction is the one that breaks it, so
-// this file does not call it, and the firm-rule path is refused even as a
-// `size + profitTarget` sum: it would have covered ONE account out of 289 at the
-// price of writing the unit confusion into a second place.
+// compare a balance against. accountTargets.js holds the argument for that unit.
+// When this file was written, `resolveAccountLimits()` exposed a field also
+// called `targetProfit` that fell back to `rule.profitTarget` or
+// `genericProfitTarget(size)`, profit AMOUNTS under 10,000 on all 94 accounts
+// with nothing stored, which would have declared 94 of 289 evaluations (32.5%)
+// finished. That field is gone: it now returns `targetBalance`, in this file's
+// unit, and `targetProfitAmount`, the profit still to be made. This file still
+// does not call it, for a reason that is no longer about units: its firm-rule
+// path covered ONE account out of 289, and a target from `tightestRuleFor` is a
+// guess about a plan nobody recorded, which a client should not be shown as the
+// number their account has to reach.
 //
 // WHAT IS NOT HERE, deliberately. No drawdown limit derived from
 // PROP_FIRM_RULES. It resolves for 93.1% of these accounts, and on all of them

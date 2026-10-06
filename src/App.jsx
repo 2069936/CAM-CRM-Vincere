@@ -132,7 +132,8 @@ import { downloadReportPdfBytes, saveBlobAs } from "./domain/reportPdfDownload";
 import { buildClientExportPackage } from "./domain/clientExportPackage";
 import { parseNinjaTraderCsvText, summarizeUploadTypes } from "./domain/csvImport";
 import { buildBatchImportPlan } from "./domain/batchImport";
-import { suggestAccountDefaults } from "./domain/accountTargets";
+import { classificationDefaults, inferStartingBalance } from "./domain/accountTargets";
+import { profitNeededFor } from "./domain/propFirmRules";
 import {
   parseNinjaTraderLogFile,
   summarizeLogByAccount,
@@ -1807,6 +1808,51 @@ export function buildCamPerformance(clients = [], camProfiles = []) {
   }
 
   return Object.values(camMap).sort((a, b) => b.weeklyPnl - a.weeklyPnl);
+}
+
+/**
+ * The manager's evaluations table: every live evaluation account on the book,
+ * with the week's "Target %" beside it.
+ *
+ * Out of ManagerOverview's render so the Target % column is testable, because
+ * it is one of the two readers that divide a weekly PnL by the target and so
+ * need the remaining profit rather than the stored balance (weeklyTargetPct).
+ * Blank, not 0%, on a week with no PnL, as it always was.
+ */
+export function buildManagerEvaluationRows(clients = [], activeCamProfiles = [], asOfDate = "") {
+  const rows = [];
+  for (const client of clients) {
+    const cam = activeCamProfiles.find((p) =>
+      (p.clientIds || []).includes(client.id),
+    );
+    const reg = client.accountRegistry || {};
+    const latestImport = importAsOf(client, asOfDate);
+    for (const [accountName, meta] of Object.entries(reg)) {
+      if (!meta.accountType?.startsWith("Evaluation")) continue;
+      if (meta.status === "Failed" || meta.status === "Inactive") continue;
+      const snap = (latestImport?.snapshots || []).find(
+        (s) => s.accountName === accountName,
+      );
+      const dailyPnl = Number(snap?.grossRealizedPnl || 0);
+      const weeklyPnl = Number(snap?.weeklyPnl || 0);
+      // Same column, same unit rule — see weeklyTargetPct.
+      const targetPct = weeklyPnl ? weeklyTargetPct(meta, snap) : null;
+      rows.push({
+        accountName,
+        alias: meta.alias || accountName,
+        clientName: client.name,
+        clientId: client.id,
+        camName: cam?.name || "-",
+        accountType: meta.accountType,
+        bulletBotPassType: meta.bulletBotPassType || "",
+        dailyPnl,
+        weeklyPnl,
+        targetPct,
+        status: meta.status || "Active",
+      });
+    }
+  }
+  return rows.sort((a, b) => b.weeklyPnl - a.weeklyPnl);
 }
 
 export function buildAllFundedAccounts(clients = [], camProfiles = []) {
@@ -4623,44 +4669,10 @@ function ManagerOverview({
     () => buildAllFundedAccounts(clients, activeCamProfiles),
     [clients, activeCamProfiles],
   );
-  const allEvals = useMemo(() => {
-    const rows = [];
-    for (const client of clients) {
-      const cam = activeCamProfiles.find((p) =>
-        (p.clientIds || []).includes(client.id),
-      );
-      const reg = client.accountRegistry || {};
-      const latestImport = importAsOf(client, asOfDate);
-      for (const [accountName, meta] of Object.entries(reg)) {
-        if (!meta.accountType?.startsWith("Evaluation")) continue;
-        if (meta.status === "Failed" || meta.status === "Inactive") continue;
-        const snap = (latestImport?.snapshots || []).find(
-          (s) => s.accountName === accountName,
-        );
-        const dailyPnl = Number(snap?.grossRealizedPnl || 0);
-        const weeklyPnl = Number(snap?.weeklyPnl || 0);
-        const target = Number(meta.targetProfit || 0);
-        const targetPct =
-          target > 0 && weeklyPnl
-            ? Math.round((weeklyPnl / target) * 100)
-            : null;
-        rows.push({
-          accountName,
-          alias: meta.alias || accountName,
-          clientName: client.name,
-          clientId: client.id,
-          camName: cam?.name || "-",
-          accountType: meta.accountType,
-          bulletBotPassType: meta.bulletBotPassType || "",
-          dailyPnl,
-          weeklyPnl,
-          targetPct,
-          status: meta.status || "Active",
-        });
-      }
-    }
-    return rows.sort((a, b) => b.weeklyPnl - a.weeklyPnl);
-  }, [clients, activeCamProfiles, asOfDate]);
+  const allEvals = useMemo(
+    () => buildManagerEvaluationRows(clients, activeCamProfiles, asOfDate),
+    [clients, activeCamProfiles, asOfDate],
+  );
 
   const unassignedClients = useMemo(() => {
     const assignedClientIds = new Set(
@@ -10379,6 +10391,46 @@ export async function renderReportSheetHtml({ client, dailyImport, camProfile })
 
 
 
+/**
+ * The profit an account still has to make, from whatever start the book can give.
+ *
+ * One definition of the start fallback, because the two "Target %" columns both
+ * need it and a second copy would drift. `targetProfit` is an absolute BALANCE
+ * (accountTargets.js carries the argument), so the remaining profit is the
+ * target minus the account's own start — stored if the desk set one, inferred
+ * from the standard sizes otherwise, and null when neither is available.
+ */
+export function profitNeededForAccount(meta, snapshot) {
+  return profitNeededFor(
+    meta?.targetProfit,
+    Number(meta?.startBalance || 0) || inferStartingBalance(snapshot?.accountBalance),
+  );
+}
+
+/**
+ * A week's PnL as a percentage of the profit the account still has to make.
+ *
+ * The "Target %" column, in the two places that draw it — ManagerOverview and
+ * buildCamFundedRows. Shared because both used to divide by `meta.targetProfit`
+ * directly, and that is a BALANCE, so every figure came out at a fraction of
+ * the real one: on the book's latest closes, a median of 1/13 across the 56
+ * funded rows with a target, a start and a week that moved, and 10 of 64 such
+ * rows rounded to 0%. Null rather
+ * than a guess when there is no start to subtract, so the column prints nothing
+ * instead of a balance-scale number.
+ *
+ * Deliberately unclamped: the two call sites differ on whether a percentage over
+ * 100 should be shown as an overshoot or capped, and that is a display decision,
+ * not a unit one.
+ */
+export function weeklyTargetPct(meta, snapshot) {
+  const weeklyPnl = snapshot ? Number(snapshot.weeklyPnl || 0) : null;
+  if (weeklyPnl === null) return null;
+  const needed = profitNeededForAccount(meta, snapshot);
+  if (needed === null) return null;
+  return Math.round((weeklyPnl / needed) * 100);
+}
+
 /* THE FUNDED BOOK AS IT IS NOW, PRICED OFF WHATEVER DAY IT WAS LAST PRICED.
  *
  * Pulled out of the CAM Overview's render so it can be tested, because nothing
@@ -10432,12 +10484,10 @@ export function buildCamFundedRows(clients = []) {
           buffer !== null && ddLimit > 0
             ? Math.round((buffer / ddLimit) * 100)
             : null;
-        const target = Number(a.targetProfit || 0);
+        const needed = profitNeededForAccount(a, snap);
         const weeklyPnl = snap ? Number(snap.weeklyPnl || 0) : null;
-        const pct =
-          target > 0 && weeklyPnl !== null
-            ? Math.min(100, Math.round((weeklyPnl / target) * 100))
-            : null;
+        const rawPct = weeklyTargetPct(a, snap);
+        const pct = rawPct === null ? null : Math.min(100, rawPct);
         return {
           client,
           account: a,
@@ -10452,7 +10502,12 @@ export function buildCamFundedRows(clients = []) {
           bufferPct,
           pct,
           weeklyPnl,
-          target,
+          // The balance that passes, same unit as the stored column.
+          target: Number(a.targetProfit || 0),
+          // And the profit still to be made, which is what `pct` is measured
+          // against. Both are exposed so a consumer cannot pick the wrong one
+          // without naming it.
+          targetProfitNeeded: needed,
         };
       });
   });
@@ -15292,13 +15347,7 @@ export default function App() {
         (s) => s.accountName?.toLowerCase() === accountName.toLowerCase(),
       );
       const balance = Number(snapshot?.accountBalance || 0);
-      const defaults = suggestAccountDefaults(patch.accountType, balance);
-      const isEmpty = (value) => value == null || value === "";
-      const augment = {};
-      if (defaults.startingBalance != null && isEmpty(meta.startBalance))
-        augment.startBalance = defaults.startingBalance;
-      if (defaults.target != null && isEmpty(meta.targetProfit))
-        augment.targetProfit = defaults.target;
+      const augment = classificationDefaults(patch.accountType, meta, balance);
       if (Object.keys(augment).length) finalPatch = { ...patch, ...augment };
     }
     // A classification without the day it was made cannot be placed in time,

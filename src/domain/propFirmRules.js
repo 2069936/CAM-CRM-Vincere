@@ -277,6 +277,27 @@ export function genericProfitTarget(size) {
   return target ? target - size : null;
 }
 
+/**
+ * The profit still to be made to reach a target balance.
+ *
+ * For the readers that want "how much is left" rather than "which balance
+ * passes". Null rather than a guess when there is no start to measure from: a
+ * target with nothing subtracted from it IS the target, and a weekly PnL over
+ * that is the balance-scale percentage this file's unit rules exist to prevent.
+ *
+ * Here rather than in accountTargets.js — which is where the unit argument is
+ * written down — because accountTargets.js imports reconcile.js, and this module
+ * is loaded directly by the Node ESM server entrypoints with no bundler to
+ * resolve for it.
+ */
+export function profitNeededFor(targetBalance, startBalance) {
+  const target = Number(targetBalance);
+  const start = Number(startBalance);
+  if (!Number.isFinite(target) || target <= 0) return null;
+  if (!Number.isFinite(start) || start <= 0) return null;
+  return target > start ? target - start : null;
+}
+
 export function ruleFor(firm, size, plan = null, rules = PROP_FIRM_RULES) {
   if (!firm || !size) return null;
   if (plan) return rules[`${firm}|${plan}|${size}`] || null;
@@ -290,6 +311,31 @@ export function ruleFor(firm, size, plan = null, rules = PROP_FIRM_RULES) {
  * labelled as derived so nothing downstream can present a lookup as though a
  * human confirmed it, the same way a derived trailing figure is kept distinct
  * from a reported one.
+ *
+ * TARGETS COME BACK AS `targetBalance`, AN ABSOLUTE BALANCE, and `targetProfitAmount`,
+ * the profit still to be made. There is deliberately no `targetProfit` on this
+ * result any more. It used to exist, it held `rule.profitTarget` — an AMOUNT,
+ * 3,000 on a 50k — and it shared its name with `account.targetProfit`, which is
+ * a BALANCE (accountTargets.js carries the full argument for that unit).
+ * AccountManager wrote this field straight onto the account on a plan pick, so
+ * one click put an amount into a balance column, and `balance >= target` then
+ * read the evaluation as already passed. The name is gone rather than fixed in
+ * place so that nothing can quietly go on reading the old field: a stale
+ * `limits.targetProfit` is now `undefined`, which fails loudly, instead of a
+ * number in the wrong unit, which does not.
+ *
+ * NO MIGRATION IS REQUIRED and none is shipped. Measured over the 685 accounts
+ * the CRM loads from the book's 764 trading_accounts rows: 312 carry a stored
+ * target, 302 of the 311 with a start to compare against sit at or above it, and
+ * ZERO equal any amount this function could have produced for
+ * their firm, plan and size — so the amount-unit write path never landed a row.
+ * (The nine stored values below their own start match no published amount either;
+ * they are targets typed below the start, a separate and still-open defect, and a
+ * migration that scaled them up would be inventing numbers.) Had a conversion
+ * been needed, the predicate would have been "equals the published amount for
+ * this account's size and is below its start", which is self-disarming: a
+ * converted row becomes `size + amount`, which is above the start, so a second
+ * run selects nothing.
  */
 export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_FIRM_RULES } = {}) {
   const firm = normalizePropFirm(account?.connection);
@@ -304,6 +350,32 @@ export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_
   const plan = String(account?.propFirmPlan || '').trim() || null;
   const rule = ruleFor(firm, size, plan, rules);
   const planKnown = Boolean(plan && rules[`${firm}|${plan}|${size}`]);
+  const storedTargetSet = Number.isFinite(storedTarget) && storedTarget > 0;
+
+  /* A derived target is converted up to a balance here, against the account's
+   * NOMINAL size rather than its observed start. A firm publishes one target per
+   * plan and size, so two accounts on the same plan have to resolve to the same
+   * number even though their first close on record differs by a few hundred
+   * dollars. GENERIC_TARGET_BALANCE is already stated as a balance, so the
+   * generic path reads it directly instead of going through
+   * genericProfitTarget() and back. */
+  const ruleAmount = rule?.profitTarget ?? null;
+  const genericBalance = size != null ? (GENERIC_TARGET_BALANCE[size] ?? null) : null;
+  const derivedBalance = ruleAmount != null && size != null
+    ? size + ruleAmount
+    : genericBalance;
+  const derivedSource = ruleAmount != null && size != null
+    ? 'firm-rule'
+    : (genericBalance != null ? 'generic' : null);
+
+  const targetBalance = storedTargetSet ? storedTarget : derivedBalance;
+  /* The base for "how much is left": the account's own start where one is known
+   * or observable, the nominal size otherwise. Null when neither exists, because
+   * a target with nothing to subtract is the target, and that is exactly the
+   * balance-scale percentage this change exists to stop. */
+  const amountBase = (Number.isFinite(storedStart) && storedStart > 0)
+    ? storedStart
+    : (startBalance ?? size);
 
   return {
     firm,
@@ -315,14 +387,11 @@ export function resolveAccountLimits(account, { dailyImports = [], rules = PROP_
     drawdownSource: Number.isFinite(storedDrawdown) && storedDrawdown > 0
       ? 'stored'
       : (rule?.trailingDrawdown != null ? 'firm-rule' : null),
-    targetProfit: Number.isFinite(storedTarget) && storedTarget > 0
-      ? storedTarget
-      : (rule?.profitTarget ?? genericProfitTarget(size)),
-    targetSource: Number.isFinite(storedTarget) && storedTarget > 0
-      ? 'stored'
-      : (rule?.profitTarget != null
-        ? 'firm-rule'
-        : (genericProfitTarget(size) != null ? 'generic' : null)),
+    /** The balance that passes this account. Same unit as account.targetProfit. */
+    targetBalance,
+    /** The profit still to be made to reach it, or null with no start to measure from. */
+    targetProfitAmount: profitNeededFor(targetBalance, amountBase),
+    targetSource: storedTargetSet ? 'stored' : derivedSource,
     plan,
     // A rule found without a named plan is the tightest that firm sells at that
     // size, not that account's own. Saying so keeps a fallback from reading as a

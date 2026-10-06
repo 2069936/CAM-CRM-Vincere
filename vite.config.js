@@ -68,6 +68,7 @@ export const localSnapshotTests = [
   "src/domain/sidebarClientList.test.js",
   "src/domain/supabaseLoadCost.book.test.js",
   "src/domain/synthesizedReference.book.test.js",
+  "src/domain/targetProfitUnit.book.test.js",
   "src/insightFeed.book.test.js",
   "src/printLayout.book.test.js",
 ]

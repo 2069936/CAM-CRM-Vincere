@@ -138,14 +138,33 @@ describe('summarizeRuleCoverage', () => {
 });
 
 describe('generic profit targets', () => {
+  /* These used to assert `limits.targetProfit` was 4,000 on a 50k — the profit
+   * AMOUNT. That is the unit defect, pinned by a test: AccountManager wrote the
+   * field straight onto the account, where it is a BALANCE every other reader
+   * compares against a live balance, so 4,000 read as "already passed".
+   * accountTargets.js carries the argument for the balance. The amount has not
+   * gone away, it has a name of its own now. */
   it('falls back to the generic target when no firm rule exists', () => {
     const limits = resolveAccountLimits(
       { accountName: 'A1', connection: 'Tradeify', startBalance: 50000 },
       { rules: {} },
     );
 
-    expect(limits.targetProfit).toBe(4000);
+    expect(limits.targetBalance).toBe(54000);
+    expect(limits.targetProfitAmount).toBe(4000);
     expect(limits.targetSource).toBe('generic');
+  });
+
+  it('no longer exposes a field named targetProfit', () => {
+    // The old name is deliberately absent rather than corrected in place: a
+    // caller still reading it gets `undefined`, which breaks, instead of a
+    // number in the wrong unit, which does not.
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Tradeify', startBalance: 50000 },
+      { rules: {} },
+    );
+
+    expect(limits).not.toHaveProperty('targetProfit');
   });
 
   it('lets a firm rule beat the generic one', () => {
@@ -154,18 +173,40 @@ describe('generic profit targets', () => {
       { rules: { 'Legends|Elite|50000': { profitTarget: 3000 } } },
     );
 
-    expect(limits.targetProfit).toBe(3000);
+    expect(limits.targetBalance).toBe(53000);
+    expect(limits.targetProfitAmount).toBe(3000);
     expect(limits.targetSource).toBe('firm-rule');
   });
 
+  it('states a firm rule against the nominal size, not the account’s own start', () => {
+    // A firm publishes one target per plan and size. Two accounts on the same
+    // plan whose first close differs by a few hundred dollars must still resolve
+    // to the same balance, or the same plan appears to have two targets.
+    const rules = { 'Legends|Elite|50000': { profitTarget: 3000 } };
+    const onTheNose = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Legends', propFirmPlan: 'Elite', startBalance: 50000 },
+      { rules },
+    );
+    const drifted = resolveAccountLimits(
+      { accountName: 'A2', connection: 'Legends', propFirmPlan: 'Elite', startBalance: 50644 },
+      { rules },
+    );
+
+    expect(drifted.targetBalance).toBe(onTheNose.targetBalance);
+    // The remaining profit is measured from each account's own start, though.
+    expect(onTheNose.targetProfitAmount).toBe(3000);
+    expect(drifted.targetProfitAmount).toBe(53000 - 50644);
+  });
+
   it('covers every size the desk has confirmed', () => {
-    const targets = [[50000, 4000], [100000, 7000], [150000, 9000]];
-    for (const [size, expected] of targets) {
+    const targets = [[50000, 54000, 4000], [100000, 107000, 7000], [150000, 159000, 9000]];
+    for (const [size, balance, amount] of targets) {
       const limits = resolveAccountLimits(
         { accountName: 'A1', connection: 'Tradeify', startBalance: size },
         { rules: {} },
       );
-      expect(limits.targetProfit).toBe(expected);
+      expect(limits.targetBalance).toBe(balance);
+      expect(limits.targetProfitAmount).toBe(amount);
       expect(limits.targetSource).toBe('generic');
     }
   });
@@ -176,8 +217,33 @@ describe('generic profit targets', () => {
       { rules: {} },
     );
 
-    expect(limits.targetProfit).toBeNull();
+    expect(limits.targetBalance).toBeNull();
+    expect(limits.targetProfitAmount).toBeNull();
     expect(limits.targetSource).toBeNull();
+  });
+
+  it('hands a stored balance straight back, and measures the rest from the start', () => {
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Tradeify', startBalance: 50000, targetProfit: 54100 },
+      { rules: {} },
+    );
+
+    expect(limits.targetBalance).toBe(54100);
+    expect(limits.targetProfitAmount).toBe(4100);
+    expect(limits.targetSource).toBe('stored');
+  });
+
+  it('refuses a remaining-profit figure when there is no start to subtract', () => {
+    // Not 54,100. A target with nothing subtracted from it is the target, and a
+    // weekly PnL over that is the balance-scale percentage this unit rule exists
+    // to prevent.
+    const limits = resolveAccountLimits(
+      { accountName: 'A1', connection: 'Tradeify', targetProfit: 54100 },
+      { rules: {} },
+    );
+
+    expect(limits.targetBalance).toBe(54100);
+    expect(limits.targetProfitAmount).toBeNull();
   });
 });
 
