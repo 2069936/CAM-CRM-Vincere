@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AlgorithmLivePanel, { LIVE_STRATEGY_SAMPLE_VERSION } from './AlgorithmLivePanel';
@@ -212,6 +213,54 @@ describe('what the basis line owns up to', () => {
   it('says when the floors are the defaults, without a verdict word', async () => {
     const { container } = await show({ load: async () => live({ settings: { ...SETTINGS, fallback: true } }) });
     expect(panelText(container)).toContain('The floors this panel uses are the defaults, because the settings could not be read.');
+  });
+});
+
+describe('the styles', () => {
+  /* #70 shipped this panel with no rule in index.css for any of its classes, so
+   * on the desk it read as unstyled text and nothing failed. The classes asserted
+   * here are the ones the panel actually rendered, in every state below, so a
+   * class added later without a rule fails here too. */
+  it('has a rule in index.css for every algorithm-live class it renders', async () => {
+    const css = readFileSync('src/index.css', 'utf8');
+    const account = sample();
+    const noted = [{
+      id: 'c-ash',
+      name: 'Ash',
+      activityLog: [{ id: 'n1', type: 'Review', text: `${reviewNotePrefix(account)} cycle 10:10: looked`, createdAt: '2026-10-02T15:00:00Z' }],
+    }];
+    const states = [
+      { clients: noted, onLogClientActivity: vi.fn(), openNote: true },
+      { load: async () => live({ rows: [sample({ realizedPnl: null }), sample({ accountName: 'R', restartedAt: '2026-10-06T13:40:00Z' })] }) },
+      { load: async () => ({ available: false, reason: 'not_deployed' }) },
+      { load: async () => live({ cohorts: [compared({ median: -1150 })] }) },
+    ];
+    const seen = new Set();
+    for (const { openNote, ...props } of states) {
+      const { container, unmount } = await show(props);
+      if (openNote) fireEvent.click(screen.getByText('Note what you found'));
+      for (const element of container.querySelectorAll('[class]')) {
+        for (const name of element.classList) if (name.startsWith('algorithm-live')) seen.add(name);
+      }
+      unmount();
+    }
+    expect([...seen]).toEqual(expect.arrayContaining([
+      'algorithm-live', 'algorithm-live-head', 'algorithm-live-verify', 'algorithm-live-algorithm',
+      'algorithm-live-desk', 'algorithm-live-accounts', 'algorithm-live-account', 'algorithm-live-account-line',
+      'algorithm-live-absent', 'algorithm-live-previous', 'algorithm-live-actions', 'algorithm-live-note',
+    ]));
+    for (const name of seen) {
+      expect(css, name).toMatch(new RegExp(`\\.${name}(?![\\w-])`));
+    }
+  });
+
+  it('marks the account that differs, and only that one', async () => {
+    const differing = await show();
+    expect(differing.container.querySelector('.algorithm-live-account.differs')).not.toBeNull();
+    differing.unmount();
+    const within = await show({ load: async () => live({ cohorts: [compared({ median: -1150 })] }) });
+    expect(within.container.querySelector('.algorithm-live-account')).not.toBeNull();
+    expect(within.container.querySelector('.algorithm-live-account.differs')).toBeNull();
   });
 });
 
