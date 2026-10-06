@@ -117,7 +117,7 @@ describe('the file list is read from the directory, not remembered', () => {
     const numbers = files.slice(1).map((name) => Number(/^step_(\d+)/.exec(name)[1]));
     expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
     expect(numbers).toContain(56);
-    expect(numbers.at(-1)).toBe(57);
+    expect(numbers.at(-1)).toBe(58);
   });
 
   it('stops where it is told, so a test can show a defect before the fix', () => {
