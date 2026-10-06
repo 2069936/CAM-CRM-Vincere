@@ -1009,6 +1009,16 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
     return cohort(await desk(world.gray.auth));
   }
 
+  /* Birch's view: four clients outside her book and the client under test. */
+  async function fiveOutsideBirch(key) {
+    await resetSamples();
+    const cycle = boundary(1);
+    for (const [i, client] of ['G1', 'G2', 'U1', 'U2', key].entries()) {
+      await reading({ client, account: `FOR-BIRCH-${i}`, realized: -100 * (i + 1), cycle });
+    }
+    return cohort(await desk(world.birch.auth));
+  }
+
   it('a client she created stays hers, even paired under someone else\'s code', async () => {
     await camCreatesClient(world.gray, 'F3');
     await enrollAndPair('F3', await appUserOf(world.managerAuth));
@@ -1017,6 +1027,8 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
     expect(await fourOutsidePlus('F3')).toMatchObject({ status: 'thin', n_accounts: null });
     // The same five, with an outside client in place of hers, are compared.
     expect(await fourOutsidePlus('B3')).toMatchObject({ status: 'compared', n_accounts: 5 });
+    // And it is left out of GRAY's figure only: Birch did not create it.
+    expect(await fiveOutsideBirch('F3')).toMatchObject({ status: 'compared', n_accounts: 5, n_clients: 5 });
   });
 
   it('a client she enrolled stays hers, even one she did not create', async () => {
@@ -1030,6 +1042,10 @@ describe('algorithm_live_desk against a CAM who controls clients outside her boo
     await camDropsHerAssignment(world.gray, 'E1');
     expect(await grayAssigned()).not.toContain(world.clients.E1);
     expect(await fourOutsidePlus('E1')).toMatchObject({ status: 'thin', n_accounts: null });
+
+    // It is left out of GRAY's figure only. For Birch, who neither created nor
+    // enrolled it, it is the rest of the desk like any other client.
+    expect(await fiveOutsideBirch('E1')).toMatchObject({ status: 'compared', n_accounts: 5, n_clients: 5 });
   });
 
   it('a manager still sees every one of those clients in the desk figure', async () => {
