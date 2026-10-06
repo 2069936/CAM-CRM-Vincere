@@ -17,6 +17,14 @@ describe('ingest route dispatcher', () => {
     expect(resolveIngestHandler(action)).toEqual(expect.any(Function));
   });
 
+  it('dispatches /api/ingest/strategies to its own handler, leaving /accounts as it was', async () => {
+    const strategies = (await import('../../../autoCollection/ingest/strategies.js')).default;
+    const accounts = (await import('../../../autoCollection/ingest/accounts.js')).default;
+    expect(resolveIngestHandler('strategies')).toBe(strategies);
+    expect(resolveIngestHandler('accounts')).toBe(accounts);
+    expect(strategies).not.toBe(accounts);
+  });
+
   it('does not dispatch unknown paths', () => {
     expect(resolveIngestHandler('unknown')).toBeNull();
   });

@@ -24,6 +24,7 @@ import {
   rowsAsRole,
   startMigrationCluster,
 } from './migrationCluster.js';
+import { normalizeStrategySampleBody } from '../server/autoCollection/ingest/strategies.js';
 
 const runbook = readFileSync(new URL('./MIGRATIONS_TO_RUN.md', import.meta.url), 'utf8');
 const DENIED = /permission denied/i;
@@ -477,6 +478,33 @@ describe('record_algorithm_live_sample', () => {
     expect(rows[1].realized_pnl).toBeNull();
     expect(rows[1].unrealized_pnl).toBeNull();
     expect(rows[1].restarted_at).not.toBeNull();
+  });
+
+  it('takes exactly what the route forwards: the wire keys and the SQL keys are one contract', async () => {
+    /* The route's own normaliser, fed the contract fixture with today's clock,
+     * straight into the real function. A key renamed on either side fails here. */
+    await resetSamples();
+    const sampled = new Date(Date.now() - 10_000);
+    const body = {
+      schemaVersion: 1,
+      sampledAt: sampled.toISOString(),
+      strategies: [
+        { accountName: 'SIM-FIXTURE-1', strategyId: '123456789', strategyName: '0 - OGX-PF-2.4',
+          instrument: 'MNQ 12-26', realizedPnl: -412.5, unrealizedPnl: 37.5, restartedAt: null },
+        { accountName: 'SIM-FIXTURE-1', strategyId: '123456790', strategyName: '1 - ALPHA-1.2',
+          instrument: 'NQ 12-26', realizedPnl: null, unrealizedPnl: null,
+          restartedAt: new Date(sampled.getTime() - 20 * 60_000).toISOString() },
+      ],
+    };
+    const normalized = normalizeStrategySampleBody(body);
+    const out = await send('G1', normalized.sampledAt, normalized.strategies);
+    expect(out.recorded).toBe(2);
+    const rows = (await db.query(`select algorithm, instrument_root from public.algorithm_live_samples
+      where device_id = $1 order by strategy_id`, [world.devices.G1])).rows;
+    expect(rows).toEqual([
+      { algorithm: 'OGX_PF', instrument_root: 'MNQ' },
+      { algorithm: 'ALPHA', instrument_root: 'NQ' },
+    ]);
   });
 
   it('stores an off cycle reading with no cycle at all', async () => {
