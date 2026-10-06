@@ -171,6 +171,7 @@ import TimeOffPanel, {
 } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import AlgorithmLivePanel from "./components/AlgorithmLivePanel";
 import BookList from "./components/BookList";
 import DeskMoneyPanel, { CAPITAL_DETAIL_ID } from "./components/DeskMoneyPanel";
 import { SEGMENTS } from "./domain/operationsSegments";
@@ -10447,6 +10448,11 @@ function CamOverview({
   canSeeRevenue = false,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
+  // The live per algorithm comparison (step 57). The parameter loader is the
+  // same ensureStrategyParameters the manager's configuration panels use.
+  onNeedParameters = null,
+  isManager = false,
+  camName = "",
 }) {
   const [expandedAlgorithm, setExpandedAlgorithm] = useState("");
   // Collapsible overview sections (default collapsed to cut clutter).
@@ -11712,6 +11718,23 @@ function CamOverview({
         );
       })()}
 
+      {/* THE LIVE SIDE OF THE ROLLUP BELOW: each algorithm's figure today, from
+          the Strategies tab, against the desk running the same algorithm on
+          the same instrument in the same ten minute cycle. Collapsed by
+          default, and it reads nothing until it is opened. */}
+      <CollapsiblePanel title="Each algorithm today, against the desk">
+        <AlgorithmLivePanel
+          clients={workingClients}
+          configClients={isManager ? allClients : workingClients}
+          isManager={isManager}
+          camName={camName}
+          onNeedParameters={onNeedParameters}
+          onSelectClient={onSelectClient}
+          onLogClientActivity={onLogClientActivity}
+          onAddClientTask={onAddClientTask}
+        />
+      </CollapsiblePanel>
+
       <CollapsiblePanel
         title="Algorithm rollup"
         count={overview.algorithms.length}
@@ -12000,6 +12023,9 @@ function MovementSparkline({ points = [] }) {
 
 const ACTIVITY_TYPES = [
   "Note",
+  // Written by the live algorithm comparison's "Note what you found", so the
+  // Activity tab can filter the feedback loop on its own.
+  "Review",
   "Call",
   "Message",
   "Disconnection",
@@ -16626,6 +16652,9 @@ export default function App() {
                 onResolveFlag={resolveFlagByIds}
                 onClassifyAccount={classifyAccountOutcome}
                 canSeeRevenue={session?.role === USER_ROLES.MANAGER}
+                onNeedParameters={ensureStrategyParameters}
+                isManager={session?.role === USER_ROLES.MANAGER}
+                camName={currentCamProfile?.name || ""}
                 monthlyGoal={currentCamProfile?.monthlyGoal || 0}
                 onSetMonthlyGoal={(goal) => {
                   if (!currentCamProfile?.id) return;
