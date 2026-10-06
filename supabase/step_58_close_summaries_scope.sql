@@ -69,10 +69,16 @@
 -- HOW IT KNOWS WHO IS CALLING. Inside a security definer function current_user
 -- is the owner, so it cannot say. The `role` setting can: PostgREST sets it for
 -- each request to the role the JWT names, and entering a definer function does
--- not change it. It cannot be forged from a request: setting it is SET ROLE,
--- which needs membership in the role. 'none' means nobody switched role, a
--- direct login, and then the login itself is the caller and is judged by its own
--- attributes. A caller who matches nothing is scoped, never trusted.
+-- not change it. A request cannot forge it because PostgREST gives a request no
+-- way to run SET ROLE or set_config: it sets the role itself, from the JWT, and
+-- exposes only the functions in the API schemas. Role membership is NOT the
+-- guard. SET ROLE checks the session user, and on Supabase that is
+-- authenticator, which is a member of service_role. So no function reachable
+-- through /rpc may ever pass a name the caller controls to set_config('role')
+-- or to SET ROLE: that function would let a CAM call this one as service_role.
+-- 'none' means nobody switched role, a direct login, and then the login itself
+-- is the caller and is judged by its own attributes. A caller who matches
+-- nothing is scoped, never trusted.
 --
 -- WHY NOT `clients_i_created()`. Step 53 gave a CAM sight of a client it has
 -- just created and nobody has been assigned yet. That arm is on `clients` and
@@ -257,9 +263,9 @@ revoke all on function public.replace_close_summaries(uuid[], jsonb)
 grant execute on function public.replace_close_summaries(uuid[], jsonb)
   to authenticated, service_role;
 
-commit;
-
--- What this leaves, checked rather than assumed.
+-- What this leaves, checked rather than assumed, and checked BEFORE the
+-- commit: a check that fails here takes the new function down with it, so a
+-- database it refuses is left exactly as it was found.
 do $do$
 begin
   if has_function_privilege('anon', 'public.replace_close_summaries(uuid[], jsonb)', 'execute') then
@@ -273,9 +279,14 @@ begin
     select 1 from pg_proc
     where oid = 'public.replace_close_summaries(uuid[], jsonb)'::regprocedure
       and prosecdef
+      and proconfig @> array['search_path=pg_catalog, public']
       and prosrc like '%public.assigned_client_ids()%'
+      and prosrc like '%public.is_manager()%'
+      and prosrc like '%errcode = ''42501''%'
   ) then
     raise exception 'step 58 did not install the scoped replace_close_summaries';
   end if;
 end
 $do$;
+
+commit;

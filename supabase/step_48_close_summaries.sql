@@ -285,6 +285,14 @@ grant execute on function public.replace_close_summaries(uuid[], jsonb)
 -- already run by the time this migration does: a table created afterwards
 -- carries its own policy or it ships open. Signed-in users get what they have
 -- everywhere else; the publishable key in the browser bundle gets nothing.
+--
+-- ONLY ON A TABLE THAT HAS NO PERMISSIVE POLICY YET. Step 52 drops this one and
+-- puts "cam sees its own clients" in its place. Permissive policies are OR'd,
+-- so recreating `using (true)` beside step 52's on a re-run of this file would
+-- let every CAM read and write every client's summaries again, with step 52's
+-- policy still listed and doing nothing. Asking for this policy by name is not
+-- enough for that reason: after step 52 it is absent on purpose. A table that
+-- already carries any permissive policy keeps the ones it has.
 alter table public.close_summaries enable row level security;
 
 do $$
@@ -293,7 +301,7 @@ begin
     select 1 from pg_policies
     where schemaname = 'public'
       and tablename = 'close_summaries'
-      and policyname = 'authenticated full access'
+      and permissive = 'PERMISSIVE'
   ) then
     create policy "authenticated full access" on public.close_summaries
       for all to authenticated using (true) with check (true);

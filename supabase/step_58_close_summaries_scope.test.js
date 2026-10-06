@@ -94,7 +94,7 @@ async function callAs(role, subject, ids, rows) {
     await db.exec('savepoint call');
     try {
       returned = await one(db, 'select public.replace_close_summaries($1::uuid[], $2::jsonb) as n',
-        [ids, rows === null ? null : JSON.stringify(rows)]);
+        [ids, jsonArgument(rows)]);
     } catch (caught) {
       error = caught;
       await db.exec('rollback to savepoint call');
@@ -104,6 +104,16 @@ async function callAs(role, subject, ids, rows) {
   } finally {
     await db.exec('rollback');
   }
+}
+
+/**
+ * p_rows as PostgREST would hand it over: null is SQL NULL (a body with
+ * "p_rows": null), a string is sent as the jsonb text it already is (so the
+ * jsonb literal `null` and `{}` can be sent), and anything else is serialised.
+ */
+function jsonArgument(rows) {
+  if (rows === null) return null;
+  return typeof rows === 'string' ? rows : JSON.stringify(rows);
 }
 
 /** Every stored row, as `client/close/segment=pnl`, in a stable order. */
@@ -133,6 +143,7 @@ async function seedWorld(target) {
     manager: await auth('manager@example.com'),
     gone: await auth('gone@example.com'),
     stranger: await auth('stranger@example.com'),
+    idle: await auth('idle@example.com'),
   };
   const client = (name) => one(target, 'insert into public.clients (name) values ($1) returning id', [name]);
   ids.gray = await client('Gray');
@@ -142,6 +153,9 @@ async function seedWorld(target) {
   const peterCam = await cam('Peter');
   const quinnCam = await cam('Quinn');
   const goneCam = await cam('Gone');
+  /* An Active CAM with no client at all: everything it can read is a leak. */
+  const idleCam = await cam('Idle');
+  Object.assign(ids, { peterCam, quinnCam });
   await target.query(
     `insert into public.client_assignments (client_id, cam_profile_id)
      values ($1, $4), ($2, $4), ($3, $5), ($1, $6)`,
@@ -151,8 +165,9 @@ async function seedWorld(target) {
        ('peter', 'Peter', 'CAM', 'Active', $1, $2),
        ('quinn', 'Quinn', 'CAM', 'Active', $3, $4),
        ('gone', 'Gone', 'CAM', 'Inactive', $5, $6),
-       ('boss', 'Boss', 'Manager', 'Active', $7, null)`,
-    [ids.peter, peterCam, ids.quinn, quinnCam, ids.gone, goneCam, ids.manager]);
+       ('boss', 'Boss', 'Manager', 'Active', $7, null),
+       ('idle', 'Idle', 'CAM', 'Active', $8, $9)`,
+    [ids.peter, peterCam, ids.quinn, quinnCam, ids.gone, goneCam, ids.manager, ids.idle, idleCam]);
 
   const close = (clientId, day) => one(target,
     'insert into public.daily_imports (client_id, trading_date) values ($1, $2) returning id', [clientId, day]);
@@ -222,6 +237,33 @@ describe('step 58 is the one that runs last', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('its own closing check is part of the same transaction', () => {
+  it('a failed check leaves the function that was there before, not a new one', async () => {
+    /* The check refuses a database where anon can execute the function. Step 58
+     * revokes anon's grant itself, so the one way left to make the check fire
+     * is a membership step 58 does not touch: anon made a member of
+     * authenticated. If the check ran after the commit, the new body would
+     * already be installed when it complained. */
+    const before = await startMigrationCluster(migrationFilesInOrder({ upTo: 57 }));
+    const body = "select md5(prosrc) from pg_proc where oid = 'public.replace_close_summaries(uuid[], jsonb)'::regprocedure";
+    try {
+      await before.exec(`
+        create or replace function public.replace_close_summaries(p_daily_import_ids uuid[], p_rows jsonb)
+        returns integer language plpgsql security definer set search_path = pg_catalog, public
+        as $marker$ begin return -1; end; $marker$;
+        grant authenticated to anon;`);
+      const marker = await one(before, body);
+      await expect(before.exec(readFileSync(migrationUrl, 'utf8')))
+        .rejects.toThrow(/step 58 left replace_close_summaries executable by anon/);
+      await before.exec('rollback').catch(() => {});
+      expect(await one(before, body)).toBe(marker);
+    } finally {
+      await before.close();
+    }
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
 describe('the defect: a CAM writing summaries of a client it cannot read', () => {
   it('cannot read the other CAM\'s summaries in the first place, which is the rule being enforced', async () => {
     /* Step 52's policy on the table: Quinn reads Birch's one row and none of
@@ -229,6 +271,8 @@ describe('the defect: a CAM writing summaries of a client it cannot read', () =>
     const seen = await rowsAsRole(db, 'authenticated',
       'select client_id from public.close_summaries', { subject: world.quinn });
     expect(seen.map((row) => row.client_id)).toEqual([world.birch]);
+    expect(await rowsAsRole(db, 'authenticated',
+      'select client_id from public.close_summaries', { subject: world.idle })).toEqual([]);
   });
 
   it('refuses a forged figure on another CAM\'s close, and the figure stays', async () => {
@@ -248,6 +292,22 @@ describe('the defect: a CAM writing summaries of a client it cannot read', () =>
     const result = await callAs('authenticated', world.quinn, [world.grayMon, world.grayTue], []);
     expect(result.error?.message).toMatch(REFUSED);
     expect(result.summaries).toEqual(SEEDED);
+  });
+
+  it('refuses the emptying however p_rows arrives: SQL null, jsonb null, an object, an empty array', async () => {
+    /* PostgREST hands a body with "p_rows": null to the function as SQL NULL,
+     * so this is one request from the browser's publishable key. The delete
+     * runs before the rows are looked at, so a check that only ran when rows
+     * were sent would let either CAM below wipe Gray's whole history. */
+    for (const subject of [world.quinn, world.idle]) {
+      for (const rows of [null, 'null', '{}', []]) {
+        const label = `${subject === world.quinn ? 'quinn' : 'idle'} ${JSON.stringify(rows)}`;
+        const result = await callAs('authenticated', subject, [world.grayMon, world.grayTue], rows);
+        expect(result.error?.message, label).toMatch(REFUSED);
+        expect(result.error?.code, label).toBe('42501');
+        expect(result.summaries, label).toEqual(SEEDED);
+      }
+    }
   });
 
   it('refuses the WHOLE call when one close is mine and one is not, deleting neither', async () => {
@@ -285,6 +345,87 @@ describe('the defect: a CAM writing summaries of a client it cannot read', () =>
       const result = await callAs('authenticated', subject, [world.grayMon], []);
       expect(result.error?.message, String(subject)).toMatch(REFUSED);
       expect(result.summaries).toEqual(SEEDED);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('a client handed to another CAM leaves its creator\'s reach', () => {
+  it('the CAM that created a client cannot write its closes once a Manager gives it to another CAM', async () => {
+    /* Step 53 lets a CAM see a client it created while nobody owns it, through
+     * clients_i_created(). Widening this function's scope with that helper
+     * would keep the creator's write after a transfer, because the helper has
+     * no "not yet assigned" gate. This walks the real sequence, each step as
+     * the role that takes it, in one transaction that is rolled back. */
+    /* A statement that raises leaves the role switched; the savepoint in
+     * refusalOf undoes that along with the statement. */
+    const as = async (subject, sql, params) => {
+      await db.query("select set_config('request.jwt.claim.sub', $1, true)", [subject]);
+      await db.exec('set local role authenticated');
+      const { rows } = await db.query(sql, params);
+      await db.exec('reset role');
+      return rows;
+    };
+    const refusalOf = async (subject, sql, params) => {
+      await db.exec('savepoint attempt');
+      try {
+        await as(subject, sql, params);
+        await db.exec('release savepoint attempt');
+        return null;
+      } catch (caught) {
+        await db.exec('rollback to savepoint attempt');
+        return caught;
+      }
+    };
+    const replace = 'select public.replace_close_summaries($1::uuid[], $2::jsonb) as n';
+    const elmRows = async () => (await db.query(
+      `select segment, daily_pnl::float8 as pnl from public.close_summaries
+        where client_id = $1 order by segment`, [elm])).rows
+      .map((row) => `${row.segment}=${row.pnl}`);
+    let elm;
+
+    await db.exec('begin');
+    try {
+      /* Peter creates Elm and assigns it to himself, as createSupabaseClient
+       * does, then uploads a close and saves its summary. */
+      const [created] = await as(world.peter,
+        'insert into public.clients (name) values ($1) returning id, created_by', ['Elm']);
+      elm = created.id;
+      expect(created.created_by).toBe(world.peter);
+      await as(world.peter,
+        `insert into public.client_assignments (client_id, cam_profile_id, assignment_role)
+         values ($1, $2, 'Owner')`, [elm, world.peterCam]);
+      const [{ id: elmClose }] = await as(world.peter,
+        "insert into public.daily_imports (client_id, trading_date) values ($1, '2026-10-01') returning id", [elm]);
+      const [{ n: written }] = await as(world.peter, replace,
+        [[elmClose], JSON.stringify(uploadRows(elmClose, elm, '2026-10-01', 50))]);
+      expect(written).toBe(2);
+      expect(await elmRows()).toEqual(['Cash=50', 'Funded=-40']);
+
+      /* A Manager hands Elm to Quinn. */
+      await as(world.manager,
+        'delete from public.client_assignments where client_id = $1 and cam_profile_id = $2',
+        [elm, world.peterCam]);
+      await as(world.manager,
+        `insert into public.client_assignments (client_id, cam_profile_id, assignment_role)
+         values ($1, $2, 'Owner')`, [elm, world.quinnCam]);
+      expect(await as(world.peter, 'select client_id from public.close_summaries where client_id = $1', [elm]))
+        .toEqual([]);
+
+      /* Peter, its creator, can no longer forge or empty it. */
+      for (const rows of [uploadRows(elmClose, elm, '2026-10-01', -99999), [], null]) {
+        const error = await refusalOf(world.peter, replace, [[elmClose], jsonArgument(rows)]);
+        expect(error?.message, JSON.stringify(rows)).toMatch(REFUSED);
+        expect(error?.code).toBe('42501');
+        expect(await elmRows()).toEqual(['Cash=50', 'Funded=-40']);
+      }
+
+      /* Quinn, its owner now, can: the refusal above is about Peter, not Elm. */
+      expect(await refusalOf(world.quinn, replace,
+        [[elmClose], JSON.stringify(uploadRows(elmClose, elm, '2026-10-01', 70))])).toBeNull();
+      expect(await elmRows()).toEqual(['Cash=70', 'Funded=-40']);
+    } finally {
+      await db.exec('rollback');
     }
   });
 });
@@ -431,6 +572,13 @@ describe('a later re-run does not undo it', () => {
         const attack = await callAs('authenticated', ids.quinn, [ids.grayMon], []);
         expect(attack.error?.message).toMatch(REFUSED);
         expect(attack.summaries).toEqual(SEEDED);
+        /* And the READ stays scoped. Step 48 also creates the table's first
+         * policy, `using (true)`, which step 52 removes; recreated beside step
+         * 52's it is OR'd with it and every CAM reads every row again. */
+        const read = (subject) => rowsAsRole(again, 'authenticated',
+          'select client_id from public.close_summaries', { subject });
+        expect(await read(ids.idle)).toEqual([]);
+        expect((await read(ids.quinn)).map((row) => row.client_id)).toEqual([ids.birch]);
         const upload = await callAs('authenticated', ids.peter, [ids.grayMon],
           uploadRows(ids.grayMon, ids.gray, '2026-10-01', 5));
         expect(upload.error).toBeNull();

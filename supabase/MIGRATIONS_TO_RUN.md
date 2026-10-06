@@ -507,12 +507,27 @@ It needs 48 and 52 and refuses to run without them, saying which function is
 missing, before it changes anything. `step_48_close_summaries.sql` now carries
 the same function, character for character, so re-running 48 after 58 does not
 put the unscoped body back; the test beside 58 fails if the two copies differ.
+Re-running 48 also no longer brings back its first policy on the table,
+`authenticated full access` with `using (true)`: 48 now creates it only on a
+`close_summaries` that has no permissive policy yet, so after 52 it leaves
+step 52's in place. Before this change a re-run of 48 after 52 put it back
+beside step 52's, and every CAM read every client's summaries again. 58's own
+closing check runs before its commit, so a database it refuses is left as it
+was found.
 
 Verify it in the SQL editor. The catalogue first, which changes nothing:
 
     select prosrc like '%assigned_client_ids%' as scoped
     from pg_proc where oid = 'public.replace_close_summaries(uuid[], jsonb)'::regprocedure;
     -- PASS: true
+
+    select policyname, permissive, cmd from pg_policies
+    where schemaname = 'public' and tablename = 'close_summaries';
+    -- PASS: one row, 'cam sees its own clients' | PERMISSIVE | ALL.
+    -- FAIL: 'authenticated full access' listed too means 48 was re-run after
+    -- 52 under its old text. Drop that one policy and nothing else (re-running
+    -- 52 would also undo 53's client policies):
+    --   drop policy "authenticated full access" on public.close_summaries;
 
 Then the behaviour, as a real CAM against a close of a client NOT assigned to
 them. Find one:
