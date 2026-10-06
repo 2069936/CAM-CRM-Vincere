@@ -387,6 +387,36 @@ describe('who reads which rows', () => {
   });
 });
 
+describe('who reads which rows, on a database that ran each file once', () => {
+  /* The cluster above applies the directory twice, and the second pass of step
+   * 52 replaces every permissive policy on a client_id table with its own
+   * predicate. That heals a broken policy in this file, so a database that ran
+   * 57 once, which is the one Pedro will have, is asked separately. */
+  it('a CAM sees its own client and not another CAM\'s', async () => {
+    const once = await startMigrationCluster(migrationFilesInOrder());
+    try {
+      const mine = await one(once, "insert into public.clients (name) values ('Mine') returning id");
+      const theirs = await one(once, "insert into public.clients (name) values ('Theirs') returning id");
+      const profile = await one(once, "insert into public.cam_profiles (name) values ('Solo') returning id");
+      await once.query('insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)', [mine, profile]);
+      const auth = await one(once, "insert into auth.users (email) values ('solo@example.com') returning id");
+      await once.query(`insert into public.app_users (username, display_name, role, status, auth_user_id, cam_profile_id)
+        values ('solo', 'Solo', 'CAM', 'Active', $1, $2)`, [auth, profile]);
+      for (const client of [mine, theirs]) {
+        const device = await one(once, 'insert into public.ingest_devices (client_id) values ($1) returning id', [client]);
+        await once.query(`insert into public.algorithm_live_samples (device_id, client_id, account_name, strategy_id,
+          strategy_name, algorithm, instrument, instrument_root, sampled_at)
+          values ($1, $2, 'A', '1', '0 - OGX-1.0', 'OGX', 'MNQ 12-26', 'MNQ', now())`, [device, client]);
+      }
+      const rows = await rowsAsRole(once, 'authenticated',
+        'select client_id from public.algorithm_live_samples', { subject: auth });
+      expect(rows.map((row) => row.client_id)).toEqual([mine]);
+    } finally {
+      await once.close();
+    }
+  }, 120_000);
+});
+
 /* ── The settings ───────────────────────────────────────────────────────── */
 
 describe('the settings singleton', () => {
