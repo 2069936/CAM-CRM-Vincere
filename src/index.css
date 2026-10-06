@@ -4574,6 +4574,69 @@ tr:nth-child(2) .rank-badge {
   .account-tracker-row { grid-template-columns: 10px minmax(0, 1fr) auto; }
   .account-tracker-detail { grid-column: 2 / -1; }
 }
+/* ── Each algorithm today, against the desk (step 57) ─────────────────────────
+   The same box and type scale as the account tracker above it, so the two live
+   panels read as one family. The account that differs carries an amber bar
+   beside its sentence; the sentence says it, the bar only helps the eye find it. */
+.algorithm-live { margin: 8px 6px 0; display: grid; gap: 10px; font-size: 11px; }
+.algorithm-live > p,
+.algorithm-live.muted {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.algorithm-live-head { display: grid; gap: 4px; }
+.algorithm-live-head .badge { justify-self: start; }
+.algorithm-live-head p { margin: 0; color: var(--muted); font-size: 10.5px; max-width: 110ch; }
+.algorithm-live-verify {
+  padding: 9px 10px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.06);
+}
+.algorithm-live-verify h4 { margin: 0; color: var(--warning); font-size: 11px; font-weight: 700; }
+.algorithm-live-verify p { margin: 3px 0 0; font-size: 10.5px; }
+.algorithm-live-verify ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 3px; }
+.algorithm-live-verify li { color: var(--text); font-size: 10.5px; overflow-wrap: anywhere; }
+.algorithm-live-algorithm {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.algorithm-live-algorithm h4 { margin: 0; color: var(--text); font-size: 11.5px; font-weight: 700; }
+.algorithm-live-algorithm > p { margin: 0; font-size: 10.5px; }
+.algorithm-live-desk { color: var(--text); }
+.algorithm-live-accounts { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.algorithm-live-account { display: grid; gap: 3px; padding-top: 6px; border-top: 1px solid var(--border); }
+.algorithm-live-account:first-child { padding-top: 0; border-top: 0; }
+.algorithm-live-account.differs { padding-left: 8px; border-left: 2px solid var(--warning); }
+.algorithm-live-account p { margin: 0; font-size: 10.5px; overflow-wrap: anywhere; }
+.algorithm-live-account-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 10.5px; }
+.algorithm-live-account-line strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.algorithm-live-account-line .positive,
+.algorithm-live-account-line .negative { font-weight: 700; font-variant-numeric: tabular-nums; }
+.algorithm-live-absent { color: var(--muted); font-style: italic; }
+.algorithm-live-previous { color: var(--muted); font-style: italic; }
+.algorithm-live-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.algorithm-live-note { display: grid; gap: 6px; }
+.algorithm-live-note textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 10.5px;
+}
+.algorithm-live-note button { justify-self: start; }
 .auto-collection-footer {
   display: flex;
   align-items: center;

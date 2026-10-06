@@ -353,7 +353,7 @@ function AccountRow({
   const text = (extra) => reviewNoteText({ account, desk: entry.desk, cycleStart, note: extra });
 
   return (
-    <li className={`algorithm-live-account status-${account.status}`}>
+    <li className={`algorithm-live-account status-${account.status}${account.status === 'compared' && account.differs ? ' differs' : ''}`}>
       <div className="algorithm-live-account-line">
         <strong>{`${account.clientName} / ${account.accountName}`}</strong>
         {account.value === null ? (
