@@ -356,9 +356,7 @@ begin
     from history
     join public.clients as client on client.id = history.owner
     where history.account is not null
-      -- coalesce: an enrollment with no client puts a NULL in v_mine, and
-      -- "= any" over an array holding a NULL is NULL for every other id.
-      and not coalesce(history.owner = any (v_mine), false)
+      and not (history.owner = any (v_mine))
   ),
   floor_check as (
     select outside.fam,

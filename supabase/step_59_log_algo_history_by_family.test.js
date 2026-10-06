@@ -491,7 +491,14 @@ describe('after step 59: a CAM cannot move her own accounts outside her book', (
   beforeAll(async () => {
     for (const family of Object.keys(OUTSIDE)) {
       const key = `L${family[0]}`;
-      await graysClient(key, accountsOf(key));
+      if (key === 'LC') {
+        // Split over two of her clients, so that if a deleted client still
+        // counted as an owner, hers would be two of the three owners needed.
+        await graysClient('LC', accountsOf('LC').slice(0, 2));
+        await graysClient('LK', accountsOf('LC').slice(2));
+      } else {
+        await graysClient(key, accountsOf(key));
+      }
       await managerImports(family, [...hers(key), OUTSIDE[family]]);
     }
     await graysClient('LE', accountsOf('LE'));
@@ -530,8 +537,9 @@ describe('after step 59: a CAM cannot move her own accounts outside her book', (
       expect(await refusalAsRole(after, 'authenticated', 'delete from public.clients where id = $1',
         { subject, params: [world.clients.LC] })).toMatch(DENIED);
     }
-    const deleted = await after.query('delete from public.clients where id = $1 returning id', [world.clients.LC]);
-    expect(deleted.rows).toHaveLength(1);
+    const deleted = await after.query('delete from public.clients where id = any ($1) returning id',
+      [[world.clients.LC, world.clients.LK]]);
+    expect(deleted.rows).toHaveLength(2);
     expect((await familiesFor(after, world.gray.auth)).ClientAfter).toMatchObject({ status: 'withheld', total_pnl: null });
   });
 
@@ -579,6 +587,13 @@ describe('after step 59: who owns a row is the database\'s answer, made once', (
       "update public.log_algo_history set attributed_client_id = $1 where account_name = 'LS-B' and family = 'Payload'",
       [world.clients.B2]);
     expect(await ownerOf('LS-B', 'Payload')).toBe(world.clients.LS);
+  });
+
+  it('matches the registry the way the import does, ignoring case', async () => {
+    await committedAsRole(after, 'authenticated', world.managerAuth,
+      `insert into public.log_algo_history (log_date, account_name, family, direction, realized_pnl, round_trips)
+       values ('2026-10-04', 'ls-c', 'Payload', 'Long', 1, 1)`);
+    expect(await ownerOf('ls-c', 'Payload')).toBe(world.clients.LS);
   });
 
   it('a re-import after she renamed her accounts keeps the owner the first import found', async () => {
