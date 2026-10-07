@@ -41,7 +41,7 @@ import Dashboard from '../components/Dashboard';
 import { classificationDefaults } from './accountTargets';
 import { reconcileDailyImport, ACCOUNT_TYPES, PAYOUT_STATES, ACCOUNT_STATUSES } from './reconcile';
 import { buildBulletBotAccountRecords } from './bulletBotStats';
-import { PROP_FIRM_RULES, plansFor } from './propFirmRules';
+import { PROP_FIRM_RULES, STANDARD_ACCOUNT_SIZES, GENERIC_TARGET_BALANCE, plansFor } from './propFirmRules';
 import { evaluationProgressFor, EVALUATION_PROGRESS } from './evaluationReport';
 import { buildProgressToTargetRows } from './progressToTarget';
 import {
@@ -542,4 +542,173 @@ describe('the payout insight measures what is left from the balance', () => {
     expect(insight.facts.find((fact) => fact.label === 'Remaining').value).toBe('$300');
     expect(insight.message).toContain('$300 remaining');
   });
+});
+
+// ─────────────── EVERY SIZE THE RULES SELL, NOT JUST 50K ───────────────
+//
+// Everything above runs on a 50k account with its start typed in. A second
+// review rendered the plan picker on a Legends 25k with Start Bal empty: it
+// wrote 26,500 and no start, and every reader then refused the value the app
+// itself had just written ("Target not set", no "Payout eligible"), because the
+// gate only knew 50k, 100k and 150k. The book is mostly 50k, so the 50k tests
+// above never saw it.
+
+/** Renders the plan picker on an account with an EMPTY Start Bal whose only
+ * close on record is `size`, picks `plan`, and returns the account with the
+ * picker's patch applied: exactly the row the registry would now hold. */
+function pickPlanWithNoStart({ firm, plan, size, type = ACCOUNT_TYPES.FUNDED }) {
+  const account = accountFixture({ accountName: 'NS-1', connection: firm, accountType: type, startBalance: '', targetProfit: '' });
+  const patches = [];
+  render(
+    <AccountManager
+      accounts={{ [account.accountName]: account }}
+      snapshots={[{ accountName: account.accountName, accountBalance: size }]}
+      dailyImports={[{ date: '2026-09-01', snapshots: [{ accountName: account.accountName, accountBalance: size }] }]}
+      onUpdateAccount={(name, patch) => patches.push(patch)}
+      onAddAccount={() => {}}
+      onRemoveAccount={() => {}}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText(`Plan for ${account.accountName}`), { target: { value: plan } });
+  cleanup();
+  expect(patches).toHaveLength(1);
+  return { ...account, ...patches[0] };
+}
+
+/** Whether the registry row marks its own Target $ as unused. */
+function registrySaysUnused(account) {
+  render(
+    <AccountManager
+      accounts={{ [account.accountName]: account }}
+      snapshots={[]}
+      dailyImports={[]}
+      onUpdateAccount={() => {}}
+      onAddAccount={() => {}}
+      onRemoveAccount={() => {}}
+    />,
+  );
+  const unused = [...document.querySelectorAll('small')].some((el) => /^Not used/.test(el.textContent));
+  cleanup();
+  return unused;
+}
+
+/* One plan per firm and size that publishes a profit target, read off the rules
+ * table, so a size added there is covered here without editing this file. */
+const PICKABLE = (() => {
+  const seen = new Map();
+  for (const [key, rule] of Object.entries(PROP_FIRM_RULES)) {
+    const [firm, plan, size] = key.split('|');
+    if (rule.profitTarget == null) continue;
+    const id = `${firm}|${size}`;
+    if (!seen.has(id)) seen.set(id, { firm, plan, size: Number(size), amount: rule.profitTarget });
+  }
+  return [...seen.values()];
+})();
+
+describe('the plan picker on an account with no stored start, at every size it sells', () => {
+  it('covers more than the 50k the book is made of', () => {
+    expect(new Set(PICKABLE.map((entry) => entry.size)).size).toBeGreaterThan(1);
+    expect(PICKABLE.some((entry) => entry.size === 25000)).toBe(true);
+  });
+
+  const payout = READERS.find((r) => r.name === 'reconcile · Payout eligible flag');
+  const evalReached = READERS.find((r) => r.name === 'reconcile · Evaluation target reached flag');
+  const dashboard = READERS.find((r) => r.name === 'Dashboard · funded target cell');
+
+  for (const { firm, plan, size, amount } of PICKABLE) {
+    it(`${firm} ${plan} ${size / 1000}k: what the picker writes, every reader uses`, () => {
+      const funded = pickPlanWithNoStart({ firm, plan, size });
+      const target = Number(funded.targetProfit);
+      // The premise: the picker wrote the passing balance for this size.
+      expect(target).toBe(size + amount);
+
+      expect(registrySaysUnused(funded)).toBe(false);
+      expect(payout.reached(funded, target + 100)).toBe(true);
+      expect(payout.reached(funded, size)).toBe(false);
+      expect(dashboard.reached(funded, target)).toBe(true);
+      expect(dashboard.reached(funded, size)).toBe(false);
+
+      const evaluation = pickPlanWithNoStart({ firm, plan, size, type: ACCOUNT_TYPES.EVALUATION_BULLET });
+      expect(evalReached.reached(evaluation, target)).toBe(true);
+      expect(evalReached.reached(evaluation, size)).toBe(false);
+    });
+  }
+
+  it('writes the start it measured the target from, so the amount is recoverable', () => {
+    // A target with no start beside it is the shape storedTarget.js has to
+    // guess at. The picker knows the size it added the amount to; it says so.
+    for (const { firm, plan, size, amount } of PICKABLE) {
+      const written = pickPlanWithNoStart({ firm, plan, size });
+      expect(Number(written.targetProfit) - Number(written.startBalance)).toBe(amount);
+    }
+  });
+
+  it('never overwrites a start the desk typed', () => {
+    const account = accountFixture({ accountName: 'NS-2', startBalance: 51234, targetProfit: '' });
+    const patches = [];
+    render(
+      <AccountManager
+        accounts={{ [account.accountName]: account }}
+        snapshots={[]}
+        dailyImports={[]}
+        onUpdateAccount={(name, patch) => patches.push(patch)}
+        onAddAccount={() => {}}
+        onRemoveAccount={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(`Plan for ${account.accountName}`), { target: { value: PLAN } });
+    cleanup();
+    expect({ ...account, ...patches[0] }.startBalance).toBe(51234);
+  });
+});
+
+describe('a stored balance with no stored start is judged against the size it sits on', () => {
+  /* Rows already in the table, or typed by hand, carry no start and never pass
+   * through the picker again. Each is read against the standard size just below
+   * it, at every size propFirmRules says firms sell. */
+  const payout = READERS.find((r) => r.name === 'reconcile · Payout eligible flag');
+  const dashboard = READERS.find((r) => r.name === 'Dashboard · funded target cell');
+
+  const cases = STANDARD_ACCOUNT_SIZES.map((size) => ({ size, target: size + size * 0.06 }));
+  // 80,000 on a 75k: nearer 75k than 100k, and above it.
+  cases.push({ size: 75000, target: 80000 });
+
+  for (const { size, target } of cases) {
+    it(`${target.toLocaleString('en-US')} with no start reads as a target above ${size.toLocaleString('en-US')}`, () => {
+      const account = accountFixture({ accountName: 'NS-3', targetProfit: target, startBalance: '' });
+      expect(registrySaysUnused(account)).toBe(false);
+      expect(payout.reached(account, target)).toBe(true);
+      expect(payout.reached(account, size)).toBe(false);
+      expect(dashboard.reached(account, target)).toBe(true);
+      expect(dashboard.reached(account, size)).toBe(false);
+    });
+  }
+});
+
+describe('a profit amount stored with no start is still refused at every size', () => {
+  /* The other side of widening the ladder. Every amount a firm or the desk
+   * publishes, stored where a balance belongs and with no start beside it, must
+   * not snap to some small size and read as reached by an account that opened
+   * many times larger. 6,000 is the one a loose band lets through: it is 20%
+   * over a 5k account, and it is the 100k amount every firm here publishes. */
+  const payout = READERS.find((r) => r.name === 'reconcile · Payout eligible flag');
+  const amounts = new Map();
+  for (const [key, rule] of Object.entries(PROP_FIRM_RULES)) {
+    if (rule.profitTarget != null) amounts.set(rule.profitTarget, Number(key.split('|')[2]));
+  }
+  for (const [size, balance] of Object.entries(GENERIC_TARGET_BALANCE)) {
+    amounts.set(balance - Number(size), Number(size));
+  }
+
+  it('includes the amounts the review named', () => {
+    expect([...amounts.keys()]).toEqual(expect.arrayContaining([3000, 4000, 6000]));
+  });
+
+  for (const [amount, size] of amounts) {
+    it(`${amount.toLocaleString('en-US')} on a ${size / 1000}k account with no start is not reached`, () => {
+      const account = accountFixture({ accountName: 'NS-4', targetProfit: amount, startBalance: '' });
+      expect(payout.reached(account, size)).toBe(false);
+      expect(registrySaysUnused(account)).toBe(true);
+    });
+  }
 });

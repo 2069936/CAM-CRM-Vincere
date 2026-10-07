@@ -1827,6 +1827,53 @@ function withStrategyRan(strategies = [], executions = [], { evidenceComplete = 
 	});
 }
 //#endregion
+//#region src/domain/propFirmRules.js
+/** Sizes prop firms actually sell. */
+var STANDARD_ACCOUNT_SIZES$1 = [
+	5e3,
+	1e4,
+	25e3,
+	5e4,
+	75e3,
+	1e5,
+	15e4,
+	25e4,
+	3e5
+];
+/**
+* The nearest standard size to a starting balance, or null.
+*
+* Balances drift the moment trading starts, so this only reads a balance from
+* the earliest close on record and only accepts a match within a tolerance. A
+* 50,000 account that opened at 50,000 is a 50k account; one sitting at 61,400
+* is not any size we sell, and guessing would put an account under rules that
+* were never its own.
+*/
+function inferAccountSize(balance, { tolerance = .15 } = {}) {
+	const value = Number(balance);
+	if (!Number.isFinite(value) || value <= 0) return null;
+	let best = null;
+	let bestDistance = Infinity;
+	for (const size of STANDARD_ACCOUNT_SIZES$1) {
+		const distance = Math.abs(value - size) / size;
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			best = size;
+		}
+	}
+	return bestDistance <= tolerance ? best : null;
+}
+/** Earliest balance on record for an account, which is the closest thing to its opening size. */
+function firstObservedBalance(accountName, dailyImports = []) {
+	const sorted = (dailyImports || []).filter((entry) => entry?.date).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+	for (const entry of sorted) for (const snapshot of entry.snapshots || []) {
+		if (snapshot.accountName !== accountName) continue;
+		const balance = Number(snapshot.accountBalance);
+		if (Number.isFinite(balance) && balance > 0) return balance;
+	}
+	return null;
+}
+//#endregion
 //#region src/domain/storedTarget.js
 var STANDARD_ACCOUNT_SIZES = [
 	5e4,
@@ -1848,7 +1895,7 @@ var STORED_TARGET = {
 	NONE: "none",
 	/** At or below the start it is judged against. */
 	NOT_ABOVE_START: "not-above-start",
-	/** No stored start, and the value implies no standard size. */
+	/** No stored start, and the value sits on no standard size. */
 	NO_START: "no-start"
 };
 var positive$1 = (value) => {
@@ -1871,7 +1918,7 @@ function storedTargetStatus(meta) {
 		judgedAgainst: null,
 		state: STORED_TARGET.NONE
 	};
-	const judgedAgainst = positive$1(meta?.startBalance) ?? inferStartingBalance(stored);
+	const judgedAgainst = positive$1(meta?.startBalance) ?? inferAccountSize(stored);
 	if (judgedAgainst == null) return {
 		target: null,
 		stored,
@@ -3572,7 +3619,7 @@ function jsonArray(value) {
 	return Array.isArray(value) ? value : [];
 }
 //#endregion
-//#region node_modules/fflate/esm/browser.js
+//#region ../../../../../../../../Users/pedro/Developer/CAM-CRM-Vincere/node_modules/fflate/esm/browser.js
 var u8 = Uint8Array, u16 = Uint16Array, i32 = Int32Array;
 var fleb = new u8([
 	0,
@@ -4365,18 +4412,6 @@ function targetForAccount(accountType, startingBalance) {
 	if (isCashType(accountType)) return null;
 	if (isSimulationAccountType(accountType)) return null;
 	return TARGET_TABLE[accountType === ACCOUNT_TYPES.EVALUATION_BULLET ? "bulletBot" : "standard"][Number(startingBalance)] ?? null;
-}
-//#endregion
-//#region src/domain/propFirmRules.js
-/** Earliest balance on record for an account, which is the closest thing to its opening size. */
-function firstObservedBalance(accountName, dailyImports = []) {
-	const sorted = (dailyImports || []).filter((entry) => entry?.date).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
-	for (const entry of sorted) for (const snapshot of entry.snapshots || []) {
-		if (snapshot.accountName !== accountName) continue;
-		const balance = Number(snapshot.accountBalance);
-		if (Number.isFinite(balance) && balance > 0) return balance;
-	}
-	return null;
 }
 //#endregion
 //#region src/domain/evaluationReport.js

@@ -134,6 +134,11 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
       // in a column every reader compares against a balance, so picking a plan on
       // a 50k evaluation made it read as already passed.
       ...(account.targetProfit ? {} : { targetProfit: next.targetBalance ?? '' }),
+      // And the start that balance was measured from, when the desk has not
+      // typed one. The target is `size + amount`; leaving the size out stored a
+      // balance with nothing beside it to say what it is above, which is the
+      // shape storedTarget.js has to guess at.
+      ...(Number(account.startBalance) > 0 || !next.accountSize ? {} : { startBalance: next.accountSize }),
     });
   };
 

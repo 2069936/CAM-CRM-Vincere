@@ -18,22 +18,37 @@
 //     them and this gate refuses them.
 //
 // THE RULE. A stored target is used only when it sits ABOVE a start the book
-// actually knows: the stored start balance, or, with none stored, the nominal
-// size the target itself implies (54,100 implies a 50k, 107,300 a 100k). A value
-// that implies no size and has no start beside it is unreadable, and a value at
-// or below its start would be "reached" by an account that has made nothing.
-// Either way the reader is told NO TARGET, the same answer it gives an account
-// where nobody typed one, and the screen says "Target not set" instead of 100%.
+// actually knows: the stored start balance, or, with none stored, the size the
+// target itself sits on. That size comes from propFirmRules.inferAccountSize,
+// the same snap the plan picker uses to size an account, over the full ladder
+// firms sell (5k to 300k, within 15%): 26,500 sits on a 25k, 80,000 on a 75k,
+// 54,100 on a 50k. A value that sits on no size and has no start beside it is
+// unreadable, and a value at or below its start would be "reached" by an
+// account that has made nothing. Either way the reader is told NO TARGET, the
+// same answer it gives an account where nobody typed one, and the screen says
+// "Target not set" instead of 100%.
+//
+// Why 15% and not wider: the widest published target is 8% over its size
+// (GENERIC_TARGET_BALANCE, 54,000 on 50k), so 15% keeps every real balance. A
+// profit AMOUNT stored with no start must still be refused, and 6,000 (the 100k
+// amount every firm here publishes) is exactly 20% over a 5k account. 4,000 and
+// 3,000 sit on no size at all. targetProfitUnit.test.jsx refuses every
+// published amount.
 //
 // The start here is only the yardstick for that question. It is deliberately
 // NOT the start a reader measures progress from: each reader keeps its own (a
 // stored start, the earliest close, an inferred size) and nothing about that
 // changes.
 //
-// No imports, on purpose: reconcile.js reads this, accountTargets.js imports
-// reconcile.js, and the Node ESM server entrypoints load several of them with no
-// bundler to resolve a cycle.
+// One import, on purpose a leaf: reconcile.js reads this, accountTargets.js
+// imports reconcile.js, and the Node ESM server entrypoints load several of them
+// with no bundler to resolve a cycle. propFirmRules.js imports nothing.
 
+import { inferAccountSize } from './propFirmRules.js';
+
+// The 50k/100k/150k snap below is for a LIVE balance (accountTargets and the
+// report readers infer an account's start from it). It is not the yardstick
+// for a stored target, which uses the full ladder above.
 export const STANDARD_ACCOUNT_SIZES = [50000, 100000, 150000];
 
 // How far a live balance can drift from its starting size and still be inferred.
@@ -59,7 +74,7 @@ export const STORED_TARGET = {
   NONE: 'none',
   /** At or below the start it is judged against. */
   NOT_ABOVE_START: 'not-above-start',
-  /** No stored start, and the value implies no standard size. */
+  /** No stored start, and the value sits on no standard size. */
   NO_START: 'no-start',
 };
 
@@ -81,7 +96,7 @@ export function storedTargetStatus(meta) {
   if (stored == null) {
     return { target: null, stored: null, judgedAgainst: null, state: STORED_TARGET.NONE };
   }
-  const judgedAgainst = positive(meta?.startBalance) ?? inferStartingBalance(stored);
+  const judgedAgainst = positive(meta?.startBalance) ?? inferAccountSize(stored);
   if (judgedAgainst == null) {
     return { target: null, stored, judgedAgainst: null, state: STORED_TARGET.NO_START };
   }
