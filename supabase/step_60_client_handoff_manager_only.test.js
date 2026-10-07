@@ -161,10 +161,9 @@ afterAll(async () => {
 
 describe('step 60 is the one that runs last', () => {
   it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
-    /* The claim moves here from 57, the way 55 handed it to 56 and 56 to 57: the
-     * newest step's own test says it is the newest. 59 is this PR's other file,
-     * and 58 belongs to PR 74, so whichever of the two merges second moves the
-     * claim on its rebase. */
+    /* The claim moves here from 58, the way 55 handed it to 56, 56 to 57 and
+     * 57 to 58: the newest step's own test says it is the newest. 59 is this
+     * PR's other file. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))

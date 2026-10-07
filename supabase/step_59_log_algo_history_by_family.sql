@@ -1,9 +1,9 @@
 -- Step 59: the log history becomes a desk aggregate for a CAM, and a table only
 -- a Manager reads.
 --
--- WHY 59. 54 is claimed by draft PR 65 and 58 by PR 74 (close summaries scope),
--- and 55, 56 and 57 are merged. The run order is 56, 57, 58, 59, 60. Step 60 is
--- the other residual of step 52 and is independent of this file, and so is 58.
+-- WHY 59. 54 is claimed by draft PR 65, and 55 to 58 are merged (58 is the
+-- close summaries scope). The run order is 56, 57, 58, 59, 60. Step 60 is the
+-- other residual of step 52 and is independent of this file, and so is 58.
 --
 -- WHAT WAS WRONG, MEASURED. public.log_algo_history (step 27) holds one row per
 -- account, per day, per algorithm family: the realized P&L the NinjaTrader log

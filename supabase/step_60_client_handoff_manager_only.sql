@@ -1,7 +1,7 @@
 -- Step 60: only a Manager moves a client between books.
 --
--- WHY 60. 54 is claimed by draft PR 65 and 58 by PR 74 (close summaries scope),
--- 55 to 57 are merged, and 59 is the log history aggregate beside this file.
+-- WHY 60. 54 is claimed by draft PR 65, 55 to 58 are merged (58 is the close
+-- summaries scope), and 59 is the log history aggregate beside this file.
 -- The run order is 56, 57, 58, 59, 60; this file depends on none of 57, 58 or
 -- 59.
 --

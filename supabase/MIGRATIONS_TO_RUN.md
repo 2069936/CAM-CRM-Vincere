@@ -556,8 +556,7 @@ and the rollback is what puts them back.
     -- FAIL: a number. The old body is still installed; run 58.
 
 **59 and 60 close the two holes step 52 left. Neither needs a deploy first and
-neither depends on the other, or on 58 (PR 74's close summaries step, which was
-open when these were written and may land on either side).** 59 reads step 57's
+neither depends on the other, or on 58, which merged first.** 59 reads step 57's
 floors and refuses to run without 57, saying so; 60 needs only 52 and 53. Both
 were measured before they were written, as the role on the migration cluster
 with every step through 57 applied and `request.jwt.claim.sub` set to a CAM.
