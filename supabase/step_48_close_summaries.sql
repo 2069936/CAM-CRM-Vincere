@@ -143,6 +143,15 @@ comment on column public.close_summaries.account_names is
  * `p_daily_import_ids` with no rows in `p_rows` is emptied, which is correct:
  * a re-upload that removed every account from a close should leave no money
  * behind it.
+ *
+ * THE SCOPE CHECK AT THE TOP OF THE BODY ARRIVED WITH STEP 58, and this copy is
+ * here so that re-running this file cannot take it away. As first written the
+ * function checked nothing about its caller, and since step 52 that let a CAM
+ * replace or empty the summaries of a client it cannot even read. The reasoning
+ * is in step_58_close_summaries_scope.sql, and its test fails if this copy and
+ * that one ever differ. On a database replayed from empty the check calls step
+ * 52's helpers before step 52 has created them; a call in that window fails
+ * with 42883, which both callers already read as "step 48 has not run".
  */
 create or replace function public.replace_close_summaries(
   p_daily_import_ids uuid[],
@@ -155,9 +164,67 @@ set search_path = pg_catalog, public
 as $function$
 declare
   v_written integer := 0;
+  v_caller text;
+  v_unscoped boolean;
+  v_mine uuid[];
+  v_refused integer;
 begin
   if p_daily_import_ids is null or array_length(p_daily_import_ids, 1) is null then
     return 0;
+  end if;
+
+  -- WHO IS CALLING (step 58). current_user is this function's owner in here.
+  -- The `role` setting is the role PostgREST set for the request, and a
+  -- definer call does not change it; 'none' is a direct login.
+  v_caller := coalesce(nullif(current_setting('role', true), 'none'), session_user::text);
+
+  -- A role row level security does not govern could write the table directly,
+  -- so narrowing it here would protect nothing: the service role, which is how
+  -- the ingest endpoints and the backfill call this, and a superuser.
+  select r.rolsuper or r.rolbypassrls
+    into v_unscoped
+    from pg_catalog.pg_roles r
+   where r.rolname = v_caller;
+
+  -- Everyone else gets step 52's rule for close_summaries: a Manager every
+  -- client, a CAM the clients assigned to it. Checked before the delete, and the
+  -- whole call is refused rather than the part that is out of scope.
+  if not coalesce(v_unscoped, false) and not public.is_manager() then
+    v_mine := array(select public.assigned_client_ids());
+
+    -- Every close named. One that does not exist is refused in the same words
+    -- as one that belongs to somebody else.
+    select count(*)
+      into v_refused
+      from unnest(p_daily_import_ids) as named(id)
+      left join public.daily_imports d on d.id = named.id
+     where d.client_id is null
+        or not (d.client_id = any (v_mine));
+    if v_refused > 0 then
+      raise exception using
+        errcode = '42501',
+        message = format(
+          'replace_close_summaries refused: %s of the %s closes named are not on a client assigned to you. Nothing was replaced.',
+          v_refused, array_length(p_daily_import_ids, 1));
+    end if;
+
+    -- Every row that will be written carries its own close's client, so a close
+    -- in scope cannot be used to file money under a client that is not.
+    if jsonb_typeof(p_rows) = 'array' then
+      select count(*)
+        into v_refused
+        from jsonb_array_elements(p_rows) as row_value
+        join public.daily_imports d on d.id = (row_value ->> 'daily_import_id')::uuid
+       where d.id = any (p_daily_import_ids)
+         and (row_value ->> 'client_id')::uuid is distinct from d.client_id;
+      if v_refused > 0 then
+        raise exception using
+          errcode = '42501',
+          message = format(
+            'replace_close_summaries refused: %s row(s) name a client other than the one their close belongs to. Nothing was replaced.',
+            v_refused);
+      end if;
+    end if;
   end if;
 
   delete from public.close_summaries
@@ -218,6 +285,14 @@ grant execute on function public.replace_close_summaries(uuid[], jsonb)
 -- already run by the time this migration does: a table created afterwards
 -- carries its own policy or it ships open. Signed-in users get what they have
 -- everywhere else; the publishable key in the browser bundle gets nothing.
+--
+-- ONLY ON A TABLE THAT HAS NO PERMISSIVE POLICY YET. Step 52 drops this one and
+-- puts "cam sees its own clients" in its place. Permissive policies are OR'd,
+-- so recreating `using (true)` beside step 52's on a re-run of this file would
+-- let every CAM read and write every client's summaries again, with step 52's
+-- policy still listed and doing nothing. Asking for this policy by name is not
+-- enough for that reason: after step 52 it is absent on purpose. A table that
+-- already carries any permissive policy keeps the ones it has.
 alter table public.close_summaries enable row level security;
 
 do $$
@@ -226,7 +301,7 @@ begin
     select 1 from pg_policies
     where schemaname = 'public'
       and tablename = 'close_summaries'
-      and policyname = 'authenticated full access'
+      and permissive = 'PERMISSIVE'
   ) then
     create policy "authenticated full access" on public.close_summaries
       for all to authenticated using (true) with check (true);

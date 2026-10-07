@@ -34,6 +34,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 55 | `step_55_account_live_samples.sql` | `account_live_samples`: the LAST sample of each account on each paired VPS, overwritten, with `run_state` derived from the strategy counts in four words — `running`, `idle`, `no_strategies` (the VPS looked and nothing is loaded) and `unmeasured` (nobody looked) — plus `account_tracker_settings` (the interval, the staleness horizon, the throttle, the retention window and the first agent version that samples) and `record_account_live_sample`, which upserts and never deletes what a sample omits | The account traffic light: which accounts are alive, which are running and roughly how the day is going, between the open and the 16:45 close. 54 is skipped on purpose — it is claimed by the unmerged deep-export draft |
 | 56 | `step_56_table_privilege_lockdown.sql` | `revoke all privileges on all tables in schema public` from `anon` and `authenticated`, then grants back by a LOOP over the catalogue with one exception table for the tables that get less than the four DML verbs — every row naming what decided it; four function revokes steps 52 and 53 could not reach; and `alter default privileges` so the next table is not born with the hole | Taking away TRUNCATE, TRIGGER, REFERENCES and MAINTAIN, the four privileges row level security cannot govern — a signed-in CAM could empty 32 of the 37 tables and no policy would see it. Also narrows step 55's SELECT grant on the two tracker tables from `anon, authenticated` to `authenticated` |
 | 57 | `step_57_algorithm_live_samples.sql` | `algorithm_live_samples`: the LAST reading of each NinjaTrader strategy instance (Strategies tab Realized plus Unrealized) on each paired VPS, overwritten, with the sample cycle it belongs to; `algorithm_live_settings` (the cohort floors, the cycle tolerance, the differs threshold, the report cap and the retention window); `record_algorithm_live_sample` for the ingest route; and `algorithm_live_desk()`, which returns the desk median per algorithm and instrument as aggregates only, leaving the caller's own clients out | Each algorithm today against the desk, on the CAM overview: the same cycle for desk and client, the sample size beside every figure, and no comparison when the cohort is too thin |
+| 58 | `step_58_close_summaries_scope.sql` | `replace_close_summaries` recreated with a scope check in front of its delete: a Manager and the service role as before, anyone else only the closes of clients assigned to them, with every row carrying its own close's `client_id`, or the whole call is refused with 42501; `step_48_close_summaries.sql` now carries the same function so a re-run of 48 does not undo it | Closing a CAM's ability to replace or empty another CAM's close summaries through `/rpc/replace_close_summaries`, which since step 52 it could do to rows it cannot even read |
 
 ## These three groups behave differently
 
@@ -107,7 +108,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -480,6 +481,77 @@ trades as the old one by the next reading, on an add-on that cannot read the
 count, or while the agent service itself is down. Such a row is compared with
 a figure that counts only since it came back on, and the panel says so in its
 basis line.
+
+**58 replaces one function and nothing else, and it is safe to run at any
+time.** Step 48's `replace_close_summaries` is SECURITY DEFINER, granted to
+`authenticated`, and as written it checked nothing about its caller: it deleted
+every summary row of the closes named and inserted whatever rows it was sent.
+Since step 52 a CAM reads only its own clients, and since step 56 the browser
+holds no write on `close_summaries` at all, so this function was the one way in
+and it let any signed-in CAM replace or empty another CAM's summaries through
+`/rpc/replace_close_summaries`. Measured on the migration cluster: a CAM that
+could read 0 of another CAM's summary rows called it once and that client's Cash
+row for the day read -99,999.00.
+
+After 58 the function does what the table's own step 52 policy would allow. A
+Manager and the service role (the ingest endpoints and
+`scripts/backfill_close_summaries.mjs`) are unchanged. Anyone else may name only
+closes of clients assigned to them, and every row must carry its own close's
+`client_id`, or the whole call is refused with 42501 before anything is deleted.
+The browser's two callers, an upload and a reclassification rebuild, already
+send exactly that, so nothing a CAM does in the CRM changes and nothing needs
+deploying. A refusal reaches the CAM as an error rather than being mistaken for
+"step 48 has not run".
+
+It needs 48 and 52 and refuses to run without them, saying which function is
+missing, before it changes anything. `step_48_close_summaries.sql` now carries
+the same function, character for character, so re-running 48 after 58 does not
+put the unscoped body back; the test beside 58 fails if the two copies differ.
+Re-running 48 also no longer brings back its first policy on the table,
+`authenticated full access` with `using (true)`: 48 now creates it only on a
+`close_summaries` that has no permissive policy yet, so after 52 it leaves
+step 52's in place. Before this change a re-run of 48 after 52 put it back
+beside step 52's, and every CAM read every client's summaries again. 58's own
+closing check runs before its commit, so a database it refuses is left as it
+was found.
+
+Verify it in the SQL editor. The catalogue first, which changes nothing:
+
+    select prosrc like '%assigned_client_ids%' as scoped
+    from pg_proc where oid = 'public.replace_close_summaries(uuid[], jsonb)'::regprocedure;
+    -- PASS: true
+
+    select policyname, permissive, cmd from pg_policies
+    where schemaname = 'public' and tablename = 'close_summaries';
+    -- PASS: one row, 'cam sees its own clients' | PERMISSIVE | ALL.
+    -- FAIL: 'authenticated full access' listed too means 48 was re-run after
+    -- 52 under its old text. Drop that one policy and nothing else (re-running
+    -- 52 would also undo 53's client policies):
+    --   drop policy "authenticated full access" on public.close_summaries;
+
+Then the behaviour, as a real CAM against a close of a client NOT assigned to
+them. Find one:
+
+    select u.username, u.auth_user_id, d.id as other_close
+    from app_users u
+    join daily_imports d on d.client_id not in (
+      select a.client_id from client_assignments a where a.cam_profile_id = u.cam_profile_id)
+    where u.role = 'CAM' and coalesce(u.status, 'Active') <> 'Inactive'
+      and u.auth_user_id is not null
+    limit 1;
+
+and call it as that CAM, INSIDE A TRANSACTION THAT ROLLS BACK. The rollback is
+the point: if 58 had not applied, this call would delete that close's summaries,
+and the rollback is what puts them back.
+
+    begin;
+    select set_config('request.jwt.claim.sub', '<auth_user_id>', true);
+    set local role authenticated;
+    select public.replace_close_summaries(array['<other_close>']::uuid[], '[]'::jsonb);
+    rollback;
+    -- PASS: ERROR 42501 replace_close_summaries refused: 1 of the 1 closes named
+    --       are not on a client assigned to you. Nothing was replaced.
+    -- FAIL: a number. The old body is still installed; run 58.
 
 **47 reads gracefully and writes loudly, so run it BEFORE the deploy.**
 Everything below about falling back to the rule is true of *reads* and false of
