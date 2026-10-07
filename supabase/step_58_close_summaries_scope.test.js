@@ -196,24 +196,25 @@ beforeAll(async () => {
 afterAll(async () => { await db?.close?.(); });
 
 // ---------------------------------------------------------------------------
-describe('step 58 is the one that runs last', () => {
-  it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
+describe('step 58 is no longer the one that runs last', () => {
+  it('appears once, a later step follows it, and 54 is still a deliberate gap', () => {
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 58)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(58);
+    // 59 and 60 (PR 75) landed after this file; the highest-number claim moved to 60.
+    expect(Math.max(...numbers)).toBeGreaterThan(58);
     expect(numbers).not.toContain(54);
     expect(raw).toMatch(/54 is still claimed by draft PR 65/);
   });
 
-  it('is in the runbook table and at the end of the run order', () => {
+  it('is in the runbook table and in the run order', () => {
     expect(runbook).toMatch(/^\| 58 \| `step_58_close_summaries_scope\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 58 | `step_58_close_summaries_scope.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 57 | `step_57_algorithm_live_samples.sql`'));
-    expect(runbook).toContain('→ 56 → 57 → 58.');
+    expect(runbook).toContain('→ 56 → 57 → 58 →');
   });
 
   it('refuses to run before step 48 and step 52, and changes nothing when it does', async () => {

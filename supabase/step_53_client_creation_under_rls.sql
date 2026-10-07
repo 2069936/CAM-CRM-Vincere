@@ -72,6 +72,14 @@
 --   clients visible    : 37, his 36 plus the new one
 --   somebody else's    : 0           unchanged, nothing leaked
 --
+-- NARROWED BY STEP 60. The client_assignments policy at the bottom of this file
+-- gates on the CLIENT and never on the profile a row names, and its creator arm
+-- has no expiry, so a CAM could hand a client she holds to another CAM, delete
+-- her own row, or take back a client she created after a Manager moved it.
+-- Step 60 leaves this policy in place and adds restrictive ones beside it, so a
+-- re-run of this file does not reopen that. Do not widen the policy below
+-- thinking it is the whole rule for the table.
+--
 -- Idempotent.
 
 alter table public.clients add column if not exists created_by uuid default auth.uid();

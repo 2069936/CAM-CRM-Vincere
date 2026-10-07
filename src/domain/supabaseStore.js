@@ -15,6 +15,7 @@ import {
   closeSummaryToDb,
 } from './closeSummary';
 import { createRequestGate } from './supabaseRetry';
+import { aggregateLogFamilyHistory } from './ninjaTraderLog';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -3425,7 +3426,7 @@ export async function deleteStrategyClassification(matchKey) {
   if (error) throw new Error(error.message);
 }
 
-function logAlgoHistoryFromRow(row = {}) {
+export function logAlgoHistoryFromRow(row = {}) {
   return {
     date: row.log_date || '',
     accountName: row.account_name || '',
@@ -3436,11 +3437,63 @@ function logAlgoHistoryFromRow(row = {}) {
   };
 }
 
-export async function loadLogAlgoHistory() {
-  if (!isSupabaseConfigured || !supabase) return [];
-  const { data, error } = await supabase.from('log_algo_history').select('*');
-  if (error) throw new Error(error.message);
-  return (data || []).map(logAlgoHistoryFromRow);
+/**
+ * One family of log_algo_history_by_family() (step 59), in the shape
+ * aggregateLogFamilyHistory returns, plus whether the database withheld it.
+ *
+ * A withheld family carries its name and nothing else: every figure is null,
+ * the counts included, because a count under the floor is itself a reading
+ * about another CAM's book. Null, never 0, so the card cannot print a withheld
+ * family as a flat one.
+ */
+export function logAlgoFamilyFromRow(row = {}) {
+  const withheld = row.status === 'withheld';
+  const figure = (value) => (withheld || value == null ? null : Number(value));
+  return {
+    family: row.family || 'Unknown',
+    withheld,
+    totalPnl: figure(row.total_pnl),
+    roundTrips: figure(row.round_trips),
+    byDirection: {
+      Long: figure(row.long_pnl),
+      Short: figure(row.short_pnl),
+      Mixed: figure(row.mixed_pnl),
+    },
+    accounts: figure(row.accounts),
+    days: figure(row.days),
+  };
+}
+
+function isMissingLogHistoryFunction(error) {
+  const code = String(error?.code || '');
+  return code === 'PGRST202' || code === '42883';
+}
+
+/**
+ * The NinjaTrader log history, one row per algorithm family, which is all the
+ * Stack Playbook card prints.
+ *
+ * Since step 59 the rows belong to a Manager and a CAM reads the desk figure
+ * through log_algo_history_by_family(), which withholds a family run on too
+ * few accounts outside her book. Before step 59 runs the function does not
+ * exist and the rows are still open to every session, so the same aggregate is
+ * computed here from them, which is what the card did before; the code can
+ * deploy either side of the migration. Any other failure throws.
+ *
+ * @param {{client?: object|null}} [options] a PostgREST client, for tests.
+ */
+export async function loadLogAlgoHistory({ client = undefined } = {}) {
+  const db = client === undefined ? (isSupabaseConfigured ? supabase : null) : client;
+  if (!db) return [];
+  const { data, error } = await db.rpc('log_algo_history_by_family');
+  if (!error) return (data || []).map(logAlgoFamilyFromRow);
+  if (!isMissingLogHistoryFunction(error)) {
+    throw new Error(`log_algo_history_by_family: ${error.message}`);
+  }
+  const rows = await db.from('log_algo_history').select('*');
+  if (rows.error) throw new Error(rows.error.message);
+  return aggregateLogFamilyHistory((rows.data || []).map(logAlgoHistoryFromRow))
+    .map((family) => ({ ...family, withheld: false }));
 }
 
 export async function saveLogAlgoHistory(rows = []) {
