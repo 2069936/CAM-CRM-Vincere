@@ -3,6 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, PAYOUT_STATES, RISK_LEVELS, isCashType } from '../domain/reconcile';
 import { normalizePropFirm, plansFor, resolveAccountLimits } from '../domain/propFirmRules';
 import { SIMULATION_MODES, classifyAccountNature } from '../domain/simulationAccounts';
+import { storedTargetStatus, STORED_TARGET } from '../domain/storedTarget';
 
 const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.UNASSIGNED,
@@ -127,7 +128,17 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
       propFirmPlan: plan,
       // Only filled from the rule when the desk has not typed its own number.
       ...(account.maxDrawdownLimit ? {} : { maxDrawdownLimit: next.maxDrawdownLimit ?? '' }),
-      ...(account.targetProfit ? {} : { targetProfit: next.targetProfit ?? '' }),
+      // `targetBalance`, not the firm's published profit amount. target_profit is
+      // an absolute balance (accountTargets.js says why), and the Target $ input
+      // two columns over asks the CAM for one. Writing the amount here put 3,000
+      // in a column every reader compares against a balance, so picking a plan on
+      // a 50k evaluation made it read as already passed.
+      ...(account.targetProfit ? {} : { targetProfit: next.targetBalance ?? '' }),
+      // And the start that balance was measured from, when the desk has not
+      // typed one. The target is `size + amount`; leaving the size out stored a
+      // balance with nothing beside it to say what it is above, which is the
+      // shape storedTarget.js has to guess at.
+      ...(Number(account.startBalance) > 0 || !next.accountSize ? {} : { startBalance: next.accountSize }),
     });
   };
 
@@ -152,6 +163,23 @@ function PlanPicker({ account, dailyImports, onUpdateAccount }) {
       </small>
     </div>
   );
+}
+
+/**
+ * Says so when the Target $ on this row is one no screen will use: at or below
+ * the start, or with no start and no standard size behind it (storedTarget.js).
+ * Every progress cell shows "Target not set" for such a row, and this is where
+ * the CAM can see why and fix it.
+ */
+function UnusedTargetNote({ account }) {
+  const status = storedTargetStatus(account);
+  if (status.state === STORED_TARGET.NOT_ABOVE_START) {
+    return <small className="plan-fallback">Not used: not above the start balance</small>;
+  }
+  if (status.state === STORED_TARGET.NO_START) {
+    return <small className="plan-fallback">Not used: set Start Bal $ first</small>;
+  }
+  return null;
 }
 
 /**
@@ -355,12 +383,15 @@ export default function AccountManager({ accounts, snapshots, dailyImports = [],
               {!isCash ? (
                 <td>
                   {isCashType(account.accountType) ? <span className="field-na">N/A</span> : (
-                    <input
-                      type="number"
-                      value={account.targetProfit ?? ''}
-                      placeholder="e.g. 52000"
-                      onChange={(event) => onUpdateAccount(account.accountName, { targetProfit: event.target.value })}
-                    />
+                    <>
+                      <input
+                        type="number"
+                        value={account.targetProfit ?? ''}
+                        placeholder="e.g. 52000"
+                        onChange={(event) => onUpdateAccount(account.accountName, { targetProfit: event.target.value })}
+                      />
+                      <UnusedTargetNote account={account} />
+                    </>
                   )}
                 </td>
               ) : null}

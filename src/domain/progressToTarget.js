@@ -25,12 +25,14 @@
 // already has it on would see change shape.
 //
 // `targetProfit` IS AN ABSOLUTE BALANCE here, the same unit evaluationReport.js
-// is arranged around and the same unit App.jsx has always compared against. Do
-// not reach for `resolveAccountLimits().targetProfit`: on the 94 book accounts
-// with nothing stored it returns a profit AMOUNT under 10,000 in a field of the
-// same name, and every one of those accounts' balances already exceeds it.
+// is arranged around and the same unit App.jsx has always compared against.
+// accountTargets.js holds the argument for that unit. If a derived target is
+// ever wanted here, `resolveAccountLimits().targetBalance` is the field in this
+// unit; `targetProfitAmount` beside it is the profit still to be made, which is
+// what a weekly PnL is divided by, never what a balance is compared against.
 
 import { firstObservedBalance } from './propFirmRules.js';
+import { storedTargetStatus, STORED_TARGET } from './storedTarget.js';
 
 const positive = (value) => {
   const n = Number(value);
@@ -44,6 +46,12 @@ export const PROGRESS_STATE = {
   NO_START: 'no-start',
   /** A target at or below the account's own starting balance. */
   TARGET_NOT_ABOVE_START: 'target-not-above-start',
+  /**
+   * A value is stored, but there is no stored start and the value implies no
+   * standard size, so nothing says whether it is a balance (storedTarget.js).
+   * Still a row, because eligibility is the stored Target $ and stays that.
+   */
+  NO_TARGET: 'no-target',
 };
 
 /**
@@ -53,6 +61,13 @@ export const PROGRESS_STATE = {
  * @param {object} report a buildDailyReportSummary result
  * @param {object[]} dailyImports the client's closes, for the start fallback
  */
+function progressState(measurable, start, gateState) {
+  if (measurable) return PROGRESS_STATE.MEASURED;
+  if (gateState === STORED_TARGET.NO_START) return PROGRESS_STATE.NO_TARGET;
+  if (gateState === STORED_TARGET.NOT_ABOVE_START) return PROGRESS_STATE.TARGET_NOT_ABOVE_START;
+  return start == null ? PROGRESS_STATE.NO_START : PROGRESS_STATE.TARGET_NOT_ABOVE_START;
+}
+
 export function buildProgressToTargetRows(report, dailyImports = []) {
   const rows = [...(report?.grouped?.funded || []), ...(report?.grouped?.evaluations || [])];
   return rows
@@ -62,7 +77,12 @@ export function buildProgressToTargetRows(report, dailyImports = []) {
         ?? positive(firstObservedBalance(row.accountName, dailyImports));
       const target = Number(row.meta.targetProfit);
       const balance = Number(row.accountBalance || 0);
-      const need = start != null ? target - start : null;
+      /* The stored value has to pass storedTarget.js before it is a
+       * denominator. Without this, 4,000 with no stored start was measured
+       * against the earliest close, and an account whose close sat at 4,000
+       * printed 100%. */
+      const gate = storedTargetStatus(row.meta);
+      const need = start != null && gate.target != null ? target - start : null;
       const measurable = need != null && need > 0;
       return {
         row,
@@ -75,9 +95,7 @@ export function buildProgressToTargetRows(report, dailyImports = []) {
         percent: measurable
           ? Math.max(0, Math.min(100, Math.round(((balance - start) / need) * 100)))
           : null,
-        state: measurable
-          ? PROGRESS_STATE.MEASURED
-          : (start == null ? PROGRESS_STATE.NO_START : PROGRESS_STATE.TARGET_NOT_ABOVE_START),
+        state: progressState(measurable, start, gate.state),
       };
     });
 }

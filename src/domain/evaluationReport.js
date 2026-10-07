@@ -33,16 +33,17 @@
 // around. `trading_accounts.target_profit` stores an absolute target BALANCE:
 // all 198 stored values on evaluation accounts are >= 40,000 (min 52,999, max
 // 107,300), which is what App.jsx's progress table and bulletBotStats.js already
-// compare a balance against. `resolveAccountLimits().targetProfit` returns that
-// same stored value when there is one and otherwise falls back to
-// `rule.profitTarget` or `genericProfitTarget(size)`, which are profit AMOUNTS:
-// all 94 accounts that take that fallback get a number under 10,000, and on
-// every one of those 94 the current balance already exceeds it. Reading that
-// field here would have declared 94 of 289 evaluations (32.5%) finished. The
-// function that looks like the right abstraction is the one that breaks it, so
-// this file does not call it, and the firm-rule path is refused even as a
-// `size + profitTarget` sum: it would have covered ONE account out of 289 at the
-// price of writing the unit confusion into a second place.
+// compare a balance against. accountTargets.js holds the argument for that unit.
+// When this file was written, `resolveAccountLimits()` exposed a field also
+// called `targetProfit` that fell back to `rule.profitTarget` or
+// `genericProfitTarget(size)`, profit AMOUNTS under 10,000 on all 94 accounts
+// with nothing stored, which would have declared 94 of 289 evaluations (32.5%)
+// finished. That field is gone: it now returns `targetBalance`, in this file's
+// unit, and `targetProfitAmount`, the profit still to be made. This file still
+// does not call it, for a reason that is no longer about units: its firm-rule
+// path covered ONE account out of 289, and a target from `tightestRuleFor` is a
+// guess about a plan nobody recorded, which a client should not be shown as the
+// number their account has to reach.
 //
 // WHAT IS NOT HERE, deliberately. No drawdown limit derived from
 // PROP_FIRM_RULES. It resolves for 93.1% of these accounts, and on all of them
@@ -55,6 +56,7 @@
 import { inferStartingBalance, targetForAccount } from './accountTargets.js';
 import { firstObservedBalance } from './propFirmRules.js';
 import { strategyRan } from './strategyRan.js';
+import { storedTargetStatus, STORED_TARGET } from './storedTarget.js';
 
 /** True for both evaluation types, and for neither funded nor cash nor sim. */
 export function isEvaluationType(accountType) {
@@ -106,8 +108,15 @@ const positive = (value) => {
  * header on why the firm-rule fallback is refused.
  */
 export function evaluationTargetFor(meta, startBalance) {
-  const stored = positive(meta?.targetProfit);
-  if (stored) return { target: stored, source: 'stored' };
+  /* A stored value is only a target when it sits above a known start
+   * (storedTarget.js). One that does not is NOT replaced by the standard table:
+   * somebody typed it, it is wrong, and the row says which of the two ways it
+   * is wrong instead of quietly showing a different number. */
+  const gate = storedTargetStatus(meta);
+  if (gate.target) return { target: gate.target, source: 'stored' };
+  if (gate.state !== STORED_TARGET.NONE) {
+    return { target: null, source: null, refused: gate.state, stored: gate.stored };
+  }
   const size = inferStartingBalance(startBalance);
   const standard = size != null ? targetForAccount(meta?.accountType, size) : null;
   if (standard) return { target: standard, source: 'inferred' };
@@ -128,10 +137,14 @@ export function evaluationProgressFor(row, dailyImports = []) {
   const start = storedStart || positive(observedStart);
   const startSource = storedStart ? 'stored' : (start ? 'observed' : null);
 
-  const { target, source: targetSource } = evaluationTargetFor(row?.meta, start);
+  const { target, source: targetSource, refused, stored } = evaluationTargetFor(row?.meta, start);
   const balance = Number(row?.accountBalance || 0);
 
   const base = { start, startSource, target, targetSource, percent: null };
+  // A stored target at or below its own start: the existing sentence for it.
+  if (refused === STORED_TARGET.NOT_ABOVE_START) {
+    return { ...base, target: stored, targetSource: 'stored', state: EVALUATION_PROGRESS.TARGET_NOT_ABOVE_START };
+  }
   if (!target) return { ...base, state: EVALUATION_PROGRESS.NO_TARGET };
   if (!start) return { ...base, state: EVALUATION_PROGRESS.NO_START };
   // A target not above the start cannot be a denominator. Printing 100% would

@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { EVALUATION_PROGRESS, evaluationProgressFor, isEvaluationType } from './evaluationReport';
 import { buildDailyReportSummary } from './report';
 import { buildCrmStateFromTables } from './supabaseStore';
-import { resolveAccountLimits } from './propFirmRules';
+import { genericProfitTarget, resolveAccountLimits, ruleFor } from './propFirmRules';
 
 const snapshot = JSON.parse(
   readFileSync(new URL('../../public/local-snapshot.json', import.meta.url), 'utf8'),
@@ -229,35 +229,54 @@ describe('progress toward the target, and the trap under it', () => {
     expect(sources.filter((state) => state.start === null)).toHaveLength(0);
   });
 
-  it('would have called 94 of 289 accounts finished if it read the resolver', () => {
-    /* THE CENTRAL TRAP, measured.
+  it('would have called 94 of 289 accounts finished on the resolver\'s old amount', () => {
+    /* THE CENTRAL TRAP, measured, and closed.
      *
-     * `trading_accounts.target_profit` stores an absolute target BALANCE, and
-     * `resolveAccountLimits().targetProfit` returns that stored value when there is
-     * one and a profit AMOUNT when there is not. Both read naturally as "the
-     * target", and comparing a balance against the second looks exactly like the
-     * comparison bulletBotStats.js and App.jsx's progress table already make. */
-    const nonStored = cohort
-      .map((entry) => ({
+     * `trading_accounts.target_profit` stores an absolute target BALANCE. When
+     * this section landed, `resolveAccountLimits().targetProfit` returned that
+     * stored value when there was one and a profit AMOUNT when there was not
+     * (`rule.profitTarget`, else `genericProfitTarget(size)`). The field is gone;
+     * the old fallback is recomputed here from the same inputs so the figure the
+     * decision was made on stays checkable. */
+    const resolved = cohort.map((entry) => ({
+      entry,
+      limits: resolveAccountLimits({ ...entry.meta, accountName: entry.accountName }, { dailyImports: entry.client.dailyImports || [] }),
+    }));
+    const nonStored = resolved
+      .filter(({ limits }) => limits.targetSource !== 'stored')
+      .map(({ entry, limits }) => ({
         entry,
-        limits: resolveAccountLimits({ ...entry.meta, accountName: entry.accountName }, { dailyImports: entry.client.dailyImports || [] }),
+        limits,
+        oldAmount: limits.accountSize
+          ? (ruleFor(limits.firm, limits.accountSize, limits.plan)?.profitTarget ?? genericProfitTarget(limits.accountSize))
+          : null,
       }))
-      .filter(({ limits }) => limits.targetSource !== 'stored' && limits.targetProfit);
+      .filter(({ oldAmount }) => oldAmount);
     expect(nonStored).toHaveLength(94);
     // Every one of them under 10,000, and on every one of them the balance is
     // already past it.
-    expect(nonStored.filter(({ limits }) => limits.targetProfit < 10000)).toHaveLength(94);
-    expect(nonStored.filter(({ entry, limits }) => entry.balance >= limits.targetProfit)).toHaveLength(94);
+    expect(nonStored.filter(({ oldAmount }) => oldAmount < 10000)).toHaveLength(94);
+    expect(nonStored.filter(({ entry, oldAmount }) => entry.balance >= oldAmount)).toHaveLength(94);
     expect(Math.round((nonStored.length / cohort.length) * 1000) / 10).toBe(32.5);
 
     // Against the right number, those same 94 are not finished: 4 of them have
-    // reached their target and 90 have not. The resolver would have said 94.
+    // reached their target and 90 have not. The old amount would have said 94.
     const honest = nonStored.map(({ entry }) => evaluationProgressFor(
       { accountName: entry.accountName, accountBalance: entry.balance, meta: entry.meta },
       entry.client.dailyImports || [],
     ));
     expect(honest.filter((state) => state.state === EVALUATION_PROGRESS.REACHED)).toHaveLength(4);
     expect(honest.filter((state) => state.state !== EVALUATION_PROGRESS.REACHED)).toHaveLength(90);
+
+    // And the resolver no longer offers the amount under the target's name. What
+    // it offers now is a balance on all 94, and against it 13 have reached, not
+    // 94. Still not this file's 4: with no plan recorded on any evaluation row the
+    // resolver's balance comes from the tightest rule the firm sells at that
+    // size, a guess about the plan, which is why this section keeps to the
+    // standard table in accountTargets.js instead of calling the resolver.
+    expect(resolved.filter(({ limits }) => 'targetProfit' in limits)).toHaveLength(0);
+    expect(nonStored.filter(({ limits }) => limits.targetBalance >= 40000)).toHaveLength(94);
+    expect(nonStored.filter(({ entry, limits }) => entry.balance >= limits.targetBalance)).toHaveLength(13);
   });
 
   it('never carries a stored drawdown limit, which is why the buffer comes from the platform', () => {

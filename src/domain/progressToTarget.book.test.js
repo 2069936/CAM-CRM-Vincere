@@ -82,13 +82,19 @@ describe('what the old arithmetic was printing', () => {
 describe('what it prints now', () => {
   const rows = latest.flatMap((entry) => entry.rows);
 
-  it('recovers a start for 77 of the 78, and refuses a number for the one it cannot', () => {
+  it('recovers a start for 77 of the 78, and refuses a number for the 6 whose target cannot be read', () => {
     expect(rows).toHaveLength(233);
     const recovered = rows.filter((entry) => entry.startSource === 'observed');
     expect(recovered).toHaveLength(77);
-    const refused = rows.filter((entry) => entry.state === PROGRESS_STATE.NO_START);
-    expect(refused).toHaveLength(1);
-    for (const entry of refused) expect(entry.percent).toBeNull();
+    /* Six Funded rows store a target with no start beside it and a value that
+     * implies no standard size (storedTarget.js). Before the gate, four of them
+     * were measured against their earliest close, one was refused for having no
+     * start and one for sitting below it. Now all six say the target cannot be
+     * read, which is the truth about each. */
+    const unreadable = rows.filter((entry) => entry.state === PROGRESS_STATE.NO_TARGET);
+    expect(unreadable).toHaveLength(6);
+    for (const entry of unreadable) expect(entry.percent).toBeNull();
+    expect(rows.filter((entry) => entry.state === PROGRESS_STATE.NO_START)).toHaveLength(0);
   });
 
   it('no longer reports 70 untouched accounts as nearly finished: 5 are, 65 were not', () => {
@@ -102,7 +108,7 @@ describe('what it prints now', () => {
 
   it('says so instead of printing 0% where the recorded target is not above the start', () => {
     const notAbove = rows.filter((entry) => entry.state === PROGRESS_STATE.TARGET_NOT_ABOVE_START);
-    expect(notAbove).toHaveLength(7);
+    expect(notAbove).toHaveLength(6);
     for (const entry of notAbove) expect(entry.percent).toBeNull();
   });
 
@@ -123,9 +129,11 @@ describe('what it prints now', () => {
     const all = closes.flatMap((entry) => entry.rows);
     const measured = all.filter((entry) => entry.state === PROGRESS_STATE.MEASURED);
     expect(all).toHaveLength(1687);
-    expect(measured).toHaveLength(1623);
+    // 1,623 before the stored-target gate; the 28 that left were closes of the
+    // six unreadable targets above, measured against their earliest close.
+    expect(measured).toHaveLength(1595);
     expect(measured.filter((entry) => entry.startSource === 'stored')).toHaveLength(826);
-    expect(measured.filter((entry) => entry.startSource === 'observed')).toHaveLength(797);
+    expect(measured.filter((entry) => entry.startSource === 'observed')).toHaveLength(769);
     // Every measured row has one or the other. A third state here would be a
     // percentage drawn from a start that is neither on record nor recovered.
     expect(measured.filter((entry) => entry.startSource === null)).toHaveLength(0);

@@ -352,10 +352,11 @@ describe('reconcileDailyImport', () => {
 
   it('raises Evaluation target reached flag when a bullet-bot eval balance reaches target', () => {
     const registry = {
-      EVAL1: { accountName: 'EVAL1', accountType: 'Evaluation - Bullet Bot', status: 'Active', targetProfit: 3000 },
+      // A BALANCE on a stored start. 3,000 with no start beside it is refused.
+      EVAL1: { accountName: 'EVAL1', accountType: 'Evaluation - Bullet Bot', status: 'Active', startBalance: 50000, targetProfit: 53000 },
     };
     const parsed = {
-      accounts: [{ accountName: 'EVAL1', connection: 'Lucid', grossRealizedPnl: 3100, accountBalance: 3100, trailingMaxDrawdown: 500, weeklyPnl: 3100 }],
+      accounts: [{ accountName: 'EVAL1', connection: 'Lucid', grossRealizedPnl: 3100, accountBalance: 53100, trailingMaxDrawdown: 500, weeklyPnl: 3100 }],
       strategies: [{ accountName: 'EVAL1', strategyName: '0 - BulletBot-1.0', strategyFamily: 'BulletBot', enabled: true }],
       orders: [], executions: [],
     };

@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw, X } from
 import { formatCurrency, summarizeAccountRows } from '../domain/report';
 import { PAYOUT_STATES } from '../domain/reconcile';
 import { fillsLoadedFor } from '../domain/closeLoadState';
+import { storedTargetStatus, STORED_TARGET } from '../domain/storedTarget';
 
 function drawdownDisplay(row) {
   const ddLimit = Number(row.meta?.maxDrawdownLimit);
@@ -296,9 +297,9 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   {(isFunded || isEval) ? <td>{formatCurrency(row.accountBalance)}</td> : null}
                   {!isCash ? (() => { const dd = drawdownDisplay(row); return <td className={dd.tone}>{dd.label}</td>; })() : null}
                   {isFunded ? (() => {
-                    const target = Number(row.meta?.targetProfit || 0);
+                    const target = storedTargetStatus(row.meta).target;
                     const balance = Number(row.accountBalance || 0);
-                    if (!target) return <td className="muted" onClick={(e) => e.stopPropagation()}>-</td>;
+                    if (!target) return <TargetNotSet meta={row.meta} stopClick />;
                     // Progress from the starting balance, not from zero. A 50k account
                     // with a 54k target sits at 0% at 50k, negative below it.
                     const start = Number(row.meta?.startBalance || 0) || (balance >= 90000 ? 100000 : 50000);
@@ -329,10 +330,10 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   ) : null}
                   {isFunded ? (() => { const r = manualRiskDisplay(row.meta?.riskLevel); return <td className={r.tone}>{r.label}</td>; })() : null}
                   {isEval ? (() => {
-                    const target = Number(row.meta?.targetProfit || 0);
+                    const target = storedTargetStatus(row.meta).target;
                     const start = Number(row.meta?.startBalance || 0);
                     const balance = Number(row.accountBalance || 0);
-                    if (!target) return <td className="muted">-</td>;
+                    if (!target) return <TargetNotSet meta={row.meta} />;
                     const base = start || (target * 0.97);
                     const profit = balance - base;
                     const needed = target - base;
@@ -358,6 +359,28 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
         </table>
       </div>
     </section>
+  );
+}
+
+/**
+ * The target cell when there is no target a reader may use: nothing stored, or a
+ * stored value that is not above the account's known start (storedTarget.js).
+ * Said in words rather than "-", and never as a percentage: 3,000 stored on a
+ * 50k start used to print 100% here on the day the account opened. When a value
+ * IS stored, the tooltip says why it is not used, so the CAM knows to fix it in
+ * the registry.
+ */
+function TargetNotSet({ meta, stopClick = false }) {
+  const status = storedTargetStatus(meta);
+  const why = status.state === STORED_TARGET.NOT_ABOVE_START
+    ? `The stored target ${formatCurrency(status.stored)} is not above the start ${formatCurrency(status.judgedAgainst)}, so it is not used. Set the target balance in the Account Registry.`
+    : status.state === STORED_TARGET.NO_START
+      ? `The stored target ${formatCurrency(status.stored)} cannot be read without a start balance. Set Start Bal $ or the target balance in the Account Registry.`
+      : 'No target balance on record. Set it in the Account Registry.';
+  return (
+    <td className="muted target-not-set" title={why} onClick={stopClick ? (e) => e.stopPropagation() : undefined}>
+      Target not set
+    </td>
   );
 }
 
