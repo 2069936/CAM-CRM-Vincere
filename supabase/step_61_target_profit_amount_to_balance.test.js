@@ -186,20 +186,22 @@ describe('running it again, undoing it, and writing after it', () => {
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
 describe('step 61 is the one that runs last', () => {
-  it('is the highest number and appears once, and 54, 58, 59 and 60 are still gaps', () => {
+  it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 61)).toHaveLength(1);
     expect(Math.max(...numbers)).toBe(61);
-    for (const claimed of [54, 58, 59, 60]) expect(numbers).not.toContain(claimed);
+    // 58, 59 and 60 merged before this file; only 54 is still claimed by draft PR 65.
+    expect(numbers).not.toContain(54);
+    for (const merged of [58, 59, 60]) expect(numbers).toContain(merged);
   });
 
-  it('is in the runbook table after 57, and at the end of the run order', () => {
+  it('is in the runbook table after 60, and at the end of the run order', () => {
     expect(runbook).toMatch(/^\| 61 \| `step_61_target_profit_amount_to_balance\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 61 | `step_61_target_profit_amount_to_balance.sql`'))
-      .toBeGreaterThan(runbook.indexOf('| 57 | `step_57_algorithm_live_samples.sql`'));
-    expect(runbook).toMatch(/→ 57 → 61\./);
+      .toBeGreaterThan(runbook.indexOf('| 60 | `step_60_client_handoff_manager_only.sql`'));
+    expect(runbook).toMatch(/→ 59 → 60 → 61\./);
   });
 });

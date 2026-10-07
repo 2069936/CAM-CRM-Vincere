@@ -159,26 +159,25 @@ afterAll(async () => {
 
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
-describe('step 60 is the one that runs last', () => {
-  it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
-    /* The claim moves here from 58, the way 55 handed it to 56, 56 to 57 and
-     * 57 to 58: the newest step's own test says it is the newest. 59 is this
-     * PR's other file. */
+describe('step 60 is no longer the one that runs last', () => {
+  it('appears once, a later step follows it, and 54 is still a deliberate gap', () => {
+    /* The claim moved on to 61 (PR 78), the way 55 handed it to 56 and each
+     * step since to the next: the newest step's own test says it is the newest. */
     expect(exists).toBe(true);
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 60)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(60);
+    expect(Math.max(...numbers)).toBeGreaterThan(60);
     expect(numbers).not.toContain(54);
   });
 
-  it('is in the runbook table after 59 and ends the run order', () => {
+  it('is in the runbook table after 59 and in the run order', () => {
     expect(runbook).toMatch(/^\| 60 \| `step_60_client_handoff_manager_only\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 60 | `step_60_client_handoff_manager_only.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 59 | `step_59_log_algo_history_by_family.sql`'));
-    expect(runbook).toContain('→ 59 → 60.');
+    expect(runbook).toMatch(/→ 59 → 60(?: →|\.)/);
   });
 
   it('step 53 and step 57 say what closed the holes they describe', () => {
