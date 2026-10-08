@@ -14948,7 +14948,6 @@ export default function App() {
       clientDetailCache.current.delete(selectedClient.id);
     }
     ensureClientDetail(selectedClient.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClient?.id, selectedClient?.detailLoaded]);
 
   const openCloseId = dailyImport && !dailyImport.detailLoaded
