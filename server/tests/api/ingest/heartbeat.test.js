@@ -197,12 +197,22 @@ describe('heartbeat body validation', () => {
     expect(() => normalizeHeartbeatBody(body({ addonAvailable: value }))).toThrow('invalid_heartbeat');
   });
 
+  it.each([42, true, {}, []])('rejects a stable error code that is not a string: %j', (value) => {
+    expect(() => normalizeHeartbeatBody(body({ lastErrorCode: value }))).toThrow('invalid_heartbeat');
+  });
+
   it.each([
     'unknown_failure',
     'NINJATRADER_NOT_RUNNING',
-    42,
-  ])('rejects unsupported stable error code %j', (value) => {
-    expect(() => normalizeHeartbeatBody(body({ lastErrorCode: value }))).toThrow('invalid_heartbeat');
+    'invalid_heartbeat',
+    'strategy_sample_refused',
+  ])('lands a heartbeat whose last error code it does not know, as no code: %j', (value) => {
+    // The agent copies its LAST failure code into every heartbeat, including
+    // the code of a refused heartbeat. Refusing the word again closed a loop
+    // that left two freshly updated machines silent on the fleet screen.
+    const normalized = normalizeHeartbeatBody(body({ lastErrorCode: value, lastErrorMessage: 'kept as it was' }));
+    expect(normalized.lastErrorCode).toBeNull();
+    expect(normalized.lastErrorMessage).toBe('kept as it was');
   });
 
   it('accepts every supported stable error code', () => {

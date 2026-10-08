@@ -68,10 +68,25 @@ function queueMetric(value) {
   return value;
 }
 
+/* A WORD THE CRM DOES NOT KNOW IS NOT A REASON TO SILENCE A MACHINE.
+ *
+ * The heartbeat is the only thing that says a machine is alive, and the agent
+ * copies the code of its LAST failure into every heartbeat until something
+ * succeeds. That includes the code of a refused heartbeat itself. So a single
+ * 400 on this route used to close a loop: the agent recorded `invalid_heartbeat`,
+ * sent it back as lastErrorCode, was refused for that word, recorded it again,
+ * and the device went silent on the fleet screen until somebody reinstalled.
+ * Two machines updated to 1.2.0 on 2026-10-08 were found this way: posting
+ * account samples every ten minutes, last_seen_at frozen at the install.
+ *
+ * An unknown STRING is therefore accepted and stored as "no code": the device
+ * stays online, the message (already sanitised) still says what happened, and
+ * the record RPC's own vocabulary check never sees the word. A non string is
+ * still a malformed body. */
 function stableErrorCode(value) {
   if (value === null || value === undefined || value === '') return null;
-  if (typeof value !== 'string' || !ERROR_CODES.has(value)) throw invalidHeartbeat();
-  return value;
+  if (typeof value !== 'string') throw invalidHeartbeat();
+  return ERROR_CODES.has(value) ? value : null;
 }
 
 function safeErrorMessage(value) {
