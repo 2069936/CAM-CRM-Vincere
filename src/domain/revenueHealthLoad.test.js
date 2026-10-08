@@ -29,6 +29,11 @@ const tables = () => ({
     row({ id: 'u2', legacy_key: 'c2', name: 'Birch', subscription_price: '$250', created_at: '2026-07-01T14:00:00.000Z' }),
     row({ id: 'u3', legacy_key: 'c3', name: 'Cedar', subscription_price: 'Free', created_at: '2026-08-01T14:00:00.000Z' }),
     row({ id: 'u4', legacy_key: 'c4', name: 'Dogwood', subscription_price: null, created_at: '2026-09-01T14:00:00.000Z' }),
+    // Step 62 columns. A stored status wins over the price: a paused client's
+    // old $500 is not MRR, and a cancelled client is not part of the base.
+    row({ id: 'u6', legacy_key: 'c6', name: 'Fir', subscription_price: '$500', payment_status: 'paused', created_at: '2026-04-01T14:00:00.000Z' }),
+    row({ id: 'u7', legacy_key: 'c7', name: 'Gum', subscription_price: 'Undetermined', payment_status: 'cancelled', created_at: '2026-04-01T14:00:00.000Z' }),
+    row({ id: 'u8', legacy_key: 'c8', name: 'Hazel', subscription_price: '$400', payment_status: 'paying', created_at: '2026-04-01T14:00:00.000Z' }),
     // Deleted. The store drops it before mapping, so it must not reach the
     // panel as a live $500.
     row({
@@ -42,20 +47,34 @@ const loaded = () => buildCrmStateFromTables(tables());
 const byId = (state, id) => state.clients.find((client) => client.id === id);
 
 describe('the revenue panel over a state built from tables', () => {
-  it('sees the tier each row carries, not Undetermined for everyone', () => {
+  it('sees the amount and status each row carries, not Undetermined for everyone', () => {
     expect(revenueSnapshot(loaded().clients)).toMatchObject({
-      activeClients: 4,
-      mrr: 750,
-      priced: 3,
+      activeClients: 6,
+      mrr: 1150,
+      priced: 5,
       unpriced: 1,
-      paying: 2,
-      byTier: { $500: 1, $250: 1, Free: 1, Undetermined: 1 },
+      paying: 3,
+      byStatus: { paying: 3, free: 1, undetermined: 1, paused: 1, idle: 0 },
+      byAmount: [
+        { amount: 500, clients: 1, mrr: 500 },
+        { amount: 400, clients: 1, mrr: 400 },
+        { amount: 250, clients: 1, mrr: 250 },
+      ],
     });
+  });
+
+  it('derives the status from the price when the row has no payment_status, as a pre-62 database has not', () => {
+    const state = loaded();
+    expect(byId(state, 'c1')).toMatchObject({ paymentStatus: 'paying', profile: { paymentStatus: 'paying' } });
+    expect(byId(state, 'c3')).toMatchObject({ paymentStatus: 'free', profile: { paymentStatus: 'free' } });
+    expect(byId(state, 'c4')).toMatchObject({ paymentStatus: 'undetermined' });
+    expect(byId(state, 'c6')).toMatchObject({ paymentStatus: 'paused', subscriptionPrice: '$500' });
+    expect(byId(state, 'c7')).toMatchObject({ paymentStatus: 'cancelled' });
   });
 
   it('ages a free client from the date the row was created', () => {
     const leakage = revenueLeakage(loaded().clients, { asOf: '2026-09-08' });
-    expect(leakage).toMatchObject({ freeClients: 1, convertible: 1, potentialMrr: 375, undated: 0 });
+    expect(leakage).toMatchObject({ freeClients: 1, convertible: 1, potentialMrr: 383.33, undated: 0 });
     expect(leakage.aging).toEqual([
       { id: 'c3', name: 'Cedar', since: '2026-08-01T14:00:00.000Z', days: 37 },
     ]);
@@ -73,12 +92,14 @@ describe('the revenue panel over a state built from tables', () => {
     });
   });
 
-  it('normalizes a missing or unknown tier the same way at both levels', () => {
+  it('normalizes a missing or unknown price and status the same way at both levels', () => {
     const state = buildCrmStateFromTables({
-      clients: [row({ id: 'u9', legacy_key: 'c9', name: 'Fir', subscription_price: 'premium' })],
+      clients: [row({ id: 'u9', legacy_key: 'c9', name: 'Fir', subscription_price: 'premium', payment_status: 'whatever' })],
     });
     expect(state.clients[0].subscriptionPrice).toBe('Undetermined');
     expect(state.clients[0].profile.subscriptionPrice).toBe('Undetermined');
+    expect(state.clients[0].paymentStatus).toBe('undetermined');
+    expect(state.clients[0].profile.paymentStatus).toBe('undetermined');
     // No created_at on the row reads as empty, which revenueLeakage reports as
     // undated rather than as a client free since today.
     expect(state.clients[0].createdAt).toBe('');
@@ -86,23 +107,28 @@ describe('the revenue panel over a state built from tables', () => {
 });
 
 describe('a tier edited in the client form', () => {
-  // What CredentialsTab's updateProfile hands onUpdateClient: the whole
-  // profile, one field changed.
-  const editTier = (state, id, subscriptionPrice) => updateClientDetails(state, id, {
-    profile: { ...byId(state, id).profile, subscriptionPrice },
+  // What the client form's updateProfile hands onUpdateClient: the whole
+  // profile, with the status and the price column it decides.
+  const editTier = (state, id, paymentStatus, subscriptionPrice) => updateClientDetails(state, id, {
+    profile: { ...byId(state, id).profile, paymentStatus, subscriptionPrice },
   });
 
   it('moves the panel on the same render, not at the next login', () => {
-    const next = editTier(loaded(), 'c4', '$500');
-    expect(byId(next, 'c4').subscriptionPrice).toBe('$500');
-    expect(byId(next, 'c4').profile.subscriptionPrice).toBe('$500');
-    expect(revenueSnapshot(next.clients)).toMatchObject({ mrr: 1250, priced: 4, unpriced: 0 });
+    const next = editTier(loaded(), 'c4', 'paying', '$500');
+    expect(byId(next, 'c4')).toMatchObject({ paymentStatus: 'paying', subscriptionPrice: '$500' });
+    expect(byId(next, 'c4').profile).toMatchObject({ paymentStatus: 'paying', subscriptionPrice: '$500' });
+    expect(revenueSnapshot(next.clients)).toMatchObject({ mrr: 1650, priced: 6, unpriced: 0 });
   });
 
   it('takes revenue away as readily as it adds it', () => {
-    const next = editTier(loaded(), 'c1', 'Free');
-    expect(revenueSnapshot(next.clients)).toMatchObject({ mrr: 250, paying: 1 });
+    const next = editTier(loaded(), 'c1', 'free', 'Free');
+    expect(revenueSnapshot(next.clients)).toMatchObject({ mrr: 650, paying: 2 });
     expect(revenueLeakage(next.clients, { asOf: '2026-09-08' }).freeClients).toBe(2);
+  });
+
+  it('drops a cancelled client out of the base on the same render', () => {
+    const next = editTier(loaded(), 'c1', 'cancelled', 'Undetermined');
+    expect(revenueSnapshot(next.clients)).toMatchObject({ activeClients: 5, mrr: 650 });
   });
 
   it('leaves the tier alone when a profile edit does not carry one', () => {

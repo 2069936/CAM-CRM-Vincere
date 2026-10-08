@@ -3073,15 +3073,86 @@ function attachClientIds(rows = [], clientIdByUuid = {}) {
 }
 //#endregion
 //#region src/domain/subscriptionPrice.js
-var SUBSCRIPTION_PRICES = [
-	"$500",
-	"$250",
-	"Free",
-	"Undetermined"
-];
 var DEFAULT_SUBSCRIPTION_PRICE = "Undetermined";
+var FREE_SUBSCRIPTION_PRICE = "Free";
+[...Object.freeze([
+	500,
+	400,
+	375,
+	333,
+	250,
+	183
+]).map((amount) => `$${amount}`)];
+var PAYMENT_STATUSES = Object.freeze([
+	"paying",
+	"free",
+	"undetermined",
+	"paused",
+	"idle",
+	"cancelled"
+]);
+var DEFAULT_PAYMENT_STATUS = "undetermined";
+Object.freeze({
+	paying: "Paying",
+	free: "Free",
+	undetermined: "Undetermined",
+	paused: "Paused",
+	idle: "Idle",
+	cancelled: "Cancelled"
+});
+/**
+* Whole dollars out of an amount cell, or null.
+*
+* "$400" -> 400, "$1,000" -> 1000, "375.00" -> 375, " $ 183 " -> 183.
+* "???", "", "Free", "n/a" -> null: the caller decides what null means there.
+*/
+function parseSubscriptionAmount(value) {
+	if (typeof value === "number") return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+	const text = String(value ?? "").trim();
+	if (!text) return null;
+	const match = /^\$?\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?$/.exec(text);
+	if (!match) return null;
+	const amount = Math.round(Number(match[1].replace(/,/g, "")));
+	return amount > 0 ? amount : null;
+}
+/** 400 -> "$400". Null or a non-positive amount -> the default label. */
+function formatSubscriptionAmount(amount) {
+	const parsed = parseSubscriptionAmount(amount);
+	return parsed === null ? DEFAULT_SUBSCRIPTION_PRICE : `$${parsed}`;
+}
+/**
+* Coerce any stored or incoming value to a valid price, falling back to the
+* default. An unknown string ('premium', 'TBD', '$0') still lands on
+* Undetermined rather than being stored as a tier nobody can price.
+*/
 function normalizeSubscriptionPrice(value) {
-	return SUBSCRIPTION_PRICES.includes(value) ? value : DEFAULT_SUBSCRIPTION_PRICE;
+	if (value === "Free") return FREE_SUBSCRIPTION_PRICE;
+	if (value === "Undetermined" || value == null) return DEFAULT_SUBSCRIPTION_PRICE;
+	const text = String(value).trim();
+	if (text === "Free") return FREE_SUBSCRIPTION_PRICE;
+	if (!text.startsWith("$")) return DEFAULT_SUBSCRIPTION_PRICE;
+	return formatSubscriptionAmount(text);
+}
+/**
+* The status a legacy row implies from its price alone. This is the rule step
+* 62's backfill applies in SQL, restated here for rows read from a database
+* (or a local snapshot) that has not run it yet.
+*/
+function derivePaymentStatus(subscriptionPrice) {
+	const price = normalizeSubscriptionPrice(subscriptionPrice);
+	if (price === "Free") return "free";
+	if (price === "Undetermined") return DEFAULT_PAYMENT_STATUS;
+	return "paying";
+}
+/**
+* Coerce a stored status. When the column is absent (null/undefined), the
+* status is derived from the price so a pre-62 database still reads sensibly;
+* an unknown string lands on the default.
+*/
+function normalizePaymentStatus(value, subscriptionPrice) {
+	if (value == null || value === "") return derivePaymentStatus(subscriptionPrice);
+	const text = String(value).trim().toLowerCase();
+	return PAYMENT_STATUSES.includes(text) ? text : DEFAULT_PAYMENT_STATUS;
 }
 //#endregion
 //#region src/domain/clientTags.js
@@ -3538,6 +3609,7 @@ function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = null, lo
 			reportConfig: client.report_config && typeof client.report_config === "object" ? client.report_config : {},
 			status: client.status || "Active",
 			subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+			paymentStatus: normalizePaymentStatus(client.payment_status, client.subscription_price),
 			createdAt: client.created_at || "",
 			deletedAt: client.deleted_at || null,
 			pinned: Boolean(client.pinned),
@@ -3564,7 +3636,8 @@ function buildCrmStateFromTables(tables = {}, { preferredCamProfileId = null, lo
 				additionalEmails: jsonArray(client.additional_emails),
 				propFirm: client.prop_firm || "",
 				messenger: client.messenger || "",
-				subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price)
+				subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+				paymentStatus: normalizePaymentStatus(client.payment_status, client.subscription_price)
 			},
 			credentials: {
 				ip: credential.ip || "",

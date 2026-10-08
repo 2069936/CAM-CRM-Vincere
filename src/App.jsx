@@ -230,7 +230,17 @@ import ClientRowLabel from "./components/ClientRowLabel";
 import {
   USER_ROLES,
 } from "./domain/userStore";
-import { SUBSCRIPTION_PRICES } from "./domain/subscriptionPrice";
+import {
+  PAYMENT_STATUSES,
+  PAYMENT_STATUS_LABELS,
+  SUBSCRIPTION_AMOUNT_PRESETS,
+  normalizePaymentStatus,
+  parseSubscriptionAmount,
+  paymentStatusLabel,
+  subscriptionAmountOf,
+  subscriptionPriceFor,
+} from "./domain/subscriptionPrice";
+import { buildPaymentStatusImport, paymentPatchFor } from "./domain/paymentStatusSheet";
 import {
   authenticateSupabaseAppUser,
   getSupabaseSessionAppUser,
@@ -2710,6 +2720,7 @@ function DataToolsPanel({
   clients = [],
   camProfiles = [],
   onImportClient,
+  onUpdateClientById,
   onAppendActivity,
   session,
 }) {
@@ -2729,6 +2740,41 @@ function DataToolsPanel({
   const [isParsingBenchmark, setIsParsingBenchmark] = useState(false);
   const [benchmarkSaving, setBenchmarkSaving] = useState(false);
   const [benchmarkSaveNeedsMigration, setBenchmarkSaveNeedsMigration] = useState(false);
+  /* THE PAYMENT STATUS SHEET. The paste is parsed and matched on every
+     keystroke, in memory, and nothing reaches a client until Apply. Because
+     the plan is recomputed from `clients`, a second Apply over the same paste
+     finds nothing left to change. */
+  const [paymentSheetText, setPaymentSheetText] = useState("");
+  const [paymentApplying, setPaymentApplying] = useState(false);
+  const [paymentApplyResult, setPaymentApplyResult] = useState(null);
+  const paymentImport = useMemo(
+    () => (paymentSheetText.trim() ? buildPaymentStatusImport(paymentSheetText, clients) : null),
+    [paymentSheetText, clients],
+  );
+
+  async function applyPaymentSheet() {
+    if (!paymentImport || !onUpdateClientById || paymentApplying) return;
+    setPaymentApplying(true);
+    let applied = 0;
+    const failed = [];
+    // One at a time, like importClients: a rejection names the client it was for.
+    for (const entry of paymentImport.changes) {
+      try {
+        await onUpdateClientById(entry.clientId, paymentPatchFor(entry));
+        applied += 1;
+      } catch (error) {
+        failed.push({ name: entry.client?.name || entry.clientId, message: error?.message || String(error) });
+      }
+    }
+    setPaymentApplying(false);
+    setPaymentApplyResult({ applied, failed, unmatched: paymentImport.unmatched.length });
+  }
+
+  const paymentLabel = (entry) => {
+    const label = paymentStatusLabel(entry.status);
+    if (entry.status !== "paying") return label;
+    return entry.amount === null ? `${label}, amount unknown` : `${label} $${entry.amount}`;
+  };
 
   const duplicateKeys = useMemo(
     () => {
@@ -3764,6 +3810,129 @@ function DataToolsPanel({
           />
           {renderImportPreview("intake")}
         </div>
+        <div className="data-tool-card payment-sheet-card">
+          <strong>Payment status sheet</strong>
+          <p className="muted">
+            Paste the <b>Active</b> tab of the CAM Clients Payment Status sheet, copied from
+            Google Sheets, and the <b>Cancelled</b> tab under it if churned clients should be
+            filed too. Rows are matched by primary email, then additional emails, then exact
+            name. Nothing is written until you press Apply.
+          </p>
+          <textarea
+            className="payment-sheet-paste"
+            value={paymentSheetText}
+            placeholder={"Paying a subscription\t\t\t\tFree CAM\t\t\tUndetermined ...\nName\tEmail\tAmount\tNotes\tName\tEmail\tNotes ..."}
+            onChange={(event) => {
+              setPaymentSheetText(event.target.value);
+              setPaymentApplyResult(null);
+            }}
+          />
+          {paymentImport ? (
+            <div className="intake-preview">
+              <div className="intake-preview-head">
+                <strong>
+                  {paymentImport.counts.changes} change{paymentImport.counts.changes === 1 ? "" : "s"} to apply
+                </strong>
+                <span className="muted">
+                  {paymentImport.counts.rows} sheet rows · {paymentImport.counts.matched} matched ·{" "}
+                  {paymentImport.counts.unchanged} already current · {paymentImport.counts.ambiguous} ambiguous ·{" "}
+                  {paymentImport.counts.unmatched} unmatched
+                  {paymentImport.counts.amountUnknown
+                    ? ` · ${paymentImport.counts.amountUnknown} paying with no amount on the sheet`
+                    : ""}
+                </span>
+              </div>
+              {paymentImport.parsed.warnings.map((warning) => (
+                <div className="notice error" key={warning}>{warning}</div>
+              ))}
+              {!paymentImport.parsed.groups.length ? (
+                <div className="notice error">
+                  No group header found. The paste needs the title row (Paying a subscription, Free CAM,
+                  Undetermined, Paused, Iddle Clients) or the Cancelled tab's Name and Email header.
+                </div>
+              ) : null}
+              {paymentImport.changes.length ? (
+                <div className="table-wrap">
+                  <table className="ops-table compact-table">
+                    <thead>
+                      <tr>
+                        <th>Client</th>
+                        <th>Current</th>
+                        <th>New</th>
+                        <th>Matched by</th>
+                        <th>Sheet note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paymentImport.changes.map((entry) => (
+                        <tr key={entry.clientId} className={entry.amountUnknown ? "warn-row" : undefined}>
+                          <td>{entry.client.name}</td>
+                          <td>{paymentLabel(entry.current)}</td>
+                          <td>{paymentLabel(entry.next)}</td>
+                          <td>{entry.basis}</td>
+                          <td>{entry.row.notes || (entry.amountUnknown ? `Amount reads "${entry.row.amountText || ""}"` : "")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">Every matched client already carries what the sheet says.</p>
+              )}
+              {paymentImport.conflicts.length ? (
+                <div className="notice error">
+                  Not applied, the sheet names these clients twice with different answers:{" "}
+                  {paymentImport.conflicts.map((conflict) => conflict.client.name).join(", ")}
+                </div>
+              ) : null}
+              {paymentImport.ambiguous.length ? (
+                <div className="notice error">
+                  Ambiguous, more than one client fits:{" "}
+                  {paymentImport.ambiguous
+                    .map((item) => `${item.row.name || item.row.emailCell} (line ${item.row.line}: ${item.candidates.map((c) => c.name).join(" or ")})`)
+                    .join("; ")}
+                </div>
+              ) : null}
+              {paymentImport.unmatched.length ? (
+                <div className="notice info">
+                  <strong>Not in the CRM, handle by hand:</strong>
+                  <ul className="payment-sheet-unmatched">
+                    {paymentImport.unmatched.map((row) => (
+                      <li key={`${row.line}-${row.status}-${row.name}`}>
+                        {row.name || "(no name)"}{row.emailCell ? ` · ${row.emailCell}` : ""} · {paymentStatusLabel(row.status)}
+                        {row.status === "paying" ? (row.amount === null ? ", amount unknown" : ` $${row.amount}`) : ""}
+                        {" "}(line {row.line})
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              <div className="intake-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={applyPaymentSheet}
+                  disabled={paymentApplying || !paymentImport.changes.length || !onUpdateClientById}
+                >
+                  {paymentApplying
+                    ? "Applying..."
+                    : `Apply ${paymentImport.changes.length} change${paymentImport.changes.length === 1 ? "" : "s"}`}
+                </button>
+              </div>
+              {paymentApplyResult ? (
+                <div className={`notice ${paymentApplyResult.failed.length ? "error" : "info"}`}>
+                  {paymentApplyResult.applied} client{paymentApplyResult.applied === 1 ? "" : "s"} updated.
+                  {paymentApplyResult.failed.length
+                    ? ` ${paymentApplyResult.failed.length} failed: ${paymentApplyResult.failed.map((f) => `${f.name} (${f.message})`).join("; ")}.`
+                    : ""}
+                  {paymentApplyResult.unmatched
+                    ? ` ${paymentApplyResult.unmatched} sheet row${paymentApplyResult.unmatched === 1 ? "" : "s"} still to handle by hand.`
+                    : ""}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
       {message ? (
         <div className={`notice ${status === "error" ? "error" : "info"}`}>
@@ -4323,6 +4492,7 @@ function ManagerOverview({
   onUpdateCamProfile,
   onAddClient,
   onImportClient,
+  onUpdateClientById,
   onAppendDailyImport,
   onAppendActivity,
   onLogout,
@@ -5419,6 +5589,7 @@ function ManagerOverview({
             clients={clients}
             camProfiles={activeCamProfiles}
             onImportClient={onImportClient}
+            onUpdateClientById={onUpdateClientById}
             onAppendActivity={onAppendActivity}
             session={session}
           />
@@ -12781,9 +12952,20 @@ function CredentialsTab({
   const [showPasswords, setShowPasswords] = useState(false);
   const [additionalEmailDraft, setAdditionalEmailDraft] = useState("");
   const [churnPrompt, setChurnPrompt] = useState(false);
+  const [amountDraft, setAmountDraft] = useState(null);
+  const paymentStatus = normalizePaymentStatus(profile.paymentStatus, profile.subscriptionPrice);
+  const paymentAmount = paymentStatus === "paying" ? subscriptionAmountOf(profile.subscriptionPrice) : null;
 
   function updateProfile(patch) {
     onUpdateClient({ profile: { ...profile, ...patch } });
+  }
+
+  function commitAmountDraft() {
+    if (amountDraft === null) return;
+    const amount = parseSubscriptionAmount(amountDraft);
+    setAmountDraft(null);
+    if (amount === paymentAmount) return;
+    updateProfile({ paymentStatus: "paying", subscriptionPrice: subscriptionPriceFor("paying", amount) });
   }
   /**
    * Files the client as Inactive and says why, in ONE patch.
@@ -13031,16 +13213,67 @@ function CredentialsTab({
             </select>
           </label>
           <label>
-            Subscription price
+            Payment status
             <select
-              value={profile.subscriptionPrice || "Undetermined"}
-              onChange={(e) => updateProfile({ subscriptionPrice: e.target.value })}
+              value={paymentStatus}
+              onChange={(e) => {
+                const status = e.target.value;
+                // The price column follows the status: only Paying keeps an
+                // amount, so a pause or a cancellation drops out of the MRR and
+                // the price log records the money that stopped.
+                updateProfile({
+                  paymentStatus: status,
+                  subscriptionPrice: subscriptionPriceFor(status, status === "paying" ? paymentAmount : null),
+                });
+                setAmountDraft(null);
+              }}
             >
-              {SUBSCRIPTION_PRICES.map((price) => (
-                <option value={price} key={price}>{price}</option>
+              {PAYMENT_STATUSES.map((status) => (
+                <option value={status} key={status}>{PAYMENT_STATUS_LABELS[status]}</option>
               ))}
             </select>
           </label>
+          {paymentStatus === "paying" ? (
+            <label>
+              Monthly amount
+              <div className="payment-amount-presets">
+                {SUBSCRIPTION_AMOUNT_PRESETS.map((amount) => (
+                  <button
+                    type="button"
+                    key={amount}
+                    className={paymentAmount === amount ? "secondary-button" : "ghost-button"}
+                    onClick={() => {
+                      setAmountDraft(null);
+                      updateProfile({ paymentStatus: "paying", subscriptionPrice: subscriptionPriceFor("paying", amount) });
+                    }}
+                  >
+                    ${amount}
+                  </button>
+                ))}
+              </div>
+              {/* Committed on blur or Enter, not per keystroke: typing 400 one
+                  digit at a time would log $4 and $40 as price changes. */}
+              <input
+                type="number"
+                min="1"
+                step="1"
+                inputMode="numeric"
+                placeholder="Whole dollars"
+                value={amountDraft ?? (paymentAmount ?? "")}
+                onChange={(e) => setAmountDraft(e.target.value)}
+                onBlur={commitAmountDraft}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitAmountDraft();
+                  }
+                }}
+              />
+              {paymentAmount === null ? (
+                <span className="muted">No amount on record: counted as paying, left out of the MRR.</span>
+              ) : null}
+            </label>
+          ) : null}
           <ClientTagPicker
             tags={client.tags}
             onChange={(tags) => onUpdateClient({ tags })}
@@ -15520,6 +15753,33 @@ export default function App() {
       });
   }
 
+  /**
+   * The same save as handleUpdateClient, for a client that is not the selected
+   * one: the payment status sheet in Data Tools updates many clients in one
+   * pass. Returns the write so the caller can count what landed; it does not
+   * alert, because the caller reports failures by client name.
+   */
+  function handleUpdateClientById(clientId, patch) {
+    const target = (state.clients || []).find((client) => client.id === clientId);
+    if (!target) return Promise.reject(new Error("Client not found"));
+    setState((current) => updateClientDetails(current, clientId, patch));
+    if (!isSupabaseConfigured) return Promise.resolve();
+    return updateSupabaseClient(clientId, patch).then(() => {
+      auditSilently({
+        entityType: "client",
+        entityId: clientId,
+        action: "client.update",
+        beforeData: { clientName: target.name },
+        afterData: {
+          clientId,
+          clientName: target.name,
+          changedFields: Object.keys(patch || {}),
+          source: "payment-status-sheet",
+        },
+      });
+    });
+  }
+
   function handleUpdateClient(patch) {
     if (!selectedClient) return;
     setState((current) =>
@@ -16238,6 +16498,7 @@ export default function App() {
                 }),
               });
             }}
+            onUpdateClientById={handleUpdateClientById}
             onImportClient={async (row, camId) => {
               const savedClient = await createSupabaseClient(row.name, camId || null, row.stage || "Active");
               await updateSupabaseClient(savedClient.id, {

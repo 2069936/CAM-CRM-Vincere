@@ -5,12 +5,14 @@ import RevenueHealthPanel from './RevenueHealthPanel';
 const client = (over) => ({ id: over.id, name: over.name || over.id, status: 'Active', deletedAt: null, ...over });
 
 const book = [
-  client({ id: 'a', subscriptionPrice: '$500' }),
-  client({ id: 'b', subscriptionPrice: '$250' }),
-  client({ id: 'c', subscriptionPrice: 'Free', name: 'Long free', freeSince: '2026-03-01' }),
-  client({ id: 'd', subscriptionPrice: 'Free', name: 'Saved', tags: ['Refund save'] }),
-  client({ id: 'e', subscriptionPrice: 'Undetermined' }),
-  client({ id: 'f', subscriptionPrice: 'Undetermined' }),
+  client({ id: 'a', paymentStatus: 'paying', subscriptionPrice: '$500' }),
+  client({ id: 'b', paymentStatus: 'paying', subscriptionPrice: '$250' }),
+  client({ id: 'c', paymentStatus: 'free', subscriptionPrice: 'Free', name: 'Long free', freeSince: '2026-03-01' }),
+  client({ id: 'd', paymentStatus: 'free', subscriptionPrice: 'Free', name: 'Saved', tags: ['Refund save'] }),
+  client({ id: 'e', paymentStatus: 'undetermined', subscriptionPrice: 'Undetermined' }),
+  client({ id: 'f', paymentStatus: 'undetermined', subscriptionPrice: 'Undetermined' }),
+  client({ id: 'g', paymentStatus: 'paused', subscriptionPrice: 'Undetermined' }),
+  client({ id: 'h', paymentStatus: 'cancelled', subscriptionPrice: 'Undetermined' }),
 ];
 
 const render = (props = {}) => renderToStaticMarkup(
@@ -24,16 +26,35 @@ describe('the page says what it cannot see', () => {
     const html = render();
     expect(html).toContain('$750');
     expect(html).toContain('Floor, not total');
-    expect(html).toContain('2 of 6 clients have no tier set');
+    expect(html).toContain('2 of 7 clients have no amount set');
   });
 
-  it('warns that every number understates the desk while the tier is unset', () => {
+  it('warns that every number understates the desk while the status is unset', () => {
     expect(render()).toContain('understates the desk');
   });
 
   it('drops the caveat once every client is priced', () => {
-    const priced = book.filter((c) => c.subscriptionPrice !== 'Undetermined');
+    const priced = book.filter((c) => c.paymentStatus !== 'undetermined');
     expect(render({ clients: priced })).toContain('Every active client is priced');
+  });
+
+  it('lists the base by amount, highest first, then by the statuses that bring in nothing', () => {
+    const html = render({ clients: [...book, client({ id: 'i', paymentStatus: 'paying', subscriptionPrice: '$400' })] });
+    const order = ['$500 a month', '$400 a month', '$250 a month', 'Free', 'Paused', 'Idle', 'Undetermined']
+      .map((label) => html.indexOf(label));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+    expect(html).not.toContain('Cancelled');
+  });
+
+  it('counts cancelled clients out of the base and says so', () => {
+    expect(render()).toContain('7 active clients, cancelled excluded');
+  });
+
+  it('shows a paying client with no amount on record as its own warning row', () => {
+    const html = render({ clients: [...book, client({ id: 'j', paymentStatus: 'paying', subscriptionPrice: 'Undetermined' })] });
+    expect(html).toContain('Paying, amount unknown');
+    expect(html).toContain('3 of 8 clients have no amount set');
   });
 });
 

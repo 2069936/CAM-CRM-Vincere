@@ -4,7 +4,7 @@ import {
   persistDailyImportWithClient,
   withLegacyDailyImportId,
 } from './dailyImportPersistence';
-import { normalizeSubscriptionPrice } from './subscriptionPrice';
+import { normalizePaymentStatus, normalizeSubscriptionPrice } from './subscriptionPrice';
 import { normalizeClientTags } from './clientTags';
 import { normalizeAccountFocus } from './clientAccountFocus';
 import { mergeSimulationRows, splitSimulationRows } from './simulationAccounts';
@@ -533,8 +533,9 @@ export const LOGIN_COLUMNS = {
   clients: 'id, legacy_key, name, status, stage, deleted_at, pinned, pinned_note, notes, '
     // created_at is on this list because revenueHealth.js:114 reads
     // `client.freeSince || client.createdAt`; buildCrmStateFromTables maps it
-    // to the top level, next to subscriptionPrice.
-    + 'subscription_price, created_at, tags, account_focus, report_config, '
+    // to the top level, next to subscriptionPrice. payment_status (step 62)
+    // rides beside it: the revenue panel sums the amounts of PAYING clients.
+    + 'subscription_price, payment_status, created_at, tags, account_focus, report_config, '
     + 'churn_reason, churn_note, churned_at, full_name, email, phone, timezone, country, '
     + 'start_date, preferred_channel, language, product_key, additional_emails, prop_firm, messenger',
   client_assignments: 'client_id, cam_profile_id',
@@ -1327,6 +1328,10 @@ export function buildCrmStateFromTables(tables = {}, {
       // clientPatchToDb writes back from it. updateClientDetails mirrors an
       // edit of it up here so the two cannot drift apart in state.
       subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+      // Derived from the price when the column is not there yet (a database
+      // before step 62, or a local snapshot taken before it), so the panel
+      // reads the same book either way.
+      paymentStatus: normalizePaymentStatus(client.payment_status, client.subscription_price),
       createdAt: client.created_at || '',
       // Always null here today, since visibleClientRows drops deleted rows,
       // and mapped anyway so the panel's own filter is not reading undefined.
@@ -1374,6 +1379,7 @@ export function buildCrmStateFromTables(tables = {}, {
         propFirm: client.prop_firm || '',
         messenger: client.messenger || '',
         subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+        paymentStatus: normalizePaymentStatus(client.payment_status, client.subscription_price),
       },
       credentials: {
         ip: credential.ip || '',
@@ -2109,6 +2115,11 @@ function clientPatchToDb(patch = {}) {
     if ('propFirm' in profile) mapped.prop_firm = profile.propFirm || '';
     if ('messenger' in profile) mapped.messenger = profile.messenger || '';
     if ('subscriptionPrice' in profile) mapped.subscription_price = normalizeSubscriptionPrice(profile.subscriptionPrice);
+    // Mapped only when the patch carries it, like tags below: on a database
+    // where step 62 has not run, no other save can fail because of the column.
+    if ('paymentStatus' in profile) {
+      mapped.payment_status = normalizePaymentStatus(profile.paymentStatus, mapped.subscription_price ?? profile.subscriptionPrice);
+    }
   }
   // Mapped only when a patch actually carries tags, so no other save touches
   // the column and, on a database where step 42 has not run, no other save can
@@ -2312,6 +2323,7 @@ export async function createSupabaseClient(name, camProfileId = null, stage = 'A
      * profile keeps its copy: the client form edits that one, and
      * updateSupabaseClient writes back from profile. */
     subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+    paymentStatus: normalizePaymentStatus(client.payment_status, client.subscription_price),
     createdAt: client.created_at || '',
     deletedAt: client.deleted_at || null,
     pinned: Boolean(client.pinned),
@@ -2331,6 +2343,8 @@ export async function createSupabaseClient(name, camProfileId = null, stage = 'A
       additionalEmails: jsonArray(client.additional_emails),
       propFirm: client.prop_firm || '',
       messenger: client.messenger || '',
+      subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+      paymentStatus: normalizePaymentStatus(client.payment_status, client.subscription_price),
     },
     credentials: {
       ip: '',
