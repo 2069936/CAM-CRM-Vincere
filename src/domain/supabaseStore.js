@@ -532,9 +532,8 @@ export const LOGIN_COLUMNS = {
     + 'client_order, report_config, start_date, email, phone, timezone, notes',
   clients: 'id, legacy_key, name, status, stage, deleted_at, pinned, pinned_note, notes, '
     // created_at is on this list because revenueHealth.js:114 reads
-    // `client.freeSince || client.createdAt` and buildCrmStateFromTables never
-    // mapped it, so on Supabase data every free client aged to `days: null`.
-    // The one column this change ADDS to a login.
+    // `client.freeSince || client.createdAt`; buildCrmStateFromTables maps it
+    // to the top level, next to subscriptionPrice.
     + 'subscription_price, created_at, tags, account_focus, report_config, '
     + 'churn_reason, churn_note, churned_at, full_name, email, phone, timezone, country, '
     + 'start_date, preferred_channel, language, product_key, additional_emails, prop_firm, messenger',
@@ -1318,6 +1317,20 @@ export function buildCrmStateFromTables(tables = {}, {
       name: client.name,
       reportConfig: client.report_config && typeof client.report_config === 'object' ? client.report_config : {},
       status: client.status || 'Active',
+      // The fields revenueHealth.js reads, at the top level where it reads
+      // them. createSupabaseClient maps the same three, but it only shapes a
+      // client created in this session; every login and every local snapshot
+      // comes through HERE, and with the tier only in `profile` the panel read
+      // an MRR of $0 with every client unpriced.
+      //
+      // profile keeps its copy: the client form edits that one and
+      // clientPatchToDb writes back from it. updateClientDetails mirrors an
+      // edit of it up here so the two cannot drift apart in state.
+      subscriptionPrice: normalizeSubscriptionPrice(client.subscription_price),
+      createdAt: client.created_at || '',
+      // Always null here today, since visibleClientRows drops deleted rows,
+      // and mapped anyway so the panel's own filter is not reading undefined.
+      deletedAt: client.deleted_at || null,
       pinned: Boolean(client.pinned),
       pinnedNote: client.pinned_note || '',
       notes: client.notes || '',

@@ -1,3 +1,5 @@
+import { normalizeSubscriptionPrice } from './subscriptionPrice';
+
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -410,10 +412,22 @@ export function adoptSavedDailyImport(state, clientId, date, savedRow) {
   }));
 }
 
+/**
+ * A tier edited in the client form arrives inside `profile`, because that is
+ * the copy clientPatchToDb writes back from. revenueHealth.js reads the TOP
+ * LEVEL copy, so a shallow merge alone would leave the revenue panel on the
+ * tier the client had at login until the next full load. Mirrored here, in
+ * state only: the patch that goes to the database is the caller's, unchanged.
+ */
 export function updateClientDetails(state, clientId, patch) {
+  const profile = patch?.profile;
+  const tier = profile && 'subscriptionPrice' in profile
+    ? { subscriptionPrice: normalizeSubscriptionPrice(profile.subscriptionPrice) }
+    : {};
   return updateClient(state, clientId, (client) => ({
     ...client,
     ...patch,
+    ...tier,
   }));
 }
 
