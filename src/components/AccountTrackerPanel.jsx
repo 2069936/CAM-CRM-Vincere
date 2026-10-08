@@ -7,7 +7,7 @@ import {
   summarizeAccountTracker,
 } from '../domain/autoCollectionFleet';
 import { registryLights } from '../domain/accountBuckets';
-import { buildAccountPill, withDiffers } from '../domain/accountPill';
+import { buildAccountPill, withCloseDiffers, withDiffers } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
 import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
@@ -64,6 +64,11 @@ import useClientLiveStrategies from './useClientLiveStrategies';
  * so a CAM can tell a dead account from a new one from a missing one. The
  * plain `accountNames` prop still works and treats every name as expected.
  * new_account_days is read once per session by useAccountObservationSettings.
+ *
+ * THE SECOND AMBER MARKER (step 66). `closeVerdicts` is today's verdict per
+ * account (lower case name to verdict) from the tracker against the close
+ * panel under this strip; a pill whose verdict asks for a look carries the
+ * "Close differs" badge in words. Never red, never the pill's colour.
  */
 export default function AccountTrackerPanel({
   clientUuid = '',
@@ -79,6 +84,7 @@ export default function AccountTrackerPanel({
   defaultDetailsOpen = false,
   loadStrategies = loadSupabaseClientLiveStrategies,
   loadObservationSettings = loadSupabaseAccountObservationSettings,
+  closeVerdicts = null,
 }) {
   /* THE PICTURE FIRST, THE SENTENCES BEHIND A CLICK. Pedro's words: the tracker
    * is good but there is a lot to read. The strip above the rows is one pill
@@ -250,7 +256,10 @@ export default function AccountTrackerPanel({
             {view.rows.map((row) => (
               <AccountPill
                 key={row.accountName}
-                pill={withDiffers(row.pill, details.get(row.accountName)?.differsCount || 0)}
+                pill={withCloseDiffers(
+                  withDiffers(row.pill, details.get(row.accountName)?.differsCount || 0),
+                  closeVerdicts?.get(String(row.accountName).trim().toLowerCase()) || null,
+                )}
                 expanded={expanded === row.accountName}
                 controls={detailId}
                 onToggle={() => setExpanded((value) => (value === row.accountName ? null : row.accountName))}

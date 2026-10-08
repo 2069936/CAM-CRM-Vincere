@@ -1,7 +1,64 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/* THE WRITE PATH OF "ADD FLAG", driven against a stand-in for the client module
+ * the way paymentStatusWrite.test.js does, because insertSupabaseOperationalFlag
+ * takes no client of its own. `configured` stays false for every other test in
+ * this file: the loaders below inject their own client, and the first insert
+ * test expects no database at all. The stand-in answers the uuid lookups with
+ * fixed uuids and records every insert, so the row can be read back. */
+const db = vi.hoisted(() => {
+  const state = {
+    configured: false,
+    clientUuid: '7a1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d',
+    importUuid: 'b2c3d4e5-f601-4234-a567-89abcdef0123',
+    generatedId: 'c3d4e5f6-0718-4293-b4a5-6789abcdef01',
+    tradingAccount: null,
+    calls: [],
+    inserts: [],
+  };
+  function answer(call) {
+    switch (call.table) {
+      case 'clients': return { data: { id: state.clientUuid }, error: null };
+      case 'daily_imports': return { data: { id: state.importUuid }, error: null };
+      case 'trading_accounts': return { data: state.tradingAccount, error: null };
+      case 'operational_flags': return {
+        data: {
+          ...call.inserted,
+          id: call.inserted?.id || state.generatedId,
+          trading_accounts: state.tradingAccount ? { account_name: state.tradingAccount.account_name } : null,
+        },
+        error: null,
+      };
+      default: return { data: null, error: { message: `unexpected table ${call.table}` } };
+    }
+  }
+  state.supabase = {
+    from(table) {
+      const call = { table, filters: [], select: null, inserted: null };
+      state.calls.push(call);
+      const chain = {
+        select(columns) { call.select = columns; return chain; },
+        eq(column, value) { call.filters.push({ op: 'eq', column, value }); return chain; },
+        ilike(column, value) { call.filters.push({ op: 'ilike', column, value }); return chain; },
+        insert(row) { call.inserted = row; state.inserts.push({ table, row }); return chain; },
+        maybeSingle() { return Promise.resolve(answer(call)); },
+        single() { return Promise.resolve(answer(call)); },
+      };
+      return chain;
+    },
+  };
+  return state;
+});
+
+vi.mock('../lib/supabaseClient', () => ({
+  get isSupabaseConfigured() { return db.configured; },
+  get supabase() { return db.configured ? db.supabase : null; },
+}));
+
 import {
   ACCOUNT_LIVE_SAMPLE_HISTORY_COLUMNS,
   TRACKER_CLOSE_READING_COLUMNS,
+  insertSupabaseOperationalFlag,
   isMissingTrackerCloseReadings,
   loadSupabaseAccountLiveSampleHistory,
   loadSupabaseTrackerCloseReadings,
@@ -35,6 +92,7 @@ function fakeClient({ settings, readings, history } = {}) {
       const chain = {
         select(columns) { asked.select[table] = columns; return chain; },
         in(column, values) { asked.filters[table].push({ op: 'in', column, values }); return chain; },
+        eq(column, value) { asked.filters[table].push({ op: 'eq', column, value }); return chain; },
         gte(column, value) { asked.filters[table].push({ op: 'gte', column, value }); return chain; },
         order(column, options) { asked.order[table].push({ column, ...options }); return chain; },
         limit(n) { asked.limit[table] = n; return chain; },
@@ -141,6 +199,18 @@ describe('loadSupabaseTrackerCloseReadings', () => {
     ]);
     expect(client.asked.limit.tracker_close_readings).toBe(5000);
     expect(client.asked.limit.account_tracker_settings).toBe(1);
+  });
+
+  it('narrows to one trading day for the overview, and only when asked', async () => {
+    const client = fakeClient();
+    await loadSupabaseTrackerCloseReadings({ clientIds: ['c1'], tradingDate: '2026-10-08', client });
+    expect(client.asked.filters.tracker_close_readings).toEqual([
+      { op: 'in', column: 'client_id', values: ['c1'] },
+      { op: 'eq', column: 'trading_date', value: '2026-10-08' },
+    ]);
+    const blank = fakeClient();
+    await loadSupabaseTrackerCloseReadings({ clientIds: ['c1'], tradingDate: '  ', client: blank });
+    expect(blank.asked.filters.tracker_close_readings).toEqual([{ op: 'in', column: 'client_id', values: ['c1'] }]);
   });
 
   it('a Manager (no clientIds) reads the whole desk with no client filter', async () => {
@@ -258,5 +328,84 @@ describe('loadSupabaseAccountLiveSampleHistory', () => {
     const client = fakeClient();
     expect(await loadSupabaseAccountLiveSampleHistory({ clientIds: [], client })).toEqual({ available: true, rows: [] });
     expect(client.asked.from).toEqual([]);
+  });
+});
+
+describe('insertSupabaseOperationalFlag', () => {
+  it('writes nothing without a database, and refuses a flag with no message before any request', async () => {
+    expect(await insertSupabaseOperationalFlag('c1', 'imp-1', { id: 'f', message: 'x' })).toBeNull();
+    expect(await insertSupabaseOperationalFlag('c1', 'imp-1', { id: 'f', message: '' })).toBeNull();
+  });
+});
+
+describe('insertSupabaseOperationalFlag, against a database', () => {
+  /* The row the panel's "Add flag" hands PostgREST. The id is the browser's
+   * uuid when it has one, so the optimistic row and the stored row are the same
+   * flag; the client and the close are resolved to their uuids through the
+   * lookups, never pasted; the type, severity and status are the queue's. */
+  const FLAG_ID = '0f3b6c2e-5d1a-4e7b-9c3d-2a1b4c5d6e7f';
+  const ACCOUNT_ID = 'd4e5f6a7-1829-4ab3-9c5d-7e8f9a0b1c2d';
+  const MESSAGE = 'Tracker and close differ on ACC 01 by $140';
+  const flagOf = (over = {}) => ({
+    id: FLAG_ID, type: 'Tracker differs from the close', severity: 'Warning', status: 'Open', accountName: 'ACC 01', message: MESSAGE, ...over,
+  });
+  const lookups = () => db.calls
+    .filter((call) => call.table === 'clients' || call.table === 'daily_imports')
+    .map((call) => [call.table, call.filters[0].column, call.filters[0].value]);
+
+  beforeEach(() => {
+    db.configured = true;
+    db.tradingAccount = null;
+    db.calls = [];
+    db.inserts = [];
+  });
+  afterEach(() => { db.configured = false; });
+
+  it('inserts one row with the browser uuid as its id, the client and the close resolved to their uuids, and hands back the flag with its account name', async () => {
+    db.tradingAccount = { id: ACCOUNT_ID, account_name: 'ACC 01' };
+    const stored = await insertSupabaseOperationalFlag('c1', 'imp-1', flagOf());
+    expect(db.inserts).toHaveLength(1);
+    expect(db.inserts[0].table).toBe('operational_flags');
+    expect(db.inserts[0].row).toEqual({
+      id: FLAG_ID,
+      daily_import_id: db.importUuid,
+      client_id: db.clientUuid,
+      trading_account_id: ACCOUNT_ID,
+      type: 'Tracker differs from the close',
+      severity: 'Warning',
+      message: MESSAGE,
+      status: 'Open',
+      resolved_at: null,
+    });
+    // The legacy keys were asked for and the uuids came back: the row carries what the lookups answered.
+    expect(lookups()).toEqual(expect.arrayContaining([['clients', 'legacy_key', 'c1'], ['daily_imports', 'legacy_key', 'imp-1']]));
+    const account = db.calls.find((call) => call.table === 'trading_accounts');
+    expect(account.filters).toEqual([{ op: 'eq', column: 'client_id', value: db.clientUuid }, { op: 'ilike', column: 'account_name', value: 'ACC 01' }]);
+    expect(db.calls.find((call) => call.table === 'operational_flags').select).toBe('*, trading_accounts(account_name)');
+    expect(stored).toEqual({
+      id: FLAG_ID, type: 'Tracker differs from the close', severity: 'Warning', accountName: 'ACC 01', message: MESSAGE, status: 'Open', resolvedAt: '',
+    });
+  });
+
+  it('leaves the id to the database when the flag id is not a uuid, defaults the severity and the status, and keeps the account name from the flag', async () => {
+    const stored = await insertSupabaseOperationalFlag(db.clientUuid, 'imp-1', flagOf({ id: 'flag-local-7', severity: undefined, status: undefined }));
+    expect(db.inserts).toHaveLength(1);
+    const { row } = db.inserts[0];
+    expect('id' in row).toBe(false);
+    expect(row).toEqual({
+      daily_import_id: db.importUuid,
+      client_id: db.clientUuid,
+      trading_account_id: null,
+      type: 'Tracker differs from the close',
+      severity: 'Warning',
+      message: MESSAGE,
+      status: 'Open',
+      resolved_at: null,
+    });
+    // A client already named by uuid is looked up by id, the close still by its legacy key.
+    expect(lookups()).toEqual(expect.arrayContaining([['clients', 'id', db.clientUuid], ['daily_imports', 'legacy_key', 'imp-1']]));
+    expect(stored.id).toBe(db.generatedId);
+    expect(stored.accountName).toBe('ACC 01');
+    expect(stored).toMatchObject({ type: 'Tracker differs from the close', severity: 'Warning', status: 'Open', message: MESSAGE, resolvedAt: '' });
   });
 });

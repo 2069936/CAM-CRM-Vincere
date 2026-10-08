@@ -1,3 +1,5 @@
+import { CLOSE_DIFFERS_WORD } from '../domain/accountPill';
+
 /**
  * THE PILL: ONE ACCOUNT, THE THREE THINGS PEDRO WANTS TO READ ON IT, AS A BUTTON.
  *
@@ -15,6 +17,10 @@
  *
  * "No connection name" is a normal state, printed muted, and the pill keeps
  * the account's colour.
+ *
+ * THE SECOND MARKER (step 66) is a badge in words, "Close differs", for an
+ * account whose tracker reading and close disagree today; its verdict is one
+ * hover away in the badge's title. Amber, never red, never the pill's colour.
  */
 export default function AccountPill({
   pill,
@@ -27,6 +33,7 @@ export default function AccountPill({
     `tracker-${pill.state}`,
     `tone-${pill.tone}`,
     pill.differsCount > 0 ? 'differs' : null,
+    pill.closeDiffers ? 'close-differs' : null,
     expanded ? 'expanded' : null,
   ].filter(Boolean).join(' ');
   const body = (
@@ -38,6 +45,9 @@ export default function AccountPill({
       <span className={`account-pill-connection${pill.hasConnection ? '' : ' absent'}`}>{pill.connectionWord}</span>
       <span className="account-pill-state">{pill.label}</span>
       {pill.runLabel ? <span className="account-pill-run">{pill.runLabel}</span> : null}
+      {pill.closeDiffers ? (
+        <span className="account-pill-close-differs" title={`${pill.closeDiffersWords}.`}>{CLOSE_DIFFERS_WORD}</span>
+      ) : null}
       {pill.differsWords ? <span className="sr-only">{pill.differsWords}</span> : null}
     </>
   );

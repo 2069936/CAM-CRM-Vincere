@@ -6,7 +6,7 @@ import {
   agedWords,
   buildFleetStatusLights,
 } from '../domain/fleetStatusLights';
-import { withDiffers } from '../domain/accountPill';
+import { CLOSE_DIFFERS_WORD, withCloseDiffers, withDiffers } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
 import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
@@ -65,6 +65,11 @@ export default function FleetStatusLights({
   refreshMs = LIVE_REFRESH_MS,
   loadStrategies = loadSupabaseClientLiveStrategies,
   loadObservationSettings = loadSupabaseAccountObservationSettings,
+  // Today's tracker against the close verdicts by client key (uuid or id),
+  // each a Map of lower case account name to verdict, from the overview's
+  // read (step 66). A pill whose verdict asks for a look carries the amber
+  // "Close differs" badge in words. Null says nothing about anything.
+  closeVerdicts = null,
 }) {
   // The clock is the caller's (the tracker hook moves it on every successful
   // read). A caller without one gets the mount time, held, never a fresh
@@ -149,6 +154,12 @@ export default function FleetStatusLights({
           <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
           <span>Amber corner: an algorithm differs from the desk</span>
         </li>
+        {closeVerdicts ? (
+          <li className="fsl-legend-item fsl-legend-close">
+            <span className="account-pill-close-differs" aria-hidden="true">{CLOSE_DIFFERS_WORD}</span>
+            <span>The tracker and today&apos;s close disagree about the account</span>
+          </li>
+        ) : null}
       </ul>
       <ul className="fsl-grid">
         {view.tiles.map((tile) => (
@@ -160,6 +171,7 @@ export default function FleetStatusLights({
             onSelectClient={onSelectClient}
             refreshMs={refreshMs}
             loadStrategies={loadStrategies}
+            closeVerdicts={closeVerdicts?.get(tile.clientKey) || closeVerdicts?.get(tile.clientId) || null}
           />
         ))}
       </ul>
@@ -167,7 +179,7 @@ export default function FleetStatusLights({
   );
 }
 
-function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies }) {
+function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies, closeVerdicts = null }) {
   const [expanded, setExpanded] = useState(null);
   const detailId = useId();
   const openDot = expanded ? tile.dots.find((dot) => dot.accountName === expanded) || null : null;
@@ -210,7 +222,10 @@ function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies }) 
           {tile.dots.map((dot) => (
             <AccountPill
               key={dot.accountName}
-              pill={withDiffers(dot, details.get(dot.accountName)?.differsCount || 0)}
+              pill={withCloseDiffers(
+                withDiffers(dot, details.get(dot.accountName)?.differsCount || 0),
+                closeVerdicts?.get(String(dot.accountName).trim().toLowerCase()) || null,
+              )}
               expanded={expanded === dot.accountName}
               controls={detailId}
               onToggle={() => setExpanded((value) => (value === dot.accountName ? null : dot.accountName))}

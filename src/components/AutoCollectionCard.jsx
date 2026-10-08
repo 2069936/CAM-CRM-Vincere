@@ -20,6 +20,10 @@ import { autoCollectionApi } from '../domain/autoCollectionApi';
 import { collectorFlags } from '../domain/collectorFlags';
 import { describeQuarantineItem, quarantineCounts } from '../domain/autoCollectionFleet';
 import AccountTrackerPanel from './AccountTrackerPanel';
+import TrackerCloseComparisonPanel from './TrackerCloseComparisonPanel';
+import useTrackerCloseComparison from './useTrackerCloseComparison';
+import { buildTrackerClosePanel, closeVerdictsOf, tradingDayStart } from '../domain/trackerClosePanel';
+import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
 import { describePairRefusal } from '../domain/pairRefusal';
 import {
   buildAutoCollectionViewModel,
@@ -254,6 +258,13 @@ export default function AutoCollectionCard({
   // so the strip lights only the accounts expected to trade and folds the rest
   // into one line. When given it replaces `accountNames`.
   accountRegistry = null,
+  // The tracker against the close (step 66): the client as the app holds it,
+  // the close on the date picker and the picker's date, and the queue's own
+  // way of adding a flag. All optional: the card is still the card without them.
+  client = null,
+  dailyImport = null,
+  selectedDate = '',
+  onAddFlag = null,
   api = autoCollectionApi,
   initialStatus = null,
   initialError = null,
@@ -280,6 +291,28 @@ export default function AutoCollectionCard({
   const copyTimer = useRef(null);
   const commandCopyTimer = useRef(null);
   const confirmationTrigger = useRef(null);
+
+  /* THE TRACKER AGAINST THE CLOSE, read here and not in the panel, so the
+   * strip's pills (the amber "Close differs" badge) and the panel under the
+   * strip share one answer and one clock. The hook is the tracker's twin:
+   * two minutes, the clock on success only, a wake with the tab; the view is
+   * pure (src/domain/trackerClosePanel.js). Nothing is read without a client
+   * and a close on the picker, and a quiet card (disableAutoLoad) reads once. */
+  const closeClientKey = client?.uuid || client?.id || clientUuid || '';
+  const closeImportKey = dailyImport?.uuid || dailyImport?.id || null;
+  const closeClientIds = useMemo(() => (closeClientKey ? [closeClientKey] : []), [closeClientKey]);
+  const closeImportIds = useMemo(() => (closeImportKey ? [closeImportKey] : []), [closeImportKey]);
+  const closeRead = useTrackerCloseComparison({
+    clientIds: closeClientIds,
+    importIds: closeImportIds,
+    since: tradingDayStart(dailyImport?.date),
+    enabled: Boolean(client && closeImportKey),
+    refreshMs: disableAutoLoad ? 0 : LIVE_REFRESH_MS,
+  });
+  const closeView = useMemo(() => buildTrackerClosePanel({
+    client, dailyImport, date: selectedDate, answer: closeRead.answer, history: closeRead.history, error: closeRead.error,
+  }), [client, dailyImport, selectedDate, closeRead.answer, closeRead.history, closeRead.error]);
+  const closeVerdicts = useMemo(() => closeVerdictsOf(closeView), [closeView]);
 
   function openConfirmation(action, trigger) {
     confirmationTrigger.current = trigger;
@@ -772,6 +805,21 @@ export default function AutoCollectionCard({
           api={api}
           disableAutoRefresh={disableAutoLoad}
           now={() => new Date(nowMs)}
+          closeVerdicts={closeVerdicts}
+        />
+      ) : null}
+
+      {/* WHAT THE TRACKER SAID AGAINST WHAT THE CLOSE SAID (step 66), under the
+        * tracker it is about, for the close on the date picker. Only with the
+        * client in hand: the panel names its close by the client's imports. */}
+      {device && client ? (
+        <TrackerCloseComparisonPanel
+          view={closeView}
+          read={closeRead}
+          clientId={client.id}
+          importId={dailyImport?.id || null}
+          onAddFlag={onAddFlag}
+          refreshMs={disableAutoLoad ? 0 : LIVE_REFRESH_MS}
         />
       ) : null}
 

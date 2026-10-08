@@ -4617,6 +4617,11 @@ button.account-pill-button:hover, button.account-pill-button:focus-visible { bac
    it is never the pill's own colour: the dot under it keeps the account's state. */
 .account-pill-mark { position: absolute; right: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2px var(--surface-2); }
 .account-pill.differs .account-pill-button { border-color: var(--warning-border); }
+/* THE SECOND AMBER MARKER (step 66): "Close differs", in words, when today's
+   close and the tracker disagree about this account. A badge under the state,
+   amber and never red, and never the pill's own colour. */
+.account-pill-close-differs { display: inline-block; padding: 0 5px; border: 1px solid var(--warning-border); border-radius: 999px; background: var(--warning-bg); color: var(--warning); font-size: 9.5px; font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.account-pill.close-differs .account-pill-button { border-color: var(--warning-border); }
 
 /* ── What one account is running, under its pill (AccountLiveDetail) ──────────
    The connection, the totals the account sample measured, then one row per
@@ -4903,6 +4908,84 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
   font-size: 10.5px;
 }
 .algorithm-live-note button { justify-self: start; }
+/* ── The tracker against the close (TrackerCloseComparisonPanel, TrackerCloseTable,
+   TrackerCloseOverview, step 66) ─────────────────────────────────────────────
+   One row per account: the tracker's reading pinned at the capture against the
+   close the CRM holds, the delta, the strategies, the gap and the verdict in
+   words; the algorithms behind a click; "Add flag" confirmed in the cell. The
+   same box and type scale as the tracker above it. A row that asks for a look
+   carries an amber bar beside its sentence; the word says it, the bar only
+   helps the eye find it. Amber and never red: nothing here says wrong. */
+.tracker-close { margin: 8px 6px 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); display: grid; gap: 8px; font-size: 11px; }
+.tracker-close-head { display: flex; align-items: flex-start; gap: 8px; }
+.tracker-close-head svg { flex-shrink: 0; margin-top: 1px; color: var(--muted); }
+.tracker-close-head > div { display: grid; gap: 3px; min-width: 0; }
+.tracker-close-head strong { color: var(--text); font-size: 11px; }
+.tracker-close-head > div > span { color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+.tracker-close-header-words { color: var(--text); cursor: help; text-decoration: underline dotted; }
+.tracker-close-source, .tracker-close-summary, .tracker-close-empty, .tracker-close-failed { margin: 0; color: var(--muted); font-size: 10.5px; max-width: 110ch; }
+.tracker-close-summary { color: var(--text); }
+.tracker-close-failed { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.tracker-close-failed p { margin: 0; }
+.tracker-close-table-wrap { margin: 0; }
+.tracker-close-table { min-width: 860px; font-size: 11px; }
+.tracker-close-table th, .tracker-close-table td { padding: 8px 10px; vertical-align: top; }
+.tracker-close-row.attention { box-shadow: inset 3px 0 0 var(--warning); }
+.tracker-close-row.attention td:first-child { padding-left: 12px; }
+.tracker-close-toggle { display: grid; gap: 2px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.tracker-close-toggle:hover .tracker-close-account, .tracker-close-toggle:focus-visible .tracker-close-account { text-decoration: underline; }
+.tracker-close-account { color: var(--text); font-size: 11.5px; overflow-wrap: anywhere; }
+.tracker-close-connection { color: var(--muted); font-size: 10.5px; }
+.tracker-close-connection.absent { font-style: italic; }
+.tracker-close-tracker { display: grid; gap: 2px; }
+.tracker-close-figure { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text); }
+.tracker-close-figure.strong { font-weight: 700; }
+.tracker-close-figure-label { color: var(--muted); }
+.tracker-close-sampled { color: var(--muted); font-size: 10px; }
+.tracker-close-absent { color: var(--muted); font-style: italic; }
+.tracker-close-close { font-variant-numeric: tabular-nums; }
+.tracker-close-delta { font-variant-numeric: tabular-nums; font-weight: 700; }
+/* The day's trail: a step per value run, the capture a dashed amber line. */
+.tracker-close-spark { display: block; margin-top: 4px; overflow: visible; }
+.tracker-close-spark path { stroke: var(--info); stroke-width: 1.5; fill: none; }
+.tracker-close-spark-capture { stroke: var(--warning); stroke-width: 1; stroke-dasharray: 2 2; }
+.tracker-close-verdict { font-size: 10px; padding: 1px 6px; }
+.tracker-close-sentence { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; max-width: 48ch; overflow-wrap: anywhere; }
+.tracker-close-actions { white-space: nowrap; }
+.tracker-close-flag, .tracker-close-flag-cancel { font-size: 10.5px; padding: 2px 8px; }
+.tracker-close-flag-confirm { display: grid; gap: 4px; justify-items: start; color: var(--text); font-size: 10.5px; white-space: normal; max-width: 32ch; }
+.tracker-close-flag-confirm-yes { font-size: 10.5px; min-height: 26px; margin-top: 0; }
+.tracker-close-flag-added { color: var(--success); font-size: 10.5px; font-weight: 700; }
+.tracker-close-detail td { background: var(--surface-3); }
+.tracker-close-strategies { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.tracker-close-strategy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 10.5px; }
+.tracker-close-strategy strong { color: var(--text); }
+.tracker-close-strategy.moved { padding-left: 8px; border-left: 2px solid var(--warning); }
+.tracker-close-strategy.close-only { color: var(--muted); }
+.tracker-close-strategy-instrument { color: var(--muted); }
+.tracker-close-strategy-moved { font-size: 10px; padding: 1px 6px; }
+.tracker-close-strategy-words { flex: 1 1 100%; color: var(--muted); font-size: 10px; }
+.tracker-close-strategies-empty { margin: 0; color: var(--muted); font-size: 10.5px; }
+/* The overview: one line per client, worst first, the table behind a click. */
+.tracker-close-overview { margin: 8px 6px 0; display: grid; gap: 8px; font-size: 11px; }
+.tracker-close-overview-head { display: flex; align-items: flex-start; gap: 8px; }
+.tracker-close-overview-head svg { flex-shrink: 0; margin-top: 2px; color: var(--muted); }
+.tracker-close-overview-head p { margin: 0; color: var(--muted); font-size: 10.5px; max-width: 110ch; }
+.tracker-close-overview-summary { margin: 0; color: var(--text); font-size: 10.5px; }
+.tracker-close-lines { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.tracker-close-line { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.tracker-close-line.attention { border-left: 3px solid var(--warning); }
+.tracker-close-line-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.tracker-close-line-toggle, .tracker-close-line-still { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 10.5px; text-align: left; }
+.tracker-close-line-toggle { cursor: pointer; }
+.tracker-close-line-toggle:hover .tracker-close-line-name, .tracker-close-line-toggle:focus-visible .tracker-close-line-name { text-decoration: underline; }
+.tracker-close-line-name { color: var(--text); font-size: 11.5px; font-weight: 700; }
+.tracker-close-line-words { color: var(--text); }
+.tracker-close-line.state-no_close .tracker-close-line-words, .tracker-close-line.state-not_pinned .tracker-close-line-words, .tracker-close-line.state-reading_close .tracker-close-line-words, .tracker-close-line.state-close_after_login .tracker-close-line-words { color: var(--muted); }
+.tracker-close-line-open { font-size: 10.5px; }
+.tracker-close-line-table { padding-top: 6px; border-top: 1px solid var(--border); }
+.fsl-legend-close .account-pill-close-differs { font-size: 9px; }
+/* ── End of the tracker against the close ──────────────────────────────────── */
 .auto-collection-footer {
   display: flex;
   align-items: center;

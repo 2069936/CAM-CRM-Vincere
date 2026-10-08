@@ -247,11 +247,15 @@ describe('the order of the Operations Command Center', () => {
     const money = indexOfHeading(container, 'Desk money');
     const live = indexOfHeading(container, 'Live accounts');
     const rollCall = indexOfHeading(container, 'Algorithm roll call');
+    const close = indexOfHeading(container, 'Tracker against the close');
     const feed = indexOfHeading(container, 'Insight Feed');
     const flags = indexOfHeading(container, 'Open flags, all clients');
     expect(money).toBeLessThan(live);
     // The roll call per algorithm, right after the desk lights.
     expect(rollCall).toBe(live + 1);
+    // The tracker against today's close for the whole desk, right after the roll call.
+    expect(close).toBe(rollCall + 1);
+    expect(close).toBeLessThan(feed);
     expect(rollCall).toBeLessThan(feed);
     expect(live).toBeLessThan(feed);
     expect(feed).toBeLessThan(flags);
