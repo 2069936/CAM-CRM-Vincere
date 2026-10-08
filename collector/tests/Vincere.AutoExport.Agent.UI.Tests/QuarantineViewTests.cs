@@ -154,4 +154,155 @@ public sealed class QuarantineViewTests
 
         Assert.Equal("something_new", view.Items.Single().Reason);
     }
+
+    /* THE ROWS, STACKED.
+     *
+     * Twenty refused closes used to be twenty amber rows saying the same
+     * sentence. They are now one row per code and tone, with the count and
+     * the span of days, and the rows themselves behind it. Items is untouched:
+     * the detail is still the service's list in the service's order. */
+
+    [Fact]
+    public void CapturesWithTheSameCodeAndToneFoldIntoOneGroup()
+    {
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-20", "snapshot_processing_failed", 1, true),
+            Item("2026-07-22", "snapshot_processing_failed", 1, true),
+            Item("2026-07-21", "snapshot_processing_failed", 1, true)));
+
+        QuarantineGroupView group = Assert.Single(view.Groups);
+        Assert.True(view.IsGrouped);
+        Assert.Equal(3, group.Count);
+        Assert.Equal("snapshot_processing_failed", group.Code);
+        Assert.Equal("pending", group.Tone);
+        Assert.Contains("could not process", group.Reason);
+        Assert.Equal("Mon 20 Jul to Wed 22 Jul", group.DateRange);
+        Assert.Equal("3 captures, Mon 20 Jul to Wed 22 Jul", group.Headline);
+        Assert.Equal("Will be retried at 12:00 PM New York", group.Disposition);
+        Assert.Equal("1 of 3 retries used", group.Retry);
+        Assert.True(group.HasDetails);
+        Assert.Equal("Show or hide the 3 captures with code snapshot_processing_failed", group.DetailsName);
+        // The rows behind the toggle read newest first.
+        Assert.Equal(new[] { "Wed 22 Jul", "Tue 21 Jul", "Mon 20 Jul" }, group.Items.Select(row => row.DateLabel).ToArray());
+        // The service's list is still the service's list.
+        Assert.Equal(new[] { "Mon 20 Jul", "Wed 22 Jul", "Tue 21 Jul" }, view.Items.Select(row => row.DateLabel).ToArray());
+        Assert.Equal("3 captures in quarantine · 3 will be sent again at 12:00 PM New York", view.Summary);
+    }
+
+    [Fact]
+    public void GroupsReadRetriedFirstThenNewest()
+    {
+        // The newest capture overall is final; it still comes after every
+        // group the button can do something about, because that is the order
+        // the Summary already uses.
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-23", "capture_conflict", 0, false),
+            Item("2026-07-20", "snapshot_processing_failed", 0, true),
+            Item("2026-07-22", "capture_requires_replay", 1, true),
+            Item("2026-07-21", "snapshot_rejected", 0, false)));
+
+        Assert.Equal(
+            new[] { "capture_requires_replay", "snapshot_processing_failed", "capture_conflict", "snapshot_rejected" },
+            view.Groups.Select(group => group.Code).ToArray());
+        Assert.Equal(new[] { "pending", "pending", "bad", "bad" }, view.Groups.Select(group => group.Tone).ToArray());
+        Assert.Equal("4 captures in quarantine · 2 will be sent again at 12:00 PM New York, 2 waiting for the desk", view.Summary);
+    }
+
+    [Fact]
+    public void TheSameCodeInTwoTonesIsTwoGroups()
+    {
+        // A 422 with retries left and one that has used all three ask
+        // different things of the reader, so they do not share a row.
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-21", "unsupported_schema_version", 3, false),
+            Item("2026-07-22", "unsupported_schema_version", 1, true)));
+
+        Assert.Equal(2, view.Groups.Count);
+        Assert.Equal("pending", view.Groups[0].Tone);
+        Assert.Equal("1 of 3 retries used", view.Groups[0].Retry);
+        Assert.Equal("Will be retried at 12:00 PM New York", view.Groups[0].Disposition);
+        Assert.Equal("bad", view.Groups[1].Tone);
+        Assert.Equal("3 of 3 retries used", view.Groups[1].Retry);
+        Assert.Equal("Retried 3 times, waiting for the desk", view.Groups[1].Disposition);
+        Assert.All(view.Groups, group => Assert.False(group.HasDetails));
+    }
+
+    [Fact]
+    public void AGroupWhoseRowsDifferInAttemptsSaysTheRange()
+    {
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-22", "snapshot_processing_failed", 2, true),
+            Item("2026-07-21", "snapshot_processing_failed", 1, true),
+            Item("2026-07-20", "capture_requires_replay", 4, true),
+            Item("2026-07-17", "capture_requires_replay", 0, true),
+            Item("2026-07-16", "snapshot_rejected", 0, false),
+            Item("2026-07-15", "snapshot_rejected", 0, false)));
+
+        Assert.Equal("1 to 2 of 3 retries used", view.Groups[0].Retry);
+        Assert.Equal("Sent again up to 4 times", view.Groups[1].Retry);
+        Assert.Equal(string.Empty, view.Groups[2].Retry);
+    }
+
+    [Fact]
+    public void AGroupWhoseRowsDisagreeOnWhatHappensNextSaysThePlainThing()
+    {
+        // One row was retried three times before it was given up on, the other
+        // was final from the start. The group does not claim either story.
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-22", "unsupported_schema_version", 3, false),
+            Item("2026-07-21", "unsupported_schema_version", 0, false)));
+
+        QuarantineGroupView group = Assert.Single(view.Groups);
+        Assert.Equal("Waiting for the desk", group.Disposition);
+        Assert.Equal("0 to 3 of 3 retries used", group.Retry);
+    }
+
+    [Fact]
+    public void ASingleCaptureIsNotGroupedAndItsGroupIsItself()
+    {
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-22", "snapshot_processing_failed", 1, true)));
+
+        Assert.False(view.IsGrouped);
+        QuarantineGroupView group = Assert.Single(view.Groups);
+        QuarantineItemView row = Assert.Single(view.Items);
+        Assert.Equal(1, group.Count);
+        Assert.False(group.HasDetails);
+        Assert.Equal("Wed 22 Jul", group.DateRange);
+        Assert.Equal("1 capture, Wed 22 Jul", group.Headline);
+        Assert.Equal(row.Disposition, group.Disposition);
+        Assert.Equal(row.Attempts, group.Retry);
+        Assert.Equal("1 capture in quarantine · 1 will be sent again at 12:00 PM New York", view.Summary);
+    }
+
+    [Fact]
+    public void TwoCapturesOnOneDayNameTheDayOnce()
+    {
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("2026-07-22", "capture_conflict", 0, false),
+            Item("2026-07-22", "capture_conflict", 0, false)));
+
+        QuarantineGroupView group = Assert.Single(view.Groups);
+        Assert.Equal("Wed 22 Jul", group.DateRange);
+        Assert.Equal("2 captures, Wed 22 Jul", group.Headline);
+    }
+
+    [Fact]
+    public void ARowWithoutAReadableDateSortsLastInItsGroup()
+    {
+        QuarantineView view = QuarantineView.Parse(Status(
+            Item("not-a-date", "capture_conflict", 0, false),
+            Item("2026-07-22", "capture_conflict", 0, false)));
+
+        QuarantineGroupView group = Assert.Single(view.Groups);
+        Assert.Equal("Wed 22 Jul", group.Items[0].DateLabel);
+        Assert.Equal("not-a-date", group.Items[1].DateLabel);
+    }
+
+    [Fact]
+    public void NothingInTheFolderHasNoGroups()
+    {
+        Assert.Empty(QuarantineView.Parse(null).Groups);
+        Assert.False(QuarantineView.Parse(null).IsGrouped);
+    }
 }

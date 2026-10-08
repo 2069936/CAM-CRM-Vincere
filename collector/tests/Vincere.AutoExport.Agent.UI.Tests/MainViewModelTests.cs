@@ -544,6 +544,116 @@ public sealed class MainViewModelTests
         Assert.Equal("retryQuarantine", Assert.Single(client.Calls).Command);
     }
 
+    /* THE ROWS, STACKED.
+     *
+     * The window binds to these and nothing else decides what it shows: one
+     * capture is one row as before, more are grouped, more than three groups
+     * are three until the toggle asks for all of them. */
+
+    [Fact]
+    public async Task OneQuarantinedCaptureIsOneRowAsBefore()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus(
+            Quarantined("2026-07-22", "snapshot_processing_failed", 1, true))));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+
+        Assert.True(viewModel.QuarantineIsFlat);
+        Assert.False(viewModel.QuarantineIsGrouped);
+        Assert.Single(viewModel.QuarantineItems);
+        Assert.False(viewModel.HasMoreQuarantineGroups);
+    }
+
+    [Fact]
+    public async Task SeveralQuarantinedCapturesAreGroupedAndThreeGroupsShowUntilAskedForAll()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus(
+            Quarantined("2026-07-22", "snapshot_processing_failed", 1, true),
+            Quarantined("2026-07-21", "snapshot_processing_failed", 1, true),
+            Quarantined("2026-07-20", "capture_requires_replay", 0, true),
+            Quarantined("2026-07-17", "snapshot_rejected", 0, false),
+            Quarantined("2026-07-16", "capture_conflict", 0, false),
+            Quarantined("2026-07-15", "payload_too_large", 0, false),
+            Quarantined("2026-07-14", "payload_too_large", 0, false))));
+        MainViewModel viewModel = new(client);
+        await viewModel.InitializeAsync();
+        List<string> changed = new();
+        viewModel.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        Assert.True(viewModel.QuarantineIsGrouped);
+        Assert.False(viewModel.QuarantineIsFlat);
+        Assert.Equal(7, viewModel.QuarantineItems.Count);
+        Assert.Equal(3, viewModel.QuarantineGroups.Count);
+        Assert.True(viewModel.HasMoreQuarantineGroups);
+        Assert.False(viewModel.ShowAllQuarantineGroups);
+        Assert.Equal("Show all 5", viewModel.ShowAllQuarantineGroupsLabel);
+        Assert.Equal(
+            new[] { "snapshot_processing_failed", "capture_requires_replay", "snapshot_rejected" },
+            viewModel.QuarantineGroups.Select(group => group.Code).ToArray());
+
+        viewModel.ShowAllQuarantineGroups = true;
+
+        Assert.Equal(5, viewModel.QuarantineGroups.Count);
+        Assert.Equal("Show fewer", viewModel.ShowAllQuarantineGroupsLabel);
+        Assert.Contains(nameof(MainViewModel.QuarantineGroups), changed);
+        Assert.Contains(nameof(MainViewModel.ShowAllQuarantineGroupsLabel), changed);
+        Assert.Contains(nameof(MainViewModel.ShowAllQuarantineGroups), changed);
+
+        viewModel.ShowAllQuarantineGroups = false;
+
+        Assert.Equal(3, viewModel.QuarantineGroups.Count);
+        Assert.Equal("Show all 5", viewModel.ShowAllQuarantineGroupsLabel);
+    }
+
+    [Fact]
+    public async Task ThreeGroupsOrFewerAreAllShownAndNeedNoToggle()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus(
+            Quarantined("2026-07-22", "snapshot_processing_failed", 1, true),
+            Quarantined("2026-07-21", "snapshot_rejected", 0, false),
+            Quarantined("2026-07-20", "capture_conflict", 0, false))));
+        MainViewModel viewModel = new(client);
+
+        await viewModel.InitializeAsync();
+
+        Assert.True(viewModel.QuarantineIsGrouped);
+        Assert.Equal(3, viewModel.QuarantineGroups.Count);
+        Assert.False(viewModel.HasMoreQuarantineGroups);
+        Assert.Contains("3 captures in quarantine", viewModel.QuarantineSummary);
+    }
+
+    [Fact]
+    public async Task ANewStatusRaisesEveryGroupedPropertyTheWindowBindsTo()
+    {
+        FakeClient client = new();
+        client.Responses.Enqueue(Response(true, "status_ok", "ok", QuarantinedStatus(
+            Quarantined("2026-07-22", "snapshot_processing_failed", 1, true),
+            Quarantined("2026-07-21", "snapshot_rejected", 0, false))));
+        MainViewModel viewModel = new(client);
+        List<string> changed = new();
+        viewModel.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        await viewModel.InitializeAsync();
+
+        foreach (string name in new[]
+        {
+            nameof(MainViewModel.QuarantineIsFlat),
+            nameof(MainViewModel.QuarantineIsGrouped),
+            nameof(MainViewModel.QuarantineGroups),
+            nameof(MainViewModel.HasMoreQuarantineGroups),
+            nameof(MainViewModel.ShowAllQuarantineGroupsLabel),
+            nameof(MainViewModel.QuarantineItems),
+            nameof(MainViewModel.QuarantineSummary),
+        })
+        {
+            Assert.Contains(name, changed);
+        }
+    }
+
     /* THE REPORT WAS WRITTEN AND THE BUTTON STAYED GREY.
      *
      * AsyncCommand does not hook CommandManager.RequerySuggested, so nothing

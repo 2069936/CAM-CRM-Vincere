@@ -110,6 +110,100 @@
                 </Grid>
             </Border>
         </DataTemplate>
+        <!-- A toggle that reads as a link: the card already has one button, and
+             a second one would compete with it for the click that matters. -->
+        <Style x:Key="LinkToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource InfoBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="4,2" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource TextBrush}" /></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{StaticResource InfoBrush}" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Every quarantined capture with the same code and the same tone, as one
+             row: a count badge, the span of days, the sentence once. The rows
+             themselves are behind Details, in the template above, for the time
+             the desk asks about one day in particular. -->
+        <DataTemplate x:Key="QuarantineGroupTemplate">
+            <Border CornerRadius="6" Padding="10,7" Margin="0,6,0,0" BorderThickness="1"
+                    AutomationProperties.Name="{Binding Headline}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="#2E2612" />
+                        <Setter Property="BorderBrush" Value="#F5B841" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Tone}" Value="bad">
+                                <Setter Property="Background" Value="#331A1E" />
+                                <Setter Property="BorderBrush" Value="#FF6B6B" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" CornerRadius="10" MinWidth="28" Padding="8,2" VerticalAlignment="Top">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="{StaticResource WarningBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Tone}" Value="bad">
+                                            <Setter Property="Background" Value="{StaticResource DangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="{Binding Count}" FontSize="12" FontWeight="SemiBold" Foreground="#0F1720" HorizontalAlignment="Center" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="10,0,8,0">
+                            <TextBlock Text="{Binding Headline}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            <TextBlock Text="{Binding Code}" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                            <TextBlock Text="{Binding Disposition}" FontSize="12" HorizontalAlignment="Right" />
+                            <TextBlock Text="{Binding Retry}" FontSize="11" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Right" Margin="0,2,0,0" />
+                            <ToggleButton x:Name="DetailsToggle" HorizontalAlignment="Right" Margin="0,4,0,0"
+                                          Visibility="{Binding HasDetails, Converter={StaticResource BoolToVisibility}}"
+                                          AutomationProperties.Name="{Binding DetailsName}">
+                                <ToggleButton.Style>
+                                    <Style TargetType="ToggleButton" BasedOn="{StaticResource LinkToggleStyle}">
+                                        <Setter Property="Content" Value="Details" />
+                                        <Style.Triggers>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter Property="Content" Value="Hide details" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ToggleButton.Style>
+                            </ToggleButton>
+                        </StackPanel>
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding Items}" ItemTemplate="{StaticResource QuarantineItemTemplate}" Margin="18,0,0,2"
+                                  Visibility="{Binding IsChecked, ElementName=DetailsToggle, Converter={StaticResource BoolToVisibility}}"
+                                  AutomationProperties.Name="{Binding DetailsName}" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
         <!-- The quarantine card, defined once and placed on the two tabs a paired
              machine lands on. Hidden while the folder is empty, which is the
              ordinary state: an empty card would read as a warning about nothing. -->
@@ -122,8 +216,19 @@
                                AutomationProperties.LiveSetting="Polite" />
                     <TextBlock Text="Captures the CRM refused. Ones it could not process are sent again after a fix on the CRM side, up to three times; the rest wait for the desk."
                                Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" FontSize="12" Margin="0,6,0,0" />
+                    <!-- One capture: its row, as it has always been. -->
                     <ItemsControl ItemsSource="{Binding QuarantineItems}" ItemTemplate="{StaticResource QuarantineItemTemplate}" Margin="0,8,0,0"
+                                  Visibility="{Binding QuarantineIsFlat, Converter={StaticResource BoolToVisibility}}"
                                   AutomationProperties.Name="Captures in quarantine" />
+                    <!-- Several: one row per reason, the first three until asked for the rest. -->
+                    <StackPanel Visibility="{Binding QuarantineIsGrouped, Converter={StaticResource BoolToVisibility}}">
+                        <ItemsControl ItemsSource="{Binding QuarantineGroups}" ItemTemplate="{StaticResource QuarantineGroupTemplate}" Margin="0,8,0,0"
+                                      AutomationProperties.Name="Captures in quarantine, grouped by reason" />
+                        <ToggleButton Content="{Binding ShowAllQuarantineGroupsLabel}" IsChecked="{Binding ShowAllQuarantineGroups, Mode=TwoWay}"
+                                      Style="{StaticResource LinkToggleStyle}" HorizontalAlignment="Left" Margin="0,8,0,0"
+                                      Visibility="{Binding HasMoreQuarantineGroups, Converter={StaticResource BoolToVisibility}}"
+                                      AutomationProperties.Name="Show every group of quarantined captures, or only the first three" />
+                    </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                         <Button Content="Retry quarantine now" Command="{Binding RetryQuarantineCommand}" Background="{StaticResource RaisedBrush}" Foreground="{StaticResource TextBrush}"
                                 AutomationProperties.Name="Send the retryable quarantined captures back for upload now" />

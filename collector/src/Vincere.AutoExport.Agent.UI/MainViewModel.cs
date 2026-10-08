@@ -37,6 +37,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string collectionAlert;
     private IReadOnlyList<CaptureDayView> days = Array.Empty<CaptureDayView>();
     private QuarantineView quarantine = QuarantineView.Empty;
+    private bool showAllQuarantineGroups;
 
     private readonly ReleaseCheck releaseCheck;
 
@@ -175,6 +176,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasQuarantine)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineSummary)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineItems)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineIsFlat)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineIsGrouped)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineGroups)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMoreQuarantineGroups)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowAllQuarantineGroupsLabel)));
             (RetryQuarantineCommand as AsyncCommand)?.RaiseCanExecuteChanged();
         }
     }
@@ -182,6 +188,41 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool HasQuarantine => Quarantine.HasItems;
     public string QuarantineSummary => Quarantine.Summary;
     public IReadOnlyList<QuarantineItemView> QuarantineItems => Quarantine.Items;
+
+    /* THE ROWS, STACKED.
+     *
+     * A machine whose CRM refused a month of closes showed a column of twenty
+     * identical amber rows under a summary that had already said "20 captures
+     * in quarantine". The card now shows one row per reason, three of them
+     * until asked for the rest, and the individual rows behind a Details
+     * toggle on each. One capture is still one row, exactly as before: a
+     * group of one is chrome around nothing. */
+    private const int CollapsedQuarantineGroups = 3;
+
+    public bool QuarantineIsFlat => !Quarantine.IsGrouped;
+    public bool QuarantineIsGrouped => Quarantine.IsGrouped;
+
+    /// <summary>The groups the card lists: all of them when expanded or few enough, otherwise the first three.</summary>
+    public IReadOnlyList<QuarantineGroupView> QuarantineGroups =>
+        ShowAllQuarantineGroups || !HasMoreQuarantineGroups
+            ? Quarantine.Groups
+            : Quarantine.Groups.Take(CollapsedQuarantineGroups).ToArray();
+
+    public bool HasMoreQuarantineGroups => Quarantine.Groups.Count > CollapsedQuarantineGroups;
+
+    public bool ShowAllQuarantineGroups
+    {
+        get => showAllQuarantineGroups;
+        set
+        {
+            if (!Set(ref showAllQuarantineGroups, value)) return;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(QuarantineGroups)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowAllQuarantineGroupsLabel)));
+        }
+    }
+
+    public string ShowAllQuarantineGroupsLabel =>
+        ShowAllQuarantineGroups ? "Show fewer" : $"Show all {Quarantine.Groups.Count}";
     public ICommand RetryQuarantineCommand { get; }
     public ICommand PairCommand { get; }
     public ICommand TestCaptureCommand { get; }
