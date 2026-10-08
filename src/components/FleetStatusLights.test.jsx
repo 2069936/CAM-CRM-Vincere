@@ -350,7 +350,7 @@ describe('a client with a legacy key', () => {
     const view = buildFleetStatusLights({ clients: [legacy], tracker: tracker({ [UUID]: [sample('APEX-1')] }), now: NOW });
     expect(view.kind).toBe('ready');
     expect(view.tiles[0].summary.rows[0].sample.accountName).toBe('APEX-1');
-    expect(view.tiles[0].worst).toBe('live');
+    expect(view.tiles[0].worst.state).toBe('live');
   });
 
   it('still finds samples keyed by id for a client without a uuid', () => {
