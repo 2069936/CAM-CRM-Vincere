@@ -947,23 +947,25 @@ describe('running it again', () => {
 
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
-describe('step 65 is the one that runs last', () => {
-  it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
+describe('step 65 is numbered once, after 64', () => {
+  it('appears once, and 54 is still a deliberate gap', () => {
+    // Step 66's test now holds the "highest number" assertion; this one only
+    // says 65 is here once and that nothing reused 54.
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 65)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(65);
+    expect(Math.max(...numbers)).toBeGreaterThanOrEqual(65);
     expect(numbers).not.toContain(54);
     for (const merged of [58, 59, 60, 61, 62, 63, 64]) expect(numbers).toContain(merged);
   });
 
-  it('is in the runbook table after 64, and at the end of the run order', () => {
+  it('is in the runbook table after 64, and in the run order after 64', () => {
     expect(runbook).toMatch(/^\| 65 \| `step_65_account_observations\.sql` \|.*\|$/m);
     expect(runbook.indexOf('| 65 | `step_65_account_observations.sql`'))
       .toBeGreaterThan(runbook.indexOf('| 64 | `step_64_algorithm_live_position.sql`'));
-    expect(runbook).toMatch(/→ 63 → 64 → 65\./);
+    expect(runbook).toMatch(/→ 63 → 64 → 65( →|\.)/);
     expect(runbook).toContain('Step 65');
   });
 });

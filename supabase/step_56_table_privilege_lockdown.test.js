@@ -123,6 +123,12 @@ const EXPECTED = {
    * edited in the SQL editor and a CAM must not be able to turn the auto fail
    * off from the browser. */
   account_observation_settings: 'S',
+  /* STEP 66'S PAIR: the run length history of the tracker samples and the
+   * tracker side of each close, both written by triggers on the service role's
+   * own writes and read by the browser. A CAM able to write either could forge
+   * the tracker side of a close. */
+  account_live_sample_history: 'S',
+  tracker_close_readings: 'S',
   // nothing at all
   ingest_admission_settings: '',
   ingest_quarantine_reports: '',
