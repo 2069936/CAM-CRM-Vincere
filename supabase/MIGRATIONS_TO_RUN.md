@@ -39,6 +39,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 60 | `step_60_client_handoff_manager_only.sql` | `my_cam_profile_id()` and four RESTRICTIVE policies on `client_assignments` beside step 53's permissive one: a CAM reads her own clients' rows, inserts only (a client she created that nobody holds, her own profile), and never updates or deletes | Only a Manager moves a client between books. Closes the handoff step 57 names as its residual, and a creator taking back a client a Manager moved away |
 | 61 | `step_61_target_profit_amount_to_balance.sql` | `target_profit_before_step_61` on `trading_accounts`, and every `target_profit` that is a profit AMOUNT beyond doubt (positive, below a stored start and no more than a fifth of it) rewritten as the BALANCE `start_balance + amount`. On production that is 1 row of 726 | An evaluation that has made nothing no longer reads as passed. |
 | 62 | `step_62_payment_status.sql` | `clients.payment_status` text not null default `undetermined`, CHECK in (paying, free, undetermined, paused, idle, cancelled); a backfill from `subscription_price` (`$N` to paying, `Free` to free, everything else left undetermined) that touches only rows still at the default; the table's grants restated per step 56 (anon nothing, authenticated select, insert, update, RLS on). `subscription_price` stays and now holds any whole dollar amount as `$N` | A client at $400, $375, $333 or $183 is filed as paying what they pay instead of Undetermined, and a paused, idle or cancelled client has a status of their own. Run it BEFORE deploying the build that reads the column: the login selects `payment_status` and fails on a database without it |
+| 63 | `step_63_heartbeat_without_ninjatrader_version.sql` | replaces `record_ingest_heartbeat` so a null `p_ninjatrader_version` is accepted: the stored `ingest_devices.ninjatrader_version` is kept (coalesce) and stays null only while no heartbeat has ever carried one; a non null value is still validated as a version, every other check is step 41's unchanged, and the grants are restated (service_role only). Replaces one function and rewrites no row | Agent 1.2.0 sends ninjaTraderVersion null until the first capture has told it the real one, and after every service restart until that day's capture. The route has passed null through since 2026-09-02; the RPC still refused it, so each heartbeat was a 400 and `last_seen_at` froze. Leading hypothesis for the eight VPS silent since their 1.2.0 update on 2026-10-08. Run it ANY time; nothing in the app changes. If step 41 is ever run again, run 63 again after it: 41 carries the old body |
 
 ## These three groups behave differently
 
@@ -112,7 +113,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -791,6 +792,18 @@ Step 41 replaces only `record_ingest_heartbeat`. It removes both forms of the
 invalid ordering rule between `last_success_at` and `last_capture_at`; either
 timestamp may honestly be newer. The independent five-minute future-skew
 checks remain in place. It does not rewrite stored device rows.
+
+Step 63 replaces the same function again, and only it. The one rule it drops is
+`p_ninjatrader_version is null`: the agent does not know the NinjaTrader version
+until the add-on has reported it at the first successful capture, and
+CollectorState is in memory, so a fresh 1.2.0 install and every service restart
+before that day's capture send null. Agents up to 1.1.x hid this by sending the
+literal "8.1.0". The stored `ninjatrader_version` is kept when a heartbeat
+carries null, written when one carries a value, and null only while no heartbeat
+ever has. A non null value is still validated as a version. Nothing else in the
+body moves, and the file restates the function's grants (step 56's rule). It
+does not rewrite stored device rows. Running 63 twice is a no-op; running 41
+after 63 brings the refusal back, so 63 is run again after any re-run of 41.
 
 Step 39 adds columns and rewrites nothing. Every client already marked Inactive
 keeps a null reason and a null date, which the app reports as "Not recorded"
