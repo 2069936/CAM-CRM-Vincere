@@ -342,6 +342,15 @@ describe('what is still refused, exactly as before', () => {
     expect(await refusal(world.known, { p_min_interval_seconds: 3601 })).toMatch(/INVALID_HEARTBEAT_REQUEST/);
   });
 
+  it('the order of the two timestamps is still free, the deadlock step 41 removed stays removed', async () => {
+    const t = Date.now();
+    const earlier = new Date(t - 60 * 1000).toISOString();
+    const now = new Date(t).toISOString();
+    expect(await refusal(world.known, { p_last_capture_at: earlier, p_last_success_at: now })).toBeNull();
+    expect(await refusal(world.known, { p_last_capture_at: now, p_last_success_at: earlier })).toBeNull();
+    expect(await refusal(world.known, { p_last_capture_at: now, p_last_success_at: null })).toBeNull();
+  });
+
   it('a revoked device and an unknown device are still INVALID_INGEST_DEVICE', async () => {
     expect(await refusal(world.revoked)).toMatch(/INVALID_INGEST_DEVICE/);
     expect(await refusal('00000000-0000-4000-8000-000000000000')).toMatch(/INVALID_INGEST_DEVICE/);
