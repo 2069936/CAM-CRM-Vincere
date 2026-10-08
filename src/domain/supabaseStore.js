@@ -16,6 +16,7 @@ import {
 } from './closeSummary';
 import { createRequestGate } from './supabaseRetry';
 import { aggregateLogFamilyHistory } from './ninjaTraderLog';
+import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountBuckets';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -29,7 +30,7 @@ function byLegacy(rows) {
   return Object.fromEntries((rows || []).map((row) => [pickId(row), row]));
 }
 
-function accountMetaFromRow(row) {
+export function accountMetaFromRow(row) {
   return {
     id: row.id,
     accountName: row.account_name,
@@ -57,6 +58,18 @@ function accountMetaFromRow(row) {
     dateLastPayout: row.date_last_payout || '',
     payoutCount: row.payout_count || 0,
     tradovateAccountId: row.tradovate_account_id || '',
+    // WHAT THE CLOSES SAY ABOUT THIS ACCOUNT, written by the database (step 65)
+    // and only read here. observedState is null, not a default word, when the
+    // column is absent (a database before 65) or the row has not been refreshed:
+    // accountBuckets.js keeps such a row expected, because no observation is
+    // not evidence of anything. The reading is numeric, which PostgREST sends
+    // as a string; '' and null both mean none.
+    observedState: row.observed_state || null,
+    lastCloseSeenOn: row.last_close_seen_on || '',
+    closesMissed: sampleInteger(row.closes_missed),
+    breachedOn: row.breached_on || '',
+    breachReading: numberOrNull(row.breach_reading),
+    observedAt: row.observed_at || '',
     payoutHistory: [],
   };
 }
@@ -543,7 +556,11 @@ export const LOGIN_COLUMNS = {
     + 'simulation_mode, payout_state, target_profit, start_balance, max_drawdown_limit, '
     + 'prop_firm_plan, risk_level, bullet_bot_pass_type, bullet_bot_direction, algo_stack, '
     + 'daily_loss_limit, notes, date_added, date_funded, date_failed, date_last_payout, '
-    + 'payout_count, tradovate_account_id',
+    // The observation step 65 writes on the row. Absent before the migration
+    // runs, which selectRows tolerates: it drops the column and retries, so the
+    // build deploys safely ahead of the database.
+    + 'payout_count, tradovate_account_id, observed_state, last_close_seen_on, closes_missed, '
+    + 'breached_on, breach_reading, observed_at',
   payout_events: 'id, trading_account_id, payout_date, amount, state, note',
   // The date picker, every close count and closeAsOf. `source_summary` is not
   // here: it is a jsonb the ClientExportDialog reads and nothing else, about
@@ -927,6 +944,62 @@ export async function loadSupabaseAccountTracker({ clientIds = null } = {}) {
     if (isMissingAccountTracker(error)) return empty;
     throw error;
   }
+}
+
+/* ── The account observations (step 65) ────────────────────────────────── */
+
+export const ACCOUNT_OBSERVATION_SETTINGS_COLUMNS = 'stale_closes, auto_fail_on_breach, new_account_days';
+
+export function isMissingAccountObservations(error) {
+  const message = error?.message || '';
+  return error?.code === 'PGRST205'
+    || error?.code === '42P01'
+    || /account_observation_settings/i.test(message)
+      && /(does not exist|schema cache)/i.test(message);
+}
+
+/**
+ * The settings row as the screens read it. Each value is validated against the
+ * same bounds the table's CHECK constraints hold, and falls back to the column
+ * default on its own: a row somebody edited into a shape the constraint would
+ * have refused cannot arrive here, but a missing column on a database between
+ * two versions of the table can.
+ */
+export function mapAccountObservationSettings(row) {
+  const stale = sampleInteger(row?.stale_closes);
+  const newDays = sampleInteger(row?.new_account_days);
+  return {
+    staleCloses: stale !== null && stale >= 1 && stale <= 30 ? stale : ACCOUNT_OBSERVATION_DEFAULTS.staleCloses,
+    autoFailOnBreach: typeof row?.auto_fail_on_breach === 'boolean'
+      ? row.auto_fail_on_breach
+      : ACCOUNT_OBSERVATION_DEFAULTS.autoFailOnBreach,
+    newAccountDays: newDays !== null && newDays >= 0 && newDays <= 90 ? newDays : ACCOUNT_OBSERVATION_DEFAULTS.newAccountDays,
+  };
+}
+
+/**
+ * The one row of account_observation_settings: how many closes an account may
+ * miss before it is gone, whether a breach fails it by itself, and how many
+ * days a never seen account is still new.
+ *
+ * @returns {Promise<{available: boolean, staleCloses: number, autoFailOnBreach: boolean, newAccountDays: number}>}
+ *   available:false with the defaults when step 65 has not run (or there is no
+ *   database). Any other failure THROWS, so a screen says it could not read
+ *   rather than printing a default as if it were the setting.
+ */
+export async function loadSupabaseAccountObservationSettings({ client = undefined } = {}) {
+  const db = client === undefined ? (isSupabaseConfigured ? supabase : null) : client;
+  const fallback = { available: false, ...ACCOUNT_OBSERVATION_DEFAULTS };
+  if (!db) return fallback;
+  const { data, error } = await db
+    .from('account_observation_settings')
+    .select(ACCOUNT_OBSERVATION_SETTINGS_COLUMNS)
+    .limit(1);
+  if (error) {
+    if (isMissingAccountObservations(error)) return fallback;
+    throw new Error(`account_observation_settings: ${error.message}`);
+  }
+  return { available: true, ...mapAccountObservationSettings(data?.[0]) };
 }
 
 /* ── The live per algorithm comparison (step 57) ───────────────────────── */

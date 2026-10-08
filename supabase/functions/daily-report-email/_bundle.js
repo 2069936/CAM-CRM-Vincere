@@ -3203,6 +3203,27 @@ function normalizeAccountFocus(value) {
 	const wanted = new Set((Array.isArray(value) ? value : []).map((entry) => String(entry ?? "").trim().toLowerCase()).filter(Boolean));
 	return ACCOUNT_FOCUS_LIST.filter((focus) => wanted.has(focus.toLowerCase()));
 }
+Object.freeze({
+	SEEN: "seen",
+	BREACHED: "breached",
+	ABSENT: "absent",
+	NEVER_SEEN: "never_seen"
+});
+Object.freeze({
+	staleCloses: 5,
+	autoFailOnBreach: true,
+	newAccountDays: 14
+});
+Object.freeze([
+	"expected",
+	"looksFailed",
+	"goneFromClose",
+	"newNotSeen",
+	"registeredNeverSeen",
+	"retired"
+]);
+ACCOUNT_STATUSES.ACTIVE, ACCOUNT_STATUSES.PAYOUT_HOLD;
+ACCOUNT_STATUSES.FAILED, ACCOUNT_STATUSES.INACTIVE, ACCOUNT_STATUSES.RESERVE;
 //#endregion
 //#region src/domain/supabaseStore.js
 function pickId(row) {
@@ -3240,6 +3261,12 @@ function accountMetaFromRow(row) {
 		dateLastPayout: row.date_last_payout || "",
 		payoutCount: row.payout_count || 0,
 		tradovateAccountId: row.tradovate_account_id || "",
+		observedState: row.observed_state || null,
+		lastCloseSeenOn: row.last_close_seen_on || "",
+		closesMissed: sampleInteger(row.closes_missed),
+		breachedOn: row.breached_on || "",
+		breachReading: numberOrNull$1(row.breach_reading),
+		observedAt: row.observed_at || "",
 		payoutHistory: []
 	};
 }
@@ -3459,6 +3486,15 @@ var LATEST_CLOSE_COLUMNS = {
 };
 LATEST_CLOSE_COLUMNS.executions, `${LATEST_CLOSE_COLUMNS.account_snapshots}`, LATEST_CLOSE_COLUMNS.strategy_snapshots;
 `${LATEST_CLOSE_COLUMNS.strategy_snapshots}`;
+function sampleNumber(value) {
+	if (value === null || value === void 0 || value === "") return null;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+function sampleInteger(value) {
+	const parsed = sampleNumber(value);
+	return Number.isInteger(parsed) ? parsed : null;
+}
 /**
 * Builds the CRM state from raw table rows.
 *
