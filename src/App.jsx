@@ -173,6 +173,8 @@ import TimeOffPanel, {
 } from "./components/TimeOffPanel";
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
+import FleetStatusLights from "./components/FleetStatusLights";
+import useLiveAccountTracker from "./components/useLiveAccountTracker";
 import AlgorithmLivePanel from "./components/AlgorithmLivePanel";
 import BookList from "./components/BookList";
 import DeskMoneyPanel, { CAPITAL_DETAIL_ID } from "./components/DeskMoneyPanel";
@@ -312,7 +314,6 @@ import {
   deleteSupabaseCoverage,
   timeOffEntryFromRow,
   upsertSupabaseTradingAccount,
-  loadSupabaseAccountTracker,
 } from "./domain/supabaseStore";
 import { summarizeAccountTracker } from "./domain/autoCollectionFleet";
 import {
@@ -4472,7 +4473,7 @@ const DESK_HISTORY_COLUMNS = deskBusinessColumns();
  */
 const RANKING_WINDOW_DAYS = 60;
 
-function ManagerOverview({
+export function ManagerOverview({
   clients,
   closeSummaries = null,
   // One load state per panel, looked up by the panel's own key. It was a single
@@ -4517,6 +4518,20 @@ function ManagerOverview({
   const [showPipeline, setShowPipeline] = useState(false);
   const [showBatchImport, setShowBatchImport] = useState(false);
   const [batchImportResult, setBatchImportResult] = useState(null);
+  /* THE STATUS LIGHT FOR THE WHOLE DESK. The same read and the same tiles the
+     CAM overview shows for one book, here for every working client. The desk's
+     churned clients are left out for the reason CamOverview leaves them out of
+     its working book: nothing is expected of a former client's accounts. */
+  const deskWorkingClients = useMemo(
+    () => clients.filter((client) => !isChurnedClient(client)),
+    [clients],
+  );
+  const deskTrackerIds = useMemo(
+    // By uuid, the key account_live_samples carries; `id` is the legacy key.
+    () => deskWorkingClients.map((client) => client.uuid || client.id).filter(Boolean),
+    [deskWorkingClients],
+  );
+  const { tracker: deskTracker, clock: deskTrackerClock } = useLiveAccountTracker(deskTrackerIds);
 
   function readFileText(file) {
     return new Promise((resolve, reject) => {
@@ -5977,6 +5992,27 @@ function ManagerOverview({
             </div>
           )}
         </div>
+
+        {/* Live accounts across the desk, right under the money and the tiles:
+            Pedro's order for the Manager is revenue first, then the light, then
+            the flags and the rest. A tile opens the client inside its CAM's
+            workspace, which is the only route a Manager has to a client page. */}
+        <CollapsiblePanel title="Live accounts" defaultOpen tone="fleet-lights-panel">
+          <FleetStatusLights
+            clients={deskWorkingClients}
+            tracker={deskTracker}
+            now={deskTrackerClock}
+            onSelectClient={(clientId) => {
+              // The client to CAM mapping lives on the CAM profile (clientIds,
+              // from client_assignments), never on the client. Resolved the way
+              // the Insight Feed and the flags table resolve it.
+              const cam = activeCamProfiles.find((p) =>
+                (p.clientIds || []).includes(clientId),
+              );
+              onOpenCam(cam?.id, clientId);
+            }}
+          />
+        </CollapsiblePanel>
 
         {/* The capital behind whichever segment row is open.
             The row's account count and this panel's are two different counts
@@ -10696,7 +10732,7 @@ export function buildCamFundedRows(clients = []) {
   });
 }
 
-function CamOverview({
+export function CamOverview({
   clients,
   camProfiles = [],
   allClients = [],
@@ -10705,7 +10741,6 @@ function CamOverview({
   onLogClientActivity,
   onResolveFlag,
   onClassifyAccount,
-  canSeeRevenue = false,
   monthlyGoal: monthlyGoalProp = 0,
   onSetMonthlyGoal,
   // The live per algorithm comparison (step 57). The parameter loader is the
@@ -10782,71 +10817,24 @@ function CamOverview({
   );
   /* WHAT IS HAPPENING RIGHT NOW, ON THE SCREEN THE CAM OPENS FIRST.
    *
-   * Its own small read, not part of the login state: the login state is loaded
-   * once and held, and a tracker that only moved at login would be a tracker of
-   * whenever the CAM signed in. One PostgREST request for the whole assigned
-   * book, under step 55's SELECT policy, so a 37-client overview costs no
-   * serverless invocations at all.
-   *
-   * REFRESHED FASTER THAN IT CHANGES, on purpose. The fleet samples about every
-   * ten minutes; this asks every two, which is what keeps "4 minutes ago" on a
-   * card from reading "4 minutes ago" a quarter of an hour later. One bounded
-   * query against a few hundred rows is the cheapest thing on this page.
-   *
-   * ITS OWN FAILURE IS SILENCE. `available: false` is what a CRM where step 55
-   * has not run answers, and it is also what a failed read answers, and both
-   * mean the same thing here: say nothing live. A tracker is not worth an error
-   * banner on the screen a CAM opens first. */
-  const [liveTracker, setLiveTracker] = useState(null);
-  const [liveClock, setLiveClock] = useState(() => Date.now());
-  const trackerScope = useMemo(
+   * One PostgREST request for the whole assigned book every two minutes, under
+   * step 55's SELECT policy; the polling, the failure rule and the clock live in
+   * useLiveAccountTracker, shared with the Operations Command Center. The same
+   * object feeds the status light panel below, the briefing's per client chips
+   * and nothing else: one read, three readers, no second request. */
+  const trackerClientIds = useMemo(
     // By uuid: account_live_samples.client_id is the uuid, and a client's `id`
     // is its legacy key when it has one, which PostgREST refuses as a uuid.
-    () => workingClients.map((client) => client.uuid || client.id).filter(Boolean).sort().join(","),
+    () => workingClients.map((client) => client.uuid || client.id).filter(Boolean),
     [workingClients],
   );
-  useEffect(() => {
-    let live = true;
-    const clientIds = trackerScope ? trackerScope.split(",") : [];
-    if (!clientIds.length) {
-      setLiveTracker(null);
-      return undefined;
-    }
-    async function read() {
-      try {
-        const result = await loadSupabaseAccountTracker({ clientIds });
-        if (!live) return;
-        setLiveTracker(result.available ? result : null);
-        setLiveClock(Date.now());
-      } catch {
-        if (live) setLiveTracker(null);
-      }
-    }
-    read();
-    const timer = setInterval(read, 120_000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [trackerScope]);
+  const { tracker: liveTracker, clock: liveClock } = useLiveAccountTracker(trackerClientIds);
 
   const briefing = useMemo(() => buildTodayBriefing(workingClients, {
     liveByClientId: liveTracker?.samplesByClientId || null,
     staleSeconds: liveTracker?.staleSeconds || 1500,
     now: () => new Date(liveClock),
   }), [workingClients, liveTracker, liveClock]);
-  /* THE DESK'S LIVE LINE, which is the half of "how is the day going" the close
-     cannot answer before 16:45. Counted across the CAM's own book. */
-  const liveSummary = useMemo(() => {
-    if (!liveTracker) return null;
-    const rows = [...(liveTracker.samplesByClientId?.values() || [])].flat();
-    if (!rows.length) return null;
-    const summary = summarizeAccountTracker(rows, {
-      now: new Date(liveClock),
-      staleSeconds: liveTracker.staleSeconds,
-    });
-    return { ...summary, clients: liveTracker.samplesByClientId.size };
-  }, [liveTracker, liveClock]);
   const insights = useMemo(
     () => buildPortfolioInsights(workingClients),
     [workingClients],
@@ -11015,26 +11003,6 @@ function CamOverview({
             {closeStats.total > closeStats.withUpload && (
               <span className="negative">
                 · {closeStats.total - closeStats.withUpload} no upload
-              </span>
-            )}
-            {/* THE LINE THAT IS TRUE BEFORE 16:45.
-                Everything to the left of this reads 0/N from midnight until the
-                closes land, because it is about the close. This says what the
-                desk is doing right now, from samples taken minutes ago, and it
-                is absent rather than zeroed when nothing is sampling - a "0
-                running" on a fleet nobody is sampling would be a claim about
-                the desk instead of a claim about the CRM. */}
-            {liveSummary && (
-              <span
-                className="muted"
-                title={`Live samples from ${liveSummary.clients} of ${closeStats.total} clients. The oldest reading counted here is inside the staleness window; anything older is counted as silent.`}
-              >
-                · live: {liveSummary.running} of {liveSummary.total} accounts
-                running
-                {liveSummary.disconnected
-                  ? `, ${liveSummary.disconnected} disconnected`
-                  : ""}
-                {liveSummary.silent ? `, ${liveSummary.silent} silent` : ""}
               </span>
             )}
             {formerCount > 0 && (
@@ -11242,16 +11210,36 @@ function CamOverview({
         </div>
       </div>
 
-      {/* Revenue health, for management only. Placed directly under the header
-          because it is the first question asked in that meeting, and because
-          every figure on it carries the count of clients nobody has priced. */}
-      {canSeeRevenue ? (
-        <RevenueHealthPanel
-          clients={revenueBook}
-          asOf={today}
-          monthStart={monthStart}
-        />
+      {/* Revenue health, for a Manager only and collapsed until asked for.
+          A CAM does not see it at all: revenue is a management question, and
+          Pedro asked that the first thing a CAM reads here be the status light,
+          not a panel about pricing. For a Manager it stays first, because it is
+          the first question asked in that meeting, and it opens on a click so
+          the light below it is still on the first screen. */}
+      {isManager ? (
+        <CollapsiblePanel title="Revenue health" tone="revenue-health">
+          <RevenueHealthPanel
+            clients={revenueBook}
+            asOf={today}
+            monthStart={monthStart}
+            embedded
+          />
+        </CollapsiblePanel>
       ) : null}
+
+      {/* THE STATUS LIGHT, FIRST. One tile per client, one dot per account,
+          worst first, from the same tracker read the briefing chips use. The
+          header used to carry a "live: 18 of 21 accounts running" line of text
+          above this; that sentence now sits on top of the grid, with the picture
+          under it, and is not said twice. */}
+      <CollapsiblePanel title="Live accounts" defaultOpen tone="fleet-lights-panel">
+        <FleetStatusLights
+          clients={workingClients}
+          tracker={liveTracker}
+          now={liveClock}
+          onSelectClient={onSelectClient}
+        />
+      </CollapsiblePanel>
 
       {/*
         The queue, directly under the tile that counts it — and handed the SAME
@@ -17011,7 +16999,6 @@ export default function App() {
                 onLogClientActivity={persistActivity}
                 onResolveFlag={resolveFlagByIds}
                 onClassifyAccount={classifyAccountOutcome}
-                canSeeRevenue={session?.role === USER_ROLES.MANAGER}
                 onNeedParameters={ensureStrategyParameters}
                 isManager={session?.role === USER_ROLES.MANAGER}
                 camName={currentCamProfile?.name || ""}

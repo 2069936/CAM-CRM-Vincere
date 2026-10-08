@@ -46,7 +46,14 @@ export default function AccountTrackerPanel({
   refreshMs = 120_000,
   disableAutoRefresh = false,
   now = () => new Date(),
+  defaultDetailsOpen = false,
 }) {
+  /* THE PICTURE FIRST, THE SENTENCES BEHIND A CLICK. Pedro's words: the tracker
+   * is good but there is a lot to read. The strip above the rows is one large
+   * dot per account with its name and its state in words under it, and the rows
+   * (every sentence kept, because the sentences are what the desk acts on) open
+   * on "Details". Nothing is lost; the glance just comes first. */
+  const [showDetails, setShowDetails] = useState(defaultDetailsOpen);
   /* IT REFRESHES ITSELF, AND IT ASKS FOR NOTHING ELSE.
    *
    * The card around this panel deliberately does NOT reload on a timer: only the
@@ -172,9 +179,26 @@ export default function AccountTrackerPanel({
       </div>
 
       {view.rows.length ? (
-        <ul className="account-tracker-rows">
-          {view.rows.map((row) => <TrackerRow key={row.accountName} row={row} />)}
-        </ul>
+        <>
+          <ol className="account-tracker-lights" aria-label="Accounts at a glance">
+            {view.rows.map((row) => <TrackerLight key={row.accountName} row={row} />)}
+          </ol>
+          <button
+            type="button"
+            className="account-tracker-details-toggle"
+            aria-expanded={showDetails}
+            onClick={() => setShowDetails((value) => !value)}
+          >
+            {showDetails
+              ? 'Hide details'
+              : `Details (${view.rows.length} account${view.rows.length === 1 ? '' : 's'}, each with its own sentence and time)`}
+          </button>
+          {showDetails ? (
+            <ul className="account-tracker-rows">
+              {view.rows.map((row) => <TrackerRow key={row.accountName} row={row} />)}
+            </ul>
+          ) : null}
+        </>
       ) : (
         <p className="account-tracker-none">
           No account is registered for this client and none has been sampled.
@@ -202,6 +226,25 @@ function headline(summary) {
 function money(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+/* ONE LARGE DOT, THE NAME, THE STATE IN WORDS. The traffic light Pedro asked
+ * for: readable from across the desk, and still never a colour alone. The run
+ * state is shown under the same rule as the row: only while the reading is
+ * current, because a silent account's last known "running" is a claim about a
+ * machine that has stopped answering. */
+function TrackerLight({ row }) {
+  const { verdict } = row;
+  const showsRun = verdict.state === 'live' || verdict.state === 'disconnected';
+  const run = showsRun ? accountRunStateCopy(verdict.runState) : null;
+  return (
+    <li className={`account-tracker-light tracker-${verdict.state}`} title={verdict.detail}>
+      <span className="account-tracker-light-dot" aria-hidden="true" />
+      <span className="account-tracker-light-name">{row.accountName}</span>
+      <span className="account-tracker-light-state">{verdict.label}</span>
+      {run ? <span className="account-tracker-light-run" title={run.detail}>{run.label}</span> : null}
+    </li>
+  );
 }
 
 function TrackerRow({ row }) {

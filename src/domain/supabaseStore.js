@@ -888,7 +888,7 @@ export function mapAccountLiveSample(row = {}) {
  * @returns {Promise<{available: boolean, staleSeconds: number, samplesByClientId: Map<string, object[]>}>}
  */
 export async function loadSupabaseAccountTracker({ clientIds = null } = {}) {
-  const empty = { available: false, staleSeconds: 1500, samplesByClientId: new Map() };
+  const empty = { available: false, staleSeconds: 1500, minAgentVersion: null, samplesByClientId: new Map() };
   if (!isSupabaseConfigured || !supabase) return empty;
   const scope = Array.isArray(clientIds) ? [...new Set(clientIds.filter(Boolean))] : null;
   if (scope && !scope.length) return { ...empty, available: true };
@@ -901,7 +901,9 @@ export async function loadSupabaseAccountTracker({ clientIds = null } = {}) {
         // pagination would mean the table had stopped being a last sample.
         return scoped.order('account_name', { ascending: true }).limit(2000);
       }),
-      selectRows('account_tracker_settings', 'stale_sample_seconds', (query) => query.limit(1)),
+      // min_agent_version travels too, so the overview's status light can name
+      // the build the desk is waiting for on the day nothing samples yet.
+      selectRows('account_tracker_settings', 'stale_sample_seconds, min_agent_version', (query) => query.limit(1)),
     ]);
     const samplesByClientId = new Map();
     for (const row of rows) {
@@ -916,6 +918,9 @@ export async function loadSupabaseAccountTracker({ clientIds = null } = {}) {
       // Never zero, whatever comes back: a horizon of zero would read every
       // sample as silent the instant it landed.
       staleSeconds: Number.isInteger(stored) && stored > 0 ? stored : 1500,
+      minAgentVersion: typeof settings?.[0]?.min_agent_version === 'string' && settings[0].min_agent_version.trim()
+        ? settings[0].min_agent_version.trim()
+        : null,
       samplesByClientId,
     };
   } catch (error) {

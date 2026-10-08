@@ -61,12 +61,18 @@ function device(overrides = {}) {
  * below for the refresh assertions, and a second binding of that name silently
  * won the hoist and turned every assertion in this file into a comparison
  * against an empty array. */
+/* THE ROWS ARE OPENED FOR THESE ASSERTIONS. The panel now leads with a traffic
+ * light strip and keeps the rows (every sentence) behind "Details", closed by
+ * default; the describe at the end of this file holds the strip and the toggle
+ * to account. Everything in between is about the sentences, so it asks for the
+ * rows to be open and reads them as before. */
 function markup(props = {}) {
   return renderToStaticMarkup(<AccountTrackerPanel
     tracker={tracker()}
     device={device()}
     accountNames={['APEX-1']}
     now={() => NOW}
+    defaultDetailsOpen
     {...props}
   />);
 }
@@ -423,6 +429,7 @@ describe('the panel refreshes itself, because a frozen age is not a tracker', ()
       api={{ loadStatus: loadStatus || (() => new Promise(() => {})) }}
       refreshMs={1000}
       now={() => NOW}
+      defaultDetailsOpen
       {...props}
     />);
   }
@@ -491,5 +498,84 @@ describe('the panel refreshes itself, because a frozen age is not a tracker', ()
     // claim step 55 had not been run.
     expect(container.textContent).toContain('APEX-1');
     expect(container.textContent).not.toContain('Migration step 55');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE TRAFFIC LIGHT STRIP, which is what Pedro asked for: the tracker was right
+ * and there was too much to read. One large dot per account with the name and
+ * the state in words under it, before the rows; the rows behind "Details".
+ * ------------------------------------------------------------------------- */
+describe('the traffic light strip over the rows', () => {
+  afterEach(cleanup);
+
+  const three = () => tracker({
+    accounts: [
+      sample({ accountName: 'APEX-1' }),
+      sample({ accountName: 'APEX-2', connected: false, status: 'ConnectionLost' }),
+      sample({ accountName: 'APEX-3', sampledAt: '2026-10-05T13:00:00.000Z' }),
+    ],
+  });
+
+  function strip(props = {}) {
+    return render(<AccountTrackerPanel
+      tracker={three()}
+      device={device()}
+      accountNames={['APEX-1', 'APEX-2', 'APEX-3', 'APEX-4']}
+      disableAutoRefresh
+      now={() => NOW}
+      {...props}
+    />);
+  }
+
+  it('shows one light per account, each with its name and its state in words', () => {
+    const { container } = strip();
+    const lights = [...container.querySelectorAll('.account-tracker-light')];
+    expect(lights.map((light) => light.querySelector('.account-tracker-light-name').textContent))
+      .toEqual(['APEX-1', 'APEX-2', 'APEX-3', 'APEX-4']);
+    expect(lights.map((light) => light.querySelector('.account-tracker-light-state').textContent))
+      .toEqual(['Live', 'Disconnected', 'Silent', 'Never sampled']);
+    // The colour class and the word travel together on every light.
+    expect(lights.map((light) => light.className))
+      .toEqual([
+        'account-tracker-light tracker-live',
+        'account-tracker-light tracker-disconnected',
+        'account-tracker-light tracker-sample_stale',
+        'account-tracker-light tracker-never_sampled',
+      ]);
+    // The sentence is one hover away, on the light itself.
+    expect(lights[1].getAttribute('title')).toContain('not connected to its broker');
+  });
+
+  it('shows the run state only under a current reading', () => {
+    const { container } = strip();
+    const runs = [...container.querySelectorAll('.account-tracker-light')]
+      .map((light) => light.querySelector('.account-tracker-light-run')?.textContent ?? null);
+    // Live and disconnected carry it; silent and never sampled do not.
+    expect(runs).toEqual(['running', 'running', null, null]);
+  });
+
+  it('keeps the rows behind Details, closed by default, and every sentence comes back on a click', () => {
+    const { container, getByRole } = strip();
+    expect(container.querySelector('.account-tracker-rows')).toBeNull();
+    expect(container.textContent).not.toContain('Sampled 4 minutes ago.');
+    const toggle = getByRole('button', { name: /^Details/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('4 accounts');
+    act(() => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelectorAll('.account-tracker-row').length).toBe(4);
+    expect(container.textContent).toContain('Sampled 4 minutes ago.');
+    expect(container.textContent).toContain('not connected to its broker');
+    expect(container.textContent).toContain('last sampled this account 2 hours ago');
+    act(() => { toggle.click(); });
+    expect(container.querySelector('.account-tracker-rows')).toBeNull();
+  });
+
+  it('opens the rows from the start when asked to', () => {
+    const { container } = strip({ defaultDetailsOpen: true });
+    expect(container.querySelectorAll('.account-tracker-row').length).toBe(4);
+    // The strip is still there above them: the picture is not an alternative to the rows.
+    expect(container.querySelectorAll('.account-tracker-light').length).toBe(4);
   });
 });

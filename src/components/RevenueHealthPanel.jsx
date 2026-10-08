@@ -45,6 +45,11 @@ export default function RevenueHealthPanel({
   priceLogStartedAt = null,
   asOf,
   monthStart,
+  /* `embedded` renders the body without its own panel and heading, for a host
+   * that supplies both: the CAM overview wraps this in a CollapsiblePanel titled
+   * "Revenue health", and a second heading inside the first would be the panel
+   * saying its name twice. The active client count moves onto a line of its own. */
+  embedded = false,
 }) {
   const snapshot = revenueSnapshot(clients);
   const leakage = revenueLeakage(clients, { asOf });
@@ -56,13 +61,11 @@ export default function RevenueHealthPanel({
   const conversion = conversionFromFree(priceChanges, { logStartedAt: priceLogStartedAt });
   const undetermined = snapshot.byStatus.undetermined;
 
-  return (
-    <section className="panel revenue-health">
-      <div className="panel-heading">
-        <h3>Revenue health</h3>
-        <span className="muted">{snapshot.activeClients} active clients, cancelled excluded</span>
-      </div>
-
+  const body = (
+    <>
+      {embedded ? (
+        <p className="muted revenue-embedded-note">{snapshot.activeClients} active clients, cancelled excluded</p>
+      ) : null}
       <div className="revenue-tiles">
         <Tile
           label="Total MRR"
@@ -192,6 +195,17 @@ export default function RevenueHealthPanel({
           </p>
         )}
       </div>
+    </>
+  );
+
+  if (embedded) return <div className="revenue-health revenue-health-embedded">{body}</div>;
+  return (
+    <section className="panel revenue-health">
+      <div className="panel-heading">
+        <h3>Revenue health</h3>
+        <span className="muted">{snapshot.activeClients} active clients, cancelled excluded</span>
+      </div>
+      {body}
     </section>
   );
 }
