@@ -557,10 +557,12 @@ describe('record_algorithm_live_sample', () => {
       sampledAt: sampled.toISOString(),
       strategies: [
         { accountName: 'SIM-FIXTURE-1', strategyId: '123456789', strategyName: '0 - OGX-PF-2.4',
-          instrument: 'MNQ 12-26', realizedPnl: -412.5, unrealizedPnl: 37.5, restartedAt: null },
+          instrument: 'MNQ 12-26', realizedPnl: -412.5, unrealizedPnl: 37.5, restartedAt: null,
+          marketPosition: 'long', positionQuantity: 2, tradesThisRun: 7 },
         { accountName: 'SIM-FIXTURE-1', strategyId: '123456790', strategyName: '1 - ALPHA-1.2',
           instrument: 'NQ 12-26', realizedPnl: null, unrealizedPnl: null,
-          restartedAt: new Date(sampled.getTime() - 20 * 60_000).toISOString() },
+          restartedAt: new Date(sampled.getTime() - 20 * 60_000).toISOString(),
+          marketPosition: null, positionQuantity: null, tradesThisRun: null },
       ],
     };
     const normalized = normalizeStrategySampleBody(body);

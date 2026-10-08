@@ -40,7 +40,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 61 | `step_61_target_profit_amount_to_balance.sql` | `target_profit_before_step_61` on `trading_accounts`, and every `target_profit` that is a profit AMOUNT beyond doubt (positive, below a stored start and no more than a fifth of it) rewritten as the BALANCE `start_balance + amount`. On production that is 1 row of 726 | An evaluation that has made nothing no longer reads as passed. |
 | 62 | `step_62_payment_status.sql` | `clients.payment_status` text not null default `undetermined`, CHECK in (paying, free, undetermined, paused, idle, cancelled); a backfill from `subscription_price` (`$N` to paying, `Free` to free, everything else left undetermined) that touches only rows still at the default; the table's grants restated per step 56 (anon nothing, authenticated select, insert, update, RLS on). `subscription_price` stays and now holds any whole dollar amount as `$N` | A client at $400, $375, $333 or $183 is filed as paying what they pay instead of Undetermined, and a paused, idle or cancelled client has a status of their own. Run it BEFORE deploying the build that reads the column: the login selects `payment_status` and fails on a database without it |
 | 63 | `step_63_heartbeat_without_ninjatrader_version.sql` | replaces `record_ingest_heartbeat` so a null `p_ninjatrader_version` is accepted: the stored `ingest_devices.ninjatrader_version` is kept (coalesce) and stays null only while no heartbeat has ever carried one; a non null value is still validated as a version, every other check is step 41's unchanged, and the grants are restated (service_role only). Replaces one function and rewrites no row | Agent 1.2.0 sends ninjaTraderVersion null until the first capture has told it the real one, and after every service restart until that day's capture. The route has passed null through since 2026-09-02; the RPC still refused it, so each heartbeat was a 400 and `last_seen_at` froze. Leading hypothesis for the eight VPS silent since their 1.2.0 update on 2026-10-08. Run it ANY time; nothing in the app changes. If step 41 is ever run again, run 63 again after it: 41 carries the old body |
-
+| 64 | `step_64_algorithm_live_position.sql` | `market_position` (long, short, flat), `position_quantity` (0 to 100000) and `trades_this_run` (0 to 1000000) on `algorithm_live_samples`, all nullable with their own CHECK constraints, and `record_algorithm_live_sample` replaced with the SAME signature so each item's `marketPosition`, `positionQuantity` and `tradesThisRun` are validated and written (a reading without them clears the columns: the row is the latest reading, not a merge). Grants restated (service_role only). Rewrites no row | Agent 1.2.1 reads each live strategy's position off NinjaTrader and posts it with the reading, so the desk sees whether BulletBot fired long or short, how many contracts it holds and how many trades this run has made, instead of asking in the team chat. Agents 1.2.0 send none of the three and store null. Run it AFTER merging the CRM and BEFORE installing agent 1.2.1 anywhere; a 1.2.1 agent against a database without it still lands and only loses the three values until it runs. If step 57 is ever run again, run 64 again after it: 57 carries the old function body |
 ## These three groups behave differently
 
 **28–30 are required before the auto-collector works at all.** They create tables
@@ -113,7 +113,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -804,6 +804,24 @@ ever has. A non null value is still validated as a version. Nothing else in the
 body moves, and the file restates the function's grants (step 56's rule). It
 does not rewrite stored device rows. Running 63 twice is a no-op; running 41
 after 63 brings the refusal back, so 63 is run again after any re-run of 41.
+
+Step 64 adds three nullable columns to `algorithm_live_samples` and replaces
+`record_algorithm_live_sample` with the same signature, nothing else. The CAMs
+tell each other in the team chat whether BulletBot fired long or short; the CRM
+cannot know that from the catalogue, so agent 1.2.1 reads each live strategy's
+position off NinjaTrader and posts `marketPosition`, `positionQuantity` and
+`tradesThisRun` inside each item of the reading. The function validates them
+when present (one of the three lower case words, whole numbers within the
+column bounds) and writes them on insert and on the upsert's update. A reading
+that carries none of them clears the columns, because the row is the latest
+reading and a position that could not be read this cycle must not show last
+cycle's as current. Null is "not read", never flat and never zero. The order
+for the desk is: merge the CRM, run this file, then install 1.2.1. Agents 1.2.0
+are unaffected in every order; a 1.2.1 agent against a database without 64
+lands and loses only the three values. The file refuses to run before 57 and
+says so. Running 64 twice is a no-op (the columns say "already exists,
+skipping"); running 57 after 64 keeps the columns but stops filling them, so
+64 is run again after any re-run of 57.
 
 Step 39 adds columns and rewrites nothing. Every client already marked Inactive
 keeps a null reason and a null date, which the app reports as "Not recorded"
