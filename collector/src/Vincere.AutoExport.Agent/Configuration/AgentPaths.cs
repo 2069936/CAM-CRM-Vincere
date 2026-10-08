@@ -16,7 +16,9 @@ public sealed record AgentPaths(
     /// <summary>The last account classification the CRM was able to send. See RosterStore.</summary>
     string Roster,
     /// <summary>The relay secret the heartbeat hands out, so this machine can mail its own close when the CRM cannot be reached. Its own file rather than a second field in config.json, because it is a credential and belongs encrypted at rest like the device token beside it.</summary>
-    string RelaySecret = null)
+    string RelaySecret = null,
+    /// <summary>What the add-on last said it and NinjaTrader were, kept so a restarted service reports the real NinjaTrader version in its first heartbeat instead of null until that day's capture. See ObservedEnvironmentStore. A trailing default, like RelaySecret, so every caller that builds the record by hand keeps compiling.</summary>
+    string ObservedEnvironment = null)
 {
     public static AgentPaths FromEnvironment()
     {
@@ -40,6 +42,7 @@ public sealed record AgentPaths(
             Path.Combine(root, "logs"),
             Path.Combine(root, "history.json"),
             Path.Combine(root, "roster.json"),
-            Path.Combine(root, "relay-secret.bin"));
+            Path.Combine(root, "relay-secret.bin"),
+            Path.Combine(root, "environment.json"));
     }
 }

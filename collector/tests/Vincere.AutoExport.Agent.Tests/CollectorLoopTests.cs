@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NodaTime;
+using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Crm;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
@@ -867,5 +869,111 @@ public sealed class CollectorLoopTests
         state.RecordEnvironment("  8.1.6.0  ", "1.0.0");
 
         Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+    }
+
+    /* THE VERSION SURVIVES A RESTART. The add-on reports it at the capture and
+     * nowhere else, so a service restarted between two closes used to say null
+     * until the next one. With a store, the state starts from what the last
+     * capture said and writes what each capture teaches it. */
+
+    [Fact]
+    public void StartsFromWhatTheLastCaptureSaidWhenAStoreHoldsIt()
+    {
+        FakeEnvironmentStore store = new() { Stored = new ObservedEnvironment("8.1.6.0", "1.2.1") };
+
+        CollectorState state = new(store);
+
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+        Assert.Equal("1.2.1", state.Snapshot().AddonVersion);
+        Assert.Equal(1, store.Loads);
+        Assert.Empty(store.Saved);
+        // Everything that is about this process still starts empty.
+        Assert.Null(state.Snapshot().LastCaptureAt);
+        Assert.Equal("unpaired", state.Snapshot().DeviceStatus);
+    }
+
+    [Fact]
+    public void StartsEmptyWhenTheStoreHoldsNothing()
+    {
+        CollectorState state = new(new FakeEnvironmentStore());
+
+        Assert.Null(state.Snapshot().NinjaTraderVersion);
+        Assert.Null(state.Snapshot().AddonVersion);
+    }
+
+    [Fact]
+    public void WritesWhatACaptureTeachesItAndOnlyWhenSomethingChanged()
+    {
+        FakeEnvironmentStore store = new();
+        CollectorState state = new(store);
+
+        state.RecordEnvironment("8.1.6.0", "1.2.1");
+        state.RecordEnvironment("8.1.6.0", "1.2.1");
+        state.RecordEnvironment(null, "   ");
+        state.RecordEnvironment("8.1.7.0", null);
+
+        Assert.Equal(
+            new[] { new ObservedEnvironment("8.1.6.0", "1.2.1"), new ObservedEnvironment("8.1.7.0", "1.2.1") },
+            store.Saved);
+        Assert.Equal("8.1.7.0", state.Snapshot().NinjaTraderVersion);
+    }
+
+    [Fact]
+    public void AStoreThatFailsCostsNothing()
+    {
+        // Load and Save both throw; the state behaves exactly like a bare one.
+        CollectorState state = new(new ThrowingEnvironmentStore());
+
+        Assert.Null(state.Snapshot().NinjaTraderVersion);
+        state.RecordEnvironment("8.1.6.0", "1.2.1");
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+    }
+
+    [Fact]
+    public void ABlankReportAfterARestartKeepsTheStoredVersionAndWritesNothing()
+    {
+        FakeEnvironmentStore store = new() { Stored = new ObservedEnvironment("8.1.6.0", "1.2.1") };
+        CollectorState state = new(store);
+
+        state.RecordEnvironment(null, null);
+
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+        Assert.Empty(store.Saved);
+    }
+
+    [Fact]
+    public async Task TheFirstHeartbeatAfterARestartCarriesTheStoredVersion()
+    {
+        FakeEnvironmentStore store = new() { Stored = new ObservedEnvironment("8.1.6.0", "1.2.1") };
+        ThrowingHeartbeatCrm crm = new();
+        HeartbeatLoop loop = new(
+            new FakeQueue(), crm, new FakeTokenStore("token"), new CollectorState(store), "1.2.1", "1.0.0", null);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        HeartbeatPayload sent = Assert.Single(crm.Payloads);
+        Assert.Equal("8.1.6.0", sent.NinjaTraderVersion);
+        Assert.Equal("1.2.1", sent.AddonVersion);
+    }
+
+    private sealed class FakeEnvironmentStore : IObservedEnvironmentStore
+    {
+        public ObservedEnvironment Stored { get; set; }
+        public int Loads { get; private set; }
+        public List<ObservedEnvironment> Saved { get; } = new();
+
+        public ObservedEnvironment Load()
+        {
+            Loads++;
+            return Stored;
+        }
+
+        public void Save(ObservedEnvironment environment) => Saved.Add(environment);
+    }
+
+    private sealed class ThrowingEnvironmentStore : IObservedEnvironmentStore
+    {
+        public ObservedEnvironment Load() => throw new IOException("disk gone");
+        public void Save(ObservedEnvironment environment) => throw new IOException("disk gone");
     }
 }
