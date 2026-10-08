@@ -5,10 +5,12 @@ import { LIVE_SAMPLING_BUILD } from '../domain/fleetStatusLights';
 import { withDiffers } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
-import { loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
+import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
+import useAccountObservationSettings from './useAccountObservationSettings';
 import useClientLiveStrategies from './useClientLiveStrategies';
 import useDeskDevices, { loadDeskDevices } from './useDeskDevices';
 
@@ -42,6 +44,12 @@ import useDeskDevices, { loadDeskDevices } from './useDeskDevices';
  * WHERE THE DEVICES COME FROM, SAID OUT LOUD. The fleet route is Manager only;
  * the line under the summary says whether the lights include VPS health or
  * come from the samples and the registry alone.
+ *
+ * ONLY THE ACCOUNTS EXPECTED TO TRADE ARE IN THE DRAWER. The registry says
+ * what the closes saw of each account (step 65); the never sampled group holds
+ * the expected ones nobody has sampled, a new one saying so, and the rest of
+ * the registry is one folded line at the bottom of the drawer (NotShownLine).
+ * new_account_days is read once per session by useAccountObservationSettings.
  */
 const SOURCE_WORDS = Object.freeze({
   readable: 'VPS health from the collector fleet.',
@@ -67,6 +75,7 @@ export default function DeskClientLights({
   deviceAware = true,
   loadDevices = loadDeskDevices,
   loadStrategies = loadSupabaseClientLiveStrategies,
+  loadObservationSettings = loadSupabaseAccountObservationSettings,
 }) {
   // The clock is the caller's (the tracker hook moves it on every successful
   // read); a caller without one gets the mount time, held.
@@ -74,9 +83,10 @@ export default function DeskClientLights({
   const at = now ?? mountedAt;
   const trackerReady = Boolean(tracker && tracker.available !== false);
   const fleet = useDeskDevices({ enabled: deviceAware && trackerReady, refreshMs, load: loadDevices });
+  const observation = useAccountObservationSettings({ enabled: trackerReady, load: loadObservationSettings });
   const view = useMemo(
-    () => buildDeskClientLights({ clients, tracker, devices: fleet.devices, now: at }),
-    [clients, tracker, fleet.devices, at],
+    () => buildDeskClientLights({ clients, tracker, devices: fleet.devices, now: at, settings: observation.settings }),
+    [clients, tracker, fleet.devices, at, observation.settings],
   );
   const clientsById = useMemo(() => {
     const map = new Map();
@@ -313,6 +323,7 @@ function Drawer({ id, bulb, details, strategies, expanded, detailId, onExpand, o
       ) : (
         <p className="dcl-drawer-empty">No account sampled and none expected on the registry.</p>
       )}
+      <NotShownLine notShown={bulb.notShown} label={`${bulb.clientName}, accounts not shown`} />
     </div>
   );
 }

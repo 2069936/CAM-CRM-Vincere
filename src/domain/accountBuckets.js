@@ -293,3 +293,133 @@ export function bucketRegistryAccounts(registry, { now = Date.now(), settings = 
 export function expectedAccountNameSet(buckets) {
   return new Set((buckets?.expected?.accounts || []).map((row) => row.accountName));
 }
+
+/* ── What a light needs from the registry, in one call ────────────────────────
+ *
+ * The three screens with a light (the overview tiles, the desk drawer, the
+ * client page strip) ask the same question of a registry: which names get a
+ * pill, which of those are new, and what to say about the rest. Asked here so
+ * the three cannot answer differently.
+ *
+ * THE FOLDED LINE. Pedro's words: show only the accounts expected to trade, and
+ * say in one collapsed line why the others are not shown, so a CAM can tell a
+ * dead account from a new one from a missing one. The line is the bucket
+ * sentences of what has no light (looks failed, gone, never seen, retired) in
+ * the order the questions are asked, and behind a Show toggle each hidden name
+ * with a reason word and, one hover away, what the close saw of it. Nothing at
+ * all when every account is expected: a new account is expected and shown, so
+ * it is never in the line; it says "new" on its own pill instead.
+ *
+ * AN ACCOUNT THE VPS IS SAMPLING KEEPS ITS LIGHT, whatever the close said of
+ * it: NinjaTrader still naming an account that looks failed is a question
+ * worth a pill, not a thing to hide. The caller hands in the sampled names and
+ * the line counts only what has no light anywhere.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The word printed beside a hidden account's name in the folded list, by the
+ * row's bucket reason. The retired reasons are the status words themselves. */
+export const NOT_SHOWN_WORDS = Object.freeze({
+  breached: 'looks failed',
+  absent: 'gone from the close',
+  'never seen': 'never seen in a close',
+  [ACCOUNT_STATUSES.FAILED]: ACCOUNT_STATUSES.FAILED,
+  [ACCOUNT_STATUSES.INACTIVE]: ACCOUNT_STATUSES.INACTIVE,
+  [ACCOUNT_STATUSES.RESERVE]: ACCOUNT_STATUSES.RESERVE,
+  Ignored: 'Ignored',
+});
+
+function wholeDollars(value) {
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+/** What the close saw of a hidden account, for the hover on its name. */
+function notShownDetail(row) {
+  switch (row.reason) {
+    case 'breached': {
+      const when = row.breachedOn ? ` on ${row.breachedOn}` : ' on the close';
+      const reading = row.breachReading !== null ? `, reading ${wholeDollars(row.breachReading)}` : '';
+      return `Breached${when}${reading}, status still ${row.status}.`;
+    }
+    case 'absent': {
+      const closes = Number.isInteger(row.closesMissed) && row.closesMissed > 0
+        ? ` for ${row.closesMissed} ${plural(row.closesMissed, 'close')}`
+        : '';
+      const seen = row.lastCloseSeenOn ? `, last seen ${row.lastCloseSeenOn}` : '';
+      return `Gone from the close${closes}${seen}.`;
+    }
+    case 'never seen':
+      return `Never seen in a close${row.dateAdded ? `, added ${row.dateAdded}` : ', no date added'}.`;
+    case 'Ignored':
+      return `Account type ${ACCOUNT_TYPES.IGNORE}.`;
+    default:
+      return `Status ${row.reason}.`;
+  }
+}
+
+/** "Added 3 days ago, not seen in a close yet." for a new account's pill. */
+function newAccountWords(row) {
+  const days = row.daysSinceAdded;
+  const when = !Number.isInteger(days) || days <= 0 ? 'today' : `${days} ${plural(days, 'day')} ago`;
+  return `Added ${when}, not seen in a close yet.`;
+}
+
+/**
+ * The one folded line for the registry accounts without a light.
+ *
+ * @param {object} buckets from bucketRegistryAccounts.
+ * @param {{except?: Iterable<string>}} [options] names to leave out because they
+ *   have a light anyway: the accounts the VPS is sampling.
+ * @returns {{count: number, sentence: string, accounts: object[]}|null} null when
+ *   nothing is hidden. `accounts` are the hidden rows in the order of the
+ *   questions (looks failed, gone, never seen, retired), each with `word` and
+ *   `detail` added.
+ */
+export function notShownAccounts(buckets, { except = [] } = {}) {
+  const skip = new Set(except);
+  const keep = (bucket) => (bucket?.accounts || []).filter((row) => !skip.has(row.accountName));
+  const looksFailed = keep(buckets?.looksFailed);
+  const gone = keep(buckets?.goneFromClose);
+  const neverSeen = keep(buckets?.registeredNeverSeen);
+  const retired = keep(buckets?.retired);
+  const hidden = [...looksFailed, ...gone, ...neverSeen, ...retired];
+  if (!hidden.length) return null;
+  const newAccountDays = buckets?.settings?.newAccountDays ?? ACCOUNT_OBSERVATION_DEFAULTS.newAccountDays;
+  const parts = [
+    // "not shown" is the line's own heading, so the bucket sentence drops it.
+    looksFailedSentence(looksFailed)?.replace(/, not shown$/, ''),
+    goneSentence(gone),
+    neverSeenSentence(neverSeen, newAccountDays),
+    retiredSentence(retired),
+  ].filter(Boolean);
+  return {
+    count: hidden.length,
+    sentence: `Not shown: ${parts.map((part) => `${part}.`).join(' ')}`,
+    accounts: hidden.map((row) => ({
+      ...row,
+      word: NOT_SHOWN_WORDS[row.reason] || row.reason,
+      detail: notShownDetail(row),
+    })),
+  };
+}
+
+/**
+ * Everything a light needs from one registry.
+ *
+ * @param {Record<string, object>|null} registry client.accountRegistry.
+ * @param {{now?: Date|number|string, settings?: object|null, sampled?: Iterable<string>}} [options]
+ *   `sampled` are the account names the VPS has a sample for; they keep a light
+ *   whatever the close said, so the folded line leaves them out.
+ * @returns {{buckets: object, names: string[], fresh: Map<string, string>, notShown: object|null}}
+ *   `names` are the expected accounts, sorted, a pill each; `fresh` maps the
+ *   new ones among them to their sentence; `notShown` is the folded line or null.
+ */
+export function registryLights(registry, { now = Date.now(), settings = null, sampled = [] } = {}) {
+  const buckets = bucketRegistryAccounts(registry, { now, settings });
+  const expected = buckets.expected.accounts;
+  return {
+    buckets,
+    names: expected.map((row) => row.accountName),
+    fresh: new Map(expected.filter((row) => row.reason === 'new').map((row) => [row.accountName, newAccountWords(row)])),
+    notShown: notShownAccounts(buckets, { except: sampled }),
+  };
+}

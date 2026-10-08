@@ -1,7 +1,8 @@
+import { registryLights } from './accountBuckets';
 import { NO_CONNECTION_WORD, buildAccountPill } from './accountPill';
 import { cycleClock } from './algorithmLiveComparison';
 import { classifyAccountSample } from './autoCollectionFleet';
-import { agedWords, expectedAccountNames } from './fleetStatusLights';
+import { agedWords, registryNameSet } from './fleetStatusLights';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * ONE BULB PER CLIENT, FOR THE MANAGER'S DESK VIEW.
@@ -39,6 +40,12 @@ import { agedWords, expectedAccountNames } from './fleetStatusLights';
  * reported; painting it red claimed a lost connection the data did not show,
  * and did so for the whole desk twice a day. Red needs the heartbeat to say
  * NinjaTrader is down, or a fresh sample to say disconnected.
+ *
+ * WHICH REGISTRY ACCOUNTS COUNT. The same rule as the tiles: the accounts the
+ * database expects on the close (accountBuckets.js, step 65), a new one saying
+ * so on its pill; the rest of the registry is one folded line at the bottom of
+ * the drawer (`notShown`), never a bulb's reason to be brown. An account the
+ * VPS is sampling keeps its pill whatever the close said of it.
  *
  * WITH OR WITHOUT THE DEVICES. The browser cannot read ingest_devices; a
  * Manager reaches the fleet through /api/admin/ingest-fleet, a CAM is refused.
@@ -255,25 +262,36 @@ function sentenceOf(state, { counts, device, deviceAware, newestSampledAt, ageMi
  * @param {boolean} input.deviceAware whether the devices were readable at all.
  * @param {Date|number|string} input.now
  * @param {number} input.staleSeconds the tracker's horizon.
+ * @param {object|null} input.settings account_observation_settings as the loader
+ *   maps it ({newAccountDays, staleCloses}), or null for the column defaults.
  */
-export function buildDeskClientLight(client, { samples = [], devices = null, deviceAware = false, now, staleSeconds = 1500 } = {}) {
+export function buildDeskClientLight(client, { samples = [], devices = null, deviceAware = false, now, staleSeconds = 1500, settings = null } = {}) {
   const at = toDate(now) || new Date();
   const list = (Array.isArray(samples) ? samples : []).filter((row) => row && row.accountName);
-  const registry = expectedAccountNames(client);
-  const registrySet = new Set(registry);
   const sampledNames = new Set(list.map((row) => row.accountName));
+  const lights = registryLights(client?.accountRegistry, { now: at, settings, sampled: [...sampledNames] });
+  const registry = lights.names;
+  const known = registryNameSet(client);
 
   const sampledPills = list.map((sample) => {
     const verdict = classifyAccountSample({ now: at, sample, staleSeconds });
     return {
-      ...buildAccountPill({ accountName: sample.accountName, sample, verdict, inRegistry: registrySet.has(sample.accountName), sampleOnly: true }),
+      ...buildAccountPill({ accountName: sample.accountName, sample, verdict, inRegistry: known.has(sample.accountName), sampleOnly: true }),
       sample,
     };
   });
   const neverPills = registry
     .filter((name) => !sampledNames.has(name))
     .map((accountName) => ({
-      ...buildAccountPill({ accountName, sample: null, verdict: classifyAccountSample({ now: at, sample: null, staleSeconds }), inRegistry: true, sampleOnly: true }),
+      ...buildAccountPill({
+        accountName,
+        sample: null,
+        verdict: classifyAccountSample({ now: at, sample: null, staleSeconds }),
+        inRegistry: true,
+        sampleOnly: true,
+        isNew: lights.fresh.has(accountName),
+        newWords: lights.fresh.get(accountName) || null,
+      }),
       sample: null,
     }));
 
@@ -315,6 +333,9 @@ export function buildDeskClientLight(client, { samples = [], devices = null, dev
     deviceAware,
     connections: groups,
     dots: [...sampledPills, ...neverPills],
+    // The folded line at the bottom of the drawer, or null when every
+    // registry account is expected.
+    notShown: lights.notShown,
     newestSampledAt: newest,
     ageMinutes,
   };
@@ -343,9 +364,11 @@ export function deskWords(counts, ageMinutes) {
  *   ready        bulbs, and the folded list of clients without a VPS.
  *
  * @param {{clients: object[], tracker: object|null, devices?: {available?: boolean,
- *   byClientId?: Map<string, object[]>}|null, now: Date|number|string}} input
+ *   byClientId?: Map<string, object[]>}|null, now: Date|number|string,
+ *   settings?: object|null}} input `settings` is account_observation_settings
+ *   as the loader maps it, null for the column defaults.
  */
-export function buildDeskClientLights({ clients = [], tracker = null, devices = null, now = Date.now() } = {}) {
+export function buildDeskClientLights({ clients = [], tracker = null, devices = null, now = Date.now(), settings = null } = {}) {
   const at = toDate(now) || new Date();
   const list = (Array.isArray(clients) ? clients : []).filter((client) => client && client.id);
   if (!tracker || tracker.available === false) return { kind: 'unavailable', bulbs: [], hidden: [], at, deviceAware: false };
@@ -361,6 +384,7 @@ export function buildDeskClientLights({ clients = [], tracker = null, devices = 
     deviceAware,
     now: at,
     staleSeconds,
+    settings,
   }));
   const sampledAny = all.some((bulb) => bulb.counts.sampled > 0);
   const pairedAny = all.some((bulb) => bulb.device?.paired);

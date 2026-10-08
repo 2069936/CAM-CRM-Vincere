@@ -5,6 +5,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AccountTrackerPanel from './AccountTrackerPanel';
 import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
+import { resetAccountObservationSettingsCache } from './useAccountObservationSettings';
 import { ACCOUNT_TRACKER_STATES } from '../domain/autoCollectionFleet';
 import AutoCollectionCard from './AutoCollectionCard';
 
@@ -789,5 +790,158 @@ describe('what an account is running, under its pill', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * ONLY THE ACCOUNTS EXPECTED TO TRADE GET A PILL ON THE CLIENT PAGE.
+ *
+ * Pedro's words: dead accounts piled up on the client page as never sampled.
+ * The strip now takes the registry itself (with what the closes saw of each
+ * row) and lights the expected accounts only; a new one says so; the rest is
+ * one folded line under the pills. Fictional registry.
+ * ------------------------------------------------------------------------- */
+describe('only the accounts expected to trade get a pill on the client page', () => {
+  afterEach(() => { cleanup(); resetClientLiveStrategiesCache(); resetAccountObservationSettingsCache(); });
+
+  const observed = (accountName, over = {}) => [accountName, {
+    accountName, status: 'Active', accountType: 'Funded', observedState: 'seen',
+    closesMissed: 0, lastCloseSeenOn: '2026-10-04', dateAdded: '2026-06-01', ...over,
+  }];
+  const REGISTRY = Object.fromEntries([
+    observed('ACC 01'),
+    observed('ACC 02'),
+    observed('ACC 03', { observedState: 'breached', breachedOn: '2026-10-04', breachReading: -263 }),
+    observed('ACC 04', { observedState: 'absent', closesMissed: 6, lastCloseSeenOn: '2026-09-26' }),
+    observed('ACC 05', { observedState: 'never_seen', lastCloseSeenOn: '', dateAdded: '2026-10-02' }),
+    observed('ACC 06', { status: 'Failed' }),
+  ]);
+  const settingsNever = () => new Promise(() => {});
+
+  function strip(props = {}) {
+    return render(<AccountTrackerPanel
+      clientUuid="22222222-2222-4222-8222-222222222222"
+      clientName="Maple Ridge"
+      tracker={tracker({ accounts: [sample({ accountName: 'ACC 01' })] })}
+      device={device()}
+      accountRegistry={REGISTRY}
+      disableAutoRefresh
+      now={() => NOW}
+      loadStrategies={() => new Promise(() => {})}
+      loadObservationSettings={settingsNever}
+      {...props}
+    />);
+  }
+  const names = (container) => [...container.querySelectorAll('.account-pill')]
+    .map((pill) => `${pill.dataset.account}: ${pill.querySelector('.account-pill-state').textContent}`);
+
+  it('shows the two seen and the new one, hides the failed, the gone and the retired, and says why in one folded line', () => {
+    const { container, getByRole } = strip();
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(getByRole('button', { name: /^Details/ }).textContent).toContain('3 accounts');
+    const line = container.querySelector('.account-tracker .not-shown');
+    expect(line.querySelector('.not-shown-words').textContent)
+      .toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. 1 retired: 1 Failed.');
+    expect(container.textContent).not.toContain('ACC 03');
+    const toggle = line.querySelector('.not-shown-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    act(() => { toggle.click(); });
+    expect([...line.querySelectorAll('.not-shown-list li')].map((item) => item.textContent))
+      .toEqual(['ACC 03 looks failed', 'ACC 04 gone from the close', 'ACC 06 Failed']);
+    // Under the pills, above the Details toggle.
+    expect(container.querySelector('.account-pills').compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line.compareDocumentPosition(container.querySelector('.account-tracker-details-toggle')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the new account says so on the pill, in its title with the VPS sentence, and on its row', () => {
+    const { container, getByRole } = strip();
+    const fresh = container.querySelector('.account-pill[data-account="ACC 05"]');
+    expect(fresh.className).toBe('account-pill tracker-never_sampled tone-faint');
+    const title = fresh.querySelector('button').getAttribute('title');
+    expect(title).toContain('ACC 05: New, not sampled yet.');
+    expect(title).toContain('Added 3 days ago, not seen in a close yet.');
+    // With the device in hand, the sentence that names the VPS follows.
+    expect(title).toContain('sampling other accounts and has never sent this one');
+    act(() => { getByRole('button', { name: /^Details/ }).click(); });
+    const rows = [...container.querySelectorAll('.account-tracker-row')];
+    expect(rows.map((row) => `${row.querySelector('.account-tracker-name').textContent.trim()}: ${row.querySelector('.account-tracker-state').textContent}`))
+      .toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(rows[2].querySelector('.account-tracker-detail').textContent).toContain('Added 3 days ago, not seen in a close yet.');
+  });
+
+  it('keeps the plain names prop: every name is expected and nothing is folded', () => {
+    const { container } = strip({ accountRegistry: null, accountNames: ['ACC 01', 'ACC 02'] });
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled']);
+    expect(container.querySelector('.not-shown')).toBeNull();
+  });
+
+  it('keeps a pill for an account the VPS sampled that the registry lacks, or that the close hid', () => {
+    const { container } = strip({
+      tracker: tracker({ accounts: [sample({ accountName: 'ACC 01' }), sample({ accountName: 'ACC 03' }), sample({ accountName: 'ACC 09' })] }),
+      defaultDetailsOpen: true,
+    });
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 03: Live', 'ACC 05: New, not sampled yet', 'ACC 09: Live']);
+    // The registry's "new" abbreviation is for an account the registry lacks, and no other.
+    const rows = [...container.querySelectorAll('.account-tracker-row')];
+    expect(rows.filter((row) => row.querySelector('abbr')).map((row) => row.querySelector('.account-tracker-name').textContent.trim().replace(/\s+new$/, '')))
+      .toEqual(['ACC 09']);
+    expect(container.querySelector('.not-shown-words').textContent).toBe('Not shown: 1 gone from the close for 6 closes. 1 retired: 1 Failed.');
+  });
+
+  it('with nothing expected and nothing sampled, says so and still folds the rest', () => {
+    const { container } = strip({
+      tracker: tracker({ accounts: [], deviceHasSamples: false }),
+      accountRegistry: Object.fromEntries([REGISTRY['ACC 03'], REGISTRY['ACC 04']].map((meta) => [meta.accountName, meta])),
+    });
+    expect(container.querySelectorAll('.account-pill').length).toBe(0);
+    expect(container.querySelector('.account-tracker-none').textContent).toBe('No account is expected on the close for this client and none has been sampled.');
+    expect(container.querySelector('.not-shown-words').textContent).toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
+    cleanup();
+    const bare = strip({ tracker: tracker({ accounts: [], deviceHasSamples: false }), accountRegistry: {} });
+    expect(bare.container.querySelector('.account-tracker-none').textContent).toBe('No account is registered for this client and none has been sampled.');
+    expect(bare.container.querySelector('.not-shown')).toBeNull();
+  });
+
+  it('reads new_account_days and moves the line with it', async () => {
+    const loadObservationSettings = vi.fn(async () => ({ available: true, staleCloses: 5, autoFailOnBreach: true, newAccountDays: 2 }));
+    const { container } = strip({ loadObservationSettings });
+    await waitFor(() => expect(container.querySelectorAll('.account-pill').length).toBe(2));
+    expect(loadObservationSettings).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.not-shown-words').textContent).toContain('1 registered and never seen in a close, added more than 2 days ago');
+  });
+
+  it('the collector card hands the registry down to the strip', () => {
+    const html = renderToStaticMarkup(<AutoCollectionCard
+      clientUuid="22222222-2222-4222-8222-222222222222"
+      clientName="Maple Ridge"
+      accountRegistry={REGISTRY}
+      disableAutoLoad
+      api={{ loadStatus: () => new Promise(() => {}) }}
+      initialStatus={{
+        serverTime: '2026-10-05T15:00:00.000Z',
+        client: { uuid: '22222222-2222-4222-8222-222222222222', name: 'Maple Ridge' },
+        permissions: { generate: true, rebind: true, revoke: true },
+        release: { url: 'https://downloads.example.test/agent.msi', version: '1.2.0', sha256: 'a'.repeat(64) },
+        device: {
+          id: 'device-1', status: 'active', healthStatus: 'online', agentVersion: '1.2.0',
+          revokedAt: null, createdAt: '2026-01-04T12:00:00Z', lastSeenAt: '2026-10-05T14:59:30.000Z',
+          schedule: { time: '16:30:00', timezone: 'America/New_York' },
+        },
+        enrollment: null,
+        lastBatch: { tradingDate: '2026-10-03', status: 'processed', rowCounts: { accounts: 5 } },
+        accountTracker: tracker({ accounts: [sample({ accountName: 'ACC 01' })] }),
+      }}
+    />);
+    expect(html).toContain('data-account="ACC 05"');
+    expect(html).toContain('New, not sampled yet');
+    expect(html).not.toContain('data-account="ACC 03"');
+    expect(html).toContain('Not shown: 1 account looks failed, breached on the close.');
+  });
+
+  it('prints no dash of any kind in the strip, the line or a title', () => {
+    const { container } = strip();
+    act(() => { container.querySelector('.not-shown-toggle').click(); });
+    expect(container.textContent).not.toMatch(/—|–| - /);
+    for (const node of container.querySelectorAll('[title]')) expect(node.getAttribute('title')).not.toMatch(/—|–| - /);
   });
 });

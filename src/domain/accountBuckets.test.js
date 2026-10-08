@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_OBSERVATION_DEFAULTS,
   BUCKET_KEYS,
+  NOT_SHOWN_WORDS,
   bucketRegistryAccounts,
   expectedAccountNameSet,
+  notShownAccounts,
+  registryLights,
 } from './accountBuckets';
 
 /* Fictional registry rows in the shape accountMetaFromRow builds. */
@@ -198,5 +201,123 @@ describe('bucketRegistryAccounts', () => {
     for (const key of BUCKET_KEYS) {
       expect(buckets[key].sentence, key).not.toMatch(/[—–]| - /);
     }
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * WHAT GETS A LIGHT, AND THE ONE FOLDED LINE FOR THE REST.
+ *
+ * Pedro's words: the lights kept showing dead accounts as never sampled. Now
+ * that the database classifies them, a light is drawn only for the accounts
+ * expected to trade (the new ones among them, said as new), and one collapsed
+ * line under the tile, the strip and the drawer says why the others are not
+ * shown, so a CAM can tell a dead account from a new one from a missing one.
+ * ------------------------------------------------------------------------- */
+describe('registryLights: which accounts get a light, and the folded line for the rest', () => {
+  const REGISTRY = {
+    'ACC 01': meta(),
+    'ACC 02': meta({ observedState: 'seen' }),
+    'ACC 03': meta({ observedState: 'breached', breachedOn: '2026-10-07', breachReading: -263.5 }),
+    'ACC 04': meta({ observedState: 'absent', closesMissed: 6, lastCloseSeenOn: '2026-09-29' }),
+    'ACC 05': meta({ observedState: 'never_seen', lastCloseSeenOn: '', dateAdded: '2026-10-05' }),
+    'ACC 06': meta({ status: 'Failed' }),
+    'ACC 07': meta({ observedState: 'never_seen', lastCloseSeenOn: '', dateAdded: '2026-01-10' }),
+  };
+
+  it('lights the expected accounts, the new one among them, and folds the rest into one line', () => {
+    const lights = registryLights(REGISTRY, { now: NOW });
+    expect(lights.names).toEqual(['ACC 01', 'ACC 02', 'ACC 05']);
+    expect([...lights.fresh.keys()]).toEqual(['ACC 05']);
+    expect(lights.fresh.get('ACC 05')).toBe('Added 3 days ago, not seen in a close yet.');
+    expect(lights.notShown.count).toBe(4);
+    expect(lights.notShown.sentence).toBe(
+      'Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. '
+      + '1 registered and never seen in a close, added more than 14 days ago. 1 retired: 1 Failed.',
+    );
+    // Failed first, then gone, then never seen, then retired: the order of the questions.
+    expect(lights.notShown.accounts.map((row) => `${row.accountName}: ${row.word}`)).toEqual([
+      'ACC 03: looks failed', 'ACC 04: gone from the close', 'ACC 07: never seen in a close', 'ACC 06: Failed',
+    ]);
+    expect(NOT_SHOWN_WORDS.breached).toBe('looks failed');
+  });
+
+  it('says beside each hidden name what the close saw of it', () => {
+    const { notShown } = registryLights(REGISTRY, { now: NOW });
+    const detail = Object.fromEntries(notShown.accounts.map((row) => [row.accountName, row.detail]));
+    expect(detail['ACC 03']).toBe('Breached on 2026-10-07, reading -$264, status still Active.');
+    expect(detail['ACC 04']).toBe('Gone from the close for 6 closes, last seen 2026-09-29.');
+    expect(detail['ACC 07']).toBe('Never seen in a close, added 2026-01-10.');
+    expect(detail['ACC 06']).toBe('Status Failed.');
+  });
+
+  it('a new account is expected and says since when; added today says today', () => {
+    const lights = registryLights({
+      N: meta({ observedState: 'never_seen', dateAdded: '2026-10-07' }),
+      T: meta({ observedState: 'never_seen', dateAdded: '2026-10-08' }),
+    }, { now: NOW });
+    expect(lights.names).toEqual(['N', 'T']);
+    expect(lights.fresh.get('N')).toBe('Added 1 day ago, not seen in a close yet.');
+    expect(lights.fresh.get('T')).toBe('Added today, not seen in a close yet.');
+  });
+
+  it('is nothing at all when every account is expected, new ones included', () => {
+    const lights = registryLights({
+      A: meta(),
+      N: meta({ observedState: 'never_seen', dateAdded: '2026-10-07' }),
+      U: { status: 'Active' },
+    }, { now: NOW });
+    expect(lights.names).toEqual(['A', 'N', 'U']);
+    expect(lights.notShown).toBeNull();
+    expect(notShownAccounts(bucketRegistryAccounts({}, { now: NOW }))).toBeNull();
+  });
+
+  it('the setting moves a new account into the folded line', () => {
+    const lights = registryLights(REGISTRY, { now: NOW, settings: { newAccountDays: 2 } });
+    expect(lights.names).toEqual(['ACC 01', 'ACC 02']);
+    expect(lights.fresh.size).toBe(0);
+    expect(lights.notShown.count).toBe(5);
+    expect(lights.notShown.sentence).toContain('2 registered and never seen in a close, added more than 2 days ago');
+  });
+
+  it('an account the VPS is sampling keeps its light even when the close hid it, and leaves the line', () => {
+    // NinjaTrader still naming an account that looks failed is a question worth a
+    // pill; the line then counts only what has no light anywhere.
+    const lights = registryLights(REGISTRY, { now: NOW, sampled: ['ACC 03', 'ACC 09'] });
+    expect(lights.names).toEqual(['ACC 01', 'ACC 02', 'ACC 05']);
+    expect(lights.notShown.count).toBe(3);
+    expect(lights.notShown.sentence).toBe(
+      'Not shown: 1 gone from the close for 6 closes. '
+      + '1 registered and never seen in a close, added more than 14 days ago. 1 retired: 1 Failed.',
+    );
+    expect(lights.notShown.accounts.map((row) => row.accountName)).toEqual(['ACC 04', 'ACC 07', 'ACC 06']);
+    const sampledAll = registryLights(REGISTRY, { now: NOW, sampled: ['ACC 03', 'ACC 04', 'ACC 06', 'ACC 07'] });
+    expect(sampledAll.notShown).toBeNull();
+  });
+
+  it('an empty or missing registry lights nothing and hides nothing', () => {
+    expect(registryLights(null, { now: NOW })).toMatchObject({ names: [], notShown: null });
+    expect(registryLights({}, { now: NOW }).fresh.size).toBe(0);
+  });
+
+  it('no line, word or detail carries a dash as punctuation', () => {
+    const { notShown } = registryLights({
+      ...REGISTRY,
+      G: meta({ accountType: 'Inactive / Ignore' }),
+      R: meta({ status: 'Reserve' }),
+      U: meta({ observedState: 'never_seen', dateAdded: '' }),
+      M: meta({ observedState: 'absent', closesMissed: null, lastCloseSeenOn: '' }),
+      B: meta({ observedState: 'breached', breachedOn: '', breachReading: null }),
+    }, { now: NOW });
+    expect(notShown.sentence).not.toMatch(/[—–]| - /);
+    for (const row of notShown.accounts) {
+      expect(row.word, row.accountName).not.toMatch(/[—–]| - /);
+      expect(row.detail, row.accountName).not.toMatch(/[—–]| - /);
+      expect(row.detail, row.accountName).toMatch(/\.$/);
+    }
+    const detail = Object.fromEntries(notShown.accounts.map((row) => [row.accountName, row.detail]));
+    expect(detail.M).toBe('Gone from the close.');
+    expect(detail.B).toBe('Breached on the close, status still Active.');
+    expect(detail.U).toBe('Never seen in a close, no date added.');
+    expect(detail.G).toBe('Account type Inactive / Ignore.');
   });
 });

@@ -13342,7 +13342,7 @@ function CredentialsTab({
           key={client.uuid}
           clientUuid={client.uuid}
           clientName={client.name}
-          accountNames={Object.keys(client.accountRegistry || {})}
+          accountRegistry={client.accountRegistry || {}}
         />
       ) : null}
 

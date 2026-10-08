@@ -6,12 +6,15 @@ import {
   classifyAccountTracker,
   summarizeAccountTracker,
 } from '../domain/autoCollectionFleet';
+import { registryLights } from '../domain/accountBuckets';
 import { buildAccountPill, withDiffers } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
-import { loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
+import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
+import useAccountObservationSettings from './useAccountObservationSettings';
 import useClientLiveStrategies from './useClientLiveStrategies';
 
 /**
@@ -52,6 +55,15 @@ import useClientLiveStrategies from './useClientLiveStrategies';
  * open at a time. The strategy rows for this client are read when the panel
  * mounts and refreshed on the same cadence as the tracker, so the amber marker
  * for an algorithm that differs from the desk is on the pill before any click.
+ *
+ * ONLY THE ACCOUNTS EXPECTED TO TRADE GET A PILL. Pedro's words: dead accounts
+ * piled up here as never sampled. The strip takes the registry itself
+ * (`accountRegistry`, with what the closes saw of each row, step 65) and
+ * lights the accounts the database expects on the close; a new one says "New,
+ * not sampled yet"; the rest is one folded line under the pills (NotShownLine)
+ * so a CAM can tell a dead account from a new one from a missing one. The
+ * plain `accountNames` prop still works and treats every name as expected.
+ * new_account_days is read once per session by useAccountObservationSettings.
  */
 export default function AccountTrackerPanel({
   clientUuid = '',
@@ -59,12 +71,14 @@ export default function AccountTrackerPanel({
   tracker = null,
   device = null,
   accountNames = [],
+  accountRegistry = null,
   api = autoCollectionApi,
   refreshMs = 120_000,
   disableAutoRefresh = false,
   now = () => new Date(),
   defaultDetailsOpen = false,
   loadStrategies = loadSupabaseClientLiveStrategies,
+  loadObservationSettings = loadSupabaseAccountObservationSettings,
 }) {
   /* THE PICTURE FIRST, THE SENTENCES BEHIND A CLICK. Pedro's words: the tracker
    * is good but there is a lot to read. The strip above the rows is one pill
@@ -128,24 +142,31 @@ export default function AccountTrackerPanel({
     load: loadStrategies,
   });
   const client = useMemo(() => ({ id: clientUuid, uuid: clientUuid, name: clientName || clientUuid }), [clientUuid, clientName]);
+  /* new_account_days, read once per session; null until read means the defaults. */
+  const observation = useAccountObservationSettings({ enabled: Boolean(shownTracker), load: loadObservationSettings });
   const view = useMemo(() => {
     if (!shownTracker) return null;
     const staleSeconds = shownTracker.staleSeconds;
     const samples = Array.isArray(shownTracker.accounts) ? shownTracker.accounts : [];
     const byName = new Map(samples.map((sample) => [sample.accountName, sample]));
-    /* The registry's accounts are listed beside the sampled ones, so an account
-     * the desk knows about and the VPS has never mentioned is VISIBLE as never
-     * sampled rather than simply missing from a list. A row that is only in the
-     * sample is kept too: NinjaTrader naming an account the registry does not
-     * have is the existing "new account needs classification" flow, and hiding
-     * it here would hide the thing that starts it. */
-    const names = [...new Set([
-      ...samples.map((sample) => sample.accountName),
-      ...(accountNames || []).filter(Boolean),
-    ])].sort((left, right) => String(left).localeCompare(String(right)));
+    /* The registry's EXPECTED accounts are listed beside the sampled ones, so an
+     * account the desk knows about and the VPS has never mentioned is VISIBLE as
+     * never sampled rather than simply missing from a list; what the close has
+     * hidden (looks failed, gone, never seen, retired) is the folded line under
+     * the pills. A row that is only in the sample is kept too: NinjaTrader
+     * naming an account the registry does not have is the existing "new account
+     * needs classification" flow, and hiding it here would hide the thing that
+     * starts it; and a sampled account the close hid keeps its pill as well. */
+    const registry = accountRegistry && typeof accountRegistry === 'object'
+      ? accountRegistry
+      : Object.fromEntries((accountNames || []).filter(Boolean).map((name) => [name, {}]));
+    const sampledNames = samples.map((sample) => sample.accountName);
+    const lights = registryLights(registry, { now: at, settings: observation.settings, sampled: sampledNames });
+    const names = [...new Set([...sampledNames, ...lights.names])]
+      .sort((left, right) => String(left).localeCompare(String(right)));
     const rows = names.map((accountName) => {
       const sample = byName.get(accountName) || null;
-      const inRegistry = (accountNames || []).includes(accountName);
+      const inRegistry = Object.prototype.hasOwnProperty.call(registry, accountName);
       const verdict = classifyAccountTracker({
         now: at,
         device: shownDevice,
@@ -161,17 +182,21 @@ export default function AccountTrackerPanel({
         verdict,
         // sampleOnly false: this screen has the device, so the verdict's own
         // never_sampled sentence (which names the VPS) is the true one here.
-        pill: buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: false }),
+        pill: buildAccountPill({
+          accountName, sample, verdict, inRegistry, sampleOnly: false,
+          isNew: lights.fresh.has(accountName), newWords: lights.fresh.get(accountName) || null,
+        }),
       };
     });
     return {
       rows,
+      notShown: lights.notShown,
       summary: summarizeAccountTracker(samples, { now: at, staleSeconds }),
       intervalMinutes: Math.round((shownTracker.sampleIntervalSeconds || 600) / 60),
       everySampled: samples.length > 0,
       enabled: Boolean(shownTracker.minAgentVersion),
     };
-  }, [shownTracker, shownDevice, accountNames, at]);
+  }, [shownTracker, shownDevice, accountNames, accountRegistry, observation.settings, at]);
   const details = useMemo(() => new Map((view?.rows || []).map((row) => [
     row.accountName,
     buildAccountLiveDetail({ client, accountName: row.accountName, sample: row.sample, strategies: strategies.data, now: at }),
@@ -240,6 +265,7 @@ export default function AccountTrackerPanel({
               error={strategies.error}
             />
           ) : null}
+          <NotShownLine notShown={view.notShown} label={`${clientName || 'this client'}, accounts not shown`} />
           <button
             type="button"
             className="account-tracker-details-toggle"
@@ -257,9 +283,14 @@ export default function AccountTrackerPanel({
           ) : null}
         </>
       ) : (
-        <p className="account-tracker-none">
-          No account is registered for this client and none has been sampled.
-        </p>
+        <>
+          <p className="account-tracker-none">
+            {view.notShown
+              ? 'No account is expected on the close for this client and none has been sampled.'
+              : 'No account is registered for this client and none has been sampled.'}
+          </p>
+          <NotShownLine notShown={view.notShown} label={`${clientName || 'this client'}, accounts not shown`} />
+        </>
       )}
     </div>
   );
@@ -286,7 +317,7 @@ function money(value) {
 }
 
 function TrackerRow({ row }) {
-  const { verdict, sample } = row;
+  const { verdict, sample, pill } = row;
   const total = money(sample?.totalPnl);
   /* The run state is shown only while the reading is current. A silent account's
    * last known "running" is a claim about a machine that has stopped answering,
@@ -309,7 +340,7 @@ function TrackerRow({ row }) {
           existing strategy chips encode enabled in a colour class and nothing
           else, which is colour-only encoding of the most important bit on the
           panel. */}
-      <span className="account-tracker-state" title={verdict.detail}>{verdict.label}</span>
+      <span className="account-tracker-state" title={pill.detail}>{pill.label}</span>
       {run ? <span className={`badge ${runTone(run.runState)}`} title={run.detail}>{run.label}</span> : null}
       {total ? (
         <span className={sample.totalPnl >= 0 ? 'positive' : 'negative'} title="Realized plus unrealized, as of this row's own sample.">
@@ -326,7 +357,8 @@ function TrackerRow({ row }) {
           ? <time dateTime={verdict.sampledAt}>{agedLabel(verdict.ageMinutes)}</time>
           : <span className="account-tracker-absent">never</span>}
       </span>
-      <span className="account-tracker-detail">{verdict.detail}</span>
+      {/* The pill's words: the verdict's, or the new account's sentence in front of them. */}
+      <span className="account-tracker-detail">{pill.detail}</span>
     </li>
   );
 }

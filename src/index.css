@@ -4754,6 +4754,21 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 @media (max-width: 720px) {
   .dcl-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
+/* ── Why the rest of the registry has no light (NotShownLine) ─────────────────
+   One folded line in muted text under a tile, under the client page strip and
+   at the bottom of the desk drawer: the accounts that look failed, are gone
+   from the close, were never seen or are retired, with a Show toggle that lists
+   them beside a reason word. Nothing when every account is expected. Muted on
+   purpose: it is the answer to "where did that account go", not an alarm. */
+.not-shown { margin: 6px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--muted); font-size: 10.5px; }
+.fsl-tile > .not-shown, .dcl-drawer > .not-shown { margin: 0; }
+.not-shown-toggle { padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 10.5px; text-decoration: underline dotted; cursor: pointer; }
+.not-shown-toggle:hover, .not-shown-toggle:focus-visible { color: var(--text); }
+.not-shown-words { color: var(--muted); overflow-wrap: anywhere; }
+.not-shown-list { flex-basis: 100%; margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); }
+.not-shown-list li { cursor: help; }
+.not-shown-name { color: var(--muted); font-weight: 600; overflow-wrap: anywhere; }
+.not-shown-reason { color: var(--muted); font-style: italic; }
 /* ── Each algorithm today, against the desk (step 57) ─────────────────────────
    The same box and type scale as the account tracker above it, so the two live
    panels read as one family. The account that differs carries an amber bar
