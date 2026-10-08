@@ -4590,6 +4590,68 @@ tr:nth-child(2) .rank-badge {
   .account-tracker-row { grid-template-columns: 10px minmax(0, 1fr) auto; }
   .account-tracker-detail { grid-column: 2 / -1; }
 }
+/* ── The traffic light over the tracker rows ──────────────────────────────────
+   One large dot per account with the name and the state in WORDS under it, so
+   the panel can be read from across the desk; the rows with every sentence sit
+   behind "Details". The same three colours as the rows, and never alone. */
+.account-tracker-lights { margin: 10px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 10px 16px; }
+.account-tracker-light { display: grid; justify-items: center; gap: 3px; min-width: 64px; max-width: 120px; font-size: 10px; color: var(--muted); text-align: center; }
+.account-tracker-light-dot { width: 18px; height: 18px; border-radius: 50%; background: #94a3b8; box-shadow: 0 0 0 3px var(--surface-2), 0 0 0 4px var(--border); margin: 2px 0 3px; }
+.account-tracker-light-name { color: var(--text); font-weight: 600; font-size: 10.5px; overflow-wrap: anywhere; }
+.account-tracker-light-state { color: var(--text); }
+.account-tracker-light-run { font-style: italic; }
+.account-tracker-light.tracker-live .account-tracker-light-dot { background: var(--success); }
+.account-tracker-light.tracker-disconnected .account-tracker-light-dot,
+.account-tracker-light.tracker-sample_stale .account-tracker-light-dot { background: var(--warning); }
+.account-tracker-light.tracker-never_sampled .account-tracker-light-dot { background: var(--warning); opacity: 0.55; }
+.account-tracker-details-toggle { margin: 10px 0 0; padding: 0; border: 0; background: none; color: var(--muted); font-size: 10.5px; text-decoration: underline dotted; cursor: pointer; }
+.account-tracker-details-toggle:hover { color: var(--text); }
+
+/* ── The status light for the whole book (FleetStatusLights) ──────────────────
+   One tile per client tinted by its worst account, one dot per account inside,
+   worst first. Tone classes carry the colour and a word sits beside every one
+   of them: the legend, the tile's state word, the word under each dot. The
+   selectors use the direct child so a tile's tone never recolours the dots of
+   the accounts inside it. */
+.fleet-lights-panel .panel-heading { margin-bottom: 8px; }
+.fsl, .fsl-empty { font-size: 11px; }
+.fsl-empty { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); }
+.fsl-empty svg { flex-shrink: 0; margin-top: 1px; }
+.fsl-empty > div { display: grid; gap: 3px; min-width: 0; }
+.fsl-empty strong { color: var(--text); }
+.fsl-head { display: flex; align-items: flex-start; gap: 8px; }
+.fsl-head svg { flex-shrink: 0; margin-top: 2px; color: var(--muted); }
+.fsl-summary { margin: 0; color: var(--text); }
+.fsl-legend { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 10.5px; }
+.fsl-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.fsl-dot { width: 10px; height: 10px; border-radius: 50%; background: #94a3b8; flex-shrink: 0; }
+.fsl-legend-item.tone-live > .fsl-dot, .fsl-dot-item.tone-live > .fsl-dot { background: var(--success); }
+.fsl-legend-item.tone-attention > .fsl-dot, .fsl-dot-item.tone-attention > .fsl-dot { background: var(--warning); }
+.fsl-legend-item.tone-faint > .fsl-dot, .fsl-dot-item.tone-faint > .fsl-dot { background: var(--warning); opacity: 0.55; }
+.fsl-legend-item.tone-none > .fsl-dot { background: #94a3b8; }
+.fsl-grid { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.fsl-tile { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.fsl-tile.tone-live { border-left-color: var(--success); }
+.fsl-tile.tone-attention { border-left-color: var(--warning); background: var(--warning-bg); }
+.fsl-tile.tone-faint { border-left-color: rgba(var(--warning-rgb), 0.55); }
+.fsl-tile.tone-none { border-left-color: #94a3b8; }
+.fsl-tile-button { display: grid; gap: 8px; width: 100%; padding: 10px 12px; border: 0; background: none; color: inherit; text-align: left; font: inherit; cursor: default; border-radius: 8px; }
+button.fsl-tile-button { cursor: pointer; }
+button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background: rgba(255, 255, 255, 0.04); }
+.fsl-tile-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.fsl-tile-name { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.fsl-tile-state { color: var(--text); font-size: 10.5px; white-space: nowrap; }
+.fsl-tile.tone-attention .fsl-tile-state { color: var(--warning); font-weight: 600; }
+.fsl-tile.tone-live .fsl-tile-state { color: var(--success); }
+.fsl-tile.tone-none .fsl-tile-state, .fsl-tile.tone-faint .fsl-tile-state { color: var(--muted); }
+.fsl-dots { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.fsl-dot-item { display: inline-grid; justify-items: center; gap: 2px; font-size: 9px; color: var(--muted); }
+.fsl-dot-item > .fsl-dot { width: 14px; height: 14px; }
+.fsl-dot-word { white-space: nowrap; }
+.fsl-tile-words { color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .fsl-grid { grid-template-columns: 1fr; }
+}
 /* ── Each algorithm today, against the desk (step 57) ─────────────────────────
    The same box and type scale as the account tracker above it, so the two live
    panels read as one family. The account that differs carries an amber bar
