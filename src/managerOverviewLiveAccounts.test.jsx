@@ -247,7 +247,7 @@ describe('the order of the Operations Command Center', () => {
     const money = indexOfHeading(container, 'Desk money');
     const live = indexOfHeading(container, 'Live accounts');
     const feed = indexOfHeading(container, 'Insight Feed');
-    const flags = indexOfHeading(container, 'Open flags - all clients');
+    const flags = indexOfHeading(container, 'Open flags, all clients');
     expect(money).toBeLessThan(live);
     expect(live).toBeLessThan(feed);
     expect(feed).toBeLessThan(flags);

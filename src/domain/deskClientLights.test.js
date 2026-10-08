@@ -102,6 +102,16 @@ describe('the six states of a bulb', () => {
     expect(view.sentence).toBe('Partly live, 3 connected, 1 disconnected, 1 silent.');
   });
 
+  it('is partly live on a silent account alone, beside a live one, with nothing disconnected and the VPS fine', () => {
+    // Silence is the only thing wrong here, so silence alone must be what makes
+    // the bulb amber: a rule that needed a disconnected account or a VPS error
+    // beside it would paint this client green.
+    const view = buildDeskClientLight(client('c-1', 'Client A', ['ACC 01', 'ACC 02']), { samples: [sample('ACC 01'), silent('ACC 02')], devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500 });
+    expect(view.state).toBe('partly');
+    expect(view.tone).toBe('partly');
+    expect(view.sentence).toBe('Partly live, 1 connected, 1 silent.');
+  });
+
   it('is partly live when the accounts are connected but the VPS reports an error', () => {
     const view = bulb([sample('ACC 01'), sample('ACC 02')], [device({ healthStatus: 'error', lastErrorCode: 'capture_failed' })]);
     expect(view.state).toBe('partly');

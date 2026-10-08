@@ -20,7 +20,7 @@ function Probe({ clientId = UUID, active = true, load, refreshMs = 1_000 }) {
   const { data, error, reading, at } = useClientLiveStrategies(clientId, { active, load, refreshMs });
   return (
     <output data-at={at ?? ''} data-reading={String(reading)}>
-      {error ? `error:${error}` : data ? `data:${data.clientId}` : 'nothing'}
+      {`error:${error ?? 'none'}|data:${data?.clientId ?? 'none'}`}
     </output>
   );
 }
@@ -49,7 +49,7 @@ describe('useClientLiveStrategies', () => {
     await flush();
     expect(load).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith({ clientId: UUID });
-    expect(text(container)).toBe(`data:${UUID}`);
+    expect(text(container)).toBe(`error:none|data:${UUID}`);
     expect(container.querySelector('output').getAttribute('data-reading')).toBe('false');
     await flush(1_000);
     expect(load).toHaveBeenCalledTimes(2);
@@ -57,7 +57,7 @@ describe('useClientLiveStrategies', () => {
     await flush(5_000);
     expect(load).toHaveBeenCalledTimes(2);
     // The last answer stays on screen while inactive: that is what keeps the marker.
-    expect(text(container)).toBe(`data:${UUID}`);
+    expect(text(container)).toBe(`error:none|data:${UUID}`);
   });
 
   it('reads nothing while inactive and nothing for an empty client', async () => {
@@ -65,7 +65,7 @@ describe('useClientLiveStrategies', () => {
     const { container } = render(<Probe load={load} active={false} />);
     await flush(3_000);
     expect(load).not.toHaveBeenCalled();
-    expect(text(container)).toBe('nothing');
+    expect(text(container)).toBe('error:none|data:none');
     expect(container.querySelector('output').getAttribute('data-reading')).toBe('false');
     render(<Probe load={load} clientId="" />);
     await flush(3_000);
@@ -80,8 +80,8 @@ describe('useClientLiveStrategies', () => {
     const second = render(<Probe load={load} refreshMs={60_000} />);
     await flush();
     expect(load).toHaveBeenCalledTimes(1);
-    expect(text(second.container)).toBe(`data:${UUID}`);
-    expect(text(first.container)).toBe(`data:${UUID}`);
+    expect(text(second.container)).toBe(`error:none|data:${UUID}`);
+    expect(text(first.container)).toBe(`error:none|data:${UUID}`);
   });
 
   it('re-reads a cached answer that is older than the cadence', async () => {
@@ -101,8 +101,8 @@ describe('useClientLiveStrategies', () => {
     const b = render(<Probe load={load} clientId="client-b" />);
     await flush();
     expect(load).toHaveBeenCalledTimes(2);
-    expect(text(a.container)).toBe('data:client-a');
-    expect(text(b.container)).toBe('data:client-b');
+    expect(text(a.container)).toBe('error:none|data:client-a');
+    expect(text(b.container)).toBe('error:none|data:client-b');
   });
 
   it('reports a failed read as an error and keeps the previous answer', async () => {
@@ -111,11 +111,11 @@ describe('useClientLiveStrategies', () => {
       .mockRejectedValueOnce(new Error('timeout'));
     const { container } = render(<Probe load={load} />);
     await flush();
-    expect(text(container)).toBe(`data:${UUID}`);
+    expect(text(container)).toBe(`error:none|data:${UUID}`);
     await flush(1_000);
     expect(load).toHaveBeenCalledTimes(2);
     // The data is still the last good answer; the error travels beside it.
-    expect(text(container)).toBe('error:timeout');
+    expect(text(container)).toBe(`error:timeout|data:${UUID}`);
     expect(container.querySelector('output').getAttribute('data-at')).not.toBe('');
   });
 
@@ -123,7 +123,7 @@ describe('useClientLiveStrategies', () => {
     const load = vi.fn(async () => { throw new Error('offline'); });
     const { container } = render(<Probe load={load} />);
     await flush();
-    expect(text(container)).toBe('error:offline');
+    expect(text(container)).toBe('error:offline|data:none');
     expect(container.querySelector('output').getAttribute('data-reading')).toBe('false');
   });
 });

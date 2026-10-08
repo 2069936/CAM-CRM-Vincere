@@ -6111,7 +6111,7 @@ export function ManagerOverview({
           const flagTypeGroups = groupByFlagType(allFlags);
           return (
             <CollapsiblePanel
-              title="Open flags - all clients"
+              title="Open flags, all clients"
               count={allFlags.length}
               tone="open-flags-panel"
               badges={

@@ -753,4 +753,41 @@ describe('what an account is running, under its pill', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps the strategy rows on screen and says the refresh failed when a later read rejects', async () => {
+    /* The first read answers with rows; the refresh two minutes later rejects.
+     * The rows must stay (they are the last good answer, and the pill keeps its
+     * marker from them) and the failure is one muted line under them, never a
+     * banner and never "could not read", which would deny the rows above it. */
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      const loadStrategies = vi.fn()
+        .mockResolvedValueOnce(answer([strategyRow('APEX-1')]))
+        .mockRejectedValue(new Error('timeout'));
+      const { container } = panel({
+        loadStrategies,
+        disableAutoRefresh: false,
+        refreshMs: 120_000,
+        // The panel's own tracker refresh never answers here: this is about the rows.
+        api: { loadStatus: () => new Promise(() => {}) },
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(loadStrategies).toHaveBeenCalledTimes(1);
+      act(() => { container.querySelector('.account-pill-button').click(); });
+      expect(container.querySelectorAll('.account-live-strategy').length).toBe(1);
+      expect(container.querySelector('.account-live-detail-failed')).toBeNull();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(loadStrategies).toHaveBeenCalledTimes(2);
+      expect(container.querySelectorAll('.account-live-strategy').length).toBe(1);
+      expect(container.querySelector('.account-live-strategy').textContent).toContain('total -$1,000');
+      expect(container.querySelector('.account-live-detail-failed').textContent).toBe('Could not refresh what is running. The rows are the last answer.');
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      // The pill keeps the marker the last answer gave it.
+      expect(container.querySelectorAll('.account-pill.differs').length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
