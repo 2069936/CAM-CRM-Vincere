@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import TrackerCloseComparisonPanel from './TrackerCloseComparisonPanel';
 import AutoCollectionCard from './AutoCollectionCard';
 import { buildTrackerClosePanel } from '../domain/trackerClosePanel';
-import { ANSWER, CLIENT, DATE, SETTINGS, dailyImport, history } from './trackerCloseFixtures.test-helpers';
+import { ANSWER, CLIENT, DATE, SETTINGS, VERDICT_TONES, allVerdictsClose, dailyImport, history } from './trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
  * THE TRACKER AGAINST THE CLOSE, ON THE CLIENT PAGE, AS A CAM READS IT.
@@ -277,6 +277,37 @@ describe('the words and the styles', () => {
       expect(source, file).not.toMatch(/['"`][^'"`\n]*[\u2013\u2014][^'"`\n]*['"`]/);
       expect(source, file).not.toMatch(/(title|label)="[^"\n]* - [^"\n]*"/);
     }
+  });
+
+  it('paints every verdict chip amber, green or muted, by verdict, and never red', () => {
+    /* The badge tone is the one thing the house rule says about a chip: a
+     * question is amber, agreement is green, nothing to compare is muted, and
+     * nothing is ever red. Over the four account close and over the nine
+     * verdict close, every chip is checked against the verdict on its row. */
+    const all = allVerdictsClose();
+    const chips = [];
+    for (const over of [{}, { dailyImport: all.dailyImport, answer: all.answer }]) {
+      const { container, unmount } = show(over);
+      for (const row of rowsOf(container)) {
+        const chip = row.querySelector('.tracker-close-verdict');
+        chips.push({ verdict: row.dataset.verdict, className: chip.className, word: text(chip) });
+      }
+      unmount();
+    }
+    expect(chips).toHaveLength(13);
+    expect(new Set(chips.map((chip) => chip.verdict)).size).toBe(9);
+    for (const chip of chips) {
+      expect(chip.className, chip.verdict).toMatch(/^badge (warning|success|muted) tracker-close-verdict verdict-[a-z_]+$/);
+      expect(chip.className, chip.verdict).not.toMatch(/error|danger|red/);
+      expect(chip.className, chip.verdict).toBe(`badge ${VERDICT_TONES[chip.verdict]} tracker-close-verdict verdict-${chip.verdict}`);
+    }
+    const byVerdict = Object.fromEntries(chips.map((chip) => [chip.verdict, chip.className.split(' ')[1]]));
+    expect(byVerdict).toEqual({
+      differs: 'warning', tracker_reset: 'warning', tracker_only: 'warning', close_only: 'warning', stale_reading: 'warning',
+      matches: 'success', settled_at_close: 'success',
+      after_close: 'muted', tracker_no_figure: 'muted',
+    });
+    expect(chips.map((chip) => chip.word)).toEqual(expect.arrayContaining(['Differs', 'Tracker reset', 'Tracker only', 'Close only', 'Stale reading', 'After the close', 'No tracker figure', 'Settled at the close', 'Matches']));
   });
 
   it('has a rule in index.css for every tracker-close class it renders, amber and never red', () => {

@@ -91,3 +91,48 @@ export function history(extra = []) {
     ],
   };
 }
+
+/* THE NINE VERDICTS ON ONE CLOSE, for the chip tone and the verdict order. The
+ * four accounts above plus five more, each reaching one verdict by the rule
+ * that decides it (capture 20:31 UTC, tolerance the larger of $5 and 2%,
+ * staleness horizon 25 minutes):
+ *   ACC 05 tracker reset: realized fell to zero and the reset was seen, close $300.
+ *   ACC 06 stale reading: last sampled 91 minutes before the capture.
+ *   ACC 07 after the close: the first reading came 14 minutes after the capture.
+ *   ACC 08 no tracker figure: a reading with no realized figure.
+ *   ACC 09 settled at the close: realized $100 plus open $50 meets the close $150. */
+export function allVerdictsClose() {
+  const readings = [
+    ...READINGS,
+    reading({ id: 5, accountName: 'ACC 05', realizedPnl: 0, unrealizedPnl: 0, totalPnl: 0, resetSeen: true }),
+    reading({ id: 6, accountName: 'ACC 06', realizedPnl: 80, unrealizedPnl: 0, totalPnl: 80, sampledAt: '2026-10-07T19:00:00.000Z', readingSince: '2026-10-07T18:50:00.000Z' }),
+    reading({ id: 7, accountName: 'ACC 07', source: 'none', connectionName: null, connected: null, realizedPnl: null, unrealizedPnl: null, totalPnl: null, strategyCount: null, enabledStrategyCount: null, runState: null, sampledAt: null, readingSince: null, nextSampledAt: '2026-10-07T20:45:00.000Z' }),
+    reading({ id: 8, accountName: 'ACC 08', realizedPnl: null, unrealizedPnl: null, totalPnl: null }),
+    reading({ id: 9, accountName: 'ACC 09', realizedPnl: 100, unrealizedPnl: 50, totalPnl: 150 }),
+  ];
+  const close = dailyImport({
+    sourceSummary: { pnl_sources: { realized: 8 } },
+    snapshots: [
+      ...dailyImport().snapshots,
+      snapshot('snap-5', 'ACC 05', 300),
+      snapshot('snap-6', 'ACC 06', 80),
+      snapshot('snap-7', 'ACC 07', 20),
+      snapshot('snap-8', 'ACC 08', 15),
+      snapshot('snap-9', 'ACC 09', 150),
+    ],
+  });
+  return { readings, dailyImport: close, answer: { available: true, readings, settings: SETTINGS } };
+}
+
+/** Verdict to chip tone, the house rule: a question is amber, agreement green, nothing to compare muted. Never red. */
+export const VERDICT_TONES = Object.freeze({
+  differs: 'warning',
+  tracker_reset: 'warning',
+  tracker_only: 'warning',
+  close_only: 'warning',
+  stale_reading: 'warning',
+  matches: 'success',
+  settled_at_close: 'success',
+  after_close: 'muted',
+  tracker_no_figure: 'muted',
+});

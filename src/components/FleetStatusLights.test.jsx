@@ -545,6 +545,101 @@ describe('three honest empty states', () => {
   });
 });
 
+/* ------------------------------------------------------------------------- *
+ * THE "CLOSE DIFFERS" BADGE ON THE TILES (step 66).
+ *
+ * The overview's read of today's pinned readings hands the lights a Map of
+ * client key to (lower case account name to verdict). A pill whose verdict asks
+ * for a look carries the amber badge in words, with the verdict in its title;
+ * every other pill is untouched; the legend names the badge only when a Map was
+ * handed at all. The lookup follows the identity rule: the Map may be keyed by
+ * the client's uuid (the tile's clientKey) or by its id.
+ * ------------------------------------------------------------------------- */
+describe('the "Close differs" badge from today\'s close', () => {
+  const badgesIn = (root) => [...root.querySelectorAll('.fsl-tile .account-pill-close-differs')];
+  const greenDiffers = () => new Map([['c-green', new Map([['g-1', 'differs']])]]);
+
+  it('puts the badge on the one account whose verdict asks for a look, with the verdict in its title, and on no other', () => {
+    const { container } = mount({ closeVerdicts: greenDiffers() });
+    const badges = badgesIn(container);
+    expect(badges).toHaveLength(1);
+    const pill = badges[0].closest('.account-pill');
+    expect(pill.getAttribute('data-account')).toBe('G-1');
+    expect(pill.closest('.fsl-tile').getAttribute('data-client-id')).toBe('c-green');
+    expect(badges[0].textContent).toBe('Close differs');
+    expect(badges[0].getAttribute('title')).toBe('Close differs: the realized figures differ.');
+    expect(pill.querySelector('.account-pill-button').getAttribute('title')).toContain('Close differs: the realized figures differ.');
+    // The badge is never the pill's colour: G-1 is still the live green pill it was.
+    expect(pill.className).toBe('account-pill tracker-live tone-live close-differs');
+    const green = container.querySelector('[data-client-id="c-green"]');
+    expect(pillsOf(green).find((item) => item.getAttribute('data-account') === 'G-2').querySelector('.account-pill-close-differs')).toBeNull();
+    const amber = container.querySelector('[data-client-id="c-amber"]');
+    expect(amber.querySelectorAll('.account-pill-close-differs').length).toBe(0);
+    expect(amber.querySelectorAll('.account-pill.close-differs').length).toBe(0);
+  });
+
+  it('names the badge in the legend when a Map is handed, and not when nothing is known about the close', () => {
+    const withMap = mount({ closeVerdicts: greenDiffers() });
+    const legendItem = withMap.container.querySelector('.fsl-legend-close');
+    expect(legendItem).not.toBeNull();
+    expect(legendItem.className).toBe('fsl-legend-item fsl-legend-close');
+    expect(legendItem.querySelector('.account-pill-close-differs').textContent).toBe('Close differs');
+    expect(legendItem.textContent).toContain('The tracker and today\'s close disagree about the account');
+    expect(withMap.container.querySelectorAll('.fsl-legend-item').length).toBe(6);
+    withMap.unmount();
+
+    const without = mount({ closeVerdicts: null });
+    expect(without.container.querySelector('.fsl-legend-close')).toBeNull();
+    expect(without.container.querySelectorAll('.account-pill-close-differs').length).toBe(0);
+    expect(without.container.querySelectorAll('.fsl-legend-item').length).toBe(5);
+    without.unmount();
+
+    // An empty Map says the read ran and found nothing to flag: the legend names the badge, no pill carries it.
+    const empty = mount({ closeVerdicts: new Map() });
+    expect(empty.container.querySelector('.fsl-legend-close')).not.toBeNull();
+    expect(badgesIn(empty.container)).toHaveLength(0);
+  });
+
+  it('leaves a pill alone for a verdict that agrees or says nothing to compare', () => {
+    const { container } = mount({
+      closeVerdicts: new Map([['c-green', new Map([['g-1', 'matches'], ['g-2', 'after_close']])], ['c-amber', new Map([['a-1', 'settled_at_close']])]]),
+    });
+    expect(badgesIn(container)).toHaveLength(0);
+    expect(container.querySelectorAll('.account-pill.close-differs').length).toBe(0);
+    // The legend still names it: a Map was handed.
+    expect(container.querySelector('.fsl-legend-close')).not.toBeNull();
+  });
+
+  it('finds the verdicts under the client uuid (the tile\'s clientKey) as well as under its id', () => {
+    const UUID = '4b0e5c8f-8c3f-4b2a-9d2e-1b2c3d4e5f60';
+    const legacy = { ...client('act-1700000000-ash', 'Ash', [['APEX-1'], ['APEX-2']]), uuid: UUID };
+    const lights = (closeVerdicts) => render(<FleetStatusLights
+      clients={[legacy]}
+      tracker={tracker({ [UUID]: [sample('APEX-1'), sample('APEX-2')] })}
+      now={NOW}
+      loadStrategies={neverAnswers}
+      closeVerdicts={closeVerdicts}
+    />);
+    const byUuid = lights(new Map([[UUID, new Map([['apex-1', 'tracker_only']])]]));
+    let badges = badgesIn(byUuid.container);
+    expect(badges).toHaveLength(1);
+    expect(badges[0].closest('.account-pill').getAttribute('data-account')).toBe('APEX-1');
+    expect(badges[0].getAttribute('title')).toBe('Close differs: tracker only.');
+    byUuid.unmount();
+
+    const byId = lights(new Map([['act-1700000000-ash', new Map([['apex-2', 'close_only']])]]));
+    badges = badgesIn(byId.container);
+    expect(badges).toHaveLength(1);
+    expect(badges[0].closest('.account-pill').getAttribute('data-account')).toBe('APEX-2');
+    expect(badges[0].getAttribute('title')).toBe('Close differs: close only.');
+    byId.unmount();
+
+    // A Map about some other client says nothing about this one.
+    const elsewhere = lights(new Map([['someone-else', new Map([['apex-1', 'differs']])]]));
+    expect(badgesIn(elsewhere.container)).toHaveLength(0);
+  });
+});
+
 describe('a client with a legacy key', () => {
   /* On a real book a client's `id` is its legacy key and `uuid` is the row's
    * uuid. The tracker keys samples by client_id, which is the uuid, so a lookup

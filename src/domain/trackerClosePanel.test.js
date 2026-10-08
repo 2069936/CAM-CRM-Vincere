@@ -12,6 +12,8 @@ import {
   readingsForClose,
   verdictCountWords,
 } from './trackerClosePanel';
+import { VERDICTS } from './trackerCloseComparison';
+import { VERDICT_TONES, allVerdictsClose } from '../components/trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
  * WHAT THE CLIENT PAGE AND THE OVERVIEW PRINT ABOUT THE TRACKER AND THE CLOSE.
@@ -210,6 +212,26 @@ describe('the rows a CAM reads', () => {
     expect(matches.gapWords).toBe('none');
   });
 
+  it('counts at the close only the strategies that ran there: one the close lists as not run is seen, not counted, and not a gap', () => {
+    // The tracker carried URGO 1.3 too; the close lists it with ran: false.
+    const close = dailyImport();
+    close.snapshots[0].strategies.push({ id: 'ss-2', strategyName: 'URGO 1.3', instrument: 'MES 12-26', realized: 0, unrealized: 0, enabled: false, ran: false });
+    const readings = READINGS.map((row) => (row.accountName !== 'ACC 01' ? row : {
+      ...row,
+      strategies: [...row.strategies, { strategyId: '200', strategyName: 'URGO 1.3', algorithm: 'URGO', instrument: 'MES 12-26', realizedPnl: 0, unrealizedPnl: 0, restartedAt: null, sampledAt: '2026-10-07T20:30:02.000Z' }],
+    }));
+    const [differs] = panel({ dailyImport: close, answer: { ...ANSWER, readings } }).rows;
+    expect(differs.strategiesWords).toBe('2 seen, 1 at close');
+    expect(differs.gapWords).toBe('1 moved');
+    expect(differs.strategies.find((item) => item.strategyName === 'URGO 1.3')).toMatchObject({ inClose: true, closeRan: false, moved: false, words: 'Did not run at the close.' });
+    // A strategy only the close lists, and lists as not run, is no gap either.
+    const quiet = dailyImport();
+    quiet.snapshots[0].strategies.push({ id: 'ss-3', strategyName: 'URGO 1.3', instrument: 'MES 12-26', realized: 0, unrealized: 0, enabled: false, ran: false });
+    const [unchanged] = panel({ dailyImport: quiet }).rows;
+    expect(unchanged.strategiesWords).toBe('1 seen, 1 at close');
+    expect(unchanged.gapWords).toBe('1 moved');
+  });
+
   it('says the header in clocks and the tolerance in dollars with the ratio rule beside it', () => {
     const view = panel();
     expect(view.header.capturedClock).toMatch(/^\d\d:\d\d$/);
@@ -240,6 +262,22 @@ describe('the rows a CAM reads', () => {
     expect(panel({ history: { available: false } }).rows[0].spark).toBeNull();
   });
 
+  it('draws only this client\'s history: another client\'s runs on an account of the same name are not its trail', () => {
+    const elsewhere = (realizedPnl, firstSampledAt, lastSampledAt) => ({
+      clientId: 'someone-else', accountName: 'ACC 02', realizedPnl, totalPnl: realizedPnl, firstSampledAt, lastSampledAt, samples: 2,
+    });
+    const view = panel({
+      history: history([
+        elsewhere(10, '2026-10-07T14:00:00.000Z', '2026-10-07T16:00:00.000Z'),
+        elsewhere(90, '2026-10-07T16:10:00.000Z', '2026-10-07T20:30:00.000Z'),
+      ]),
+    });
+    const matches = view.rows.find((row) => row.accountName === 'ACC 02');
+    // Northwind's own ACC 02 held one value all day: one run, no line.
+    expect(matches.spark).toBeNull();
+    expect(view.rows.find((row) => row.accountName === 'ACC 01').spark.runs).toBe(2);
+  });
+
   it('writes the flag draft for every attention row and none for a row that matches', () => {
     const [differs, trackerOnly, closeOnly, matches] = panel().rows;
     expect(differs.flagDraft).toMatchObject({
@@ -260,6 +298,49 @@ describe('the rows a CAM reads', () => {
       expect(source, file).not.toMatch(/['"`][^'"`\n]*[\u2013\u2014][^'"`\n]*['"`]/);
       expect(source, file).not.toMatch(/['"`][^'"`\n]* - [^'"`\n]*['"`]/);
     }
+  });
+});
+
+describe('the chip tone per verdict: a question is amber, agreement green, nothing to compare muted, never red', () => {
+  /* Nine accounts on one close, one per verdict (trackerCloseFixtures). The
+   * tone is pinned per verdict here so that a chip turned red anywhere in the
+   * table fails a test, not a review: the pill badge and the CSS block were
+   * already pinned, the chip was not. */
+  const all = allVerdictsClose();
+  const view = buildTrackerClosePanel({ client: CLIENT, dailyImport: all.dailyImport, date: DATE, answer: all.answer });
+
+  it('reaches every verdict once, attention first, strongest first', () => {
+    expect(view.state).toBe('ready');
+    expect(view.rows.map((row) => [row.accountName, row.verdict])).toEqual([
+      ['ACC 01', 'differs'], ['ACC 05', 'tracker_reset'], ['ACC 03', 'tracker_only'], ['ACC 04', 'close_only'], ['ACC 06', 'stale_reading'],
+      ['ACC 07', 'after_close'], ['ACC 08', 'tracker_no_figure'], ['ACC 09', 'settled_at_close'], ['ACC 02', 'matches'],
+    ]);
+    expect([...view.rows.map((row) => row.verdict)].sort()).toEqual([...VERDICTS].sort());
+  });
+
+  it('pins the tone of each verdict', () => {
+    expect(Object.fromEntries(view.rows.map((row) => [row.verdict, row.tone]))).toEqual({
+      differs: 'warning',
+      tracker_reset: 'warning',
+      tracker_only: 'warning',
+      close_only: 'warning',
+      stale_reading: 'warning',
+      matches: 'success',
+      settled_at_close: 'success',
+      after_close: 'muted',
+      tracker_no_figure: 'muted',
+    });
+    expect(VERDICT_TONES).toEqual(Object.fromEntries(view.rows.map((row) => [row.verdict, row.tone])));
+  });
+
+  it('never paints a chip red, and every verdict that asks for a look is amber', () => {
+    for (const row of view.rows) {
+      expect(['warning', 'success', 'muted'], row.verdict).toContain(row.tone);
+      expect(row.tone, row.verdict).not.toMatch(/error|danger|red/);
+      if (row.attention) expect(row.tone, row.verdict).toBe('warning');
+    }
+    expect(view.rows.filter((row) => row.tone === 'warning')).toHaveLength(5);
+    expect(view.summary).toMatchObject({ accounts: 9, attention: 5, worst: 'differs' });
   });
 });
 
@@ -334,6 +415,39 @@ describe('the overview, one line per client, worst first', () => {
     expect(view.lines[2].words).toBe('No close yet today.');
     expect(view.lines[0].panel.rows).toHaveLength(4);
     expect(view.attentionClients).toBe(1);
+  });
+
+  it('ranks a client whose worst is tracker only or stale above one that matches, with the one that differs first of all', () => {
+    /* A real book: one client differs, one has an account only the tracker saw,
+     * one has a stale reading, one matches, one has no close yet. A line that
+     * matches must never sort above a line that asks for a look, whatever the
+     * verdict that asks. */
+    const cedar = { id: 'c-cedar', name: 'Cedar Hill', dailyImports: [dailyImport({ id: 'di-c', uuid: 'imp-c', clientId: 'c-cedar', snapshots: [snapshot('snap-c1', 'CH 01', 10)] })] };
+    const birch = { id: 'c-birch', name: 'Birch Lane', dailyImports: [dailyImport({ id: 'di-b', uuid: 'imp-b', clientId: 'c-birch', snapshots: [snapshot('snap-b1', 'BL 01', 80)] })] };
+    const readings = [
+      ...READINGS,
+      mapleReading,
+      reading({ id: 21, clientId: 'c-cedar', dailyImportId: 'imp-c', accountName: 'CH 01', realizedPnl: 10, totalPnl: 10 }),
+      reading({ id: 22, clientId: 'c-cedar', dailyImportId: 'imp-c', accountName: 'CH 02', realizedPnl: 25, totalPnl: 25 }),
+      reading({ id: 23, clientId: 'c-birch', dailyImportId: 'imp-b', accountName: 'BL 01', realizedPnl: 80, totalPnl: 80, sampledAt: '2026-10-07T19:00:00.000Z', readingSince: '2026-10-07T18:50:00.000Z' }),
+    ];
+    const view = buildTrackerCloseOverview({
+      clients: [quiet, other, birch, cedar, northwind],
+      today: TODAY,
+      answer: { available: true, readings, settings: SETTINGS },
+    });
+    expect(view.lines.map((line) => [line.clientName, line.state, line.summary?.worst ?? null])).toEqual([
+      ['Northwind', 'ready', 'differs'],
+      ['Cedar Hill', 'ready', 'tracker_only'],
+      ['Birch Lane', 'ready', 'stale_reading'],
+      ['Maple Ridge', 'ready', 'matches'],
+      ['Quiet Pond', 'no_close', null],
+    ]);
+    expect(view.lines[1].words).toBe('1 tracker only, 1 matches');
+    expect(view.lines[2].words).toBe('1 stale');
+    expect(view.attentionClients).toBe(3);
+    // The one that differs first of all, even when it is the only one with that verdict and the others ask for a look too.
+    expect(view.lines.findIndex((line) => line.clientName === 'Northwind')).toBe(0);
   });
 
   it('says the verdict counts in rank order with the flags after them', () => {

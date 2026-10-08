@@ -85,7 +85,7 @@ describe('the lines', () => {
     expect(onSelectClient).toHaveBeenCalledWith(CLIENT.id);
   });
 
-  it('asks for the rows of a close this session has not loaded, once per set', () => {
+  it('asks for the rows of a close this session has not loaded, once per set, whatever the identity of the callback', () => {
     const unloaded = { ...northwind, dailyImports: [dailyImport({ snapshotsLoaded: false })] };
     const { container, onNeedClose, rerender, view } = show({ clients: [unloaded] });
     expect(text(linesOf(container)[0])).toContain('Reading the close.');
@@ -93,6 +93,35 @@ describe('the lines', () => {
     expect(onNeedClose).toHaveBeenCalledWith(['imp-1']);
     rerender(<TrackerCloseOverview view={view} read={{ clock: NOW, error: null, reading: false, retry: vi.fn() }} refreshMs={0} onNeedClose={onNeedClose} />);
     expect(onNeedClose).toHaveBeenCalledTimes(1);
+    // App.jsx hands a new arrow function every render: the same set of closes
+    // is still asked for once in all, not once per render.
+    const fresh = vi.fn();
+    rerender(<TrackerCloseOverview view={view} read={{ clock: NOW, error: null, reading: false, retry: vi.fn() }} refreshMs={0} onNeedClose={fresh} />);
+    expect(fresh).not.toHaveBeenCalled();
+    expect(onNeedClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('ranks a client whose worst is tracker only or stale above one that matches, and the one that differs first of all', () => {
+    const cedar = { id: 'c-cedar', name: 'Cedar Hill', dailyImports: [dailyImport({ id: 'di-c', uuid: 'imp-c', clientId: 'c-cedar', snapshots: [snapshot('snap-c1', 'CH 01', 10)] })] };
+    const birch = { id: 'c-birch', name: 'Birch Lane', dailyImports: [dailyImport({ id: 'di-b', uuid: 'imp-b', clientId: 'c-birch', snapshots: [snapshot('snap-b1', 'BL 01', 80)] })] };
+    const readings = [
+      ...BOOK_ANSWER.readings,
+      reading({ id: 21, clientId: 'c-cedar', dailyImportId: 'imp-c', accountName: 'CH 01', realizedPnl: 10, unrealizedPnl: 0, totalPnl: 10 }),
+      reading({ id: 22, clientId: 'c-cedar', dailyImportId: 'imp-c', accountName: 'CH 02', realizedPnl: 25, unrealizedPnl: 0, totalPnl: 25 }),
+      reading({ id: 23, clientId: 'c-birch', dailyImportId: 'imp-b', accountName: 'BL 01', realizedPnl: 80, unrealizedPnl: 0, totalPnl: 80, sampledAt: '2026-10-07T19:00:00.000Z', readingSince: '2026-10-07T18:50:00.000Z' }),
+    ];
+    const { container } = show({ clients: [quiet, maple, birch, cedar, northwind], answer: { ...BOOK_ANSWER, readings } });
+    const lines = linesOf(container);
+    expect(lines.map((line) => text(line.querySelector('.tracker-close-line-toggle, .tracker-close-line-still')))).toEqual([
+      'Northwind: 1 differs, 1 tracker only, 1 close only, 1 matches, 1 algorithm moved',
+      'Cedar Hill: 1 tracker only, 1 matches',
+      'Birch Lane: 1 stale',
+      'Maple Ridge: 1 matches',
+      'Quiet Pond: No close yet today.',
+    ]);
+    expect(lines.slice(0, 3).every((line) => line.className.includes('attention'))).toBe(true);
+    expect(lines[3].className).not.toContain('attention');
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('3 of 5 clients ask for a look.');
   });
 
   it('names a close pinned after this session loaded, and the one with no reading pinned', () => {
