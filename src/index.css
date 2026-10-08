@@ -2838,6 +2838,22 @@ textarea {
   padding: 14px;
 }
 
+/* The payment status sheet paste and the amount presets on the client form. */
+.payment-sheet-paste {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+.payment-sheet-card { grid-column: 1 / -1; }
+.payment-sheet-unmatched { margin: 6px 0 0; padding-left: 18px; }
+.payment-sheet-unmatched li { font-size: 12px; line-height: 1.5; }
+.payment-amount-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.payment-amount-presets button { padding: 4px 10px; font-size: 12px; }
+
 .data-tool-card input[type="file"] {
   border: 1px dashed rgba(255, 255, 255, 0.1);
   border-radius: 8px;

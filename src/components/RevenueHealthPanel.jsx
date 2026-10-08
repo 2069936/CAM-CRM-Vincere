@@ -1,5 +1,11 @@
-import { conversionFromFree, revenueLeakage, revenueMovement, revenueSnapshot } from '../domain/revenueHealth';
-import { SUBSCRIPTION_PRICES } from '../domain/subscriptionPrice';
+import {
+  NON_PAYING_STATUSES,
+  conversionFromFree,
+  revenueLeakage,
+  revenueMovement,
+  revenueSnapshot,
+} from '../domain/revenueHealth';
+import { PAYMENT_STATUS_LABELS } from '../domain/subscriptionPrice';
 
 /* ------------------------------------------------------------------------- *
  * Revenue health, with its own limits printed on it.
@@ -7,15 +13,18 @@ import { SUBSCRIPTION_PRICES } from '../domain/subscriptionPrice';
  * Two things on this page are not like the others and both are said out loud
  * rather than left for someone to discover in a meeting:
  *
- * THE UNPRICED COUNT SITS NEXT TO THE MRR. Most of this book is on
- * 'Undetermined'. The MRR is therefore a floor and the page says so, because a
- * dashboard that treats "nobody asked" as $0 reports a business half its size
- * and gets believed.
+ * THE UNPRICED COUNT SITS NEXT TO THE MRR. Most of this book is undetermined.
+ * The MRR is therefore a floor and the page says so, because a dashboard that
+ * treats "nobody asked" as $0 reports a business half its size and gets
+ * believed.
  *
  * MOVEMENT SAYS HOW FAR BACK IT CAN SEE. New and lost MRR come from the price
  * log, which starts the day it shipped. Before that the audit trail recorded
  * which field changed and never the values, so the honest answer for earlier
  * periods is "not recorded", not zero.
+ *
+ * THE BASE IS GROUPED BY AMOUNT, not by a fixed tier list: the desk's sheet
+ * holds six different amounts today and will hold a seventh without warning.
  * ------------------------------------------------------------------------- */
 
 const money = (value) => `$${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
@@ -45,12 +54,13 @@ export default function RevenueHealthPanel({
     logStartedAt: priceLogStartedAt,
   });
   const conversion = conversionFromFree(priceChanges, { logStartedAt: priceLogStartedAt });
+  const undetermined = snapshot.byStatus.undetermined;
 
   return (
     <section className="panel revenue-health">
       <div className="panel-heading">
         <h3>Revenue health</h3>
-        <span className="muted">{snapshot.activeClients} active clients</span>
+        <span className="muted">{snapshot.activeClients} active clients, cancelled excluded</span>
       </div>
 
       <div className="revenue-tiles">
@@ -58,7 +68,7 @@ export default function RevenueHealthPanel({
           label="Total MRR"
           value={money(snapshot.mrr)}
           note={snapshot.unpriced
-            ? `Floor, not total. ${snapshot.unpriced} of ${snapshot.activeClients} clients have no tier set.`
+            ? `Floor, not total. ${snapshot.unpriced} of ${snapshot.activeClients} clients have no amount set.`
             : 'Every active client is priced.'}
           tone={snapshot.unpriced ? 'warn' : undefined}
         />
@@ -78,22 +88,38 @@ export default function RevenueHealthPanel({
         <h4>Where the base sits</h4>
         <table className="revenue-table">
           <thead>
-            <tr><th>Tier</th><th>Clients</th><th>Share</th><th>MRR</th></tr>
+            <tr><th>Paying</th><th>Clients</th><th>Share</th><th>MRR</th></tr>
           </thead>
           <tbody>
-            {SUBSCRIPTION_PRICES.map((tier) => (
-              <tr key={tier} className={tier === 'Undetermined' && snapshot.byTier[tier] ? 'warn-row' : undefined}>
-                <td>{tier}</td>
-                <td>{snapshot.byTier[tier]}</td>
-                <td>{snapshot.tierShare[tier]}%</td>
-                <td>{tier === 'Undetermined' ? '—' : money(snapshot.byTier[tier] * (tier === '$500' ? 500 : tier === '$250' ? 250 : 0))}</td>
+            {snapshot.byAmount.map((row) => (
+              <tr key={row.amount}>
+                <td>{money(row.amount)} a month</td>
+                <td>{row.clients}</td>
+                <td>{row.share}%</td>
+                <td>{money(row.mrr)}</td>
+              </tr>
+            ))}
+            {snapshot.payingUnknownAmount ? (
+              <tr className="warn-row">
+                <td>Paying, amount unknown</td>
+                <td>{snapshot.payingUnknownAmount}</td>
+                <td>{Number(((snapshot.payingUnknownAmount * 100) / snapshot.activeClients).toFixed(1))}%</td>
+                <td>—</td>
+              </tr>
+            ) : null}
+            {NON_PAYING_STATUSES.map((status) => (
+              <tr key={status} className={status === 'undetermined' && snapshot.byStatus[status] ? 'warn-row' : undefined}>
+                <td>{PAYMENT_STATUS_LABELS[status]}</td>
+                <td>{snapshot.byStatus[status]}</td>
+                <td>{snapshot.statusShare[status]}%</td>
+                <td>{status === 'undetermined' ? '—' : money(0)}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        {snapshot.byTier.Undetermined ? (
+        {undetermined ? (
           <p className="revenue-caveat">
-            {snapshot.byTier.Undetermined} clients have never had a tier set. Until they do,
+            {undetermined} clients have never had a payment status set. Until they do,
             every number on this page understates the desk.
           </p>
         ) : null}

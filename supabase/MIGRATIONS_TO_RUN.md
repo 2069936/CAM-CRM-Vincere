@@ -38,6 +38,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 59 | `step_59_log_algo_history_by_family.sql` | step 43's `using (true)` policy on `log_algo_history` replaced by one for Managers; `attributed_client_id` on each row, set by a trigger when the row is written to the one client holding that account name then, and never moved after; and `log_algo_history_by_family()`, which returns the card's seven numbers per family and withholds from a CAM every family run on fewer accounts, or fewer clients, outside her book than step 57's floors | A CAM no longer reads every book's per account, per family P&L, nor rewrites it. The Stack Playbook "Algo history (from logs)" card keeps its numbers |
 | 60 | `step_60_client_handoff_manager_only.sql` | `my_cam_profile_id()` and four RESTRICTIVE policies on `client_assignments` beside step 53's permissive one: a CAM reads her own clients' rows, inserts only (a client she created that nobody holds, her own profile), and never updates or deletes | Only a Manager moves a client between books. Closes the handoff step 57 names as its residual, and a creator taking back a client a Manager moved away |
 | 61 | `step_61_target_profit_amount_to_balance.sql` | `target_profit_before_step_61` on `trading_accounts`, and every `target_profit` that is a profit AMOUNT beyond doubt (positive, below a stored start and no more than a fifth of it) rewritten as the BALANCE `start_balance + amount`. On production that is 1 row of 726 | An evaluation that has made nothing no longer reads as passed. |
+| 62 | `step_62_payment_status.sql` | `clients.payment_status` text not null default `undetermined`, CHECK in (paying, free, undetermined, paused, idle, cancelled); a backfill from `subscription_price` (`$N` to paying, `Free` to free, everything else left undetermined) that touches only rows still at the default; the table's grants restated per step 56 (anon nothing, authenticated select, insert, update, RLS on). `subscription_price` stays and now holds any whole dollar amount as `$N` | A client at $400, $375, $333 or $183 is filed as paying what they pay instead of Undetermined, and a paused, idle or cancelled client has a status of their own. Run it BEFORE deploying the build that reads the column: the login selects `payment_status` and fails on a database without it |
 
 ## These three groups behave differently
 
@@ -111,7 +112,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of

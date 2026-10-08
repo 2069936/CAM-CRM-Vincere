@@ -1,4 +1,4 @@
-import { normalizeSubscriptionPrice } from './subscriptionPrice';
+import { normalizePaymentStatus, normalizeSubscriptionPrice } from './subscriptionPrice';
 
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -424,10 +424,16 @@ export function updateClientDetails(state, clientId, patch) {
   const tier = profile && 'subscriptionPrice' in profile
     ? { subscriptionPrice: normalizeSubscriptionPrice(profile.subscriptionPrice) }
     : {};
+  // payment_status rides beside the price for the same reason; revenueSnapshot
+  // sums the amounts of the clients whose TOP LEVEL status says paying.
+  const status = profile && 'paymentStatus' in profile
+    ? { paymentStatus: normalizePaymentStatus(profile.paymentStatus, profile.subscriptionPrice) }
+    : {};
   return updateClient(state, clientId, (client) => ({
     ...client,
     ...patch,
     ...tier,
+    ...status,
   }));
 }
 
