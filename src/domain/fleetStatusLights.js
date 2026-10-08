@@ -83,7 +83,8 @@ export const LEGEND = Object.freeze([
 
 const EXPECTED_TO_TRADE = new Set([ACCOUNT_STATUSES.ACTIVE, ACCOUNT_STATUSES.PAYOUT_HOLD]);
 
-function expectedAccountNames(client) {
+/** The registry accounts still expected to trade (Active or Payout Hold); shared with the desk bulbs. */
+export function expectedAccountNames(client) {
   const registry = client?.accountRegistry;
   if (!registry || typeof registry !== 'object') return [];
   return Object.entries(registry)

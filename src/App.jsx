@@ -174,6 +174,7 @@ import TimeOffPanel, {
 import CamRecordPanel from "./components/CamRecordPanel";
 import CollapsiblePanel from "./components/CollapsiblePanel";
 import FleetStatusLights from "./components/FleetStatusLights";
+import DeskClientLights from "./components/DeskClientLights";
 import useLiveAccountTracker from "./components/useLiveAccountTracker";
 import AlgorithmLivePanel from "./components/AlgorithmLivePanel";
 import BookList from "./components/BookList";
@@ -5993,16 +5994,22 @@ export function ManagerOverview({
           )}
         </div>
 
-        {/* Live accounts across the desk, right under the money and the tiles:
-            Pedro's order for the Manager is revenue first, then the light, then
-            the flags and the rest. A tile opens the client inside its CAM's
-            workspace, which is the only route a Manager has to a client page. */}
+        {/* Live accounts across the desk, right under the money: Pedro's order
+            for the Manager is revenue first, then the light, then the flags and
+            the rest. ONE BULB PER CLIENT here, not the CAM overview's tiles:
+            109 tiles with every account is unreadable for the Manager; one light
+            per client, is NinjaTrader up and are the connections active, and a
+            click opens the breakdown. The drawer's "Open client" opens the client
+            inside its CAM's workspace, the only route a Manager has to a client
+            page. The devices come from the fleet route, which only a Manager may
+            call; the component falls back to samples when refused. */}
         <CollapsiblePanel title="Live accounts" defaultOpen tone="fleet-lights-panel">
-          <FleetStatusLights
+          <DeskClientLights
             clients={deskWorkingClients}
             tracker={deskTracker}
             now={deskTrackerClock}
             refreshMs={deskTrackerRefreshMs}
+            deviceAware={session?.role === USER_ROLES.MANAGER}
             onSelectClient={(clientId) => {
               // The client to CAM mapping lives on the CAM profile (clientIds,
               // from client_assignments), never on the client. Resolved the way
