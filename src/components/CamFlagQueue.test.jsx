@@ -354,3 +354,72 @@ describe('the two flags that ask what happened to the account', () => {
     expect(buttons(tree, 'resolve-row').length).toBeGreaterThan(0);
   });
 });
+
+/* ── A word in the account column, never a dash ───────────────────────────── */
+
+describe('the account column has a word for every row, never a dash', () => {
+  /* Step 65 writes one flag per account marked Failed by the close, and ONE
+   * summary flag per client with no trading account when more than three flip
+   * in one close. That summary flag used to render an em dash in the account
+   * column of this queue. Fictional client and accounts. */
+  const closeBook = () => [
+    {
+      id: 'client-3',
+      name: 'Maple Ridge',
+      dailyImports: [{
+        id: 'imp-0807',
+        date: '2026-08-07',
+        flags: [
+          flag('f-summary', {
+            type: 'Marked Failed by the close',
+            accountName: '',
+            message: 'The close marked 5 accounts Failed: ACC 01, ACC 02, ACC 03, ACC 04, ACC 05. '
+              + 'They breached between 2026-08-01 and 2026-08-07. Change the status on an account if the prop firm says otherwise.',
+          }),
+          flag('f-one', {
+            type: 'Marked Failed by the close',
+            accountName: 'ACC 06',
+            message: 'ACC 06 breached on 2026-08-07: trailing reading -$263 against a $2,500 limit, status was Active. '
+              + 'Change the status on the account if the prop firm says otherwise.',
+          }),
+          flag('f-plain', { type: 'Strategy disabled', accountName: '', message: 'Strategy Bullet 3.2 is disabled' }),
+        ],
+      }],
+    },
+  ];
+  const queue = (clients) => renderToStaticMarkup(
+    <CamFlagQueue clients={clients} today={TODAY} onResolveFlag={() => {}} defaultOpenGroups={999} />,
+  );
+
+  it('says "Several accounts" for the summary flag, with the count in the hover title', () => {
+    const html = queue(closeBook());
+    expect(html).toContain('title="5 accounts, named in the flag">Several accounts<');
+    // The per account flag beside it keeps its name.
+    expect(html).toContain('>ACC 06<');
+    // And the summary offers no outcome button: there is no one account to write to.
+    const tree = CamFlagQueue({ clients: closeBook(), today: TODAY, onResolveFlag: () => {}, onClassifyAccount: () => {} });
+    expect(buttons(tree, 'classify-account')).toHaveLength(0);
+    expect(buttons(tree, 'resolve-row')).toHaveLength(3);
+  });
+
+  it('says "No account" for any other flag without one', () => {
+    const html = queue(closeBook());
+    expect(html).toContain('>No account<');
+    expect(countOf(html, />No account</g)).toBe(1);
+    expect(countOf(html, />Several accounts</g)).toBe(1);
+  });
+
+  it('prints no dash of any kind in its own words, in any of its states', () => {
+    // The evidence line under a Missing account flag is quietAccounts.js's
+    // sentence, read back as stored; it is not this component's copy and is
+    // taken out before the check. Everything else on the screen is.
+    const ownWords = (html) => html.replace(/<span class="flag-evidence[^"]*"[^>]*>.*?<\/span>/g, '');
+    for (const clients of [closeBook(), strandedBook(), []]) {
+      const html = ownWords(queue(clients));
+      expect(strip(html)).not.toMatch(/—|–| - /);
+      expect(html).not.toMatch(/—|–/);
+    }
+    // The positive control: the evidence line is where the one remaining dash lives.
+    expect(queue(strandedBook())).toMatch(/flag-evidence/);
+  });
+});

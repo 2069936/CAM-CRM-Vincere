@@ -33,6 +33,7 @@
 // Pure: no React, no Supabase.
 
 import { SIZING } from './setFileNormalise';
+import { knownPosition } from './livePosition';
 
 /** The only verdict word this module produces. */
 export const DIFFERS_WORD = 'differs';
@@ -72,6 +73,11 @@ function finiteOrNull(value) {
 
 function cents(value) {
   return Math.round(value * 100) / 100;
+}
+
+function wholeOrNull(value) {
+  const parsed = finiteOrNull(value);
+  return Number.isInteger(parsed) ? parsed : null;
 }
 
 function cohortKey(algorithm, root) {
@@ -197,8 +203,17 @@ function accountEntry(group, { desk, cohort, settings, client, configFor }) {
     accountName: group.accountName,
     algorithm: group.algorithm,
     instrumentRoot: group.instrumentRoot,
+    // The step 64 position rides on each instance as the reading carried it:
+    // null is "not read" (a 1.2.0 agent), never flat and never 0. Carried, not
+    // used: the roll call and the drill down phrase it.
     instances: reading
-      .map((row) => ({ strategyName: row.strategyName || '', instrument: row.instrument || '' }))
+      .map((row) => ({
+        strategyName: row.strategyName || '',
+        instrument: row.instrument || '',
+        marketPosition: knownPosition(row.marketPosition),
+        positionQuantity: wholeOrNull(row.positionQuantity),
+        tradesThisRun: wholeOrNull(row.tradesThisRun),
+      }))
       .sort((a, b) => compareText(a.strategyName, b.strategyName) || compareText(a.instrument, b.instrument)),
     realized,
     unrealized,

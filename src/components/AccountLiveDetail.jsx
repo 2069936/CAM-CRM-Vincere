@@ -120,6 +120,14 @@ function StrategyRow({ strategy }) {
       <Money label="realized" value={strategy.realized} />
       <Money label="open" value={strategy.unrealized} />
       <Money label="total" value={strategy.total} strong />
+      {/* Which way it fired, the contracts and the trades (step 64, agent
+          1.2.1). A reading that carried none says nothing here: null is not
+          read, never flat. */}
+      {strategy.positionWords ? (
+        <span className="account-live-strategy-position" title="Market position, contracts held and trades this run, as the agent read them off the strategy.">
+          {strategy.positionWords}
+        </span>
+      ) : null}
       {comparison.differs ? (
         <span className="badge warning account-live-strategy-differs">Differs from the desk</span>
       ) : null}

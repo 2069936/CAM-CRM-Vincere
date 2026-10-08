@@ -219,6 +219,23 @@ describe('one row per strategy instance, held against the desk', () => {
     expect(view.differsWords).toBe('1 algorithm differs from the desk');
   });
 
+  it('says which way it fired, the contracts and the trades when the reading carries them (agent 1.2.1)', () => {
+    const view = detail({ strategies: strategies({ rows: [row({ marketPosition: 'long', positionQuantity: 2, tradesThisRun: 1 })] }) });
+    expect(view.strategies[0]).toMatchObject({ marketPosition: 'long', positionQuantity: 2, tradesThisRun: 1 });
+    expect(view.strategies[0].positionWords).toBe('long, 2 contracts, 1 trade this run');
+    const flat = detail({ strategies: strategies({ rows: [row({ marketPosition: 'flat', positionQuantity: 0, tradesThisRun: 4 })] }) });
+    expect(flat.strategies[0].positionWords).toBe('flat, 4 trades this run');
+    const short = detail({ strategies: strategies({ rows: [row({ marketPosition: 'short', positionQuantity: 1, tradesThisRun: null })] }) });
+    expect(short.strategies[0].positionWords).toBe('short, 1 contract');
+  });
+
+  it('says nothing about the position when the reading carried none (agent 1.2.0): null, never flat, never 0', () => {
+    const view = detail();
+    expect(view.strategies[0]).toMatchObject({ marketPosition: null, positionQuantity: null, tradesThisRun: null, positionWords: null });
+    const unread = detail({ strategies: strategies({ rows: [row({ marketPosition: null, positionQuantity: null, tradesThisRun: null })] }) });
+    expect(unread.strategies[0].positionWords).toBeNull();
+  });
+
   it('sorts the rows by algorithm, then instrument, then strategy name', () => {
     const view = detail({
       strategies: strategies({
@@ -268,9 +285,10 @@ describe('whose rows these are', () => {
       detail({ strategies: strategies({ rows: [row({ realizedPnl: null })] }) }),
       detail({ strategies: strategies({ cohorts: [] }) }),
       detail({ sample: sample({ strategyCount: null, enabledStrategyCount: null }) }),
+      detail({ strategies: strategies({ rows: [row({ marketPosition: 'long', positionQuantity: 2, tradesThisRun: 1 })] }) }),
     ];
     for (const view of views) {
-      const text = [view.totals?.strategiesWords, view.differsWords, ...view.strategies.flatMap((s) => [s.comparison.sentence, s.restartNote])]
+      const text = [view.totals?.strategiesWords, view.differsWords, ...view.strategies.flatMap((s) => [s.comparison.sentence, s.restartNote, s.positionWords])]
         .filter(Boolean).join(' ');
       expect(text).not.toMatch(/[\u2013\u2014]| - /);
     }

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  ALGORITHM_LIVE_SAMPLE_COLUMNS,
   loadSupabaseAlgorithmLive,
   loadSupabaseClientLiveStrategies,
+  mapAlgorithmLiveSample,
   resetAlgorithmLiveSettingsCache,
 } from './supabaseStore';
 
@@ -100,6 +102,29 @@ describe('loadSupabaseAlgorithmLive', () => {
     expect(result.settings).toMatchObject({
       minCohortAccounts: 6, minCohortClients: 4, differsAtSpread: 3, minSpreadDollars: 120, cycleSeconds: 900, fallback: false,
     });
+  });
+
+  it('selects and maps the step 64 position columns, null when the agent did not send them', async () => {
+    /* Agent 1.2.1 posts market_position, position_quantity and trades_this_run
+     * with each reading; a 1.2.0 agent posts none and the row holds null.
+     * NULL IS "NOT READ", never flat and never 0. */
+    for (const column of ['market_position', 'position_quantity', 'trades_this_run']) {
+      expect(ALGORITHM_LIVE_SAMPLE_COLUMNS.split(/,\s*/)).toContain(column);
+    }
+    const base = { client_id: 'c1', account_name: 'A', strategy_id: '1', strategy_name: 'BulletBot 2.0', algorithm: 'BulletBot', instrument: 'MNQ 12-26', instrument_root: 'MNQ', realized_pnl: '-100', unrealized_pnl: '-40', restarted_at: null, sampled_at: '2026-10-08T14:10:02+00:00', cycle_start: '2026-10-08T14:10:00+00:00' };
+    expect(mapAlgorithmLiveSample({ ...base, market_position: 'long', position_quantity: 2, trades_this_run: '3' }))
+      .toMatchObject({ marketPosition: 'long', positionQuantity: 2, tradesThisRun: 3 });
+    expect(mapAlgorithmLiveSample({ ...base, market_position: 'flat', position_quantity: 0, trades_this_run: 0 }))
+      .toMatchObject({ marketPosition: 'flat', positionQuantity: 0, tradesThisRun: 0 });
+    expect(mapAlgorithmLiveSample(base)).toMatchObject({ marketPosition: null, positionQuantity: null, tradesThisRun: null });
+    expect(mapAlgorithmLiveSample({ ...base, market_position: null, position_quantity: '', trades_this_run: null }))
+      .toMatchObject({ marketPosition: null, positionQuantity: null, tradesThisRun: null });
+    // A word the CHECK constraint would refuse is not read either, nor a fraction of a contract.
+    expect(mapAlgorithmLiveSample({ ...base, market_position: 'sideways', position_quantity: 1.5, trades_this_run: 2 }))
+      .toMatchObject({ marketPosition: null, positionQuantity: null, tradesThisRun: 2 });
+    const client = fakeClient({ samples: { data: [{ ...base, market_position: 'short', position_quantity: 1, trades_this_run: 1 }], error: null } });
+    const result = await loadSupabaseAlgorithmLive({ clientIds: ['c1'], client });
+    expect(result.rows[0]).toMatchObject({ marketPosition: 'short', positionQuantity: 1, tradesThisRun: 1 });
   });
 
   it('reads a filling marker as filling, and no rows as no cycle', async () => {

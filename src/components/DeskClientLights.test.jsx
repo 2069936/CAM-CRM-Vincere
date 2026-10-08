@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DeskClientLights from './DeskClientLights';
 import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
+import { resetAccountObservationSettingsCache } from './useAccountObservationSettings';
 import { AutoCollectionApiError } from '../domain/autoCollectionApi';
 
 /* ------------------------------------------------------------------------- *
@@ -429,5 +430,108 @@ describe('the stylesheet', () => {
     expect(line('.dcl-bulb.tone-live .dcl-light')).toContain('var(--success)');
     const redLines = block.split('\n').filter((row) => /--error|--red\b|\.danger/.test(row));
     expect(redLines.every((row) => row.includes('tone-off'))).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * ONLY THE ACCOUNTS EXPECTED TO TRADE ARE IN THE DRAWER.
+ *
+ * The same rule as the tiles, on the desk: the never sampled group under the
+ * connections holds the expected accounts nobody has sampled (a new one says
+ * so), and one folded line at the bottom of the drawer says why the rest of
+ * the registry has no light.
+ * ------------------------------------------------------------------------- */
+describe('only the accounts expected to trade are in the drawer', () => {
+  const UUID_M = '9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f';
+  const observed = (accountName, over = {}) => [accountName, {
+    accountName, status: 'Active', accountType: 'Funded', observedState: 'seen',
+    closesMissed: 0, lastCloseSeenOn: '2026-10-07', dateAdded: '2026-06-01', ...over,
+  }];
+  const MAPLE = {
+    id: 'act-1700000000-maple', uuid: UUID_M, name: 'Maple Ridge', profile: { stage: 'Active' },
+    accountRegistry: Object.fromEntries([
+      observed('ACC 01'),
+      observed('ACC 02'),
+      observed('ACC 03', { observedState: 'breached', breachedOn: '2026-10-07', breachReading: -263 }),
+      observed('ACC 04', { observedState: 'absent', closesMissed: 6, lastCloseSeenOn: '2026-09-29' }),
+      observed('ACC 05', { observedState: 'never_seen', lastCloseSeenOn: '', dateAdded: '2026-10-05' }),
+      observed('ACC 06', { status: 'Failed' }),
+    ]),
+  };
+  const settingsNever = vi.fn(() => new Promise(() => {}));
+  function mountMaple(props = {}) {
+    return mount({
+      clients: [MAPLE],
+      tracker: tracker({ samplesByClientId: new Map([[UUID_M, [sample('ACC 01', { connectionName: 'Bluesky' })]]]) }),
+      loadDevices: vi.fn(async () => ({ available: true, byClientId: new Map([[UUID_M, [device()]]]) })),
+      loadObservationSettings: settingsNever,
+      ...props,
+    });
+  }
+  const groupNames = (container) => [...container.querySelectorAll('.dcl-connection')].map((node) => node.querySelector('.dcl-connection-name').textContent);
+  const pillsIn = (container, name) => [...container.querySelector(`.dcl-connection[data-connection="${name}"]`).querySelectorAll('.account-pill')]
+    .map((pill) => `${pill.dataset.account}: ${pill.querySelector('.account-pill-state').textContent}`);
+
+  afterEach(() => resetAccountObservationSettingsCache());
+
+  it('lists the two seen and the new one under the connections, and folds the rest into one line at the bottom', async () => {
+    const { container } = mountMaple();
+    await ready(container, 1);
+    const bulb = container.querySelector('.dcl-bulb');
+    expect(bulb.dataset.state).toBe('live');
+    expect(bulb.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Maple Ridge: Live, 1 account connected on 1 connection.');
+    act(() => { bulbFor(container, 'act-1700000000-maple').click(); });
+    expect(groupNames(container)).toEqual(['Bluesky', 'Never sampled']);
+    expect(pillsIn(container, 'Never sampled')).toEqual(['ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(container.querySelectorAll('.account-pill').length).toBe(3);
+    const fresh = container.querySelector('.account-pill[data-account="ACC 05"] .account-pill-button');
+    expect(fresh.getAttribute('title')).toContain('ACC 05: New, not sampled yet. No connection name. Added 3 days ago, not seen in a close yet.');
+
+    const drawer = container.querySelector('.dcl-drawer');
+    const line = drawer.querySelector('.not-shown');
+    expect(line.querySelector('.not-shown-words').textContent)
+      .toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. 1 retired: 1 Failed.');
+    // Under the connections, not above them.
+    expect(drawer.querySelector('.dcl-connections').compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(drawer.textContent).not.toContain('ACC 03');
+    const toggle = line.querySelector('.not-shown-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    act(() => { toggle.click(); });
+    expect([...line.querySelectorAll('.not-shown-list li')].map((item) => item.textContent))
+      .toEqual(['ACC 03 looks failed', 'ACC 04 gone from the close', 'ACC 06 Failed']);
+  });
+
+  it('prints no line when every account on the registry is expected', async () => {
+    const { container } = mount({ loadObservationSettings: settingsNever });
+    await ready(container);
+    act(() => { bulbFor(container, 'act-1700000000-client-a').click(); });
+    expect(container.querySelector('.dcl-drawer')).not.toBeNull();
+    expect(container.querySelector('.not-shown')).toBeNull();
+    expect(container.textContent).not.toContain('Not shown');
+  });
+
+  it('a client whose only expected accounts are hidden is still a bulb when its VPS is paired, and the drawer says why', async () => {
+    const hidden = { ...MAPLE, accountRegistry: Object.fromEntries([
+      observed('ACC 03', { observedState: 'breached', breachedOn: '2026-10-07', breachReading: -263 }),
+      observed('ACC 04', { observedState: 'absent', closesMissed: 6 }),
+    ]) };
+    const { container } = mountMaple({ clients: [hidden], tracker: tracker({ samplesByClientId: new Map() }) });
+    await ready(container, 1);
+    expect(container.querySelector('.dcl-bulb').dataset.state).toBe('never_sampled');
+    act(() => { bulbFor(container, 'act-1700000000-maple').click(); });
+    expect(container.querySelector('.dcl-drawer-empty').textContent).toBe('No account sampled and none expected on the registry.');
+    expect(container.querySelector('.dcl-drawer .not-shown-words').textContent)
+      .toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
+  });
+
+  it('the setting moves the new account into the line', async () => {
+    const loadObservationSettings = vi.fn(async () => ({ available: true, staleCloses: 5, autoFailOnBreach: true, newAccountDays: 2 }));
+    const { container } = mountMaple({ loadObservationSettings });
+    await ready(container, 1);
+    act(() => { bulbFor(container, 'act-1700000000-maple').click(); });
+    await waitFor(() => expect(container.querySelectorAll('.account-pill').length).toBe(2));
+    expect(pillsIn(container, 'Never sampled')).toEqual(['ACC 02: Never sampled']);
+    expect(container.querySelector('.dcl-drawer .not-shown-words').textContent).toContain('1 registered and never seen in a close, added more than 2 days ago');
+    expect(loadObservationSettings).toHaveBeenCalledTimes(1);
   });
 });

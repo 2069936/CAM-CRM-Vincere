@@ -1,5 +1,6 @@
 import { buildAlgorithmLiveComparison, cycleClock } from './algorithmLiveComparison';
 import { NO_CONNECTION_WORD, differsWords } from './accountPill';
+import { knownPosition, positionWords } from './livePosition';
 import { formatCurrency } from './report';
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -122,10 +123,22 @@ function comparisonOf(entry, cycleStart) {
   };
 }
 
+function wholeOrNull(value) {
+  const parsed = finiteOrNull(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
 function strategyRow(row, entry, cycleStart) {
   const realized = finiteOrNull(row.realizedPnl);
   const unrealized = finiteOrNull(row.unrealizedPnl);
   const restarted = row.restartedAt && Number.isFinite(Date.parse(row.restartedAt)) ? row.restartedAt : null;
+  // Step 64, agent 1.2.1: which way it fired, the contracts and the trades.
+  // Null is "not read" (a 1.2.0 machine) and the row then says nothing of it.
+  const position = {
+    marketPosition: knownPosition(row.marketPosition),
+    positionQuantity: wholeOrNull(row.positionQuantity),
+    tradesThisRun: wholeOrNull(row.tradesThisRun),
+  };
   return {
     key: `${row.strategyId ?? ''}|${row.strategyName ?? ''}|${row.algorithm}|${row.instrument}`,
     strategyId: row.strategyId ?? null,
@@ -140,6 +153,8 @@ function strategyRow(row, entry, cycleStart) {
     restartNote: restarted ? `Restarted at ${cycleClock(restarted)}, so this figure counts only since then.` : null,
     sampledAt: row.sampledAt || null,
     cycleStart: row.cycleStart || null,
+    ...position,
+    positionWords: positionWords(position),
     comparison: comparisonOf(entry, cycleStart),
   };
 }

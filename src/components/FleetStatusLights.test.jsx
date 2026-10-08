@@ -3,6 +3,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FleetStatusLights from './FleetStatusLights';
 import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
+import { resetAccountObservationSettingsCache } from './useAccountObservationSettings';
 import {
   DOT_TONES,
   LEGEND,
@@ -566,5 +567,184 @@ describe('a client with a legacy key', () => {
     const view = buildFleetStatusLights({ clients: [plain], tracker: tracker({ 'c-plain': [sample('APEX-2')] }), now: NOW });
     expect(view.tiles[0].summary.rows[0].sample.accountName).toBe('APEX-2');
     expect(view.tiles[0].clientKey).toBe('c-plain');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * ONLY THE ACCOUNTS EXPECTED TO TRADE GET A LIGHT.
+ *
+ * Pedro's words: the lights kept showing dead accounts as never sampled. The
+ * database now says what the closes saw of every registry row (step 65), so a
+ * tile draws a pill for the expected accounts only, says "New, not sampled yet"
+ * on a new one, and folds the rest into one muted line under the tile with a
+ * Show toggle, so a CAM can tell a dead account from a new one from a missing
+ * one. Fictional client, fictional accounts.
+ * ------------------------------------------------------------------------- */
+describe('only the accounts expected to trade get a light', () => {
+  const observed = (accountName, over = {}) => [accountName, {
+    accountName, status: 'Active', accountType: 'Funded', observedState: 'seen',
+    closesMissed: 0, lastCloseSeenOn: '2026-10-04', dateAdded: '2026-06-01', ...over,
+  }];
+  const MAPLE_ROWS = [
+    observed('ACC 01'),
+    observed('ACC 02'),
+    observed('ACC 03', { observedState: 'breached', breachedOn: '2026-10-04', breachReading: -263 }),
+    observed('ACC 04', { observedState: 'absent', closesMissed: 6, lastCloseSeenOn: '2026-09-26' }),
+    observed('ACC 05', { observedState: 'never_seen', lastCloseSeenOn: '', dateAdded: '2026-10-02' }),
+  ];
+  function mapleRidge(rows = MAPLE_ROWS, extra = {}) {
+    return { id: 'c-maple', name: 'Maple Ridge', profile: { stage: 'Active' }, accountRegistry: Object.fromEntries(rows), ...extra };
+  }
+  const settingsNever = vi.fn(() => new Promise(() => {}));
+  function lights(props = {}) {
+    return render(<FleetStatusLights
+      clients={[mapleRidge()]}
+      tracker={tracker({ 'c-maple': [sample('ACC 01')] })}
+      now={NOW}
+      loadStrategies={neverAnswers}
+      loadObservationSettings={settingsNever}
+      {...props}
+    />);
+  }
+  const names = (container) => [...container.querySelectorAll('.account-pill')]
+    .map((pill) => `${pillText(pill, 'name')}: ${pillText(pill, 'state')}`);
+  const lineWords = (container) => container.querySelector('.fsl-tile .not-shown .not-shown-words')?.textContent ?? null;
+
+  afterEach(() => resetAccountObservationSettingsCache());
+
+  it('draws a pill for the two seen and the new one, and none for the account that looks failed or the one gone from the close', () => {
+    const { container } = lights();
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(container.querySelectorAll('.account-pill').length).toBe(3);
+    // Folded: the hidden names are not on the tile until Show is clicked.
+    expect(container.textContent).not.toContain('ACC 03');
+    expect(container.textContent).not.toContain('ACC 04');
+    expect(container.querySelector('.fsl-tile').className).toBe('fsl-tile tone-faint');
+  });
+
+  it('the new account reads "New, not sampled yet" on the pill and in its title, faint like a never sampled one', () => {
+    const { container } = lights();
+    const fresh = container.querySelector('.account-pill[data-account="ACC 05"]');
+    expect(fresh.className).toBe('account-pill tracker-never_sampled tone-faint');
+    expect(pillText(fresh, 'state')).toBe('New, not sampled yet');
+    expect(pillText(fresh, 'connection')).toBe('No connection name');
+    const title = fresh.querySelector('.account-pill-button').getAttribute('title');
+    expect(title).toContain('ACC 05: New, not sampled yet.');
+    expect(title).toContain('Added 3 days ago, not seen in a close yet.');
+    expect(title).toContain('Open the client to see whether a VPS is paired');
+    // The one that is not new keeps the old word.
+    const plain = container.querySelector('.account-pill[data-account="ACC 02"]');
+    expect(pillText(plain, 'state')).toBe('Never sampled');
+    expect(plain.querySelector('.account-pill-button').getAttribute('title')).not.toContain('not seen in a close');
+    // The tile's own sentence counts the two apart.
+    expect(container.querySelector('.fsl-tile-words').textContent)
+      .toBe('1 account sampled: 1 running, 1 registered and never sampled, 1 new and not sampled yet. Latest sample 4m ago.');
+  });
+
+  it('says in one folded line why the others are not shown, and Show lists them with a reason word', () => {
+    const { container } = lights();
+    const line = container.querySelector('.fsl-tile .not-shown');
+    expect(lineWords(container)).toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
+    expect(line.querySelector('.not-shown-words').className).toContain('muted');
+    const toggle = line.querySelector('button.not-shown-toggle');
+    expect(toggle.textContent).toBe('Show');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(line.querySelector('.not-shown-list')).toBeNull();
+    act(() => { toggle.click(); });
+    expect(toggle.textContent).toBe('Hide');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const list = line.querySelector('.not-shown-list');
+    expect(toggle.getAttribute('aria-controls')).toBe(list.id);
+    expect(list.className).toContain('muted');
+    expect([...list.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['ACC 03 looks failed', 'ACC 04 gone from the close']);
+    expect(list.querySelector('li').getAttribute('title')).toBe('Breached on 2026-10-04, reading -$263, status still Active.');
+    // The line sits under the pills and the tile sentence, and no button is inside a button.
+    expect(container.querySelector('.fsl-tile-words').compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('button button').length).toBe(0);
+    act(() => { toggle.click(); });
+    expect(line.querySelector('.not-shown-list')).toBeNull();
+  });
+
+  it('prints no line at all when every account on the registry is expected', () => {
+    const { container } = lights({ clients: [mapleRidge([MAPLE_ROWS[0], MAPLE_ROWS[1], MAPLE_ROWS[4]])] });
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(container.querySelector('.not-shown')).toBeNull();
+    expect(container.textContent).not.toContain('Not shown');
+  });
+
+  it('counts the retired accounts in the line too, so a dead account is told from a missing one', () => {
+    const { container } = lights({
+      clients: [mapleRidge([
+        ...MAPLE_ROWS,
+        observed('ACC 06', { status: 'Failed', observedState: 'breached', breachedOn: '2026-10-01' }),
+        observed('ACC 07', { status: 'Inactive' }),
+      ])],
+    });
+    expect(names(container).length).toBe(3);
+    expect(lineWords(container)).toBe(
+      'Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. 2 retired: 1 Failed, 1 Inactive.',
+    );
+    act(() => { container.querySelector('.not-shown-toggle').click(); });
+    expect([...container.querySelectorAll('.not-shown-list li')].map((item) => item.textContent))
+      .toEqual(['ACC 03 looks failed', 'ACC 04 gone from the close', 'ACC 06 Failed', 'ACC 07 Inactive']);
+  });
+
+  it('keeps a pill for an account the VPS sampled that the registry lacks, or that the close hid', () => {
+    const { container } = lights({
+      tracker: tracker({ 'c-maple': [sample('ACC 01'), sample('ACC 03'), sample('ACC 09', { connectionName: 'Bluesky' })] }),
+    });
+    // ACC 03 looks failed on the close and NinjaTrader is still naming it: a
+    // pill, in the registry; ACC 09 is not on the registry at all: a pill too.
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 03: Live', 'ACC 05: New, not sampled yet', 'ACC 09: Live']);
+    // And the line counts only what has no light anywhere.
+    expect(lineWords(container)).toBe('Not shown: 1 gone from the close for 6 closes.');
+  });
+
+  it('reads new_account_days once and moves the line with it: at 2 days a 3 day old account is never seen, not new', async () => {
+    const loadObservationSettings = vi.fn(async () => ({ available: true, staleCloses: 5, autoFailOnBreach: true, newAccountDays: 2 }));
+    const { container } = lights({ loadObservationSettings });
+    await waitFor(() => expect(container.querySelectorAll('.account-pill').length).toBe(2));
+    expect(loadObservationSettings).toHaveBeenCalledTimes(1);
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled']);
+    expect(lineWords(container)).toBe(
+      'Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. '
+      + '1 registered and never seen in a close, added more than 2 days ago.',
+    );
+    act(() => { container.querySelector('.not-shown-toggle').click(); });
+    expect([...container.querySelectorAll('.not-shown-list li')].map((item) => item.textContent))
+      .toContain('ACC 05 never seen in a close');
+  });
+
+  it('falls back to 14 days when the settings cannot be read, and says nothing about it', async () => {
+    const loadObservationSettings = vi.fn(async () => { throw new Error('timeout'); });
+    const { container } = lights({ loadObservationSettings });
+    await waitFor(() => expect(loadObservationSettings).toHaveBeenCalled());
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(container.textContent).not.toMatch(/could not|failed to read|timeout/i);
+  });
+
+  it('finds the samples by the uuid and the registry on the client, for a client with a legacy key', () => {
+    const UUID = '9c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f';
+    const legacy = mapleRidge(MAPLE_ROWS, { id: 'act-1700000000-maple', uuid: UUID });
+    const view = buildFleetStatusLights({ clients: [legacy], tracker: tracker({ [UUID]: [sample('ACC 01')] }), now: NOW });
+    expect(view.tiles[0].clientKey).toBe(UUID);
+    expect(view.tiles[0].dots.map((dot) => `${dot.accountName}: ${dot.label}`)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(view.tiles[0].notShown.sentence).toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
+    // The settings reach the domain too, by the same name the loader maps.
+    const tight = buildFleetStatusLights({ clients: [legacy], tracker: tracker({ [UUID]: [sample('ACC 01')] }), now: NOW, settings: { newAccountDays: 2 } });
+    expect(tight.tiles[0].dots.map((dot) => dot.accountName)).toEqual(['ACC 01', 'ACC 02']);
+    expect(tight.tiles[0].notShown.count).toBe(3);
+  });
+
+  it('a client whose expected accounts are all hidden still says so on a grey tile', () => {
+    const { container } = lights({
+      clients: [mapleRidge([MAPLE_ROWS[2], MAPLE_ROWS[3]]), client('c-green', 'Green Oak', [['G-1']])],
+      tracker: tracker({ 'c-green': [sample('G-1')] }),
+    });
+    const tile = container.querySelector('[data-client-id="c-maple"]');
+    expect(tile.className).toBe('fsl-tile tone-none');
+    expect(tile.querySelectorAll('.account-pill').length).toBe(0);
+    expect(tile.querySelector('.fsl-tile-words').textContent).toBe('No account expected on the close and none sampled.');
+    expect(lineWords(container)).toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
   });
 });

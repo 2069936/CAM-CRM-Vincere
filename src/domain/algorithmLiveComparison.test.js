@@ -117,6 +117,28 @@ describe('an account against its cohort', () => {
     expect(accounts.find((a) => a.accountName === 'ACC-2')).toMatchObject({ value: -100 });
   });
 
+  it('carries the position, the contracts and the trades on each instance, null when not read', () => {
+    /* Step 64: agent 1.2.1 posts market_position, position_quantity and
+     * trades_this_run with each reading; 1.2.0 posts none. The comparison does
+     * not use them, it carries them, so the roll call and the drill down read
+     * them off the same reading the figure came from. */
+    const result = build({
+      desk: desk(),
+      rows: [
+        row({ strategyId: '1', marketPosition: 'long', positionQuantity: 2, tradesThisRun: 3 }),
+        row({ strategyId: '2', strategyName: '1 - OGX-PF-2.4' }),
+      ],
+    });
+    const [account] = result.algorithms[0].accounts;
+    expect(account.instances).toEqual([
+      { strategyName: '0 - OGX-PF-2.4', instrument: 'MNQ 12-26', marketPosition: 'long', positionQuantity: 2, tradesThisRun: 3 },
+      { strategyName: '1 - OGX-PF-2.4', instrument: 'MNQ 12-26', marketPosition: null, positionQuantity: null, tradesThisRun: null },
+    ]);
+    // A word the column does not allow is not read either.
+    const odd = onlyAccount(build({ desk: desk(), rows: [row({ marketPosition: 'sideways', positionQuantity: '2', tradesThisRun: '' })] }));
+    expect(odd.instances[0]).toMatchObject({ marketPosition: null, positionQuantity: 2, tradesThisRun: null });
+  });
+
   it('a part not measured reads unmeasured with NO value, never 0', () => {
     for (const part of [{ realizedPnl: null }, { unrealizedPnl: null }, { realizedPnl: undefined }]) {
       const account = onlyAccount(build({ desk: desk(), rows: [row(part), row({ strategyId: '2' })] }));

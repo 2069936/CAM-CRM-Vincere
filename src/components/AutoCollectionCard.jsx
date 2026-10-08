@@ -250,6 +250,10 @@ export default function AutoCollectionCard({
   // from a list. Defaulted, because every other prop here is and because the
   // tracker is still useful without it.
   accountNames = [],
+  // The registry itself (name to meta, with what the closes saw of each row),
+  // so the strip lights only the accounts expected to trade and folds the rest
+  // into one line. When given it replaces `accountNames`.
+  accountRegistry = null,
   api = autoCollectionApi,
   initialStatus = null,
   initialError = null,
@@ -764,6 +768,7 @@ export default function AutoCollectionCard({
           tracker={status?.accountTracker ?? null}
           device={device}
           accountNames={accountNames}
+          accountRegistry={accountRegistry}
           api={api}
           disableAutoRefresh={disableAutoLoad}
           now={() => new Date(nowMs)}

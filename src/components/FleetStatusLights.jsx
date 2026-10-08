@@ -9,10 +9,12 @@ import {
 import { withDiffers } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
-import { loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
+import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
+import useAccountObservationSettings from './useAccountObservationSettings';
 import useClientLiveStrategies from './useClientLiveStrategies';
 
 /**
@@ -44,6 +46,13 @@ import useClientLiveStrategies from './useClientLiveStrategies';
  * The refresh is said out loud over the grid: "Updated 40 s ago, refreshes
  * every 2 min."
  *
+ * ONLY THE ACCOUNTS EXPECTED TO TRADE GET A PILL. The registry says what the
+ * closes saw of every account (step 65); a tile lights the expected ones, says
+ * "New, not sampled yet" on a new one, and folds the rest into one muted line
+ * under the tile with a Show toggle (NotShownLine). The one setting this needs,
+ * new_account_days, is read once per session by useAccountObservationSettings
+ * and defaults to 14 when it cannot be read.
+ *
  * THREE HONEST EMPTY STATES, each a different thing to do: step 55 not run
  * (nothing is recorded), nothing sampled yet (install the build that samples),
  * and a client nothing has reached (open it: the client page has the device).
@@ -55,6 +64,7 @@ export default function FleetStatusLights({
   onSelectClient = null,
   refreshMs = LIVE_REFRESH_MS,
   loadStrategies = loadSupabaseClientLiveStrategies,
+  loadObservationSettings = loadSupabaseAccountObservationSettings,
 }) {
   // The clock is the caller's (the tracker hook moves it on every successful
   // read). A caller without one gets the mount time, held, never a fresh
@@ -62,7 +72,14 @@ export default function FleetStatusLights({
   // "silent" about accounts nobody has re-read.
   const [mountedAt] = useState(() => Date.now());
   const at = now ?? mountedAt;
-  const view = useMemo(() => buildFleetStatusLights({ clients, tracker, now: at }), [clients, tracker, at]);
+  const observation = useAccountObservationSettings({
+    enabled: Boolean(tracker && tracker.available !== false),
+    load: loadObservationSettings,
+  });
+  const view = useMemo(
+    () => buildFleetStatusLights({ clients, tracker, now: at, settings: observation.settings }),
+    [clients, tracker, at, observation.settings],
+  );
   const clientsById = useMemo(() => {
     const map = new Map();
     for (const client of clients || []) if (client?.id) map.set(client.id, client);
@@ -213,6 +230,7 @@ function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies }) 
         {tile.words}
         {tile.sampled ? ` Latest sample ${agedWords(tile.ageMinutes)}.` : ''}
       </span>
+      <NotShownLine notShown={tile.notShown} label={`${tile.clientName}, accounts not shown`} />
     </li>
   );
 }

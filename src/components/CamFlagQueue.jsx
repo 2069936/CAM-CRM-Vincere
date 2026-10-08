@@ -11,6 +11,30 @@ import { QUIET_SHAPES, buildQuietAccounts, quietEvidenceForFlag } from '../domai
 /** The one flag type this file reads evidence back for. reconcile.js:582. */
 const MISSING_ACCOUNT = 'Missing account';
 const TARGET_REACHED = 'Evaluation target reached';
+/** Step 65's flag: the close marked an account Failed. One per account, or ONE
+ * per client with no trading account when more than three flip in one close. */
+const MARKED_FAILED = 'Marked Failed by the close';
+
+/**
+ * The account column always has a word, never a dash.
+ *
+ * The summary flag step 65 writes when more than three accounts fail in one
+ * close carries no trading_account_id, so its row used to print an em dash
+ * where the account goes. It names its accounts in the message; the cell says
+ * so, with the count one hover away. Any other flag without an account (a
+ * "Strategy disabled" row with no account name, a book problem) says that.
+ */
+function accountCell(row) {
+  if (row.accountName) return { word: row.accountName, title: undefined };
+  if (row.type === MARKED_FAILED) {
+    const count = Number((String(row.message || '').match(/marked (\d+) accounts? Failed/i) || [])[1]);
+    return {
+      word: 'Several accounts',
+      title: Number.isInteger(count) && count > 0 ? `${count} accounts, named in the flag` : 'Named in the flag',
+    };
+  }
+  return { word: 'No account', title: 'This flag names no account.' };
+}
 
 // WHICH FLAG ASKS WHICH QUESTION.
 //
@@ -212,7 +236,7 @@ export default function CamFlagQueue({
       <p className="muted" style={{ margin: '6px 0 0', fontSize: 12 }}>
         {totals.rows} problem{totals.rows === 1 ? '' : 's'} across {totals.clients} client
         {totals.clients === 1 ? '' : 's'}, held in {totals.occurrences} flag record
-        {totals.occurrences === 1 ? '' : 's'} — the same problem is written again into every
+        {totals.occurrences === 1 ? '' : 's'}. The same problem is written again into every
         close it survives, so the record count is always the larger number.
         {' '}
         {totals.behindLatestClose > 0 ? (
@@ -287,7 +311,7 @@ export default function CamFlagQueue({
             <span className="muted" style={{ fontSize: 11 }}>
               {group.occurrences === group.total
                 ? `${group.occurrences} flag record${group.occurrences === 1 ? '' : 's'}`
-                : `writes ${group.occurrences} flag records — these ${group.total} problems are held on ${group.occurrences} rows across the closes they survived`}
+                : `writes ${group.occurrences} flag records: these ${group.total} problems are held on ${group.occurrences} rows across the closes they survived`}
             </span>
           </div>
 
@@ -319,7 +343,7 @@ export default function CamFlagQueue({
                         {row.severity}
                       </span>
                     </td>
-                    <td className="muted">{row.accountName || '—'}</td>
+                    <td className="muted" title={accountCell(row).title}>{accountCell(row).word}</td>
                     <td>
                       {row.message || row.type}
                       <FlagEvidence group={group} row={row} model={evidence} />
@@ -394,7 +418,7 @@ export default function CamFlagQueue({
       */}
       <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>
         Nothing here is deleted. Resolving writes status and resolved_at onto the flag and an
-        entry into the client&apos;s activity log, so a closed flag can still be read back —{' '}
+        entry into the client&apos;s activity log, so a closed flag can still be read back.{' '}
         {totals.recentlyClosed} flag{totals.recentlyClosed === 1 ? '' : 's'} closed
         {model.closedWindow?.from
           ? ` between ${model.closedWindow.from} and ${model.closedWindow.to}`
@@ -414,7 +438,7 @@ export default function CamFlagQueue({
         {!totals.recentlyClosed && !model.lastClosedOn && model.closedTotal ? (
           <>
             {model.closedTotal} flag{model.closedTotal === 1 ? ' is' : 's are'} closed on this book
-            but none carries a resolved_at date, so when they were closed is not measured — it is
+            but none carries a resolved_at date, so when they were closed is not measured. It is
             not that nothing was closed.
           </>
         ) : null}

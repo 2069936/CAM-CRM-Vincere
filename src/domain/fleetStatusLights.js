@@ -1,4 +1,4 @@
-import { ACCOUNT_STATUSES } from './reconcile';
+import { registryLights } from './accountBuckets';
 import {
   accountTrackerHeadline,
   classifyAccountSample,
@@ -31,12 +31,17 @@ import { PILL_TONES, buildAccountPill } from './accountPill';
  * client.
  *
  * WHICH ACCOUNTS GET A DOT. Every account the VPS has sampled, plus every
- * account on the client's registry that is still expected to trade (Active or
- * Payout Hold). A registered account nobody has sampled is a dot that says
- * "never sampled", because an account that is missing from a picture is
- * invisible and an account that is visibly unsampled is a question. Retired,
- * failed and reserve accounts are left out: nothing is expected of them, so a
- * light on them would be a false alarm every morning.
+ * account on the client's registry that the database expects on the close
+ * (accountBuckets.js, step 65: seen in a close, new, or not observed yet). A
+ * registered account nobody has sampled is a dot that says "never sampled",
+ * because an account that is missing from a picture is invisible and an
+ * account that is visibly unsampled is a question; a NEW one says "New, not
+ * sampled yet" instead, so a fresh account is never read as a dead one. The
+ * rest of the registry (looks failed on the close, gone from the close, never
+ * seen and older than new_account_days, retired) gets no light: nothing is
+ * expected of it, so a light on it was a false alarm every morning. The tile
+ * carries one folded line (`notShown`) saying why, with the names behind a
+ * toggle. An account the VPS is sampling keeps its dot whatever the close said.
  *
  * WORST FIRST. A tile is tinted by its worst account, and the grid is sorted so
  * the clients that need a look are at the top left. The rank is a desk
@@ -81,15 +86,11 @@ export const LEGEND = Object.freeze([
   { tone: 'none', word: TONE_WORDS.none },
 ]);
 
-const EXPECTED_TO_TRADE = new Set([ACCOUNT_STATUSES.ACTIVE, ACCOUNT_STATUSES.PAYOUT_HOLD]);
-
-/** The registry accounts still expected to trade (Active or Payout Hold); shared with the desk bulbs. */
-export function expectedAccountNames(client) {
+/** Every name on the registry, hidden or not: a sampled account the registry
+ * holds is never marked as unknown to it, whatever the close said of it. */
+export function registryNameSet(client) {
   const registry = client?.accountRegistry;
-  if (!registry || typeof registry !== 'object') return [];
-  return Object.entries(registry)
-    .filter(([name, meta]) => Boolean(name) && (!meta?.status || EXPECTED_TO_TRADE.has(meta.status)))
-    .map(([name]) => name);
+  return new Set(registry && typeof registry === 'object' ? Object.keys(registry).filter(Boolean) : []);
 }
 
 function toDate(value) {
@@ -109,24 +110,33 @@ export function agedWords(minutes) {
 /* One dot is one pill (accountPill.js) plus its rank and its sample. sampleOnly:
  * this screen has no device, so a never sampled account gets the honest
  * sentence rather than the one that claims a paired and answering VPS. */
-function buildDot(accountName, sample, inRegistry, { now, staleSeconds }) {
+function buildDot(accountName, sample, inRegistry, { now, staleSeconds, isNew = false, newWords = null }) {
   const verdict = classifyAccountSample({ now, sample, staleSeconds });
   return {
-    ...buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: true }),
+    ...buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: true, isNew, newWords }),
     sample,
     rank: STATE_RANK[verdict.state] || STATE_RANK.never_sampled,
   };
 }
 
-/** One client's tile. Exported for the tests; the grid calls it per client. */
-export function buildClientTile(client, samples, { now, staleSeconds }) {
+/**
+ * One client's tile. Exported for the tests; the grid calls it per client.
+ *
+ * `settings` is the account_observation_settings row as the loader maps it
+ * ({newAccountDays, staleCloses}), or null for the column defaults.
+ */
+export function buildClientTile(client, samples, { now, staleSeconds, settings = null }) {
   const list = (Array.isArray(samples) ? samples : []).filter((row) => row && row.accountName);
   const byName = new Map(list.map((row) => [row.accountName, row]));
-  const registry = expectedAccountNames(client);
-  const registrySet = new Set(registry);
-  const names = [...new Set([...list.map((row) => row.accountName), ...registry])]
+  const sampledNames = list.map((row) => row.accountName);
+  const lights = registryLights(client?.accountRegistry, { now, settings, sampled: sampledNames });
+  const registry = lights.names;
+  const known = registryNameSet(client);
+  const names = [...new Set([...sampledNames, ...registry])]
     .sort((left, right) => String(left).localeCompare(String(right)));
-  const dots = names.map((name) => buildDot(name, byName.get(name) || null, registrySet.has(name), { now, staleSeconds }));
+  const dots = names.map((name) => buildDot(name, byName.get(name) || null, known.has(name), {
+    now, staleSeconds, isNew: lights.fresh.has(name), newWords: lights.fresh.get(name) || null,
+  }));
   const summary = summarizeAccountTracker(list, { now, staleSeconds });
   const sampled = list.length > 0;
 
@@ -142,12 +152,20 @@ export function buildClientTile(client, samples, { now, staleSeconds }) {
   const attention = dots.filter((dot) => dot.rank >= STATE_RANK.never_sampled).length;
   const newest = summary.newestSampledAt ? toDate(summary.newestSampledAt) : null;
   const ageMinutes = newest ? Math.max(0, Math.floor((toDate(now).getTime() - newest.getTime()) / 60_000)) : null;
-  const unsampledRegistry = dots.filter((dot) => dot.state === 'never_sampled').length;
-  const words = sampled
-    ? `${accountTrackerHeadline(summary).replace(/\.$/, '')}${unsampledRegistry ? `, ${unsampledRegistry} registered and never sampled` : ''}.`
-    : (registry.length
-      ? `${registry.length} account${registry.length === 1 ? '' : 's'} on the registry, none sampled. Either no VPS is paired with this client or it has not sampled yet.`
-      : 'No account on the registry and none sampled.');
+  const unsampledRegistry = dots.filter((dot) => dot.state === 'never_sampled' && !dot.isNew).length;
+  const newUnsampled = dots.filter((dot) => dot.state === 'never_sampled' && dot.isNew).length;
+  let words;
+  if (sampled) {
+    words = `${accountTrackerHeadline(summary).replace(/\.$/, '')}`
+      + `${unsampledRegistry ? `, ${unsampledRegistry} registered and never sampled` : ''}`
+      + `${newUnsampled ? `, ${newUnsampled} new and not sampled yet` : ''}.`;
+  } else if (registry.length) {
+    words = `${registry.length} account${registry.length === 1 ? '' : 's'} on the registry, none sampled. Either no VPS is paired with this client or it has not sampled yet.`;
+  } else {
+    // Nothing expected: either the registry is empty, or everything on it is
+    // in the folded line under the tile, and the sentence must not deny that.
+    words = lights.notShown ? 'No account expected on the close and none sampled.' : 'No account on the registry and none sampled.';
+  }
   return {
     clientId: client.id,
     // The key the rows carry: the uuid, or the id for a client without one.
@@ -158,6 +176,10 @@ export function buildClientTile(client, samples, { now, staleSeconds }) {
     worst,
     attention,
     words,
+    // The folded line under the tile: why the rest of the registry has no
+    // light, or null when every account is expected.
+    notShown: lights.notShown,
+    newUnsampled,
     sampled,
     newestSampledAt: newest,
     ageMinutes,
@@ -185,9 +207,11 @@ export function compareTiles(left, right) {
  *
  * @param {{clients: object[], tracker: {available?: boolean, staleSeconds?: number,
  *   minAgentVersion?: string|null, samplesByClientId?: Map<string, object[]>}|null,
- *   now: Date|number|string}} input
+ *   now: Date|number|string, settings?: {newAccountDays?: number, staleCloses?: number}|null}} input
+ *   `settings` is account_observation_settings as the loader maps it; null
+ *   means the column defaults (14 days for new).
  */
-export function buildFleetStatusLights({ clients = [], tracker = null, now = Date.now() } = {}) {
+export function buildFleetStatusLights({ clients = [], tracker = null, now = Date.now(), settings = null } = {}) {
   const at = toDate(now) || new Date();
   const list = (Array.isArray(clients) ? clients : []).filter((client) => client && client.id);
   if (!tracker || tracker.available === false) return { kind: 'unavailable', tiles: [], summary: null, at };
@@ -196,7 +220,7 @@ export function buildFleetStatusLights({ clients = [], tracker = null, now = Dat
   const byClient = tracker.samplesByClientId instanceof Map ? tracker.samplesByClientId : new Map();
   const tiles = list
     // Samples are keyed by the row's uuid; `id` is the legacy key when there is one.
-    .map((client) => buildClientTile(client, byClient.get(client.uuid) || byClient.get(client.id) || [], { now: at, staleSeconds }))
+    .map((client) => buildClientTile(client, byClient.get(client.uuid) || byClient.get(client.id) || [], { now: at, staleSeconds, settings }))
     .sort(compareTiles);
   const rows = tiles.flatMap((tile) => tile.summary.rows.map((row) => row.sample));
   if (!rows.length) {

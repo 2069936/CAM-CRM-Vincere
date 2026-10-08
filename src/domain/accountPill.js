@@ -29,6 +29,13 @@ import { accountRunStateCopy } from './autoCollectionFleet';
 
 export const NO_CONNECTION_WORD = 'No connection name';
 
+/* THE WORD FOR A NEW ACCOUNT NOBODY HAS SAMPLED. The registry says it was added
+ * within new_account_days and no close has seen it yet (accountBuckets.js); a
+ * pill that read "Never sampled" about it would make a fresh account look like
+ * a dead one, which is the thing Pedro asked the lights to stop doing. Same
+ * state, same faint colour, a different word and a sentence that says since when. */
+export const NEW_NOT_SAMPLED_WORD = 'New, not sampled yet';
+
 /* THE PALETTE, as words. Green for live, amber for disconnected or silent,
  * faded amber for never sampled, grey for anything only the device can say
  * (offline, paused, revoked, not installed, collector too old, not sampling
@@ -76,20 +83,29 @@ function titleOf({ accountName, label, connectionName, detail, run, differs }) {
  * @param {boolean} [input.sampleOnly=true] true when the caller has no device
  *   (the overview), so a never sampled account gets the honest sentence rather
  *   than the one that claims a paired VPS. The client page passes false.
+ * @param {boolean} [input.isNew=false] the registry says this account is new
+ *   (added within new_account_days, never in a close). A never sampled pill then
+ *   reads "New, not sampled yet" and its sentence opens with `newWords`.
+ * @param {string|null} [input.newWords=null] "Added 3 days ago, not seen in a close yet."
  */
-export function buildAccountPill({ accountName, sample = null, verdict, inRegistry = true, sampleOnly = true } = {}) {
+export function buildAccountPill({
+  accountName, sample = null, verdict, inRegistry = true, sampleOnly = true, isNew = false, newWords = null,
+} = {}) {
   const state = verdict?.state || 'never_sampled';
-  const label = verdict?.label || 'Never sampled';
+  const fresh = Boolean(isNew) && state === 'never_sampled';
+  const label = fresh ? NEW_NOT_SAMPLED_WORD : (verdict?.label || 'Never sampled');
   const showsRun = state === 'live' || state === 'disconnected';
   const run = showsRun ? accountRunStateCopy(verdict?.runState) : null;
   const connectionName = connectionOf(sample);
-  const detail = sampleOnly && state === 'never_sampled' ? SAMPLE_ONLY_NEVER_SAMPLED : (verdict?.detail || '');
+  const base = sampleOnly && state === 'never_sampled' ? SAMPLE_ONLY_NEVER_SAMPLED : (verdict?.detail || '');
+  const detail = fresh && newWords ? `${newWords} ${base}`.trim() : base;
   return {
     accountName,
     connectionName,
     connectionWord: connectionName || NO_CONNECTION_WORD,
     hasConnection: Boolean(connectionName),
     inRegistry: inRegistry !== false,
+    isNew: fresh,
     state,
     tone: PILL_TONES[state] || 'none',
     label,
