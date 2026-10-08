@@ -15,7 +15,13 @@ public sealed class QuarantineItemView
     /// <summary>The trading day, as "Thu 18 Sep".</summary>
     public string DateLabel { get; init; }
 
+    /// <summary>The trading day as the service sent it, "yyyy-MM-dd", kept so groups can order and span their rows.</summary>
+    public string TradingDate { get; init; }
+
     public string Code { get; init; }
+
+    /// <summary>How many times the service has sent this capture again, as a number; <see cref="Attempts"/> words it.</summary>
+    public int AttemptCount { get; init; }
 
     /// <summary>Why it is here, in a sentence a CAM can act on.</summary>
     public string Reason { get; init; }
@@ -28,6 +34,46 @@ public sealed class QuarantineItemView
 
     /// <summary>Drives the row colour: pending when it will be retried, bad when it is final.</summary>
     public string Tone { get; init; }
+}
+
+/// <summary>
+/// Every quarantined capture that shares a code and a tone, as one row. A
+/// machine with twenty refused closes used to show twenty amber rows that all
+/// said the same sentence; this says it once, with the count and the span of
+/// days, and keeps the rows behind a toggle for the one time they matter.
+/// </summary>
+public sealed class QuarantineGroupView
+{
+    public string Code { get; init; }
+
+    /// <summary>pending when every row will be retried, bad when they are final. Shared by the whole group.</summary>
+    public string Tone { get; init; }
+
+    /// <summary>The same sentence the rows carry.</summary>
+    public string Reason { get; init; }
+
+    public int Count { get; init; }
+
+    /// <summary>"Thu 18 Sep to Mon 22 Sep", oldest first, or the one day when they are all on it.</summary>
+    public string DateRange { get; init; }
+
+    /// <summary>"3 captures, Thu 18 Sep to Mon 22 Sep" or "1 capture, Thu 18 Sep".</summary>
+    public string Headline { get; init; }
+
+    /// <summary>What happens to the group next; the rows' sentence when they agree, the tone's plain one when they do not.</summary>
+    public string Disposition { get; init; }
+
+    /// <summary>The retry text for the group: "2 of 3 retries used", "1 to 2 of 3 retries used", "Sent again up to 4 times", or empty.</summary>
+    public string Retry { get; init; }
+
+    /// <summary>The individual rows, newest first, for the Details toggle.</summary>
+    public IReadOnlyList<QuarantineItemView> Items { get; init; }
+
+    /// <summary>A group of one is its own detail; the toggle is only offered when there is something behind it.</summary>
+    public bool HasDetails => Count > 1;
+
+    /// <summary>The name a screen reader gives the Details toggle.</summary>
+    public string DetailsName => $"Show or hide the {Count} captures with code {Code}";
 }
 
 /// <summary>
@@ -46,12 +92,24 @@ public sealed class QuarantineView
         Count = count;
         Items = items;
         ReviewTime = reviewTime;
+        Groups = Group(items);
     }
 
     /// <summary>Everything in the folder, which may be more than <see cref="Items"/> lists.</summary>
     public int Count { get; }
 
+    /// <summary>Every row the service listed, in the order it listed them.</summary>
     public IReadOnlyList<QuarantineItemView> Items { get; }
+
+    /// <summary>
+    /// <see cref="Items"/> folded by code and tone: the rows that will be retried
+    /// first, then the final ones, each kind newest first. A row is in exactly
+    /// one group.
+    /// </summary>
+    public IReadOnlyList<QuarantineGroupView> Groups { get; }
+
+    /// <summary>One row is shown as itself; the grouping only earns its place from two.</summary>
+    public bool IsGrouped => Items.Count > 1;
 
     /// <summary>The configured New York review time, "HH:mm", or null when the service did not say.</summary>
     public string ReviewTime { get; }
@@ -88,10 +146,13 @@ public sealed class QuarantineView
                 if (string.IsNullOrWhiteSpace(code)) continue;
                 int attempts = Number(item, "Attempts") ?? 0;
                 bool willRetry = Flag(item, "WillRetry") ?? false;
+                string tradingDate = Text(item, "TradingDate");
                 items.Add(new QuarantineItemView
                 {
-                    DateLabel = FriendlyDate(Text(item, "TradingDate")),
+                    DateLabel = FriendlyDate(tradingDate),
+                    TradingDate = tradingDate,
                     Code = code,
+                    AttemptCount = attempts,
                     Reason = Describe(code),
                     Attempts = DescribeAttempts(code, attempts),
                     Disposition = DescribeDisposition(code, attempts, willRetry, reviewTime),
@@ -101,6 +162,80 @@ public sealed class QuarantineView
         }
         int count = Math.Max(Number(data, "Count") ?? 0, items.Count);
         return new QuarantineView(count, items, reviewTime);
+    }
+
+    // WHY BY CODE AND TONE, AND NOT BY CODE ALONE.
+    //
+    // The same code can be amber on one row and red on another: a 422 that
+    // still has retries left and one that has used all three. The two rows
+    // ask different things of the person reading them, so they do not share a
+    // row here either. The order is the Summary's order, the retried kind
+    // first, and inside a kind the group with the newest capture first,
+    // because that is the one the desk is most likely to be asked about.
+    private static IReadOnlyList<QuarantineGroupView> Group(IReadOnlyList<QuarantineItemView> items)
+    {
+        return items
+            .GroupBy(item => (item.Code, item.Tone))
+            .Select(group =>
+            {
+                QuarantineItemView[] rows = group.OrderByDescending(item => SortKey(item.TradingDate), StringComparer.Ordinal).ToArray();
+                QuarantineItemView newest = rows[0];
+                QuarantineItemView oldest = rows[rows.Length - 1];
+                string dateRange = oldest.DateLabel == newest.DateLabel
+                    ? newest.DateLabel
+                    : oldest.DateLabel + " to " + newest.DateLabel;
+                string count = rows.Length == 1 ? "1 capture" : $"{rows.Length} captures";
+                return new QuarantineGroupView
+                {
+                    Code = group.Key.Code,
+                    Tone = group.Key.Tone,
+                    Reason = newest.Reason,
+                    Count = rows.Length,
+                    DateRange = dateRange,
+                    Headline = count + ", " + dateRange,
+                    Disposition = GroupDisposition(rows),
+                    Retry = GroupRetry(group.Key.Code, rows),
+                    Items = rows,
+                };
+            })
+            .OrderBy(group => group.Tone == "pending" ? 0 : 1)
+            .ThenByDescending(group => SortKey(group.Items[0].TradingDate), StringComparer.Ordinal)
+            .ThenBy(group => group.Code, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    // "yyyy-MM-dd" orders as text. A row without a readable date sorts last,
+    // not first, so it never claims the newest slot of a group it was dropped
+    // into by code alone.
+    private static string SortKey(string tradingDate) =>
+        DateTime.TryParseExact(tradingDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+            ? tradingDate
+            : string.Empty;
+
+    private static string GroupDisposition(IReadOnlyList<QuarantineItemView> rows)
+    {
+        string first = rows[0].Disposition;
+        if (rows.All(row => row.Disposition == first)) return first;
+        return rows[0].Tone == "pending" ? first : "Waiting for the desk";
+    }
+
+    private static string GroupRetry(string code, IReadOnlyList<QuarantineItemView> rows)
+    {
+        int least = rows.Min(row => row.AttemptCount);
+        int most = rows.Max(row => row.AttemptCount);
+        if (IsCapped(code))
+        {
+            return least == most
+                ? DescribeAttempts(code, most)
+                : $"{least} to {most} of {MaximumAttempts} retries used";
+        }
+        if (code == AwaitingReplayCode && most > 0)
+        {
+            return least == most
+                ? DescribeAttempts(code, most)
+                : most == 1 ? "Sent again up to once" : $"Sent again up to {most} times";
+        }
+        return string.Empty;
     }
 
     // WHY A SENTENCE AND NOT THE CODE.
