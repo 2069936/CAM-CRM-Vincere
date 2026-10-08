@@ -115,7 +115,16 @@ function safeErrorMessage(value) {
  *
  * The agent's own model has always declared this nullable, and lastCaptureAt
  * and lastSuccessAt beside it are already allowed to be null for exactly the
- * same reason: not knowing yet is the normal state of a new install. */
+ * same reason: not knowing yet is the normal state of a new install.
+ *
+ * HALF A FIX UNTIL STEP 63. Passing null through here was not enough: the RPC
+ * record_ingest_heartbeat (step 41) still refused `p_ninjatrader_version is
+ * null`, and heartbeatValidationError below turned that refusal into the same
+ * 400, so the loop above simply closed one layer down. Agents up to 1.1.x hid
+ * it by sending the literal "8.1.0"; 1.2.0 sends the honest null and every
+ * heartbeat from a restarted machine was refused until that day's capture.
+ * supabase/step_63_heartbeat_without_ninjatrader_version.sql accepts the null
+ * and keeps the version the database already holds. */
 function nullableCollectorVersion(value) {
   if (value === null || value === undefined || String(value).trim() === '') return null;
   return normalizeCollectorVersion(value);

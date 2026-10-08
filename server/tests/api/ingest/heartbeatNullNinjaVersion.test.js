@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
-import { describe, it, expect } from 'vitest';
-import { normalizeHeartbeatBody } from '../../../autoCollection/ingest/heartbeat.js';
+import { describe, it, expect, vi } from 'vitest';
+import { createHandler, createHeartbeatStore, normalizeHeartbeatBody } from '../../../autoCollection/ingest/heartbeat.js';
 
 /* THE DEADLOCK THIS UNDOES.
  *
@@ -58,6 +58,134 @@ describe('a collector that does not know its NinjaTrader version yet', () => {
   });
 });
 
+/* THE SAME NULL, ONE LAYER DOWN.
+ *
+ * Relaxing the route was half the fix. The RPC record_ingest_heartbeat still
+ * refused `p_ninjatrader_version is null` (step 41), and the route turned that
+ * refusal into the same 400, so the deadlock the comment above describes simply
+ * moved into the database. Step 63 relaxes the RPC. This proves the route's half
+ * end to end: a body with ninjaTraderVersion null, through the real handler and
+ * the real store, reaches the RPC with p_ninjatrader_version null and nothing
+ * else invented in its place. If the route ever substituted a default here, the
+ * database would store a version nobody is running. */
+describe('a null NinjaTrader version travels to the RPC as null', () => {
+  const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
+
+  function request(payload) {
+    const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
+    return {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': String(bytes.length) },
+      async *[Symbol.asyncIterator]() { yield bytes; },
+    };
+  }
+
+  function res() {
+    const sent = {};
+    return {
+      sent,
+      setHeader(name, value) { (sent.headers ||= {})[name] = value; },
+      status(code) { sent.status = code; return this; },
+      json(body) { sent.json = body; return this; },
+      end() {},
+    };
+  }
+
+  it('through the real handler and the real store, p_ninjatrader_version is null and the heartbeat is 200', async () => {
+    const rpc = vi.fn(async () => ({
+      data: [{
+        device_id: DEVICE_ID,
+        health_status: 'online',
+        throttled: false,
+        schedule_time: '16:45:00',
+        schedule_timezone: 'America/New_York',
+      }],
+      error: null,
+    }));
+    const handler = createHandler({
+      createClient: () => ({ rpc }),
+      createAuthStore: () => ({}),
+      authenticate: async () => ({ id: DEVICE_ID, clientId: 'client-1' }),
+      createStore: createHeartbeatStore,
+      pepper: 'test-pepper',
+      minimumAgentVersion: '1.2.0',
+      minIntervalSeconds: 30,
+      reportEmailSecret: '',
+      reportEmailUrl: '',
+    });
+
+    const target = res();
+    await handler(request(body({ agentVersion: '1.2.0', ninjaTraderVersion: null })), target);
+
+    expect(target.sent.status).toBe(200);
+    expect(target.sent.json).toMatchObject({ ok: true, deviceId: DEVICE_ID, status: 'online', updateRequired: false });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith('record_ingest_heartbeat', {
+      p_device_id: DEVICE_ID,
+      p_agent_version: '1.2.0',
+      p_addon_version: '1.0.0',
+      p_ninjatrader_version: null,
+      p_last_capture_at: null,
+      p_last_success_at: null,
+      p_last_error_code: null,
+      p_last_error_message: null,
+      p_queue_depth: 9,
+      p_queue_bytes: 23481,
+      p_addon_available: true,
+      p_health_status: 'online',
+      p_min_interval_seconds: 30,
+    });
+    // Null in the call, not in a string: the RPC's regex would refuse 'null'.
+    expect(rpc.mock.calls[0][1].p_ninjatrader_version).toBeNull();
+  });
+
+  it('an empty string and whitespace from an older serializer travel as null too', async () => {
+    for (const value of ['', '   ']) {
+      const rpc = vi.fn(async () => ({
+        data: [{ device_id: DEVICE_ID, health_status: 'online', throttled: false, schedule_time: '16:45:00', schedule_timezone: 'America/New_York' }],
+        error: null,
+      }));
+      const handler = createHandler({
+        createClient: () => ({ rpc }),
+        createAuthStore: () => ({}),
+        authenticate: async () => ({ id: DEVICE_ID, clientId: 'client-1' }),
+        createStore: createHeartbeatStore,
+        pepper: 'test-pepper',
+        minimumAgentVersion: '1.2.0',
+        minIntervalSeconds: 30,
+        reportEmailSecret: '',
+        reportEmailUrl: '',
+      });
+      const target = res();
+      await handler(request(body({ agentVersion: '1.2.0', ninjaTraderVersion: value })), target);
+      expect(target.sent.status).toBe(200);
+      expect(rpc.mock.calls[0][1].p_ninjatrader_version).toBeNull();
+    }
+  });
+
+  it('the database refusing that null still surfaces as the 400 the agent logs as heartbeat_failed', async () => {
+    // What production does today, before step 63 runs: the shape the eight
+    // silent machines are seeing every minute.
+    const rpc = vi.fn(async () => ({ data: null, error: { code: '22023', message: 'INVALID_HEARTBEAT_REQUEST' } }));
+    const handler = createHandler({
+      createClient: () => ({ rpc }),
+      createAuthStore: () => ({}),
+      authenticate: async () => ({ id: DEVICE_ID, clientId: 'client-1' }),
+      createStore: createHeartbeatStore,
+      pepper: 'test-pepper',
+      minimumAgentVersion: '1.2.0',
+      minIntervalSeconds: 30,
+      reportEmailSecret: '',
+      reportEmailUrl: '',
+    });
+    const target = res();
+    await handler(request(body({ agentVersion: '1.2.0', ninjaTraderVersion: null })), target);
+    expect(target.sent.status).toBe(400);
+    expect(target.sent.json).toEqual({ error: 'invalid_heartbeat' });
+    expect(rpc.mock.calls[0][1].p_ninjatrader_version).toBeNull();
+  });
+});
+
 describe('what stays required', () => {
   it('still demands the agent and add-on versions, which the agent always knows', () => {
     expect(() => normalizeHeartbeatBody(body({ agentVersion: null }))).toThrow();
@@ -77,7 +205,6 @@ describe('what stays required', () => {
  * is exactly in step with the server, and the RPC signature matches what the
  * code calls. Four theories, none of them survived. The endpoint is going to
  * have to say it itself. */
-import { createHandler } from '../../../autoCollection/ingest/heartbeat.js';
 
 describe('a heartbeat that fails for a reason nobody has guessed', () => {
   // The endpoint reads the raw body off the stream, so the request has to be
