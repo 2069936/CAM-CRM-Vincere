@@ -338,3 +338,24 @@ describe('three honest empty states', () => {
     expect(container.textContent).toContain('No client in this book to light.');
   });
 });
+
+describe('a client with a legacy key', () => {
+  /* On a real book a client's `id` is its legacy key and `uuid` is the row's
+   * uuid. The tracker keys samples by client_id, which is the uuid, so a lookup
+   * by `id` found nothing and every client read as never sampled. */
+  const UUID = '4b0e5c8f-8c3f-4b2a-9d2e-1b2c3d4e5f60';
+  const legacy = { ...client('act-1700000000-ash', 'Ash', [['APEX-1']]), uuid: UUID };
+
+  it('finds its samples under the uuid', () => {
+    const view = buildFleetStatusLights({ clients: [legacy], tracker: tracker({ [UUID]: [sample('APEX-1')] }), now: NOW });
+    expect(view.kind).toBe('ready');
+    expect(view.tiles[0].summary.rows[0].sample.accountName).toBe('APEX-1');
+    expect(view.tiles[0].worst).toBe('live');
+  });
+
+  it('still finds samples keyed by id for a client without a uuid', () => {
+    const plain = client('c-plain', 'Plain', [['APEX-2']]);
+    const view = buildFleetStatusLights({ clients: [plain], tracker: tracker({ 'c-plain': [sample('APEX-2')] }), now: NOW });
+    expect(view.tiles[0].summary.rows[0].sample.accountName).toBe('APEX-2');
+  });
+});

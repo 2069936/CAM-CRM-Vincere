@@ -4527,7 +4527,8 @@ export function ManagerOverview({
     [clients],
   );
   const deskTrackerIds = useMemo(
-    () => deskWorkingClients.map((client) => client.id).filter(Boolean),
+    // By uuid, the key account_live_samples carries; `id` is the legacy key.
+    () => deskWorkingClients.map((client) => client.uuid || client.id).filter(Boolean),
     [deskWorkingClients],
   );
   const { tracker: deskTracker, clock: deskTrackerClock } = useLiveAccountTracker(deskTrackerIds);

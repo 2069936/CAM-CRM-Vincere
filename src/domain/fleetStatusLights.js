@@ -212,7 +212,8 @@ export function buildFleetStatusLights({ clients = [], tracker = null, now = Dat
   const staleSeconds = Number(tracker.staleSeconds) > 0 ? Number(tracker.staleSeconds) : 1500;
   const byClient = tracker.samplesByClientId instanceof Map ? tracker.samplesByClientId : new Map();
   const tiles = list
-    .map((client) => buildClientTile(client, byClient.get(client.id) || [], { now: at, staleSeconds }))
+    // Samples are keyed by the row's uuid; `id` is the legacy key when there is one.
+    .map((client) => buildClientTile(client, byClient.get(client.uuid) || byClient.get(client.id) || [], { now: at, staleSeconds }))
     .sort(compareTiles);
   const rows = tiles.flatMap((tile) => tile.summary.rows.map((row) => row.sample));
   if (!rows.length) {
