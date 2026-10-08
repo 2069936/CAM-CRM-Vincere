@@ -54,6 +54,8 @@ const MISSING = [
   // Postgres's own wording when the reference is unqualified names no table.
   { code: '42703', message: 'column "pre_close_grace_seconds" does not exist' },
   { code: 'PGRST204', message: "Could not find the 'pre_close_grace_seconds' column of 'account_tracker_settings' in the schema cache" },
+  // The code alone decides here too: a PGRST205 with no message at all.
+  { code: 'PGRST205', message: '' },
 ];
 
 const ROW = {

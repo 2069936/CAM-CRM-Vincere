@@ -174,7 +174,7 @@ raises; the capture time is then the client's latest active machine schedule,
 Recorded on 2026-10-08, on the PGlite migration cluster from the repository root
 (no live Supabase run):
 
-- `supabase/step_66_tracker_close_readings.test.js`: 56 tests passed.
+- `supabase/step_66_tracker_close_readings.test.js`: 62 tests passed.
 - `supabase/step_55_account_live_samples.test.js`, `step_56_table_privilege_lockdown.test.js`,
   `step_57_algorithm_live_samples.test.js`, `step_63_heartbeat_without_ninjatrader_version.test.js`:
   213 tests passed with step 66 in the directory and its two rows in step 56's
@@ -183,7 +183,7 @@ Recorded on 2026-10-08, on the PGlite migration cluster from the repository root
   50 tests passed.
 - The full vitest suite passed; `npm run build` passed.
 - Targeted ESLint on the new and edited files: no findings.
-- Mutation testing: 33 mutations (19 in the SQL, 12 in the domain module, 2 in
+- Mutation testing: 38 mutations (23 in the SQL, 12 in the domain module, 3 in
   the store loaders), every one killed by at least one test. Three first
   survived and the tests were strengthened until they did not: a run that
   straddles the cutoff (the clock cap), a revoked machine that carries only one

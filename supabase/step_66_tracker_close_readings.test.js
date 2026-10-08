@@ -945,6 +945,33 @@ describe('what fires nothing', () => {
         and after_data ->> 'clientId' = $1`, [world.clients.C])).toBe(0);
   });
 
+  it('a late capture for a day already closed (claim, then finalize late_closed_day with the import, never persisting) pins nothing', async () => {
+    /* The route's shape when the day was closed before the capture arrived: the
+     * batch is claimed and finalized with the existing import's id, and no
+     * persist runs in between. The transition names an import, so a trigger
+     * that forgot to ask the status would pin here. */
+    const importId = await one(db,
+      'insert into public.daily_imports (client_id, trading_date) values ($1, $2) returning id', [world.clients.C, PRIOR]);
+    const capture = randomUUID();
+    const token = randomUUID();
+    const rowCounts = { accounts: 1, strategies: 0, orders: 0, executions: 0 };
+    const claimed = (await db.query(
+      `select public.claim_ingest_batch_v4($1, $2, $3::date, $4::timestamptz, 1, $5, $6, 10, $7::jsonb, $8, 120) as r`,
+      [world.devices.C, capture, PRIOR, at(PRIOR, '16:31'), `${world.clients.C}/${PRIOR}/${capture}.json.gz`,
+        'c'.repeat(64), JSON.stringify(rowCounts), token])).rows[0].r;
+    expect(claimed.outcome).toBe('owned');
+    const notices = [];
+    const finalized = await db.query(
+      `select status, daily_import_id from public.finalize_ingest_batch_v3($1, $2, $3, $4, 'late_closed_day', $5, $6::timestamptz, true,
+         null, '{}'::jsonb, $7::jsonb, 'ingest_batch_late_closed_day', '{}'::jsonb, 1)`,
+      [claimed.batch.id, world.devices.C, world.clients.C, token, importId, at(PRIOR, '16:31'), JSON.stringify(rowCounts)],
+      { onNotice: (notice) => notices.push(notice.message) });
+    expect(finalized.rows[0]).toMatchObject({ status: 'late_closed_day', daily_import_id: importId });
+    expect(notices).toEqual([]);
+    expect(await one(db, 'select count(*)::int from public.tracker_close_readings where daily_import_id = $1', [importId])).toBe(0);
+    expect(await comparisons(importId)).toEqual([]);
+  });
+
   it('a hand UPDATE that sets processed again on a processed batch does not compare again', async () => {
     const before = await comparisons(world.imports.A);
     await db.query("update public.ingest_batches set status = 'processed' where id = $1", [world.batches.A2]);
@@ -976,6 +1003,49 @@ describe('a comparison fault never fails the finalize', () => {
     expect(warnings[0]).toContain(closed.importId);
     expect(warnings[0]).toContain('step66_test_boom');
     expect(warnings[0]).not.toMatch(/[—–]/);
+  });
+});
+
+describe('a close finalized as incomplete pins the tracker side the same way', () => {
+  /* daily.js and ingest-reprocess.js both finalize a partial capture as
+   * 'incomplete', with a daily import, and the trigger names both transitions.
+   * Client C is the fixture: its history is written above and nothing has
+   * pinned it yet (the failed finalize carried no import, the fault was rolled
+   * back), so the import is new and its one audit row is exact. */
+  beforeAll(async () => {
+    await sample(world.devices.C, at(DAY, '16:20'), [account({ accountName: 'ACC 25', realizedPnl: 42, totalPnl: 42 })]);
+    world.incompleteClose = await closeDay({
+      client: world.clients.C,
+      device: world.devices.C,
+      capturedAt: at(DAY, '16:31'),
+      snapshots: [snapshot('ACC 25', 42)],
+      status: 'incomplete',
+    });
+    world.imports.C = world.incompleteClose.importId;
+  }, 60_000);
+
+  it('the finalize answered incomplete, the batch holds it, and nothing was raised', async () => {
+    expect(world.incompleteClose.status).toBe('incomplete');
+    expect(world.incompleteClose.notices).toEqual([]);
+    expect(await one(db, 'select status from public.ingest_batches where id = $1', [world.incompleteClose.batchId])).toBe('incomplete');
+  });
+
+  it('the 16:20 reading is pinned with basis captured and the batch id, and one audit row names the batch', async () => {
+    const row = await reading(world.imports.C, 'ACC 25');
+    expect(row).toMatchObject({
+      source: 'crm_history', connected: true, close_time_basis: 'captured', close_batch_id: world.incompleteClose.batchId,
+    });
+    expect(num(row.realized_pnl)).toBe(42);
+    expect(ms(row.sampled_at)).toBe(ms(at(DAY, '16:20')));
+    expect(ms(row.close_captured_at)).toBe(ms(at(DAY, '16:31')));
+    const rows = await readings(world.imports.C);
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows.every((each) => each.close_batch_id === world.incompleteClose.batchId && each.close_time_basis === 'captured')).toBe(true);
+    const audit = await comparisons(world.imports.C);
+    expect(audit).toHaveLength(1);
+    expect(audit[0].after_data).toMatchObject({
+      closeBatchId: world.incompleteClose.batchId, closeTimeBasis: 'captured', accountsInClose: 1,
+    });
   });
 });
 
@@ -1201,7 +1271,8 @@ describe('who reads which rows', () => {
   it('a Manager sees every client', async () => {
     const pinned = await rowsAsRole(db, 'authenticated',
       'select distinct client_id from public.tracker_close_readings order by 1', { subject: world.managerAuth });
-    expect(pinned.map((row) => row.client_id).sort()).toEqual([world.clients.A, world.clients.B].sort());
+    // A and B from the closes above, C from the one finalized as incomplete.
+    expect(pinned.map((row) => row.client_id).sort()).toEqual([world.clients.A, world.clients.B, world.clients.C].sort());
     const history = await rowsAsRole(db, 'authenticated',
       'select distinct client_id from public.account_live_sample_history', { subject: world.managerAuth });
     expect(history).toHaveLength(3);
