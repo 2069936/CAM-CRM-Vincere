@@ -413,6 +413,61 @@ describe('the flood rule, as the backfill fired it on Northwind', () => {
     expect(await observed(world.nw[2])).toMatchObject({ breached_on: '2026-10-06', date_failed: '2026-10-06' });
     expect(await observed(world.nw.cash)).toMatchObject({ status: 'Active', observed_state: 'seen', breached_on: null });
   });
+
+  it('the boundary, when a close lands it: exactly three flipped get a flag each, exactly four get the one flag naming them', async () => {
+    // A third fictional book, registered after 65 ran, so every verdict here is
+    // the trigger's and not the backfill's. Each close lands the way the
+    // browser lands one: the daily_imports row and its snapshots in one
+    // transaction, the refresh once at commit.
+    world.clientE = await one(db, "insert into public.clients (name) values ('Client E') returning id");
+    await db.query('insert into public.client_assignments (client_id, cam_profile_id) values ($1, $2)', [world.clientE, world.birch.profile]);
+    const E = {};
+    for (const n of [1, 2, 3, 4, 5, 6, 7]) {
+      E[n] = await one(db,
+        "insert into public.trading_accounts (client_id, account_name, account_type, status) values ($1, $2, 'Evaluation - Bullet Bot', 'Active') returning id",
+        [world.clientE, `E 0${n}`]);
+    }
+    const audits = await autoFailAudits();
+
+    await db.exec('begin');
+    const first = await one(db, 'insert into public.daily_imports (client_id, trading_date) values ($1, $2) returning id', [world.clientE, '2026-10-05']);
+    for (const n of [1, 2, 3, 4, 5, 6, 7]) await snapshot(first, E[n], `E 0${n}`, n <= 3 ? -10 : 200);
+    await db.exec('commit');
+
+    for (const n of [1, 2, 3]) {
+      expect(await observed(E[n])).toMatchObject({ status: 'Failed', observed_state: 'breached', breached_on: '2026-10-05' });
+      expect(await auditsOf(E[n])).toHaveLength(1);
+    }
+    for (const n of [4, 5, 6, 7]) expect(await observed(E[n])).toMatchObject({ status: 'Active', observed_state: 'seen' });
+    expect(await autoFailAudits()).toBe(audits + 3);
+    const each = await flagsOf(world.clientE);
+    expect(each).toHaveLength(3);
+    expect(each.map((flag) => flag.trading_account_id).sort()).toEqual([E[1], E[2], E[3]].sort());
+    for (const flag of each) expect(flag).toMatchObject({ type: 'Marked Failed by the close', severity: 'Warning', status: 'Open', daily_import_id: first });
+    expect(each.find((flag) => flag.trading_account_id === E[3]).message)
+      .toBe('E 03 breached on 2026-10-05: trailing reading -$10, status was Active. Change the status on the account if the prop firm says otherwise.');
+
+    await db.exec('begin');
+    const second = await one(db, 'insert into public.daily_imports (client_id, trading_date) values ($1, $2) returning id', [world.clientE, '2026-10-06']);
+    for (const n of [1, 2, 3, 4, 5, 6, 7]) await snapshot(second, E[n], `E 0${n}`, -10);
+    await db.exec('commit');
+
+    for (const n of [4, 5, 6, 7]) {
+      expect(await observed(E[n])).toMatchObject({ status: 'Failed', observed_state: 'breached', breached_on: '2026-10-06' });
+      expect(await auditsOf(E[n])).toHaveLength(1);
+    }
+    // The three that breached on the first close stayed breached: no second transition, no second audit row.
+    for (const n of [1, 2, 3]) expect(await auditsOf(E[n])).toHaveLength(1);
+    expect(await autoFailAudits()).toBe(audits + 7);
+    const flags = await flagsOf(world.clientE);
+    expect(flags).toHaveLength(4);
+    const summary = flags.filter((flag) => flag.daily_import_id === second);
+    expect(summary).toHaveLength(1);
+    expect(summary[0]).toMatchObject({ type: 'Marked Failed by the close', severity: 'Warning', status: 'Open', trading_account_id: null });
+    expect(summary[0].message).toBe('The close marked 4 accounts Failed: E 04, E 05, E 06, E 07. They breached on 2026-10-06. Change the status on an account if the prop firm says otherwise.');
+    const ids = await column(db, 'select distinct auto_fail_flag_id from public.trading_accounts where id in ($1, $2, $3, $4)', [E[4], E[5], E[6], E[7]]);
+    expect(ids).toHaveLength(1);
+  });
 });
 
 /* ── The rule at its edges ───────────────────────────────────────────────── */
@@ -541,6 +596,15 @@ describe('a close landing refreshes the client, at commit', () => {
     expect(await flagCount()).toBe(flagsBefore + 1);
   });
 
+  it('an orphan snapshot in upper case and padded, no trading_account_id, counts as seen: the snapshot side is lowered too', async () => {
+    // The seed's orphan rows read ' acc 15 ' against the registry's 'ACC 15',
+    // which proves the registry side is lowered; this one is the other way
+    // round, on the close ACC 15 had missed until now.
+    expect(await observed(world.accounts.orphan)).toMatchObject({ observed_state: 'seen', last_close_seen_on: '2026-10-06', closes_missed: 1 });
+    await snapshot(world.closes[D8], null, ' ACC 15 ', 100);
+    expect(await observed(world.accounts.orphan)).toMatchObject({ observed_state: 'seen', last_close_seen_on: D8, closes_missed: 0 });
+  });
+
   it('a refresh that changes nothing fires nothing: the same audit and flag counts after calling it again', async () => {
     const audits = await autoFailAudits();
     const flags = await flagCount();
@@ -557,6 +621,21 @@ describe('a close landing refreshes the client, at commit', () => {
     await snapshot(extra, world.accounts.seen, 'ACC 01', 1650);
     expect(await observed(world.accounts.seen)).toMatchObject({ last_close_seen_on: '2026-10-09' });
     await db.query('delete from public.daily_imports where id = $1', [extra]);
+    expect(await observed(world.accounts.seen)).toMatchObject({ last_close_seen_on: D8, closes_missed: 0 });
+  });
+
+  it('a close with no snapshot behind it still refreshes the client: every account seen before missed one more, its date kept', async () => {
+    // The daily_imports row alone, nothing in account_snapshots: only the
+    // trigger on daily_imports itself can have queued this refresh.
+    expect(await observed(world.accounts.seen)).toMatchObject({ last_close_seen_on: D8, closes_missed: 0 });
+    expect(await observed(world.accounts.upsert)).toMatchObject({ last_close_seen_on: D8, closes_missed: 0 });
+    const empty = await one(db, 'insert into public.daily_imports (client_id, trading_date) values ($1, $2) returning id', [world.clientA, '2026-10-09']);
+    expect(await one(db, 'select count(*)::int from public.account_snapshots where daily_import_id = $1', [empty])).toBe(0);
+    expect(await observed(world.accounts.seen)).toMatchObject({ observed_state: 'seen', last_close_seen_on: D8, closes_missed: 1 });
+    expect(await observed(world.accounts.upsert)).toMatchObject({ observed_state: 'breached', last_close_seen_on: D8, closes_missed: 1 });
+    expect(await observed(world.accounts.never)).toMatchObject({ observed_state: 'never_seen', closes_missed: 9 });
+    // Taken off the book again, so the closes the rest of this file counts stay as they were.
+    await db.query('delete from public.daily_imports where id = $1', [empty]);
     expect(await observed(world.accounts.seen)).toMatchObject({ last_close_seen_on: D8, closes_missed: 0 });
   });
 });

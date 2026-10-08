@@ -360,6 +360,10 @@ declare
   i integer;
   r record;
 begin
+  -- Two refreshes of one client committing in the same window would both read old_state
+  -- before the row lock and both write the auto fail audit row and flag: one client at a time.
+  perform pg_advisory_xact_lock(hashtext(p_client_id::text));
+
   if p_client_id is null then
     return 0;
   end if;
