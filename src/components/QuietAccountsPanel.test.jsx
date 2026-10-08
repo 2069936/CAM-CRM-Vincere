@@ -118,7 +118,7 @@ describe('QuietAccountsPanel', () => {
     // The account this panel exists for: healthy, six figures, gone for 7
     // closes, and nothing in the product said so before.
     expect(strip(html)).toContain(
-      'Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance — absent for the 7 closes since.',
+      'Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance, absent for the 7 closes since.',
     );
   });
 
@@ -220,6 +220,19 @@ describe('QuietAccountsPanel', () => {
     expect(text).toContain(
       'Healthy when it went quiet reading predates that close Last seen 2026-07-27 with $2,000 of buffer left on a $50,000 balance (that reading is from 2026-07-13, the last close that carried the column)',
     );
+  });
+
+  it('prints no dash of any kind in a shape description, a chip or an evidence line', () => {
+    // The sentences quietAccounts.js writes, checked as rendered: no em dash,
+    // no en dash and no spaced hyphen as punctuation. 2 shape descriptions, one
+    // chip and one evidence line per listed account.
+    const rendered = [
+      ...html.matchAll(/quiet-shape-[a-z]+"><div class="drift-head">.*?<\/div><p class="drift-majority"><span class="muted">([^<]*)</g),
+      ...html.matchAll(/<span class="quiet-chip quiet-chip-[a-z]+">([^<]*)</g),
+      ...html.matchAll(/<span class="drift-headline">([^<]*)</g),
+    ].map((match) => strip(match[1]));
+    expect(rendered).toHaveLength(2 + 122 + 122);
+    for (const text of rendered) expect(text).not.toMatch(/—|–| - /);
   });
 
   it('says so rather than rendering an empty shell when there are no accounts', () => {
