@@ -177,6 +177,7 @@ import FleetStatusLights from "./components/FleetStatusLights";
 import DeskClientLights from "./components/DeskClientLights";
 import useLiveAccountTracker from "./components/useLiveAccountTracker";
 import AlgorithmLivePanel from "./components/AlgorithmLivePanel";
+import AlgorithmRollCall from "./components/AlgorithmRollCall";
 import BookList from "./components/BookList";
 import DeskMoneyPanel, { CAPITAL_DETAIL_ID } from "./components/DeskMoneyPanel";
 import { SEGMENTS } from "./domain/operationsSegments";
@@ -6022,6 +6023,18 @@ export function ManagerOverview({
           />
         </CollapsiblePanel>
 
+        {/* The roll call per algorithm for the whole desk, right after the
+            bulbs: one row per algorithm any working client runs in the cycle,
+            every instance behind a click, a line to paste. The same read and
+            cadence as the CAM overview's. */}
+        <CollapsiblePanel title="Algorithm roll call" defaultOpen>
+          <AlgorithmRollCall
+            clients={deskWorkingClients}
+            tracker={deskTracker}
+            bookWords="the desk's clients"
+          />
+        </CollapsiblePanel>
+
         {/* The capital behind whichever segment row is open.
             The row's account count and this panel's are two different counts
             and both are right: the row counts snapshots on each client's most
@@ -11247,6 +11260,21 @@ export function CamOverview({
           now={liveClock}
           refreshMs={liveRefreshMs}
           onSelectClient={onSelectClient}
+        />
+      </CollapsiblePanel>
+
+      {/* THE ROLL CALL FOR THE CHAT, right under the light. One row per
+          algorithm this book runs in the cycle, my instances behind a click,
+          and a line ready to paste ("URGO: 3 accounts, -310 to -295, in line
+          with the desk."). Open by default because the chat happens all day;
+          the per account comparison it summarises stays further down,
+          collapsed. Same read as that panel, same two minute cadence, and the
+          connection names come from the tracker read the light already made. */}
+      <CollapsiblePanel title="Algorithm roll call" defaultOpen>
+        <AlgorithmRollCall
+          clients={workingClients}
+          tracker={liveTracker}
+          bookWords={isManager ? "this book's clients" : 'your clients'}
         />
       </CollapsiblePanel>
 

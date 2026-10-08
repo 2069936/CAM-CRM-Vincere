@@ -244,6 +244,24 @@ describe('the detail under a pill', () => {
   });
 });
 
+describe('the position on a strategy row (step 64, agent 1.2.1)', () => {
+  it('prints which way it fired, the contracts and the trades beside the figures, and nothing when not read', () => {
+    const fired = render(<AccountLiveDetail view={detailFor({ strategies: strategies({ rows: [row({ marketPosition: 'long', positionQuantity: 2, tradesThisRun: 1 })] }) })} />);
+    const position = fired.container.querySelector('.account-live-strategy-position');
+    expect(position.textContent).toBe('long, 2 contracts, 1 trade this run');
+    // Between the total and the comparison, so the row reads figures, position, verdict.
+    const strategy = fired.container.querySelector('.account-live-strategy');
+    const children = [...strategy.children].map((node) => node.className.split(' ')[0]);
+    expect(children.indexOf('account-live-strategy-position')).toBeGreaterThan(children.lastIndexOf('account-live-strategy-figure'));
+    expect(children.indexOf('account-live-strategy-position')).toBeLessThan(children.indexOf('account-live-strategy-words'));
+    fired.unmount();
+    const unread = render(<AccountLiveDetail view={detailFor()} />);
+    expect(unread.container.querySelector('.account-live-strategy-position')).toBeNull();
+    expect(unread.container.textContent).not.toContain('flat');
+    expect(unread.container.textContent).not.toContain('position');
+  });
+});
+
 describe('the refresh sentence', () => {
   it('ages every ten seconds from the clock it is given, without a read', () => {
     vi.useFakeTimers();
@@ -278,6 +296,7 @@ describe('the styles', () => {
       <AccountLiveDetail view={detailFor({ strategies: null })} reading />,
       <AccountLiveDetail view={detailFor({ strategies: strategies({ rows: [] }) })} />,
       <AccountLiveDetail view={detailFor({ sample: sample({ realizedPnl: null }), strategies: strategies({ rows: [row({ realizedPnl: null })] }) })} />,
+      <AccountLiveDetail view={detailFor({ strategies: strategies({ rows: [row({ marketPosition: 'short', positionQuantity: 1, tradesThisRun: 2 })] }) })} />,
       <RefreshNote updatedAt={Date.now()} />,
     ];
     for (const element of renders) {
@@ -296,7 +315,8 @@ describe('the styles', () => {
       'account-live-detail-totals', 'account-live-detail-absent', 'account-live-detail-none', 'account-live-detail-reading',
       'account-live-detail-failed', 'account-live-detail-empty', 'account-live-detail-strategies', 'account-live-strategy',
       'account-live-strategy-name', 'account-live-strategy-instrument', 'account-live-strategy-instance',
-      'account-live-strategy-figure', 'account-live-strategy-differs', 'account-live-strategy-words', 'live-refresh',
+      'account-live-strategy-figure', 'account-live-strategy-differs', 'account-live-strategy-words', 'account-live-strategy-position',
+      'live-refresh',
     ]));
     for (const name of seen) {
       expect(css, name).toMatch(new RegExp(`\\.${name}(?![\\w-])`));

@@ -4648,6 +4648,9 @@ button.account-pill-button:hover, button.account-pill-button:focus-visible { bac
 .account-live-strategy-figure-label { color: var(--muted); }
 .account-live-strategy-differs { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; }
 .account-live-strategy-words { flex: 1 1 100%; min-width: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+/* Which way it fired, the contracts and the trades (step 64, agent 1.2.1): one
+   span between the figures and the verdict, nothing at all when not read. */
+.account-live-strategy-position { flex: 0 0 auto; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 /* The row that differs carries an amber bar beside its sentence; the sentence
    says it, the bar only helps the eye find it. Amber, never red. */
 .account-live-strategy.differs { border-left: 3px solid var(--warning); padding-left: 8px; }
@@ -4769,6 +4772,74 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .not-shown-list li { cursor: help; }
 .not-shown-name { color: var(--muted); font-weight: 600; overflow-wrap: anywhere; }
 .not-shown-reason { color: var(--muted); font-style: italic; }
+/* ── The roll call per algorithm, for the chat (AlgorithmRollCall) ────────────
+   One row per algorithm the viewer runs: the name, the count, the range, the
+   desk and the status word; the instances behind a click; "Copy for the chat".
+   The row with a differing instance carries an amber bar, as the comparison
+   panel does; the word says it, the bar only helps the eye find it. */
+.algorithm-rollcall { margin: 8px 6px 0; display: grid; gap: 8px; font-size: 11px; }
+.algorithm-rollcall-head { display: grid; gap: 4px; }
+.algorithm-rollcall-head p { margin: 0; color: var(--muted); font-size: 10.5px; max-width: 110ch; }
+.algorithm-rollcall-head .live-refresh { color: var(--muted); }
+.algorithm-rollcall-empty {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.algorithm-rollcall-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.algorithm-rollcall-row {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.algorithm-rollcall-row.differs { border-left: 3px solid var(--warning); }
+.algorithm-rollcall-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.algorithm-rollcall-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.algorithm-rollcall-toggle:hover .algorithm-rollcall-name,
+.algorithm-rollcall-toggle:focus-visible .algorithm-rollcall-name { text-decoration: underline; }
+.algorithm-rollcall-name { color: var(--text); font-size: 11.5px; font-weight: 700; overflow-wrap: anywhere; }
+.algorithm-rollcall-count { color: var(--text); }
+.algorithm-rollcall-range { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.algorithm-rollcall-desk { color: var(--muted); overflow-wrap: anywhere; }
+.algorithm-rollcall-status { color: var(--muted); font-weight: 600; }
+.algorithm-rollcall-status.differs { color: var(--warning); }
+.algorithm-rollcall-status.in_line { color: var(--success); }
+.algorithm-rollcall-copy { flex: 0 0 auto; }
+.algorithm-rollcall-instances { margin: 0; padding: 6px 0 0; border-top: 1px solid var(--border); list-style: none; display: grid; gap: 4px; }
+.algorithm-rollcall-instance { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 10.5px; }
+.algorithm-rollcall-instance strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.algorithm-rollcall-instance.differs { padding-left: 8px; border-left: 2px solid var(--warning); }
+.algorithm-rollcall-connection { color: var(--text); }
+.algorithm-rollcall-connection.absent { color: var(--muted); font-style: italic; }
+.algorithm-rollcall-figure { flex: 0 0 auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.algorithm-rollcall-figure.strong { font-weight: 700; }
+.algorithm-rollcall-figure-label { color: var(--muted); }
+.algorithm-rollcall-absent { color: var(--muted); font-style: italic; }
+.algorithm-rollcall-position { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.algorithm-rollcall-trades { color: var(--muted); }
+.algorithm-rollcall-differs { font-size: 10px; padding: 1px 6px; }
 /* ── Each algorithm today, against the desk (step 57) ─────────────────────────
    The same box and type scale as the account tracker above it, so the two live
    panels read as one family. The account that differs carries an amber bar

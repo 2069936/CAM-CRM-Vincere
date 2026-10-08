@@ -3224,6 +3224,15 @@ Object.freeze([
 ]);
 ACCOUNT_STATUSES.ACTIVE, ACCOUNT_STATUSES.PAYOUT_HOLD;
 ACCOUNT_STATUSES.FAILED, ACCOUNT_STATUSES.INACTIVE, ACCOUNT_STATUSES.RESERVE;
+Object.freeze({
+	breached: "looks failed",
+	absent: "gone from the close",
+	"never seen": "never seen in a close",
+	[ACCOUNT_STATUSES.FAILED]: ACCOUNT_STATUSES.FAILED,
+	[ACCOUNT_STATUSES.INACTIVE]: ACCOUNT_STATUSES.INACTIVE,
+	[ACCOUNT_STATUSES.RESERVE]: ACCOUNT_STATUSES.RESERVE,
+	Ignored: "Ignored"
+});
 //#endregion
 //#region src/domain/supabaseStore.js
 function pickId(row) {

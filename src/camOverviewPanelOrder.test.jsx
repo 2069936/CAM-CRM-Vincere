@@ -101,10 +101,16 @@ describe('the order of the panels for a CAM', () => {
     const { container } = mount();
     await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
     const live = indexOfHeading(container, 'Live accounts');
+    const rollCall = indexOfHeading(container, 'Algorithm roll call');
     const flags = indexOfHeading(container, 'Open flags');
     const coverage = indexOfHeading(container, 'Book coverage and mix');
     const feed = indexOfHeading(container, 'Insight Feed');
-    expect(live).toBeLessThan(flags);
+    const comparison = indexOfHeading(container, 'Each algorithm today, against the desk');
+    // The roll call for the chat sits right under the light, before the flags
+    // and well before the per account comparison it summarises.
+    expect(rollCall).toBe(live + 1);
+    expect(rollCall).toBeLessThan(flags);
+    expect(rollCall).toBeLessThan(comparison);
     expect(flags).toBeLessThan(coverage);
     expect(coverage).toBeLessThan(feed);
     // The first panel heading on the page is the light's.
@@ -121,6 +127,15 @@ describe('the order of the panels for a CAM', () => {
     expect([...container.querySelectorAll('.fsl-tile-name')].map((node) => node.textContent))
       .toEqual(['Cedar Row', 'Birch Lane']);
     expect(container.querySelector('.fsl-summary').textContent).toContain('2 accounts sampled: 1 running, 1 disconnected, across 1 of 2 clients.');
+  });
+
+  it('opens the roll call by default, as a region the CAM can paste from', async () => {
+    const { container } = mount();
+    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    const toggle = [...container.querySelectorAll('.collapse-toggle')]
+      .find((button) => button.textContent.includes('Algorithm roll call'));
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(container.querySelector('.algorithm-rollcall')).not.toBeNull());
   });
 
   it('does not show Revenue health to a CAM at all', async () => {

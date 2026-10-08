@@ -1004,8 +1004,14 @@ export async function loadSupabaseAccountObservationSettings({ client = undefine
 
 /* ── The live per algorithm comparison (step 57) ───────────────────────── */
 
+/* The three position columns are step 64's: agent 1.2.1 posts them with each
+ * reading, 1.2.0 leaves them null. Step 64 is applied wherever step 57 is. */
 export const ALGORITHM_LIVE_SAMPLE_COLUMNS = 'client_id, account_name, strategy_id, strategy_name, '
-  + 'algorithm, instrument, instrument_root, realized_pnl, unrealized_pnl, restarted_at, sampled_at, cycle_start';
+  + 'algorithm, instrument, instrument_root, realized_pnl, unrealized_pnl, restarted_at, sampled_at, cycle_start, '
+  + 'market_position, position_quantity, trades_this_run';
+
+/* The words algorithm_live_samples.market_position may hold (its CHECK). */
+const MARKET_POSITION_WORDS = new Set(['long', 'short', 'flat']);
 
 const ALGORITHM_LIVE_SETTINGS_COLUMNS = 'min_cohort_accounts, min_cohort_clients, differs_at_spread, '
   + 'min_spread_dollars, cycle_tolerance_seconds';
@@ -1035,6 +1041,11 @@ export function mapAlgorithmLiveSample(row = {}) {
     restartedAt: row.restarted_at || null,
     sampledAt: row.sampled_at || null,
     cycleStart: row.cycle_start || null,
+    // NULL IS NOT READ (step 64): never flat, never 0. A word outside the
+    // column's CHECK, or a fraction of a contract, is not read either.
+    marketPosition: MARKET_POSITION_WORDS.has(row.market_position) ? row.market_position : null,
+    positionQuantity: sampleInteger(row.position_quantity),
+    tradesThisRun: sampleInteger(row.trades_this_run),
   };
 }
 

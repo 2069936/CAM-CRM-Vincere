@@ -246,9 +246,13 @@ describe('the order of the Operations Command Center', () => {
     expect(container.querySelector('h1').textContent).toBe('Operations Command Center');
     const money = indexOfHeading(container, 'Desk money');
     const live = indexOfHeading(container, 'Live accounts');
+    const rollCall = indexOfHeading(container, 'Algorithm roll call');
     const feed = indexOfHeading(container, 'Insight Feed');
     const flags = indexOfHeading(container, 'Open flags, all clients');
     expect(money).toBeLessThan(live);
+    // The roll call per algorithm, right after the desk lights.
+    expect(rollCall).toBe(live + 1);
+    expect(rollCall).toBeLessThan(feed);
     expect(live).toBeLessThan(feed);
     expect(feed).toBeLessThan(flags);
     // Nothing else sits between the money and the light.
