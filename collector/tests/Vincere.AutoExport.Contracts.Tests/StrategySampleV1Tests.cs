@@ -18,6 +18,18 @@ namespace Vincere.AutoExport.Contracts.Tests
   ""schemaVersion"": 1,
   ""sampledAt"": ""2026-10-06T10:10:02.5-04:00"",
   ""strategies"": [
+    { ""accountName"": ""SIM-FIXTURE-1"", ""strategyId"": ""123456789"", ""strategyName"": ""0 - OGX-PF-2.4"", ""instrument"": ""MNQ 12-26"", ""realizedPnl"": -412.5, ""unrealizedPnl"": 37.5, ""restartedAt"": null, ""marketPosition"": ""long"", ""positionQuantity"": 2, ""tradesThisRun"": 7 },
+    { ""accountName"": ""SIM-FIXTURE-1"", ""strategyId"": ""123456790"", ""strategyName"": ""1 - ALPHA-1.2"", ""instrument"": ""NQ 12-26"", ""realizedPnl"": null, ""unrealizedPnl"": null, ""restartedAt"": ""2026-10-06T09:50:01-04:00"", ""marketPosition"": null, ""positionQuantity"": null, ""tradesThisRun"": null }
+  ]
+}";
+
+        /* THE SAME TWO ROWS AS A 1.2.0 AGENT POSTS THEM, without the position
+         * members. The route reads a missing key as null, and this type reads it
+         * the same way. */
+        public const string Fixture120 = @"{
+  ""schemaVersion"": 1,
+  ""sampledAt"": ""2026-10-06T10:10:02.5-04:00"",
+  ""strategies"": [
     { ""accountName"": ""SIM-FIXTURE-1"", ""strategyId"": ""123456789"", ""strategyName"": ""0 - OGX-PF-2.4"", ""instrument"": ""MNQ 12-26"", ""realizedPnl"": -412.5, ""unrealizedPnl"": 37.5, ""restartedAt"": null },
     { ""accountName"": ""SIM-FIXTURE-1"", ""strategyId"": ""123456790"", ""strategyName"": ""1 - ALPHA-1.2"", ""instrument"": ""NQ 12-26"", ""realizedPnl"": null, ""unrealizedPnl"": null, ""restartedAt"": ""2026-10-06T09:50:01-04:00"" }
   ]
@@ -41,6 +53,9 @@ namespace Vincere.AutoExport.Contracts.Tests
                         RealizedPnl = -412.5m,
                         UnrealizedPnl = 37.5m,
                         RestartedAt = null,
+                        MarketPosition = "long",
+                        PositionQuantity = 2,
+                        TradesThisRun = 7,
                     },
                     new StrategySampleRowV1
                     {
@@ -51,6 +66,9 @@ namespace Vincere.AutoExport.Contracts.Tests
                         RealizedPnl = null,
                         UnrealizedPnl = null,
                         RestartedAt = new DateTimeOffset(2026, 10, 6, 9, 50, 1, TimeSpan.FromHours(-4)),
+                        MarketPosition = null,
+                        PositionQuantity = null,
+                        TradesThisRun = null,
                     },
                 },
             };
@@ -90,6 +108,51 @@ namespace Vincere.AutoExport.Contracts.Tests
             Assert.Equal(JTokenType.Null, written["realizedPnl"].Type);
             Assert.Equal(JTokenType.Null, written["unrealizedPnl"].Type);
             Assert.Equal(JTokenType.Null, written["restartedAt"].Type);
+            // The position members follow the P&L rule, not the run count's: a
+            // position that could not be read reaches the CRM as an explicit null.
+            Assert.Equal(JTokenType.Null, written["marketPosition"].Type);
+            Assert.Equal(JTokenType.Null, written["positionQuantity"].Type);
+            Assert.Equal(JTokenType.Null, written["tradesThisRun"].Type);
+        }
+
+        /* A 1.2.0 AGENT'S POST, AND A 1.2.0 ADD-ON'S REPLY, read by this version:
+         * the three members are simply null. Nothing about the version moved, so
+         * neither side refuses the other. */
+        [Fact]
+        public void A_body_without_the_position_members_reads_them_as_null_and_keeps_its_version()
+        {
+            StrategySampleV1 sample = JsonConvert.DeserializeObject<StrategySampleV1>(Fixture120);
+
+            Assert.Equal(1, sample.SchemaVersion);
+            Assert.Equal(2, sample.Strategies.Count);
+            Assert.All(sample.Strategies, row =>
+            {
+                Assert.Null(row.MarketPosition);
+                Assert.Null(row.PositionQuantity);
+                Assert.Null(row.TradesThisRun);
+            });
+            Assert.Equal(-412.5m, sample.Strategies[0].RealizedPnl);
+        }
+
+        [Fact]
+        public void The_position_members_round_trip_under_their_wire_names()
+        {
+            StrategySampleV1 sample = JsonConvert.DeserializeObject<StrategySampleV1>(Fixture);
+            JObject written = (JObject)((JArray)Parse(JsonConvert.SerializeObject(sample))["strategies"])[0];
+
+            Assert.Equal("long", sample.Strategies[0].MarketPosition);
+            Assert.Equal(2, sample.Strategies[0].PositionQuantity);
+            Assert.Equal(7, sample.Strategies[0].TradesThisRun);
+            Assert.Equal("long", written.Value<string>("marketPosition"));
+            Assert.Equal(2, written.Value<int>("positionQuantity"));
+            Assert.Equal(7, written.Value<int>("tradesThisRun"));
+            Assert.Equal(
+                new[]
+                {
+                    "accountName", "instrument", "marketPosition", "positionQuantity", "realizedPnl",
+                    "restartedAt", "strategyId", "strategyName", "tradesThisRun", "unrealizedPnl",
+                },
+                written.Properties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
         }
 
         /* THE RUN COUNT IS PIPE ONLY. The add-on writes it when it read one; a null

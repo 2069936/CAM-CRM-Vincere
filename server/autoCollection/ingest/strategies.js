@@ -30,13 +30,28 @@ import { instrumentRoot } from '../../../src/domain/instrumentSpecs.js';
  *
  * NOT DEPLOYED YET IS AN ANSWER. Until step 57 runs, the RPC is missing, and the
  * answer is 404 `strategy_sample_not_deployed`: the agent stops asking for an
- * hour and its account posts carry on every cycle. */
+ * hour and its account posts carry on every cycle.
+ *
+ * THE POSITION, SINCE AGENT 1.2.1 (step 64). The CAMs tell each other in the
+ * team chat whether BulletBot fired long or short today, and the catalogue
+ * cannot say: BulletBot decides each day. So each row may carry marketPosition
+ * (long, short or flat, any case, stored lower case), positionQuantity (whole
+ * contracts, 0 to 100000) and tradesThisRun (whole trades this run, 0 to
+ * 1000000). All three are OPTIONAL: a 1.2.0 agent sends none of them and the
+ * RPC receives null, which is "not read", never flat and never zero. A value
+ * that is present and wrong refuses the whole post like any other bad field. A
+ * step 57 database that has not run 64 ignores the three keys inside the item. */
 
 /* Wire bounds. The SQL enforces max_strategies_per_report (a settings column,
  * default 200) on top of this structural ceiling. */
 export const MAX_STRATEGIES = 1000;
 const MAX_BODY_BYTES = 128 * 1024;
 const MONEY_LIMIT = 1e12;
+/* The same bounds step 64's check constraints hold, so a row the route accepts
+ * is a row the table takes. */
+export const MAX_POSITION_QUANTITY = 100000;
+export const MAX_TRADES_THIS_RUN = 1000000;
+export const MARKET_POSITIONS = Object.freeze(['long', 'short', 'flat']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ISO_TIMESTAMP_WITH_OFFSET = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
@@ -51,6 +66,9 @@ export const ROW_KEYS = Object.freeze([
   'realizedPnl',
   'unrealizedPnl',
   'restartedAt',
+  'marketPosition',
+  'positionQuantity',
+  'tradesThisRun',
 ]);
 
 const STRING_LIMITS = Object.freeze({
@@ -128,6 +146,24 @@ function restartedAt(value, sampledMs) {
   return value;
 }
 
+/* NULL IS NOT READ, never flat. The add-on lower cases the word before it
+ * travels, and this accepts any case so a hand built body reads the same; what
+ * reaches SQL is always one of the three lower case words or null. */
+function marketPosition(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw invalidSample();
+  const word = value.trim().toLowerCase();
+  if (!MARKET_POSITIONS.includes(word)) throw invalidSample();
+  return word;
+}
+
+/** A whole non-negative count within `limit`, or null for absent. */
+function count(value, limit) {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || value < 0 || value > limit) throw invalidSample();
+  return value;
+}
+
 /**
  * The body, validated and reduced to what the RPC takes.
  *
@@ -164,6 +200,9 @@ export function normalizeStrategySampleBody(value, {
       realizedPnl: money(raw.realizedPnl),
       unrealizedPnl: money(raw.unrealizedPnl),
       restartedAt: restartedAt(raw.restartedAt, sampledMs),
+      marketPosition: marketPosition(raw.marketPosition),
+      positionQuantity: count(raw.positionQuantity, MAX_POSITION_QUANTITY),
+      tradesThisRun: count(raw.tradesThisRun, MAX_TRADES_THIS_RUN),
     };
     // One instance once. Two readings of the same instance would make the
     // upsert's outcome depend on the order of the array.

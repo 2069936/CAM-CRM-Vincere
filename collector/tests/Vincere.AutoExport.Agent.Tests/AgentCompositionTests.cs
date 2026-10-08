@@ -184,6 +184,39 @@ public sealed class AgentCompositionTests : IDisposable
         Assert.Same(provider.GetRequiredService<StrategyRunMemory>(), memory.GetValue(loop));
     }
 
+    /* THE VERSION A RESTARTED SERVICE REPORTS. The add-on tells the agent what
+     * NinjaTrader is at the capture and nowhere else, so a service restarted
+     * between two closes used to heartbeat null until the next one. The real
+     * container reads the file the last capture left under ProgramData and the
+     * state starts from it: the heartbeat loop and the control pipe both read
+     * this one CollectorState. */
+    [Fact]
+    public void The_state_starts_from_the_environment_the_last_capture_left_on_disk()
+    {
+        AgentPaths paths = AgentPaths.FromProgramData(programData);
+        Directory.CreateDirectory(paths.Root);
+        File.WriteAllText(paths.ObservedEnvironment, "{\"ninjaTraderVersion\":\"8.1.6.0\",\"addonVersion\":\"1.2.1\"}");
+        using ServiceProvider provider = BuildRealContainer();
+
+        CollectorState state = provider.GetRequiredService<CollectorState>();
+
+        Assert.Equal("8.1.6.0", state.Snapshot().NinjaTraderVersion);
+        Assert.Equal("1.2.1", state.Snapshot().AddonVersion);
+        Assert.Same(state, provider.GetRequiredService<CollectorState>());
+        Assert.Equal(paths.ObservedEnvironment, ((ObservedEnvironmentStore)provider.GetRequiredService<IObservedEnvironmentStore>()).FilePath);
+    }
+
+    [Fact]
+    public void Without_that_file_the_state_starts_as_it_always_did()
+    {
+        using ServiceProvider provider = BuildRealContainer();
+
+        CollectorState state = provider.GetRequiredService<CollectorState>();
+
+        Assert.Null(state.Snapshot().NinjaTraderVersion);
+        Assert.Null(state.Snapshot().AddonVersion);
+    }
+
     [Fact]
     public void Nothing_the_loop_needs_can_be_quietly_left_out()
     {

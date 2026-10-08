@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../../apiLib/http.js';
 import {
+  MARKET_POSITIONS,
+  MAX_POSITION_QUANTITY,
   MAX_STRATEGIES,
+  MAX_TRADES_THIS_RUN,
   ROW_KEYS,
   config,
   createHandler,
@@ -16,6 +19,17 @@ const REFERENCE_NOW = new Date('2026-10-06T14:10:30Z');
  * half serialises StrategySampleV1 and compares against this same JSON, so a
  * name that drifts on either side fails a test on that side. */
 const FIXTURE = `{
+  "schemaVersion": 1,
+  "sampledAt": "2026-10-06T10:10:02.5-04:00",
+  "strategies": [
+    { "accountName": "SIM-FIXTURE-1", "strategyId": "123456789", "strategyName": "0 - OGX-PF-2.4", "instrument": "MNQ 12-26", "realizedPnl": -412.5, "unrealizedPnl": 37.5, "restartedAt": null, "marketPosition": "long", "positionQuantity": 2, "tradesThisRun": 7 },
+    { "accountName": "SIM-FIXTURE-1", "strategyId": "123456790", "strategyName": "1 - ALPHA-1.2", "instrument": "NQ 12-26", "realizedPnl": null, "unrealizedPnl": null, "restartedAt": "2026-10-06T09:50:01-04:00", "marketPosition": null, "positionQuantity": null, "tradesThisRun": null }
+  ]
+}`;
+
+/* THE SAME TWO ROWS AS AGENT 1.2.0 POSTS THEM: no position keys at all. The
+ * fleet in the field keeps landing while 1.2.1 rolls out. */
+const FIXTURE_120 = `{
   "schemaVersion": 1,
   "sampledAt": "2026-10-06T10:10:02.5-04:00",
   "strategies": [
@@ -123,6 +137,7 @@ describe('POST /api/ingest/strategies', () => {
     expect(ROW_KEYS).toEqual([
       'accountName', 'strategyId', 'strategyName', 'algorithm', 'instrument',
       'instrumentRoot', 'realizedPnl', 'unrealizedPnl', 'restartedAt',
+      'marketPosition', 'positionQuantity', 'tradesThisRun',
     ]);
   });
 
@@ -133,6 +148,64 @@ describe('POST /api/ingest/strategies', () => {
     delete body.strategies[0].restartedAt;
     const { calls } = await post(body);
     expect(calls.rpc[0].args.p_strategies[0]).toMatchObject({ realizedPnl: null, unrealizedPnl: null, restartedAt: null });
+  });
+
+  /* THE POSITION: which way BulletBot fired, how many contracts, how many trades
+   * this run. Present and readable it goes through; null goes through as null. */
+  it('forwards the position, the quantity and the run count as the fixture carries them', async () => {
+    const { res, calls } = await post(FIXTURE);
+    expect(res.statusCode).toBe(200);
+    const [ogx, alpha] = calls.rpc[0].args.p_strategies;
+    expect(ogx).toMatchObject({ marketPosition: 'long', positionQuantity: 2, tradesThisRun: 7 });
+    expect(alpha).toMatchObject({ marketPosition: null, positionQuantity: null, tradesThisRun: null });
+  });
+
+  it('a 1.2.0 body without the position keys still lands, with the three read as null', async () => {
+    const { res, calls } = await post(FIXTURE_120);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, recorded: 2, skipped: 0 });
+    for (const row of calls.rpc[0].args.p_strategies) {
+      expect(row).toMatchObject({ marketPosition: null, positionQuantity: null, tradesThisRun: null });
+      expect(Object.keys(row).sort()).toEqual([...ROW_KEYS].sort());
+    }
+    // The RPC call shape is the one step 57 declared: the fields ride inside the items.
+    expect(Object.keys(calls.rpc[0].args).sort()).toEqual(['p_device_id', 'p_sampled_at', 'p_strategies']);
+  });
+
+  it('reads the position word in any case and hands SQL the lower case one', async () => {
+    for (const [sent, stored] of [['Long', 'long'], ['SHORT', 'short'], [' flat ', 'flat'], ['short', 'short']]) {
+      const body = fixture();
+      body.strategies[0].marketPosition = sent;
+      const { res, calls } = await post(body);
+      expect(res.statusCode, sent).toBe(200);
+      expect(calls.rpc[0].args.p_strategies[0].marketPosition, sent).toBe(stored);
+    }
+    expect(MARKET_POSITIONS).toEqual(['long', 'short', 'flat']);
+  });
+
+  it('takes the position bounds exactly at the edge and refuses one past them', async () => {
+    const edge = fixture();
+    edge.strategies[0].positionQuantity = MAX_POSITION_QUANTITY;
+    edge.strategies[0].tradesThisRun = MAX_TRADES_THIS_RUN;
+    edge.strategies[1].positionQuantity = 0;
+    edge.strategies[1].tradesThisRun = 0;
+    const at = await post(edge);
+    expect(at.res.statusCode).toBe(200);
+    expect(at.calls.rpc[0].args.p_strategies[1]).toMatchObject({ positionQuantity: 0, tradesThisRun: 0 });
+    expect(MAX_POSITION_QUANTITY).toBe(100000);
+    expect(MAX_TRADES_THIS_RUN).toBe(1000000);
+
+    for (const mutate of [
+      (row) => { row.positionQuantity = MAX_POSITION_QUANTITY + 1; },
+      (row) => { row.tradesThisRun = MAX_TRADES_THIS_RUN + 1; },
+    ]) {
+      const body = fixture();
+      mutate(body.strategies[0]);
+      const { res, calls } = await post(body);
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({ error: 'invalid_strategy_sample' });
+      expect(calls.rpc).toEqual([]);
+    }
   });
 
   it('trims the names before they reach SQL', async () => {
@@ -195,12 +268,23 @@ describe('POST /api/ingest/strategies', () => {
       ['restart a day before', (row) => { row.restartedAt = '2026-10-05T10:10:01-04:00'; }],
       ['restart without offset', (row) => { row.restartedAt = '2026-10-06T09:50:01'; }],
       ['row is an array', (row, body) => { body.strategies[0] = []; }],
+      ['position that is not a word', (row) => { row.marketPosition = 'sideways'; }],
+      ['position as a number', (row) => { row.marketPosition = 1; }],
+      ['position as an empty string', (row) => { row.marketPosition = ''; }],
+      ['position as a boolean', (row) => { row.marketPosition = true; }],
+      ['negative quantity', (row) => { row.positionQuantity = -1; }],
+      ['fractional quantity', (row) => { row.positionQuantity = 1.5; }],
+      ['string quantity', (row) => { row.positionQuantity = '2'; }],
+      ['negative run count', (row) => { row.tradesThisRun = -1; }],
+      ['fractional run count', (row) => { row.tradesThisRun = 2.5; }],
+      ['string run count', (row) => { row.tradesThisRun = '7'; }],
+      ['non finite run count', (row) => { row.tradesThisRun = Number.POSITIVE_INFINITY; }],
     ];
     for (const [label, mutate] of cases) {
       const body = fixture();
       mutate(body.strategies[0], body);
-      // Infinity does not survive JSON, so that case goes in as a parsed body.
-      const payload = label === 'non finite' ? body : JSON.stringify(body);
+      // Infinity does not survive JSON, so those cases go in as a parsed body.
+      const payload = label.startsWith('non finite') ? body : JSON.stringify(body);
       const { handler, calls } = setup();
       const res = response();
       await handler(typeof payload === 'string'

@@ -22,5 +22,9 @@ public sealed class AgentPathsTests
         Assert.Equal(Path.Combine(expected, "queue", "sent"), paths.SentQueue);
         Assert.Equal(Path.Combine(expected, "queue", "quarantine"), paths.QuarantineQueue);
         Assert.Equal(Path.Combine(expected, "logs"), paths.Logs);
+        Assert.Equal(Path.Combine(expected, "history.json"), paths.History);
+        Assert.Equal(Path.Combine(expected, "roster.json"), paths.Roster);
+        Assert.Equal(Path.Combine(expected, "relay-secret.bin"), paths.RelaySecret);
+        Assert.Equal(Path.Combine(expected, "environment.json"), paths.ObservedEnvironment);
     }
 }

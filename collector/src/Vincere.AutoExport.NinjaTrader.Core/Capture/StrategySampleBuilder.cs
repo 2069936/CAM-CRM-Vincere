@@ -30,7 +30,11 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
     /// P&L IS PASSED THROUGH AS READ. Null stays null, because null is "not
     /// measured" and the CRM shows it as such rather than as a zero. The real time
     /// trade count is passed through the same way: the agent reads a drop in it as
-    /// a restart, so an unread count must stay null and never become a zero.
+    /// a restart, so an unread count must stay null and never become a zero. So
+    /// are the market position and the quantity: an unread position is null, not
+    /// "flat" and not zero, because "flat" is an answer and null is not one.
+    /// TradesThisRun is left null here on purpose: it is the agent's member, filled
+    /// from RealtimeTradeCount once the restart detection has read it.
     /// </summary>
     public sealed class StrategySampleBuilder
     {
@@ -73,6 +77,8 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
                         UnrealizedPnl = source.UnrealizedPnl,
                         RestartedAt = null,
                         RealtimeTradeCount = source.RealtimeTradeCount,
+                        MarketPosition = source.MarketPosition,
+                        PositionQuantity = source.PositionQuantity,
                     });
                 }
             }

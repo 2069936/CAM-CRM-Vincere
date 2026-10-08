@@ -139,6 +139,36 @@ public sealed class StrategySampleBuilderTests
         Assert.Null(sample.Strategies[1].RealtimeTradeCount);
     }
 
+    /* THE POSITION GOES THROUGH AS READ, and an unread one stays null rather than
+     * becoming "flat" or zero: "flat" is an answer about BulletBot's day and null
+     * is the absence of one. TradesThisRun is the agent's member and the add-on
+     * leaves it alone. */
+    [Fact]
+    public void The_position_is_passed_through_and_an_unread_one_stays_null()
+    {
+        StrategySampleCaptureSource shortTwo = Source("SIM-1", "1", "Realtime");
+        shortTwo.MarketPosition = "short";
+        shortTwo.PositionQuantity = 2;
+        StrategySampleCaptureSource flat = Source("SIM-1", "2", "Realtime");
+        flat.MarketPosition = "flat";
+        flat.PositionQuantity = 0;
+        StrategySampleCaptureSource unread = Source("SIM-1", "3", "Realtime");
+        unread.MarketPosition = null;
+        unread.PositionQuantity = null;
+        unread.RealtimeTradeCount = 9;
+
+        StrategySampleV1 sample = Build(shortTwo, flat, unread);
+
+        Assert.Equal("short", sample.Strategies[0].MarketPosition);
+        Assert.Equal(2, sample.Strategies[0].PositionQuantity);
+        Assert.Equal("flat", sample.Strategies[1].MarketPosition);
+        Assert.Equal(0, sample.Strategies[1].PositionQuantity);
+        Assert.Null(sample.Strategies[2].MarketPosition);
+        Assert.Null(sample.Strategies[2].PositionQuantity);
+        Assert.All(sample.Strategies, row => Assert.Null(row.TradesThisRun));
+        Assert.Equal(9, sample.Strategies[2].RealtimeTradeCount);
+    }
+
     [Fact]
     public void The_version_and_the_clock_are_set_and_nothing_read_is_an_empty_list()
     {
@@ -380,6 +410,102 @@ public sealed class StrategySampleFacadeTests : IDisposable
         Assert.Null(rows[1].RealtimeTradeCount);
     }
 
+    /* THE POSITION ITSELF: which way the instance is in the market and how many
+     * contracts it holds, so the desk knows whether BulletBot fired long or short.
+     * Read from the same Position object the open figure is asked of, lower
+     * cased, and null for anything that is not one of the three words. */
+    [Fact]
+    public void Each_live_strategy_reads_its_market_position_and_quantity_as_words_the_wire_takes()
+    {
+        Account account = AccountFixture("SIM-1", connected: true);
+        TestPosition longTwo = Long(unrealized: 37.5m, lastPrice: 21000.25);
+        longTwo.Quantity = 2;
+        account.Strategies.Add(Strategy("1", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", -412.5, longTwo));
+        account.Strategies.Add(Strategy("2", "1 - ALPHA-1.2", "NQ 12-26", "Realtime", 10,
+            new TestPosition { MarketPosition = "Short", Quantity = 1 }));
+        account.Strategies.Add(Strategy("3", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new TestPosition { MarketPosition = "Flat", Quantity = 0 }));
+        // The platform's own type: an enum, not a string, as NinjaTrader.Cbi declares it.
+        account.Strategies.Add(Strategy("4", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new EnumPosition { MarketPosition = MarketPosition.Short, Quantity = 3 }));
+        Account.All.Add(account);
+
+        List<StrategySampleCaptureSource> rows = new NinjaTraderFacade().ReadStrategiesForSample().ToList();
+
+        Assert.Equal("long", rows[0].MarketPosition);
+        Assert.Equal(2, rows[0].PositionQuantity);
+        Assert.Equal("short", rows[1].MarketPosition);
+        Assert.Equal(1, rows[1].PositionQuantity);
+        Assert.Equal("flat", rows[2].MarketPosition);
+        Assert.Equal(0, rows[2].PositionQuantity);
+        Assert.Equal("short", rows[3].MarketPosition);
+        Assert.Equal(3, rows[3].PositionQuantity);
+    }
+
+    /* NOT READ IS NULL, NOT "FLAT" AND NOT ZERO. A strategy without a Position
+     * object, a position whose word is none of the three, a position whose
+     * getter throws, a quantity that is not an int or is negative: each reads
+     * null in its own member and costs the other nothing. */
+    [Fact]
+    public void A_position_that_cannot_be_read_is_null_member_by_member()
+    {
+        Account account = AccountFixture("SIM-1", connected: true);
+        account.Strategies.Add(new BareStrategy { StrategyId = "1", Name = "0 - OGX-PF-2.4", State = "Realtime" });
+        account.Strategies.Add(Strategy("2", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new TestPosition { MarketPosition = "Sideways", Quantity = 2 }));
+        account.Strategies.Add(Strategy("3", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new OddQuantityPosition { MarketPosition = "Long" }));
+        account.Strategies.Add(Strategy("4", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new TestPosition { MarketPosition = "Long", Quantity = -1 }));
+        account.Strategies.Add(Strategy("5", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new ThrowingWordPosition()));
+        account.Strategies.Add(Strategy("6", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10,
+            new TestPosition { MarketPosition = "   ", Quantity = 4 }));
+        Account.All.Add(account);
+
+        List<StrategySampleCaptureSource> rows = new NinjaTraderFacade().ReadStrategiesForSample().ToList();
+
+        Assert.Null(rows[0].MarketPosition);
+        Assert.Null(rows[0].PositionQuantity);
+        Assert.Null(rows[1].MarketPosition);
+        Assert.Equal(2, rows[1].PositionQuantity);
+        Assert.Equal("long", rows[2].MarketPosition);
+        Assert.Null(rows[2].PositionQuantity);
+        Assert.Equal("long", rows[3].MarketPosition);
+        Assert.Null(rows[3].PositionQuantity);
+        Assert.Null(rows[4].MarketPosition);
+        Assert.Equal(5, rows[4].PositionQuantity);
+        Assert.Equal(10m, rows[4].RealizedPnl);
+        Assert.Null(rows[5].MarketPosition);
+        Assert.Equal(4, rows[5].PositionQuantity);
+    }
+
+    // Like the P&L: not read for a stopped instance (the builder drops it) and
+    // lost, not invented, past the budget.
+    [Fact]
+    public void A_stopped_instance_and_a_reading_past_the_budget_carry_no_position()
+    {
+        Account account = AccountFixture("SIM-1", connected: true);
+        TestPosition held = Long(unrealized: 5m, lastPrice: 100);
+        held.Quantity = 2;
+        account.Strategies.Add(Strategy("1", "0 - OGX-PF-2.4", "MNQ 12-26", "Terminated", 10, held));
+        account.Strategies.Add(Strategy("2", "0 - OGX-PF-2.4", "MNQ 12-26", "Realtime", 10, held));
+        Account.All.Add(account);
+
+        List<StrategySampleCaptureSource> rows = new NinjaTraderFacade().ReadStrategiesForSample().ToList();
+        List<StrategySampleCaptureSource> pastBudget = new NinjaTraderFacade(TimeSpan.Zero).ReadStrategiesForSample().ToList();
+
+        Assert.Null(rows[0].MarketPosition);
+        Assert.Null(rows[0].PositionQuantity);
+        Assert.Equal("long", rows[1].MarketPosition);
+        Assert.Equal(2, rows[1].PositionQuantity);
+        Assert.All(pastBudget, row =>
+        {
+            Assert.Null(row.MarketPosition);
+            Assert.Null(row.PositionQuantity);
+        });
+    }
+
     /* THE POSITION IS ASKED IN CURRENCY, AT THE LAST PRICE. A position asked in
      * points or at a stale price would give a plausible number that is not the
      * grid's, which is worse than null. */
@@ -590,6 +716,7 @@ public sealed class StrategySampleFacadeTests : IDisposable
     public class TestPosition
     {
         public string MarketPosition { get; set; }
+        public int Quantity { get; set; }
         public decimal Unrealized { get; set; }
         public TestInstrument Instrument { get; set; }
         public TestPerformanceUnit? AskedUnit { get; private set; }
@@ -610,6 +737,27 @@ public sealed class StrategySampleFacadeTests : IDisposable
 
         public override double GetUnrealizedProfitLoss(TestPerformanceUnit unit, double price) =>
             throw new InvalidOperationException("position is being rebuilt");
+    }
+
+    // The platform's shape: MarketPosition is the NinjaTrader.Cbi enum, Quantity an int.
+    public sealed class EnumPosition
+    {
+        public MarketPosition MarketPosition { get; set; }
+        public int Quantity { get; set; }
+    }
+
+    // A quantity that is not an int at all.
+    public sealed class OddQuantityPosition
+    {
+        public string MarketPosition { get; set; }
+        public string Quantity => "two";
+    }
+
+    // A position whose word throws on read; its quantity is still readable.
+    public sealed class ThrowingWordPosition
+    {
+        public string MarketPosition => throw new InvalidOperationException("position is being rebuilt");
+        public int Quantity => 5;
     }
 
     public sealed class TestInstrument

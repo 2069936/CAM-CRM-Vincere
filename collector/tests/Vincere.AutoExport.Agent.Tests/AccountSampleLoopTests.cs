@@ -687,7 +687,47 @@ public sealed class AccountSampleLoopTests
         Assert.All(
             crm.StrategyPosted.SelectMany(sample => sample.Strategies),
             row => Assert.Null(row.RealtimeTradeCount));
+        // The same number the restart detection read, under the wire's own name:
+        // 4 trades before the toggle, 0 after it, the way the CRM will show it.
+        Assert.Equal(4, crm.StrategyPosted[0].Strategies.Single(row => row.StrategyId == "1").TradesThisRun);
+        Assert.Equal(0, second.Single(row => row.StrategyId == "1").TradesThisRun);
+        Assert.Equal(1, second.Single(row => row.StrategyId == "2").TradesThisRun);
     }
+
+    /* THE POSITION TRAVELS AS READ. The desk asks in the team chat whether
+     * BulletBot fired long or short; the add-on reads it off the strategy's
+     * Position and the agent passes it through untouched, with the run's trade
+     * count beside it. An add-on that could not read the position (or a 1.2.0
+     * add-on, which never sends one) leaves null, and null is what is posted:
+     * never "flat", never zero. */
+    [Fact]
+    public async Task The_position_and_the_run_count_are_posted_as_read_and_null_stays_null()
+    {
+        RecordingSampleCrm crm = new();
+        FakeStrategyClient strategies = new()
+        {
+            Next = () => Strategies(
+                Positioned(Counted(StrategyRow("APEX-1111", "1"), 7), "long", 2),
+                Positioned(Counted(StrategyRow("APEX-1111", "2"), 0), "flat", 0),
+                Positioned(Counted(StrategyRow("APEX-1111", "3"), null), null, null),
+                Positioned(Counted(StrategyRow("APEX-1111", "4"), 3), "short", null)),
+        };
+        Harness harness = new(FakeSampleClient.Returning(Sampled(Row("APEX-1111", connected: true))), crm, strategies: strategies);
+
+        await harness.Loop.RunOnceAsync(CancellationToken.None);
+
+        StrategySampleRowV1[] posted = Assert.Single(crm.StrategyPosted).Strategies.ToArray();
+        Assert.Equal(4, posted.Length);
+        Assert.Equal(("long", (int?)2, (int?)7), Triple(posted[0]));
+        Assert.Equal(("flat", (int?)0, (int?)0), Triple(posted[1]));
+        Assert.Equal(((string)null, (int?)null, (int?)null), Triple(posted[2]));
+        Assert.Equal(("short", (int?)null, (int?)3), Triple(posted[3]));
+        Assert.All(posted, row => Assert.Null(row.RealtimeTradeCount));
+        Assert.Empty(harness.Reporter.Codes);
+    }
+
+    private static (string, int?, int?) Triple(StrategySampleRowV1 row) =>
+        (row.MarketPosition, row.PositionQuantity, row.TradesThisRun);
 
     /* A RE-ENABLE WHILE THE STRATEGY PART WAS NOT READING. The accounts failed to
      * read for a while, so no strategy reading was taken; the strategy was switched
@@ -903,6 +943,13 @@ public sealed class AccountSampleLoopTests
     private static StrategySampleRowV1 Counted(StrategySampleRowV1 row, int? realtimeTradeCount)
     {
         row.RealtimeTradeCount = realtimeTradeCount;
+        return row;
+    }
+
+    private static StrategySampleRowV1 Positioned(StrategySampleRowV1 row, string marketPosition, int? quantity)
+    {
+        row.MarketPosition = marketPosition;
+        row.PositionQuantity = quantity;
         return row;
     }
 

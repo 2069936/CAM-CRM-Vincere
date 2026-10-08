@@ -78,6 +78,14 @@ public static class AgentComposition
         services.AddSingleton<IRosterStore>(new RosterStore(paths.Roster, new WindowsAgentDirectorySecurity()));
         services.AddSingleton<IStrategyObservationStore>(
             new StrategyObservationStore(Path.Combine(paths.Root, "strategies.json")));
+        /* What the add-on last said it and NinjaTrader were. Written at the capture
+         * that reports it, read when the service starts, so the first heartbeat
+         * after an update or a reboot carries the real NinjaTrader version instead
+         * of null until that day's close. The path has a trailing default on
+         * AgentPaths for the callers that build the record by hand. */
+        services.AddSingleton<IObservedEnvironmentStore>(new ObservedEnvironmentStore(
+            paths.ObservedEnvironment ?? Path.Combine(paths.Root, "environment.json"),
+            new WindowsAgentDirectorySecurity()));
         services.AddSingleton<INinjaTraderCaptureClient, CapturePipeClient>();
         /* THE TRACKER'S PIPE CLIENT, DELIBERATELY A SECOND INSTANCE OF THE SAME CLASS.
          *
@@ -125,7 +133,13 @@ public static class AgentComposition
             crmBaseUri,
             provider.GetRequiredService<IDeviceTokenStore>(),
             provider.GetRequiredService<IMachineGuidSource>()));
-        services.AddSingleton<CollectorState>();
+        /* THE STATE STARTS FROM WHAT THE LAST CAPTURE SAID. A bare CollectorState
+         * knows no NinjaTrader version until the add-on reports one at the close;
+         * this one reads the file the store above keeps, and RecordEnvironment
+         * writes it, so both readers of the state (the heartbeat and the Setup
+         * window over the control pipe) see the version from the first minute. */
+        services.AddSingleton<CollectorState>(provider =>
+            new CollectorState(provider.GetRequiredService<IObservedEnvironmentStore>()));
         services.AddSingleton<ICollectorClock, SystemCollectorClock>();
         services.AddSingleton<ICollectorDelay, SystemCollectorDelay>();
         services.AddSingleton<IRedactingLogger>(new RedactingLogger(paths.Logs));

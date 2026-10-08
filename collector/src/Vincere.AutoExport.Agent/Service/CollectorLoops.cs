@@ -94,6 +94,46 @@ public sealed class CollectorState
     private readonly object gate = new();
     private CollectorStatusSnapshot value = new(null, null, null, null, null, false, "unpaired");
 
+    /* WHERE THE VERSIONS SURVIVE A RESTART. Everything else in this object is
+     * about the current process and should start empty; the NinjaTrader and
+     * add-on versions are facts about the machine, learned once a day at the
+     * capture, and a service that restarts in between (an update, a reboot)
+     * used to report null until the next close. Null here, as in every test
+     * that builds the state bare, means nothing is kept. */
+    private readonly IObservedEnvironmentStore environmentStore;
+
+    public CollectorState()
+        : this(null)
+    {
+    }
+
+    /// <param name="environmentStore">
+    /// Where the last reported versions are kept. Read once here, so the first
+    /// heartbeat after a restart carries them; written by RecordEnvironment.
+    /// </param>
+    public CollectorState(IObservedEnvironmentStore environmentStore)
+    {
+        this.environmentStore = environmentStore;
+        ObservedEnvironment stored = null;
+        try
+        {
+            stored = environmentStore?.Load();
+        }
+        catch (Exception)
+        {
+            // A store that cannot be read is the same as none: the state starts
+            // the way it always did.
+        }
+        if (stored != null)
+        {
+            value = value with
+            {
+                NinjaTraderVersion = string.IsNullOrWhiteSpace(stored.NinjaTraderVersion) ? null : stored.NinjaTraderVersion.Trim(),
+                AddonVersion = string.IsNullOrWhiteSpace(stored.AddonVersion) ? null : stored.AddonVersion.Trim(),
+            };
+        }
+    }
+
     /* THE SPREAD'S HOLD, WHICH IS A FACT ABOUT ONE DAY AND NOT ABOUT THE QUEUE.
      *
      * The scheduled capture sets it; the uploader reads it; a manual capture
@@ -112,8 +152,11 @@ public sealed class CollectorState
     /// <summary>What the add-on says it and NinjaTrader are, seen at capture.</summary>
     public void RecordEnvironment(string ninjaTraderVersion, string addonVersion)
     {
+        CollectorStatusSnapshot before;
+        CollectorStatusSnapshot after;
         lock (gate)
         {
+            before = value;
             value = value with
             {
                 // Only overwrite with something. An add-on that stops reporting
@@ -125,6 +168,24 @@ public sealed class CollectorState
                     ? value.AddonVersion
                     : addonVersion.Trim(),
             };
+            after = value;
+        }
+
+        // Kept on disk only when something was learned, so a blank report
+        // neither erases the file nor rewrites it. Outside the lock: a disk is
+        // nothing the snapshot readers should wait for.
+        if (environmentStore == null) return;
+        if (string.Equals(before.NinjaTraderVersion, after.NinjaTraderVersion, StringComparison.Ordinal)
+            && string.Equals(before.AddonVersion, after.AddonVersion, StringComparison.Ordinal))
+            return;
+        try
+        {
+            environmentStore.Save(new ObservedEnvironment(after.NinjaTraderVersion, after.AddonVersion));
+        }
+        catch (Exception)
+        {
+            // Remembering the version for the next restart must never cost the
+            // capture that reported it.
         }
     }
 
@@ -1403,8 +1464,17 @@ public sealed class AccountSampleLoop : ICollectorLoop
                     RealizedPnl = row.RealizedPnl,
                     UnrealizedPnl = row.UnrealizedPnl,
                     RestartedAt = restartedAt,
-                    // RealtimeTradeCount stays behind: it is the add-on telling the
-                    // agent about runs, and the restart time above is what it means.
+                    // The position as the add-on read it, null when it could not:
+                    // which way BulletBot fired today, which the CRM cannot know
+                    // from the catalogue. A 1.2.0 add-on sends neither, and null
+                    // goes through as null.
+                    MarketPosition = row.MarketPosition,
+                    PositionQuantity = row.PositionQuantity,
+                    // The run's trade count, the same number the restart detection
+                    // above has just read, under the wire's own name. The pipe
+                    // member RealtimeTradeCount itself stays behind: the restart
+                    // time above is what it meant to the agent.
+                    TradesThisRun = row.RealtimeTradeCount,
                 });
             }
 
