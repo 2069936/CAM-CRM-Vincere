@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Activity } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
 import {
@@ -6,6 +6,13 @@ import {
   classifyAccountTracker,
   summarizeAccountTracker,
 } from '../domain/autoCollectionFleet';
+import { buildAccountPill, withDiffers } from '../domain/accountPill';
+import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
+import { loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import AccountPill from './AccountPill';
+import AccountLiveDetail from './AccountLiveDetail';
+import RefreshNote from './RefreshNote';
+import useClientLiveStrategies from './useClientLiveStrategies';
 
 /**
  * WHAT IS HAPPENING NOW, ONE ROW PER ACCOUNT.
@@ -36,9 +43,19 @@ import {
  * (`minAgentVersion` null) means no collector in the world samples yet, which is
  * the state on the day step 55 is run, and the panel says that instead and
  * claims no fault against the machine.
+ *
+ * THE STRIP IS A ROW OF PILLS, the same AccountPill the overview tiles render:
+ * the dot, the account, the connection, the state in words. Pedro's words: this
+ * one says more, keep it everywhere. A click on a pill opens, under the strip,
+ * what that account is running: the connection, the totals of its sample, and
+ * one row per strategy instance held against the desk (AccountLiveDetail). One
+ * open at a time. The strategy rows for this client are read when the panel
+ * mounts and refreshed on the same cadence as the tracker, so the amber marker
+ * for an algorithm that differs from the desk is on the pill before any click.
  */
 export default function AccountTrackerPanel({
   clientUuid = '',
+  clientName = '',
   tracker = null,
   device = null,
   accountNames = [],
@@ -47,13 +64,16 @@ export default function AccountTrackerPanel({
   disableAutoRefresh = false,
   now = () => new Date(),
   defaultDetailsOpen = false,
+  loadStrategies = loadSupabaseClientLiveStrategies,
 }) {
   /* THE PICTURE FIRST, THE SENTENCES BEHIND A CLICK. Pedro's words: the tracker
-   * is good but there is a lot to read. The strip above the rows is one large
-   * dot per account with its name and its state in words under it, and the rows
-   * (every sentence kept, because the sentences are what the desk acts on) open
-   * on "Details". Nothing is lost; the glance just comes first. */
+   * is good but there is a lot to read. The strip above the rows is one pill
+   * per account with its name, its connection and its state in words, and the
+   * rows (every sentence kept, because the sentences are what the desk acts on)
+   * open on "Details". Nothing is lost; the glance just comes first. */
   const [showDetails, setShowDetails] = useState(defaultDetailsOpen);
+  const [expanded, setExpanded] = useState(null);
+  const detailId = useId();
   /* IT REFRESHES ITSELF, AND IT ASKS FOR NOTHING ELSE.
    *
    * The card around this panel deliberately does NOT reload on a timer: only the
@@ -99,6 +119,15 @@ export default function AccountTrackerPanel({
   const shownTracker = fresh ? fresh.tracker : tracker;
   const shownDevice = fresh ? fresh.device : device;
   const at = clock;
+  /* What this client is running, for the detail under a pill and the amber
+   * marker on it. One select per client, cached by the hook; read once here
+   * when refreshing is off (the tests' and the card's quiet mode). */
+  const strategies = useClientLiveStrategies(clientUuid, {
+    active: Boolean(clientUuid) && Boolean(shownTracker),
+    refreshMs: disableAutoRefresh ? 0 : refreshMs,
+    load: loadStrategies,
+  });
+  const client = useMemo(() => ({ id: clientUuid, uuid: clientUuid, name: clientName || clientUuid }), [clientUuid, clientName]);
   const view = useMemo(() => {
     if (!shownTracker) return null;
     const staleSeconds = shownTracker.staleSeconds;
@@ -116,18 +145,23 @@ export default function AccountTrackerPanel({
     ])].sort((left, right) => String(left).localeCompare(String(right)));
     const rows = names.map((accountName) => {
       const sample = byName.get(accountName) || null;
+      const inRegistry = (accountNames || []).includes(accountName);
+      const verdict = classifyAccountTracker({
+        now: at,
+        device: shownDevice,
+        sample,
+        deviceHasSamples: shownTracker.deviceHasSamples === true,
+        trackerMinAgentVersion: shownTracker.minAgentVersion,
+        staleSeconds,
+      });
       return {
         accountName,
         sample,
-        inRegistry: (accountNames || []).includes(accountName),
-        verdict: classifyAccountTracker({
-          now: at,
-          device: shownDevice,
-          sample,
-          deviceHasSamples: shownTracker.deviceHasSamples === true,
-          trackerMinAgentVersion: shownTracker.minAgentVersion,
-          staleSeconds,
-        }),
+        inRegistry,
+        verdict,
+        // sampleOnly false: this screen has the device, so the verdict's own
+        // never_sampled sentence (which names the VPS) is the true one here.
+        pill: buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: false }),
       };
     });
     return {
@@ -138,6 +172,11 @@ export default function AccountTrackerPanel({
       enabled: Boolean(shownTracker.minAgentVersion),
     };
   }, [shownTracker, shownDevice, accountNames, at]);
+  const details = useMemo(() => new Map((view?.rows || []).map((row) => [
+    row.accountName,
+    buildAccountLiveDetail({ client, accountName: row.accountName, sample: row.sample, strategies: strategies.data, now: at }),
+  ])), [view, client, strategies.data, at]);
+  const openRow = expanded && view ? view.rows.find((row) => row.accountName === expanded) || null : null;
 
   if (!shownTracker) {
     return (
@@ -174,15 +213,33 @@ export default function AccountTrackerPanel({
               : view.everySampled
                 ? 'A collector is already sampling, and no build is named yet. Set account_tracker_settings.min_agent_version to the build that samples, so a machine too old to sample can be told apart from one that simply has not reported.'
                 : 'No collector build sends live samples yet, so nothing below is live. Set account_tracker_settings.min_agent_version to the build that does.'}
+            {' '}
+            <RefreshNote updatedAt={at} refreshMs={disableAutoRefresh ? 0 : refreshMs} />
           </span>
         </div>
       </div>
 
       {view.rows.length ? (
         <>
-          <ol className="account-tracker-lights" aria-label="Accounts at a glance">
-            {view.rows.map((row) => <TrackerLight key={row.accountName} row={row} />)}
+          <ol className="account-pills" aria-label="Accounts at a glance">
+            {view.rows.map((row) => (
+              <AccountPill
+                key={row.accountName}
+                pill={withDiffers(row.pill, details.get(row.accountName)?.differsCount || 0)}
+                expanded={expanded === row.accountName}
+                controls={detailId}
+                onToggle={() => setExpanded((value) => (value === row.accountName ? null : row.accountName))}
+              />
+            ))}
           </ol>
+          {openRow ? (
+            <AccountLiveDetail
+              id={detailId}
+              view={details.get(openRow.accountName)}
+              reading={strategies.reading}
+              error={strategies.error}
+            />
+          ) : null}
           <button
             type="button"
             className="account-tracker-details-toggle"
@@ -226,25 +283,6 @@ function headline(summary) {
 function money(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-}
-
-/* ONE LARGE DOT, THE NAME, THE STATE IN WORDS. The traffic light Pedro asked
- * for: readable from across the desk, and still never a colour alone. The run
- * state is shown under the same rule as the row: only while the reading is
- * current, because a silent account's last known "running" is a claim about a
- * machine that has stopped answering. */
-function TrackerLight({ row }) {
-  const { verdict } = row;
-  const showsRun = verdict.state === 'live' || verdict.state === 'disconnected';
-  const run = showsRun ? accountRunStateCopy(verdict.runState) : null;
-  return (
-    <li className={`account-tracker-light tracker-${verdict.state}`} title={verdict.detail}>
-      <span className="account-tracker-light-dot" aria-hidden="true" />
-      <span className="account-tracker-light-name">{row.accountName}</span>
-      <span className="account-tracker-light-state">{verdict.label}</span>
-      {run ? <span className="account-tracker-light-run" title={run.detail}>{run.label}</span> : null}
-    </li>
-  );
 }
 
 function TrackerRow({ row }) {

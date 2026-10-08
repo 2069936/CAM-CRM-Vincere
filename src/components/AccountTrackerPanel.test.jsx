@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from 'react-dom/server';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AccountTrackerPanel from './AccountTrackerPanel';
+import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
 import { ACCOUNT_TRACKER_STATES } from '../domain/autoCollectionFleet';
 import AutoCollectionCard from './AutoCollectionCard';
 
@@ -502,57 +503,79 @@ describe('the panel refreshes itself, because a frozen age is not a tracker', ()
 });
 
 /* ------------------------------------------------------------------------- *
- * THE TRAFFIC LIGHT STRIP, which is what Pedro asked for: the tracker was right
- * and there was too much to read. One large dot per account with the name and
- * the state in words under it, before the rows; the rows behind "Details".
+ * THE STRIP OF PILLS, which is what Pedro asked for: the tracker was right and
+ * there was too much to read. One pill per account with the name, the
+ * connection and the state in words, before the rows; the rows behind
+ * "Details"; and a click on a pill opens what that account is running.
  * ------------------------------------------------------------------------- */
-describe('the traffic light strip over the rows', () => {
-  afterEach(cleanup);
+describe('the strip of pills over the rows', () => {
+  afterEach(() => { cleanup(); resetClientLiveStrategiesCache(); });
 
   const three = () => tracker({
     accounts: [
       sample({ accountName: 'APEX-1' }),
-      sample({ accountName: 'APEX-2', connected: false, status: 'ConnectionLost' }),
-      sample({ accountName: 'APEX-3', sampledAt: '2026-10-05T13:00:00.000Z' }),
+      sample({ accountName: 'APEX-2', connected: false, status: 'ConnectionLost', connectionName: 'Bluesky' }),
+      sample({ accountName: 'APEX-3', sampledAt: '2026-10-05T13:00:00.000Z', connectionName: null }),
     ],
   });
 
   function strip(props = {}) {
     return render(<AccountTrackerPanel
+      clientUuid="11111111-1111-4111-8111-111111111111"
+      clientName="Gray Elm"
       tracker={three()}
       device={device()}
       accountNames={['APEX-1', 'APEX-2', 'APEX-3', 'APEX-4']}
       disableAutoRefresh
       now={() => NOW}
+      loadStrategies={() => new Promise(() => {})}
       {...props}
     />);
   }
 
-  it('shows one light per account, each with its name and its state in words', () => {
+  const pills = (container) => [...container.querySelectorAll('.account-pill')];
+  const part = (pill, name) => pill.querySelector(`.account-pill-${name}`)?.textContent ?? null;
+
+  it('shows one pill per account, each with its name, its connection and its state in words', () => {
     const { container } = strip();
-    const lights = [...container.querySelectorAll('.account-tracker-light')];
-    expect(lights.map((light) => light.querySelector('.account-tracker-light-name').textContent))
-      .toEqual(['APEX-1', 'APEX-2', 'APEX-3', 'APEX-4']);
-    expect(lights.map((light) => light.querySelector('.account-tracker-light-state').textContent))
-      .toEqual(['Live', 'Disconnected', 'Silent', 'Never sampled']);
-    // The colour class and the word travel together on every light.
+    const lights = pills(container);
+    expect(lights.map((light) => part(light, 'name'))).toEqual(['APEX-1', 'APEX-2', 'APEX-3', 'APEX-4']);
+    expect(lights.map((light) => part(light, 'connection'))).toEqual(['Rithmic', 'Bluesky', 'No connection name', 'No connection name']);
+    expect(lights.map((light) => light.querySelector('.account-pill-connection').className)).toEqual([
+      'account-pill-connection', 'account-pill-connection', 'account-pill-connection absent', 'account-pill-connection absent',
+    ]);
+    expect(lights.map((light) => part(light, 'state'))).toEqual(['Live', 'Disconnected', 'Silent', 'Never sampled']);
+    // The colour class and the word travel together on every pill.
     expect(lights.map((light) => light.className))
       .toEqual([
-        'account-tracker-light tracker-live',
-        'account-tracker-light tracker-disconnected',
-        'account-tracker-light tracker-sample_stale',
-        'account-tracker-light tracker-never_sampled',
+        'account-pill tracker-live tone-live',
+        'account-pill tracker-disconnected tone-attention',
+        'account-pill tracker-sample_stale tone-attention',
+        'account-pill tracker-never_sampled tone-faint',
       ]);
-    // The sentence is one hover away, on the light itself.
-    expect(lights[1].getAttribute('title')).toContain('not connected to its broker');
+    // The sentence is one hover away, on the pill itself, with the connection.
+    const title = lights[1].querySelector('button').getAttribute('title');
+    expect(title).toContain('APEX-2: Disconnected.');
+    expect(title).toContain('Connection Bluesky.');
+    expect(title).toContain('not connected to its broker');
+    // With the device in hand the never sampled sentence is the one that names the VPS.
+    expect(lights[3].querySelector('button').getAttribute('title')).toContain('sampling other accounts and has never sent this one');
   });
 
   it('shows the run state only under a current reading', () => {
     const { container } = strip();
-    const runs = [...container.querySelectorAll('.account-tracker-light')]
-      .map((light) => light.querySelector('.account-tracker-light-run')?.textContent ?? null);
+    const runs = pills(container).map((light) => part(light, 'run'));
     // Live and disconnected carry it; silent and never sampled do not.
     expect(runs).toEqual(['running', 'running', null, null]);
+  });
+
+  it('says when it was updated and, when refreshing, how often', () => {
+    const { container } = strip();
+    expect(container.querySelector('.account-tracker-head .live-refresh').textContent).toMatch(/^Updated .*\.$/);
+    expect(container.querySelector('.live-refresh').textContent).not.toContain('refreshes');
+    cleanup();
+    const live = strip({ disableAutoRefresh: false, refreshMs: 120_000, api: { loadStatus: () => new Promise(() => {}) } });
+    expect(live.container.querySelector('.live-refresh').textContent).toContain('refreshes every 2 min.');
   });
 
   it('keeps the rows behind Details, closed by default, and every sentence comes back on a click', () => {
@@ -576,6 +599,143 @@ describe('the traffic light strip over the rows', () => {
     const { container } = strip({ defaultDetailsOpen: true });
     expect(container.querySelectorAll('.account-tracker-row').length).toBe(4);
     // The strip is still there above them: the picture is not an alternative to the rows.
-    expect(container.querySelectorAll('.account-tracker-light').length).toBe(4);
+    expect(container.querySelectorAll('.account-pill').length).toBe(4);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * CLICK AN ACCOUNT TO SEE WHAT IT IS RUNNING.
+ * ------------------------------------------------------------------------- */
+describe('what an account is running, under its pill', () => {
+  afterEach(() => { cleanup(); resetClientLiveStrategiesCache(); });
+
+  const CLIENT_UUID = '11111111-1111-4111-8111-111111111111';
+  const CYCLE = '2026-10-05T14:50:00.000Z';
+
+  function strategyRow(accountName, overrides = {}) {
+    return {
+      clientId: CLIENT_UUID,
+      accountName,
+      strategyId: '1',
+      strategyName: '0 - OGX-PF-2.4',
+      algorithm: 'OGX_PF',
+      instrument: 'MNQ 12-26',
+      instrumentRoot: 'MNQ',
+      realizedPnl: -950,
+      unrealizedPnl: -50,
+      restartedAt: null,
+      sampledAt: '2026-10-05T14:50:02.000Z',
+      cycleStart: CYCLE,
+      ...overrides,
+    };
+  }
+
+  function answer(rows) {
+    return {
+      available: true,
+      clientId: CLIENT_UUID,
+      desk: {
+        available: true, cycleStart: CYCLE, filling: false, scope: 'rest_of_desk',
+        cohorts: [{ algorithm: 'OGX_PF', instrumentRoot: 'MNQ', status: 'compared', nAccounts: 12, nClients: 8, median: -500, spread: 100, nFlat: 0 }],
+      },
+      rows,
+      settings: { minCohortAccounts: 5, minCohortClients: 3, differsAtSpread: 3, minSpreadDollars: 50, cycleSeconds: 600, fallback: false },
+    };
+  }
+
+  function panel(props = {}) {
+    return render(<AccountTrackerPanel
+      clientUuid={CLIENT_UUID}
+      clientName="Gray Elm"
+      tracker={tracker({ accounts: [sample({ accountName: 'APEX-1' }), sample({ accountName: 'APEX-2', connectionName: 'Bluesky' })] })}
+      device={device()}
+      accountNames={['APEX-1', 'APEX-2']}
+      disableAutoRefresh
+      now={() => NOW}
+      {...props}
+    />);
+  }
+
+  it('reads what the client is running once, for this client, and marks the pill whose algorithm differs before any click', async () => {
+    const loadStrategies = vi.fn(async () => answer([strategyRow('APEX-1'), strategyRow('APEX-2', { realizedPnl: -480, unrealizedPnl: 0 })]));
+    const { container } = panel({ loadStrategies });
+    await waitFor(() => expect(loadStrategies).toHaveBeenCalledTimes(1));
+    expect(loadStrategies).toHaveBeenCalledWith({ clientId: CLIENT_UUID });
+    await waitFor(() => expect(container.querySelectorAll('.account-pill.differs').length).toBe(1));
+    const marked = container.querySelector('.account-pill.differs');
+    expect(marked.getAttribute('data-account')).toBe('APEX-1');
+    expect(marked.querySelector('.account-pill-mark')).not.toBeNull();
+    expect(marked.querySelector('button').getAttribute('title')).toContain('1 algorithm differs from the desk.');
+    expect(marked.className).toBe('account-pill tracker-live tone-live differs');
+    expect(container.querySelector('.account-live-detail')).toBeNull();
+  });
+
+  it('expands one account at a time with its totals and its strategy rows', async () => {
+    const loadStrategies = vi.fn(async () => answer([strategyRow('APEX-1'), strategyRow('APEX-2', { realizedPnl: -480, unrealizedPnl: 0 })]));
+    const { container } = panel({ loadStrategies });
+    await waitFor(() => expect(loadStrategies).toHaveBeenCalledTimes(1));
+    const [one, two] = [...container.querySelectorAll('.account-pill-button')];
+    act(() => { one.click(); });
+    expect(one.getAttribute('aria-expanded')).toBe('true');
+    const detail = container.querySelector('.account-live-detail');
+    expect(detail).not.toBeNull();
+    expect(one.getAttribute('aria-controls')).toBe(detail.getAttribute('id'));
+    expect(detail.querySelector('strong').textContent).toBe('APEX-1');
+    expect(detail.querySelector('.account-live-detail-connection').textContent).toBe('Connection Rithmic');
+    // The account totals, from the tracker sample: 412.5 realized, -120 open, 292.5 total, 2 of 3 strategies.
+    const values = [...detail.querySelectorAll('.account-live-detail-totals dd')].map((dd) => dd.textContent);
+    expect(values.slice(0, 4)).toEqual(['$413', '-$120', '$293', '2 of 3 strategies enabled']);
+    // The strategy row, with the three figures and the amber chip.
+    const row = detail.querySelector('.account-live-strategy');
+    expect(row.textContent).toContain('OGX_PF');
+    expect(row.textContent).toContain('MNQ 12-26');
+    expect(row.textContent).toContain('realized -$950');
+    expect(row.textContent).toContain('open -$50');
+    expect(row.textContent).toContain('total -$1,000');
+    expect(row.querySelector('.account-live-strategy-differs').textContent).toBe('Differs from the desk');
+    expect(row.textContent).toContain('Differs from the desk by $500, 5 times the usual spread.');
+
+    act(() => { two.click(); });
+    expect(one.getAttribute('aria-expanded')).toBe('false');
+    expect(two.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelectorAll('.account-live-detail').length).toBe(1);
+    expect(container.querySelector('.account-live-detail strong').textContent).toBe('APEX-2');
+    expect(container.querySelector('.account-live-detail').textContent).toContain('Within the usual spread of the desk');
+    expect(container.querySelector('.account-live-strategy-differs')).toBeNull();
+    expect(loadStrategies).toHaveBeenCalledTimes(1);
+
+    act(() => { two.click(); });
+    expect(container.querySelector('.account-live-detail')).toBeNull();
+  });
+
+  it('says it could not read what is running inside the detail, keeps the totals, and raises no banner', async () => {
+    const loadStrategies = vi.fn(async () => { throw new Error('timeout'); });
+    const { container } = panel({ loadStrategies });
+    await waitFor(() => expect(loadStrategies).toHaveBeenCalledTimes(1));
+    act(() => { container.querySelector('.account-pill-button').click(); });
+    const detail = container.querySelector('.account-live-detail');
+    expect(detail.querySelector('.account-live-detail-failed').textContent).toBe('Could not read what is running.');
+    expect(detail.textContent).toContain('$293');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelectorAll('.account-pill.differs').length).toBe(0);
+  });
+
+  it('refreshes the rows on the same cadence as the tracker while the panel is live', async () => {
+    vi.useFakeTimers();
+    try {
+      const loadStrategies = vi.fn(async () => answer([strategyRow('APEX-1')]));
+      panel({
+        loadStrategies,
+        disableAutoRefresh: false,
+        refreshMs: 1_000,
+        api: { loadStatus: async () => ({ accountTracker: tracker(), device: device() }) },
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(loadStrategies).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_100); });
+      expect(loadStrategies).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

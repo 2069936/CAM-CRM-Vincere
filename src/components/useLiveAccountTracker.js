@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { loadSupabaseAccountTracker } from '../domain/supabaseStore';
+import { LIVE_REFRESH_MS, WAKE_MIN_GAP_MS } from '../domain/liveRefresh';
 
 /**
  * WHAT IS HAPPENING RIGHT NOW, for a set of clients, kept fresh.
@@ -19,6 +20,14 @@ import { loadSupabaseAccountTracker } from '../domain/supabaseStore';
  * ten minutes; this asks every two, which is what keeps "4 minutes ago" on a
  * tile from reading "4 minutes ago" a quarter of an hour later.
  *
+ * AND IT WAKES UP WITH THE TAB. Pedro's question: if I leave this open all day,
+ * does it refresh on its own? A laptop that slept through the afternoon fires no
+ * interval while asleep, so the first thing he saw on opening the lid was an age
+ * from before lunch. The hook re-reads the moment the document becomes visible
+ * again or the window regains focus, at most once every WAKE_MIN_GAP_MS, because
+ * a lid opening fires both events within a second and one read is the answer.
+ * A hidden tab is never read for: nobody is looking.
+ *
  * ITS OWN FAILURE IS SILENCE. `available: false` is what a CRM where step 55
  * has not run answers, and it is also what a failed read answers, and both
  * mean the same thing here: say nothing live. The screens render that as the
@@ -30,9 +39,13 @@ import { loadSupabaseAccountTracker } from '../domain/supabaseStore';
  *
  * @param {string[]} clientIds the clients to read; the hook sorts and
  *   de-duplicates them so a re-ordered list is not a new request.
- * @returns {{tracker: object|null, clock: number}}
+ * @returns {{tracker: object|null, clock: number, refreshMs: number}} refreshMs
+ *   is handed back so the screen prints the cadence the hook actually uses.
  */
-export default function useLiveAccountTracker(clientIds = [], { refreshMs = 120_000 } = {}) {
+export default function useLiveAccountTracker(
+  clientIds = [],
+  { refreshMs = LIVE_REFRESH_MS, wakeGapMs = WAKE_MIN_GAP_MS } = {},
+) {
   const [tracker, setTracker] = useState(null);
   const [clock, setClock] = useState(() => Date.now());
   const scope = useMemo(
@@ -41,11 +54,13 @@ export default function useLiveAccountTracker(clientIds = [], { refreshMs = 120_
   );
   useEffect(() => {
     let live = true;
+    let lastReadAt = 0;
     const ids = scope ? scope.split(',') : [];
     // Nothing to read for an empty set; the return below answers null for it
     // rather than this effect setting state it would have to unset again.
     if (!ids.length) return undefined;
     async function read() {
+      lastReadAt = Date.now();
       try {
         const result = await loadSupabaseAccountTracker({ clientIds: ids });
         if (!live) return;
@@ -55,12 +70,28 @@ export default function useLiveAccountTracker(clientIds = [], { refreshMs = 120_
         if (live) setTracker(null);
       }
     }
+    function wake() {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      // The interval's reads count too: a wake a second after the timer fired
+      // is not a second request.
+      if (Date.now() - lastReadAt < wakeGapMs) return;
+      read();
+    }
     read();
     const timer = refreshMs > 0 ? setInterval(read, refreshMs) : null;
+    const listening = typeof document !== 'undefined' && typeof window !== 'undefined';
+    if (listening) {
+      document.addEventListener('visibilitychange', wake);
+      window.addEventListener('focus', wake);
+    }
     return () => {
       live = false;
       if (timer) clearInterval(timer);
+      if (listening) {
+        document.removeEventListener('visibilitychange', wake);
+        window.removeEventListener('focus', wake);
+      }
     };
-  }, [scope, refreshMs]);
-  return { tracker: scope ? tracker : null, clock };
+  }, [scope, refreshMs, wakeGapMs]);
+  return { tracker: scope ? tracker : null, clock, refreshMs };
 }

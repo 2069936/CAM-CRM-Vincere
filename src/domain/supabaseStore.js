@@ -1068,6 +1068,30 @@ export async function loadSupabaseAlgorithmLive({ clientIds = null, client = und
   };
 }
 
+/**
+ * What ONE client is running, for the detail under an account pill.
+ *
+ * Read on demand when a pill is opened and cached per client by the hook that
+ * calls it: one select on algorithm_live_samples scoped to this client_id (the
+ * uuid, never the legacy key), the desk figure from algorithm_live_desk() so
+ * each instance can be held against the desk, and the floors from the settings
+ * read above, which is cached per session. Same columns, same missing-table
+ * rule, same refusal to answer zeros for a read that failed: the detail says
+ * "could not read" instead.
+ *
+ * A Manager sees any client; a CAM sees the clients assigned to her, under step
+ * 57's SELECT policy. No new SQL.
+ *
+ * @param {{clientId: string, client?: object}} options
+ * @returns {Promise<{available: boolean, reason?: string, clientId?: string, desk?: object, rows?: object[], settings?: object|null}>}
+ */
+export async function loadSupabaseClientLiveStrategies({ clientId = '', client = undefined } = {}) {
+  const id = typeof clientId === 'string' ? clientId.trim() : '';
+  if (!id) return { available: true, clientId: '', desk: mapAlgorithmLiveDesk([]), rows: [], settings: null };
+  const result = await loadSupabaseAlgorithmLive({ clientIds: [id], client });
+  return result.available ? { ...result, clientId: id } : result;
+}
+
 export function isMissingCloseSummaries(error) {
   const message = error?.message || '';
   return error?.code === 'PGRST205'

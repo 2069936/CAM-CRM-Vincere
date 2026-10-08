@@ -4531,7 +4531,7 @@ export function ManagerOverview({
     () => deskWorkingClients.map((client) => client.uuid || client.id).filter(Boolean),
     [deskWorkingClients],
   );
-  const { tracker: deskTracker, clock: deskTrackerClock } = useLiveAccountTracker(deskTrackerIds);
+  const { tracker: deskTracker, clock: deskTrackerClock, refreshMs: deskTrackerRefreshMs } = useLiveAccountTracker(deskTrackerIds);
 
   function readFileText(file) {
     return new Promise((resolve, reject) => {
@@ -6002,6 +6002,7 @@ export function ManagerOverview({
             clients={deskWorkingClients}
             tracker={deskTracker}
             now={deskTrackerClock}
+            refreshMs={deskTrackerRefreshMs}
             onSelectClient={(clientId) => {
               // The client to CAM mapping lives on the CAM profile (clientIds,
               // from client_assignments), never on the client. Resolved the way
@@ -10828,7 +10829,7 @@ export function CamOverview({
     () => workingClients.map((client) => client.uuid || client.id).filter(Boolean),
     [workingClients],
   );
-  const { tracker: liveTracker, clock: liveClock } = useLiveAccountTracker(trackerClientIds);
+  const { tracker: liveTracker, clock: liveClock, refreshMs: liveRefreshMs } = useLiveAccountTracker(trackerClientIds);
 
   const briefing = useMemo(() => buildTodayBriefing(workingClients, {
     liveByClientId: liveTracker?.samplesByClientId || null,
@@ -11237,6 +11238,7 @@ export function CamOverview({
           clients={workingClients}
           tracker={liveTracker}
           now={liveClock}
+          refreshMs={liveRefreshMs}
           onSelectClient={onSelectClient}
         />
       </CollapsiblePanel>
