@@ -4473,7 +4473,7 @@ const DESK_HISTORY_COLUMNS = deskBusinessColumns();
  */
 const RANKING_WINDOW_DAYS = 60;
 
-function ManagerOverview({
+export function ManagerOverview({
   clients,
   closeSummaries = null,
   // One load state per panel, looked up by the panel's own key. It was a single
@@ -6002,8 +6002,13 @@ function ManagerOverview({
             tracker={deskTracker}
             now={deskTrackerClock}
             onSelectClient={(clientId) => {
-              const client = clients.find((entry) => entry.id === clientId);
-              if (client?.camProfileId) onOpenCam(client.camProfileId, clientId);
+              // The client to CAM mapping lives on the CAM profile (clientIds,
+              // from client_assignments), never on the client. Resolved the way
+              // the Insight Feed and the flags table resolve it.
+              const cam = activeCamProfiles.find((p) =>
+                (p.clientIds || []).includes(clientId),
+              );
+              onOpenCam(cam?.id, clientId);
             }}
           />
         </CollapsiblePanel>
