@@ -236,6 +236,14 @@ comment on table public.account_live_sample_history is
 --
 -- The whole body is one exception block. A history fault is a WARNING in the
 -- log and the sample lands exactly as before this step existed.
+--
+-- v_latest is a RECORD, not the table's rowtype, on purpose. plpgsql resolves a
+-- declared rowtype when it COMPILES the function, which is the first call of
+-- each backend (every new PostgREST or Supavisor connection) and happens outside
+-- the exception block below, so `v_latest public.account_live_sample_history`
+-- would let a missing history table raise into step 55's RPC on a cold backend
+-- while a warm one caught it. Field access on a record is resolved at run time,
+-- inside the block. The fresh cluster test in step_66's test file is the witness.
 -- ---------------------------------------------------------------------------
 create or replace function public.account_live_sample_history_record()
 returns trigger
@@ -244,7 +252,7 @@ security definer
 set search_path = pg_catalog, public
 as $function$
 declare
-  v_latest public.account_live_sample_history;
+  v_latest record;
   v_extended boolean := false;
   v_retention integer;
 begin

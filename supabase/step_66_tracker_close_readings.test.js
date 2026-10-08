@@ -123,12 +123,19 @@ function strategyItem(over = {}) {
   };
 }
 
+/** One strategy report, through step 57's RPC; the clock moves on the same way. */
 async function strategies(deviceId, sampledAt, items) {
   const result = await db.query(
     'select public.record_algorithm_live_sample($1, $2::timestamptz, $3::jsonb) as r',
     [deviceId, sampledAt, JSON.stringify(items)],
   );
-  return result.rows[0].r;
+  const reply = result.rows[0].r;
+  if (reply.throttled) throw new Error(`strategies throttled at ${sampledAt}`);
+  await db.query(
+    "update public.algorithm_live_samples set reported_at = reported_at - interval '1 hour' where device_id = $1",
+    [deviceId],
+  );
+  return reply;
 }
 
 async function historyRuns(deviceId, accountName) {
@@ -171,11 +178,11 @@ function closeStrategy(accountName, strategyName, instrument, realized) {
  * capture, persist the import, finalize the batch. Returns what finalize said
  * and every NOTICE or WARNING raised while it ran.
  */
-async function closeDay({ client, device, day = DAY, capturedAt, snapshots, closeStrategies = [], status = 'processed' }) {
+async function closeDay({ conn = db, client, device, day = DAY, capturedAt, snapshots, closeStrategies = [], status = 'processed' }) {
   const capture = randomUUID();
   const token = randomUUID();
   const rowCounts = { accounts: snapshots.length, strategies: closeStrategies.length, orders: 0, executions: 0 };
-  const claimed = (await db.query(
+  const claimed = (await conn.query(
     `select public.claim_ingest_batch_v4($1, $2, $3::date, $4::timestamptz, 1, $5, $6, 10, $7::jsonb, $8, 120) as r`,
     [device, capture, day, capturedAt, `${client}/${day}/${capture}.json.gz`, 'a'.repeat(64),
       JSON.stringify(rowCounts), token])).rows[0].r;
@@ -192,13 +199,13 @@ async function closeDay({ client, device, day = DAY, capturedAt, snapshots, clos
     flags: [],
     pnlSourceSummary: { realized: snapshots.length, gross_fallback: 0, gross_missing_realized: 0, unavailable: 0, unknown: 0 },
   };
-  const persisted = (await db.query(
+  const persisted = (await conn.query(
     'select public.persist_auto_daily_import_v3($1, $2, $3, $4::jsonb) as r',
     [client, batchId, token, JSON.stringify(importResult)])).rows[0].r;
   if (persisted.disposition !== 'persisted') throw new Error(`persist: ${persisted.disposition}`);
   const importId = persisted.daily_import.id;
   const notices = [];
-  const finalized = await db.query(
+  const finalized = await conn.query(
     `select status, daily_import_id, processed_at from public.finalize_ingest_batch_v3(
        $1, $2, $3, $4, $5, $6, $7::timestamptz, true, null, '{}'::jsonb, $8::jsonb,
        'ingest_batch_processed', '{"storage": 1}'::jsonb, 5)`,
@@ -307,6 +314,12 @@ beforeAll(async () => {
   await strategies(a, at(DAY, '16:30'), [
     strategyItem(),
     strategyItem({ strategyId: '101', strategyName: '1 - ALPHA-1.0', algorithm: 'ALPHA', instrument: 'NQ 12-26', instrumentRoot: 'NQ', realizedPnl: 0 }),
+  ]);
+  // A third instance read TODAY, after the trading day ended. algorithm_live_samples
+  // keeps the latest reading per instance, so a hand pin of yesterday's import
+  // run today would find it; the day's upper bound must leave it out.
+  await strategies(a, at(TODAY, '00:01'), [
+    strategyItem({ strategyId: '102', strategyName: '2 - BETA-1.0', algorithm: 'BETA', instrument: 'ES 12-26', instrumentRoot: 'ES', realizedPnl: 9 }),
   ]);
   await sample(a, at(DAY, '16:32'), [account({ accountName: 'ACC 05', realizedPnl: 7, totalPnl: 7 })]);
   await sample(a, at(DAY, '16:40'), [
@@ -669,6 +682,8 @@ describe('a close finalized as processed pins the tracker side', () => {
     });
     expect(ms(row.strategies[0].sampledAt)).toBe(ms(at(DAY, '16:30')));
     expect(row.strategies[1]).toMatchObject({ strategyName: '1 - ALPHA-1.0', realizedPnl: 0 });
+    // The instance read today, after the day ended, is not one of the day's.
+    expect(row.strategies.map((item) => item.strategyId)).toEqual(['100', '101']);
     expect((await reading(world.imports.A, 'ACC 02')).strategies).toEqual([]);
   });
 
@@ -753,6 +768,25 @@ describe('record_tracker_close_readings called directly', () => {
     expect(ms(rows[1].reading_since)).toBe(ms(at(DAY, '16:40')));
     // And with the cutoff past 16:40, ACC 03's clock is its real last sample.
     expect(ms(rows[2].sampled_at)).toBe(ms(at(DAY, '16:40')));
+  });
+
+  it('a run that begins exactly at the cutoff second is the reading, not the next one', async () => {
+    /* ACC 05's run begins at 16:32:00. One minute of grace on the 16:31 capture
+     * puts the cutoff on that very second: a run in force AT the cutoff is the
+     * pick, its clock is the cutoff, and it is not "the first run after the
+     * cutoff", so next_sampled_at stays null. */
+    await db.exec('update public.account_tracker_settings set pre_close_grace_seconds = 60 where id');
+    const reply = await one(db, 'select public.record_tracker_close_readings($1)', [world.imports.A]);
+    expect(ms(reply.cutoffAt)).toBe(ms(at(DAY, '16:32')));
+    const boundary = await reading(world.imports.A, 'ACC 05');
+    expect(boundary).toMatchObject({ source: 'crm_history', next_sampled_at: null });
+    expect(num(boundary.realized_pnl)).toBe(7);
+    expect(ms(boundary.reading_since)).toBe(ms(at(DAY, '16:32')));
+    expect(ms(boundary.sampled_at)).toBe(ms(at(DAY, '16:32')));
+    // ACC 01 is untouched: the 16:30 reading, and its 16:40 run is still after the cutoff.
+    const first = await reading(world.imports.A, 'ACC 01');
+    expect(ms(first.sampled_at)).toBe(ms(at(DAY, '16:30')));
+    expect(ms(first.next_sampled_at)).toBe(ms(at(DAY, '16:40')));
   });
 
   it('caps the pinned strategies at max_strategies_per_account', async () => {
@@ -878,10 +912,10 @@ describe('a second close of the same day', () => {
      * processing) and left a row with basis scheduled and no batch id. So the
      * count is exact and every row names a batch and the captured basis. */
     const rows = await comparisons(world.imports.A);
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
     expect(rows.at(-1).after_data).toMatchObject({ closeBatchId: world.batches.A2, accountsPinned: 7, accountsInClose: 5, accountsReadAfterClose: 0 });
-    // The first finalize, then the five direct calls above, all against batch A1.
-    expect(rows.filter((row) => row.after_data.closeBatchId === world.batches.A1)).toHaveLength(6);
+    // The first finalize, then the six direct calls above, all against batch A1.
+    expect(rows.filter((row) => row.after_data.closeBatchId === world.batches.A1)).toHaveLength(7);
     expect(rows.filter((row) => row.after_data.closeBatchId === world.batches.A2)).toHaveLength(1);
     expect(rows.every((row) => row.after_data.closeTimeBasis === 'captured' && row.after_data.closeBatchId)).toBe(true);
   });
@@ -943,6 +977,61 @@ describe('a comparison fault never fails the finalize', () => {
     expect(warnings[0]).toContain('step66_test_boom');
     expect(warnings[0]).not.toMatch(/[—–]/);
   });
+});
+
+/* ── A cold backend ─────────────────────────────────────────────────────── */
+
+describe('a cold backend: a step 66 table is gone before its trigger function ever ran', () => {
+  /* plpgsql resolves a declared rowtype when it COMPILES a function, which is
+   * the first call of each backend and happens outside the function's own
+   * exception block. Every new PostgREST or Supavisor connection is such a
+   * backend. The shared cluster above is warm, its functions ran during the
+   * fixture, so a fault of that kind is invisible to it: these two ask a cluster
+   * whose trigger functions have never run, with the table dropped first. */
+  async function coldWorld() {
+    const cold = await startMigrationCluster(migrationFilesInOrder());
+    const client = await one(cold, "insert into public.clients (name) values ('Client D') returning id");
+    const device = await one(cold, 'insert into public.ingest_devices (client_id) values ($1) returning id', [client]);
+    return { cold, client, device };
+  }
+
+  it('the history table dropped before the first sample: the RPC records, one WARNING names the device and 42P01', async () => {
+    const { cold, device } = await coldWorld();
+    try {
+      await cold.exec('drop table public.account_live_sample_history');
+      const notices = [];
+      const reply = (await cold.query(
+        'select public.record_account_live_sample($1, $2::timestamptz, $3::jsonb) as r',
+        [device, at(DAY, '10:00'), JSON.stringify([account({ realizedPnl: 1, totalPnl: 1 })])],
+        { onNotice: (notice) => notices.push(`${notice.severity}: ${notice.message}`) })).rows[0].r;
+      expect(reply).toMatchObject({ recorded: 1, throttled: false });
+      expect(await one(cold,
+        "select count(*)::int from public.account_live_samples where device_id = $1 and account_name = 'ACC 01'", [device])).toBe(1);
+      const warnings = notices.filter((n) => n.startsWith('WARNING: step 66: account_live_sample_history_record skipped'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(device);
+      expect(warnings[0]).toContain('42P01');
+      expect(warnings[0]).not.toMatch(/[—–]/);
+    } finally {
+      await cold.close();
+    }
+  }, 120_000);
+
+  it('the readings table dropped before the first close: the finalize is processed, one WARNING names the import and 42P01', async () => {
+    const { cold, client, device } = await coldWorld();
+    try {
+      await cold.exec('drop table public.tracker_close_readings');
+      const closed = await closeDay({ conn: cold, client, device, capturedAt: at(DAY, '16:31'), snapshots: [snapshot('ACC 01', 1)] });
+      expect(closed.status).toBe('processed');
+      expect(await one(cold, 'select status from public.ingest_batches where id = $1', [closed.batchId])).toBe('processed');
+      const warnings = closed.notices.filter((n) => n.startsWith('WARNING: step 66: tracker close comparison skipped'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(closed.importId);
+      expect(warnings[0]).toContain('42P01');
+    } finally {
+      await cold.close();
+    }
+  }, 120_000);
 });
 
 /* ── Privileges ──────────────────────────────────────────────────────────── */

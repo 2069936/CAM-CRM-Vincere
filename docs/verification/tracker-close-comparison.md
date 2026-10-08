@@ -38,7 +38,7 @@ Run from the repository root:
 npx vitest run supabase/step_66_tracker_close_readings.test.js
 npx vitest run supabase/step_55_account_live_samples.test.js supabase/step_56_table_privilege_lockdown.test.js supabase/step_57_algorithm_live_samples.test.js supabase/step_63_heartbeat_without_ninjatrader_version.test.js
 npx vitest run src/domain/trackerCloseComparison.test.js src/domain/supabaseStore.trackerClose.test.js
-npx eslint supabase/step_66_tracker_close_readings.test.js src/domain/trackerCloseComparison.js src/domain/trackerCloseComparison.test.js src/domain/supabaseStore.trackerClose.test.js
+npx eslint supabase/step_66_tracker_close_readings.test.js src/domain/trackerCloseComparison.js src/domain/trackerCloseComparison.test.js src/domain/supabaseStore.trackerClose.test.js src/domain/autoExportContract.test.js
 npm test
 npm run build
 ```
@@ -55,6 +55,13 @@ What the cluster test proves, each by doing it against the database:
 - a history fault (a CHECK that always fails, installed in a rolled back
   transaction) leaves the sample recorded and raises one WARNING naming the
   device, the account and the fault;
+- on a cold backend, a cluster applied once whose trigger functions have never
+  run, the history table dropped before the first sample leaves the sample
+  recorded with one WARNING naming the device and `42P01`, and the readings table
+  dropped before the first close leaves the finalize `processed` with one WARNING
+  naming the import and `42P01`. plpgsql resolves a declared rowtype when it
+  compiles the function, outside its exception block, so the warm shared cluster
+  cannot see that fault; `v_latest` is declared `record` for this reason;
 - a close finalized through `claim_ingest_batch_v4`, `persist_auto_daily_import_v3`
   and `finalize_ingest_batch_v3` pins one row per account in the union of the
   close and the readings, with the close's spelling; the pick is the run in
@@ -62,11 +69,13 @@ What the cluster test proves, each by doing it against the database:
   with two minutes of grace), `next_sampled_at` is the first run after the
   cutoff, a reading inside the grace counts, a flat night from the evening before
   is one run reaching into the day, a run that ended yesterday is not a reading,
-  the day's strategy readings are pinned in the designed keys, and one audit row
-  carries the counts;
+  the day's strategy readings are pinned in the designed keys, a strategy
+  reading dated today, after the trading day ended, is not one of them, and one
+  audit row carries the counts;
 - `record_tracker_close_readings` called directly replaces the rows wholesale
-  and writes another audit row; the grace moves the cutoff; the strategies cap
-  holds; without a batch the capture time is the client's latest ACTIVE machine's
+  and writes another audit row; the grace moves the cutoff; a run that begins
+  exactly at the cutoff second is the reading and not the next one; the
+  strategies cap holds; without a batch the capture time is the client's latest ACTIVE machine's
   own schedule with basis `scheduled`; `reset_seen` is true for a connected
   account whose realized fell from beyond ten times the tolerance to inside it
   and false when the fall stays outside; an unknown import is answered, not

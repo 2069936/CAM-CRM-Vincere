@@ -57,6 +57,17 @@ describe('auto-export snapshot v1 contract', () => {
     expect(validateAutoExportSnapshot(snapshot)).toEqual({ ok: true, errors: [] });
   });
 
+  it('validates a snapshot that carries an unknown top level key, so a rider section can travel', () => {
+    // The validator judges the sections it knows and ignores the rest. A newer
+    // AddOn may add a top level section (the 1.2.1 liveSample rider is the first)
+    // and a CRM that predates it must still accept the close.
+    const withRider = {
+      ...snapshot,
+      liveSample: { sampledAt: snapshot.capturedAt, accounts: [{ accountName: 'ACC 01', realizedPnl: 1 }] },
+    };
+    expect(validateAutoExportSnapshot(withRider)).toEqual({ ok: true, errors: [] });
+  });
+
   it('rejects formatted money and missing row identifiers', () => {
     const invalid = structuredClone(snapshot);
     invalid.accounts[0].realizedPnl = '$12.00';
