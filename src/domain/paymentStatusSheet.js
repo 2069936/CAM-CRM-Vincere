@@ -78,12 +78,26 @@ export function normalizeName(value) {
   return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+/**
+ * The cells of a row that are neither a group title nor a header word. On a
+ * title row these are the stray count or legend the desk keeps in a spare cell.
+ */
+function strayCellsOf(cells) {
+  return cells.map(cleanCell).filter((cell) => cell && !groupTitleOf(cell) && !headerRoleOf(cell));
+}
+
+/**
+ * A title row carries at least one group title and may carry a stray cell or
+ * two next to the titles. It must still be told apart from a data row whose
+ * NOTE starts like a title ("Free until October 17", "payment failed"): a data
+ * row has emails, and its names outnumber its title-like notes, so a cell with
+ * an @ in it rules the row out and the titles must outnumber the strays.
+ */
 function isTitleRow(cells) {
   const filled = cells.map(cleanCell).filter(Boolean);
-  if (!filled.length) return false;
-  const titles = filled.filter((cell) => groupTitleOf(cell));
-  // At least one group title, and nothing in the row that is plainly data.
-  return titles.length > 0 && filled.every((cell) => groupTitleOf(cell) || headerRoleOf(cell));
+  if (!filled.length || filled.some((cell) => cell.includes('@'))) return false;
+  const titles = filled.filter((cell) => groupTitleOf(cell)).length;
+  return titles > 0 && titles > strayCellsOf(cells).length;
 }
 
 function isHeaderRow(cells) {
@@ -91,6 +105,12 @@ function isHeaderRow(cells) {
   if (!filled.length) return false;
   const roles = filled.map(headerRoleOf);
   return roles.every(Boolean) && roles.includes('name');
+}
+
+/** The Cancelled tab's header: Name and Email, no Amount and no Notes. */
+function isCancelledHeader(cells) {
+  const roles = new Set(cells.map(cleanCell).filter(Boolean).map(headerRoleOf));
+  return roles.size === 2 && roles.has('name') && roles.has('email');
 }
 
 /** Column spans for each group on a title row: from its title to the next title. */
@@ -153,6 +173,10 @@ export function parsePaymentStatusSheet(text) {
     const cells = line.split('\t');
 
     if (isTitleRow(cells)) {
+      const strays = strayCellsOf(cells);
+      if (strays.length) {
+        warnings.push(`Line ${lineIndex + 1}: title row has cells that are not a group title: ${strays.map((cell) => `"${cell}"`).join(', ')}.`);
+      }
       pendingTitles = groupsFromTitleRow(cells, cells.length);
       groups = pendingTitles.map((group) => ({ ...group, columns: defaultColumns(group) }));
       groups.forEach((group) => seen.add(group.status));
@@ -169,13 +193,21 @@ export function parsePaymentStatusSheet(text) {
           return { ...widened, columns: columnsFromHeader(widened, cells) };
         });
         pendingTitles = null;
-      } else {
-        // A header with no group title above it is the Cancelled tab: Name and
-        // Email only, every row on it churned.
+      } else if (isCancelledHeader(cells)) {
+        // A header with no group title above it, Name and Email and nothing
+        // else, is the Cancelled tab: every row on it churned.
         const start = cells.findIndex((cell) => headerRoleOf(cell) === 'name');
         const group = { status: 'cancelled', start, end: cells.length - 1 };
         groups = [{ ...group, columns: columnsFromHeader(group, cells) }];
         seen.add('cancelled');
+      } else {
+        // Any other header without a title row (the Active tab pasted without
+        // its first line, or its header repeated halfway down) says nothing
+        // about which group its rows belong to. Reading them as cancelled would
+        // churn every paying client in one Apply, so nothing is parsed until a
+        // title row appears.
+        groups = null;
+        warnings.push(`Line ${lineIndex + 1}: header row with no group title above it, and not the Cancelled tab (Name and Email only); rows below it are skipped until a title row.`);
       }
       return;
     }

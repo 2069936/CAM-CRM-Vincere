@@ -205,11 +205,96 @@ describe('reading the paste', () => {
   });
 
   it('skips rows above any header and says so, and survives Windows line endings and nothing at all', () => {
-    const { rows, warnings } = parsePaymentStatusSheet(`stray\tline\r\n${HEADER_ROW.replace(/Name/, 'Name')}\r\n`);
+    const { rows, warnings } = parsePaymentStatusSheet(`stray\tline\r\n${line('Name', 'Email')}\r\n`);
     expect(rows).toEqual([]);
     expect(warnings).toEqual(['Line 1: skipped, no group header found above it.']);
     expect(parsePaymentStatusSheet('')).toEqual({ rows: [], warnings: [], groups: [] });
     expect(parsePaymentStatusSheet(null).rows).toEqual([]);
+  });
+
+  it('still finds the five groups on a title row that carries a stray cell', () => {
+    // The desk keeps a count, or a legend, in a spare cell of the title row.
+    const withCount = [
+      line('Paying a subscription', '', '', '', 'Free CAM', '', '', 'Undetermined', '', '', 'Paused', '', '', 'Iddle Clients', '', '42'),
+      HEADER_ROW,
+      line('Ada Quill', 'ada@quill.test', '$400', '', 'Bo Finch', 'bo@finch.test', '', '', '', '', '', '', '', 'Eli Moss', 'eli@moss.test'),
+    ].join('\n');
+    const { rows, groups, warnings } = parsePaymentStatusSheet(withCount);
+    expect(groups).toEqual(['paying', 'free', 'undetermined', 'paused', 'idle']);
+    expect(rows.map((row) => [row.name, row.status, row.amount])).toEqual([
+      ['Ada Quill', 'paying', 400],
+      ['Bo Finch', 'free', null],
+      ['Eli Moss', 'idle', null],
+    ]);
+    // The cell it did not understand is named, so a typo in a title is visible.
+    expect(warnings).toEqual(['Line 1: title row has cells that are not a group title: "42".']);
+
+    const withLegend = TITLE_ROW.replace(/\tIddle Clients\t$/, '\tIddle Clients\tLegend: ??? = unknown');
+    expect(parsePaymentStatusSheet(`${withLegend}\n${HEADER_ROW}`).groups).toEqual(['paying', 'free', 'undetermined', 'paused', 'idle']);
+  });
+
+  it('keeps a data row whose note starts like a group title as data', () => {
+    // No email on the row, so only the words can tell it apart from a title row.
+    const noEmails = [
+      line('Free CAM', '', '', 'Paused', '', ''),
+      line('Name', 'Email', 'Notes', 'Name', 'Email', 'Notes'),
+      line('Gil Orr', '', 'Free until October 17', 'Dee Vane', '', 'payment failed'),
+      // Email only, no name, and two title-like notes: the email is what says data.
+      line('', 'gil@orr.test', 'Free since May', '', '', 'payment failed'),
+    ].join('\n');
+    const { rows, groups, warnings } = parsePaymentStatusSheet(noEmails);
+    expect(groups).toEqual(['free', 'paused']);
+    expect(warnings).toEqual([]);
+    expect(rows.map((row) => [row.name, row.status, row.notes])).toEqual([
+      ['Gil Orr', 'free', 'Free until October 17'],
+      ['Dee Vane', 'paused', 'payment failed'],
+      ['', 'free', 'Free since May'],
+    ]);
+    expect(rows[2].emails).toEqual(['gil@orr.test']);
+  });
+
+  it('never reads an Active-shaped header without a title row as the Cancelled tab', () => {
+    // The title row was left out of the paste: the header has Amount and Notes,
+    // so it is not the Cancelled tab, and nothing under it may be churned.
+    const headless = [
+      HEADER_ROW,
+      line('Ada Quill', 'ada@quill.test', '$400', '', 'Bo Finch', 'bo@finch.test', ''),
+      line('Hal Penn', 'hal@penn.test', '$183', ''),
+    ].join('\n');
+    const { rows, groups, warnings } = parsePaymentStatusSheet(headless);
+    expect(rows).toEqual([]);
+    expect(groups).toEqual([]);
+    expect(groups).not.toContain('cancelled');
+    expect(warnings[0]).toBe('Line 1: header row with no group title above it, and not the Cancelled tab (Name and Email only); rows below it are skipped until a title row.');
+    expect(warnings).toHaveLength(3);
+    expect(warnings.slice(1)).toEqual([
+      'Line 2: skipped, no group header found above it.',
+      'Line 3: skipped, no group header found above it.',
+    ]);
+
+    // Through the whole import nothing is planned either.
+    const built = buildPaymentStatusImport(headless, book());
+    expect(built.changes).toEqual([]);
+    expect(built.counts.rows).toBe(0);
+  });
+
+  it('does not turn the rows under a repeated Active header into cancellations', () => {
+    const repeated = [
+      ACTIVE_TAB,
+      HEADER_ROW,
+      line('Ivy Lark', 'ivy@lark.test', '$500', ''),
+    ].join('\n');
+    const { rows, groups, warnings } = parsePaymentStatusSheet(repeated);
+    expect(groups).not.toContain('cancelled');
+    expect(rows.find((row) => row.name === 'Ivy Lark')).toBeUndefined();
+    expect(rows.filter((row) => row.status === 'cancelled')).toEqual([]);
+    expect(rows).toHaveLength(8);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/^Line 6: header row with no group title above it/);
+    expect(warnings[1]).toBe('Line 7: skipped, no group header found above it.');
+    // A title row after it starts a new tab as usual.
+    const resumed = parsePaymentStatusSheet(`${repeated}\n${line('Cancelled')}\n${line('Name', 'Email')}\n${line('Jon Tusk', 'jon@tusk.test')}`);
+    expect(resumed.rows.filter((row) => row.status === 'cancelled').map((row) => row.name)).toEqual(['Jon Tusk']);
   });
 });
 
