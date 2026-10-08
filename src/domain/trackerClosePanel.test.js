@@ -469,6 +469,33 @@ describe('the overview, one line per client, worst first', () => {
     expect(stale.lines[0].state).toBe('no_close');
   });
 
+  it('ranks a close pinned after this session loaded under every line that compared, and above a close still loading and a client with no close', () => {
+    /* Five clients, one per line state: Northwind differs, Maple Ridge matches,
+     * Late Close was pinned today with no import in the session, Still Loading
+     * has today's import with its rows not loaded yet, Quiet Pond has nothing.
+     * The lines that compared come first, agreement after the question; then
+     * the one asking for a reload, then the one still reading, then no close. */
+    const late = { id: 'act-late', uuid: 'late-uuid', name: 'Late Close', dailyImports: [] };
+    const lateReading = reading({ id: 11, clientId: 'late-uuid', dailyImportId: 'imp-late', accountName: 'LC 01' });
+    const still = { id: 'c-still', uuid: 'still-uuid', name: 'Still Loading', dailyImports: [dailyImport({ id: 'di-s', uuid: 'imp-s', clientId: 'c-still', snapshotsLoaded: false, snapshots: [] })] };
+    const view = buildTrackerCloseOverview({
+      clients: [quiet, still, late, other, northwind],
+      today: TODAY,
+      answer: { available: true, readings: [...READINGS, mapleReading, lateReading], settings: SETTINGS },
+    });
+    expect(view.state).toBe('ready');
+    expect(view.lines.map((line) => [line.clientName, line.state])).toEqual([
+      ['Northwind', 'ready'],
+      ['Maple Ridge', 'ready'],
+      ['Late Close', 'close_after_login'],
+      ['Still Loading', 'reading_close'],
+      ['Quiet Pond', 'no_close'],
+    ]);
+    expect(view.attentionClients).toBe(1);
+    expect(view.unloadedImportIds).toEqual(['imp-s']);
+    expect([...view.pinnedClientKeys].sort()).toEqual([UUID, 'c-maple', 'late-uuid'].sort());
+  });
+
   it('a close in the session with no pinned reading, and a close whose rows are still loading', () => {
     const unpinned = buildTrackerCloseOverview({ clients: [northwind], today: TODAY, answer: { available: true, readings: [], settings: SETTINGS } });
     expect(unpinned.lines[0].state).toBe('not_pinned');

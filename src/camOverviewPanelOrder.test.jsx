@@ -192,6 +192,20 @@ describe('the order of the panels for a Manager', () => {
 });
 
 describe('the tracker against the close (step 66)', () => {
+  const today = todayIsoDate();
+  /* One reading pinned at today's close for Cedar Row, by the overview's own
+   * fixture shape; `over` moves the figures so a case can make it differ. */
+  const pinned = (accountName, over = {}) => ({
+    id: 1, dailyImportId: 'imp-today', clientId: 'c-1', tradingDate: today, accountName, source: 'crm_history',
+    connectionName: 'Live', connected: true, status: 'Connected', realizedPnl: 10, unrealizedPnl: 0, totalPnl: 10,
+    strategyCount: 1, enabledStrategyCount: 1, runState: 'running', sampledAt: `${today}T20:30:00.000Z`,
+    readingSince: `${today}T20:00:00.000Z`, resetSeen: false, nextSampledAt: null, strategies: [], closeBatchId: 'b',
+    closeCapturedAt: `${today}T20:31:00.000Z`, closeTimeBasis: 'captured', graceSeconds: 120, staleSeconds: 1500,
+    comparedAt: `${today}T20:31:05.000Z`,
+    ...over,
+  });
+  const text = (node) => (node?.textContent || '').replace(/\s+/g, ' ').trim();
+
   it('reads today\'s pinned rows once for the working book, and names the migration when there are none to read', async () => {
     const { container } = mount();
     await waitFor(() => expect(container.querySelector('.tracker-close-overview')).not.toBeNull());
@@ -205,15 +219,6 @@ describe('the tracker against the close (step 66)', () => {
   });
 
   it('moves the briefing close dot to uploaded when today\'s rows are pinned for a client this session has no close for, without a reload', async () => {
-    const today = todayIsoDate();
-    const pinned = (accountName) => ({
-      id: 1, dailyImportId: 'imp-today', clientId: 'c-1', tradingDate: today, accountName, source: 'crm_history',
-      connectionName: 'Live', connected: true, status: 'Connected', realizedPnl: 10, unrealizedPnl: 0, totalPnl: 10,
-      strategyCount: 1, enabledStrategyCount: 1, runState: 'running', sampledAt: `${today}T20:30:00.000Z`,
-      readingSince: `${today}T20:00:00.000Z`, resetSeen: false, nextSampledAt: null, strategies: [], closeBatchId: 'b',
-      closeCapturedAt: `${today}T20:31:00.000Z`, closeTimeBasis: 'captured', graceSeconds: 120, staleSeconds: 1500,
-      comparedAt: `${today}T20:31:05.000Z`,
-    });
     mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({ available: true, readings: [pinned('CR-1'), pinned('CR-2')], settings: null });
     const { container } = mount();
     await waitFor(() => expect(container.textContent).toContain('after this session loaded'));
@@ -231,6 +236,33 @@ describe('the tracker against the close (step 66)', () => {
     const line = container.querySelector('.tracker-close-line[data-client-id="c-1"]');
     expect(line.textContent).toMatch(/Close compared at \d\d:\d\d, after this session loaded\. Reload to see it\./);
     expect(container.querySelectorAll('.tracker-close-verdict').length).toBe(0);
+  });
+
+  it('puts the amber Close differs badge on the tile pill of the one account whose close differs today, and on no other pill', async () => {
+    /* Cedar Row has today's close in the session: CR-1 closed at $200 and the
+     * tracker was pinned at $340, so CR-1 differs; CR-2 is not in the close. The
+     * verdicts the overview computed reach the Live accounts tiles through
+     * CamOverview, so the badge sits on CR-1's pill and nowhere else. */
+    const cedar = {
+      ...BOOK[0],
+      dailyImports: [{
+        id: 'di-today', uuid: 'imp-today', clientId: 'c-1', date: today, status: 'Needs review',
+        sourceSummary: { pnl_sources: { realized: 1 } },
+        snapshots: [{ id: 'snap-cr1', accountName: 'CR-1', connection: 'Live', grossRealizedPnl: 200, unrealizedPnl: 0, strategies: [] }],
+        strategies: [], simulation: {}, flags: [], snapshotsLoaded: true, detailLoaded: true,
+      }],
+    };
+    const book = [cedar, BOOK[1]];
+    mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({ available: true, readings: [pinned('CR-1', { realizedPnl: 340, totalPnl: 340 })], settings: null });
+    const { container } = mount({ clients: book, allClients: book });
+    await waitFor(() => expect(text(container.querySelector('.tracker-close-line[data-client-id="c-1"]'))).toContain('Cedar Row: 1 differs'));
+    await waitFor(() => expect(container.querySelectorAll('.fsl-tile').length).toBe(2));
+    const badges = container.querySelectorAll('.fsl-tile[data-client-id="c-1"] .account-pill-close-differs');
+    expect(badges.length).toBe(1);
+    expect(badges[0].closest('.account-pill').dataset.account).toBe('CR-1');
+    expect(badges[0].getAttribute('title')).toBe('Close differs: the realized figures differ.');
+    expect(container.querySelectorAll('.fsl-tile[data-client-id="c-1"] .account-pill[data-account="CR-2"] .account-pill-close-differs').length).toBe(0);
+    expect(container.querySelectorAll('.fsl-tile[data-client-id="c-2"] .account-pill-close-differs').length).toBe(0);
   });
 });
 

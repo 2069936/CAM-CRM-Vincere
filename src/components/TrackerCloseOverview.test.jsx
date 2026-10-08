@@ -132,6 +132,25 @@ describe('the lines', () => {
     expect(text(lateLine)).toMatch(/Late Close: Close compared at \d\d:\d\d, after this session loaded\. Reload to see it\./);
     expect(text(northwindLine)).toContain('Northwind: The tracker had no reading before this close.');
   });
+
+  it('lists the five line states in rank: differs, matches, pinned after login, still loading, no close', () => {
+    const late = { id: 'act-late', uuid: 'late-uuid', name: 'Late Close', dailyImports: [] };
+    const lateReading = reading({ id: 11, clientId: 'late-uuid', dailyImportId: 'imp-late', accountName: 'LC 01' });
+    const still = { id: 'c-still', uuid: 'still-uuid', name: 'Still Loading', dailyImports: [dailyImport({ id: 'di-s', uuid: 'imp-s', clientId: 'c-still', snapshotsLoaded: false, snapshots: [] })] };
+    const { container, onNeedClose } = show({
+      clients: [quiet, still, late, maple, northwind],
+      answer: { ...BOOK_ANSWER, readings: [...BOOK_ANSWER.readings, lateReading] },
+    });
+    const lines = linesOf(container);
+    expect(lines.map((line) => line.dataset.clientId)).toEqual([CLIENT.id, 'c-maple', 'act-late', 'c-still', 'c-quiet']);
+    expect(lines.map((line) => text(line.querySelector('.tracker-close-line-name')))).toEqual(['Northwind', 'Maple Ridge', 'Late Close', 'Still Loading', 'Quiet Pond']);
+    expect(lines.map((line) => [...line.classList].find((name) => name.startsWith('state-')))).toEqual([
+      'state-ready', 'state-ready', 'state-close_after_login', 'state-reading_close', 'state-no_close',
+    ]);
+    expect(text(lines[3].querySelector('.tracker-close-line-words'))).toBe('Reading the close.');
+    expect(onNeedClose).toHaveBeenCalledWith(['imp-s']);
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 5 clients asks for a look.');
+  });
 });
 
 describe('the empty states and the styles', () => {

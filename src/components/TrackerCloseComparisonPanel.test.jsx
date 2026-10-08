@@ -1,8 +1,23 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/* The card reads the pinned rows through the store; the store is stood in for
+ * here so a mounted card can reach a ready panel without a database. The rest
+ * of the module is the real one. */
+const mocks = vi.hoisted(() => ({
+  loadSupabaseTrackerCloseReadings: vi.fn(),
+  loadSupabaseAccountLiveSampleHistory: vi.fn(),
+}));
+
+vi.mock('../domain/supabaseStore', async (importOriginal) => ({
+  ...(await importOriginal()),
+  loadSupabaseTrackerCloseReadings: mocks.loadSupabaseTrackerCloseReadings,
+  loadSupabaseAccountLiveSampleHistory: mocks.loadSupabaseAccountLiveSampleHistory,
+}));
+
 import TrackerCloseComparisonPanel from './TrackerCloseComparisonPanel';
 import AutoCollectionCard from './AutoCollectionCard';
 import { buildTrackerClosePanel } from '../domain/trackerClosePanel';
@@ -391,5 +406,41 @@ describe('the collector card that hosts it', () => {
     const noClose = card({ client: CLIENT, dailyImport: null, selectedDate: '2026-10-08' });
     expect(noClose).toContain('No close for 2026-10-08 yet.');
     expect(card()).not.toContain('tracker-close');
+  });
+
+  it('hands the strip the verdicts it read, so the pill of the account whose close differs carries the badge and the one that matches does not', async () => {
+    /* Mounted, so the read happens: the four accounts are sampled live and the
+     * pinned rows say ACC 01 differs by $140 while ACC 02 matches. One answer,
+     * two readers: the table under the strip and the badge on the strip's pill. */
+    mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue(ANSWER);
+    mocks.loadSupabaseAccountLiveSampleHistory.mockResolvedValue(null);
+    const names = ['ACC 01', 'ACC 02', 'ACC 03', 'ACC 04'];
+    const sample = (accountName) => ({
+      accountName, connectionName: 'Bluesky', connected: true, status: 'Connected', realizedPnl: 100, unrealizedPnl: 0, totalPnl: 100,
+      strategyCount: 1, enabledStrategyCount: 1, runState: 'running', sampledAt: '2026-10-07T20:38:00.000Z',
+    });
+    const { container } = render(<AutoCollectionCard
+      clientUuid={CLIENT.uuid}
+      clientName={CLIENT.name}
+      initialStatus={{ ...paired, accountTracker: { ...paired.accountTracker, accounts: names.map(sample) } }}
+      disableAutoLoad
+      api={{ loadStatus: () => new Promise(() => {}) }}
+      accountNames={names}
+      client={CLIENT}
+      dailyImport={dailyImport()}
+      selectedDate={DATE}
+    />);
+    await waitFor(() => expect(container.querySelector('.tracker-close-table')).not.toBeNull());
+    expect(mocks.loadSupabaseTrackerCloseReadings).toHaveBeenCalledWith({ clientIds: [CLIENT.uuid], importIds: ['imp-1'], tradingDate: null });
+    const pills = [...container.querySelectorAll('.account-pills .account-pill')];
+    expect(pills.map((pill) => pill.dataset.account)).toEqual(names);
+    const differs = pills.find((pill) => pill.dataset.account === 'ACC 01');
+    const matches = pills.find((pill) => pill.dataset.account === 'ACC 02');
+    expect(differs.querySelector('.account-pill-close-differs')).not.toBeNull();
+    expect(text(differs.querySelector('.account-pill-close-differs'))).toBe('Close differs');
+    expect(differs.querySelector('.account-pill-close-differs').getAttribute('title')).toBe('Close differs: the realized figures differ.');
+    expect(differs.className).toContain('close-differs');
+    expect(matches.querySelector('.account-pill-close-differs')).toBeNull();
+    expect(matches.className).not.toContain('close-differs');
   });
 });
