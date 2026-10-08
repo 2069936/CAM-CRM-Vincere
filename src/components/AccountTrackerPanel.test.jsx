@@ -945,3 +945,19 @@ describe('only the accounts expected to trade get a pill on the client page', ()
     for (const node of container.querySelectorAll('[title]')) expect(node.getAttribute('title')).not.toMatch(/—|–| - /);
   });
 });
+
+describe('the amber "Close differs" badge on the strip (step 66)', () => {
+  it('marks the pill whose verdict asks for a look, by lower case account name, and no other', () => {
+    const html = markup({
+      tracker: tracker({ accounts: [sample(), sample({ accountName: 'APEX-2' })] }),
+      accountNames: ['APEX-1', 'APEX-2'],
+      closeVerdicts: new Map([['apex-1', 'differs'], ['apex-2', 'matches']]),
+    });
+    expect(html).toMatch(/data-account="APEX-1"[^>]*>(?:(?!<\/li>).)*account-pill-close-differs/s);
+    expect(html).not.toMatch(/data-account="APEX-2"[^>]*>(?:(?!<\/li>).)*account-pill-close-differs/s);
+    expect(html).toContain('Close differs: the realized figures differ.');
+    expect(html.match(/account-pill-close-differs/g)).toHaveLength(1);
+    // Without verdicts, nothing changes on the strip.
+    expect(markup()).not.toContain('close-differs');
+  });
+});

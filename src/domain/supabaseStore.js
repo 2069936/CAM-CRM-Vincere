@@ -1295,11 +1295,16 @@ export function mapTrackerCloseSettings(row) {
  *   available:false when step 66 has not run (or there is no database). Any
  *   other failure THROWS, so the panel says it could not read, never zeros.
  */
-export async function loadSupabaseTrackerCloseReadings({ clientIds = null, importIds = null, client = undefined } = {}) {
+export async function loadSupabaseTrackerCloseReadings({
+  clientIds = null, importIds = null, tradingDate = null, client = undefined,
+} = {}) {
   const db = client === undefined ? (isSupabaseConfigured ? supabase : null) : client;
   if (!db) return { available: false, reason: 'not_configured' };
   const scope = Array.isArray(clientIds) ? [...new Set(clientIds.filter(Boolean))] : null;
   const imports = Array.isArray(importIds) ? [...new Set(importIds.filter(Boolean))] : null;
+  // One trading day for a whole book (the overview's read): bounded by the
+  // book's accounts, whatever the table has accumulated.
+  const day = typeof tradingDate === 'string' && tradingDate.trim() ? tradingDate.trim() : null;
 
   const settingsRead = db.from('account_tracker_settings').select(TRACKER_CLOSE_SETTINGS_COLUMNS).limit(1);
   const rowsRead = (scope && !scope.length) || (imports && !imports.length)
@@ -1308,8 +1313,9 @@ export async function loadSupabaseTrackerCloseReadings({ clientIds = null, impor
       let query = db.from('tracker_close_readings').select(TRACKER_CLOSE_READING_COLUMNS);
       if (scope) query = query.in('client_id', scope);
       if (imports) query = query.in('daily_import_id', imports);
+      if (day) query = query.eq('trading_date', day);
       // Bounded, not paged: a few rows per client per close, and a caller that
-      // wants more than one day names its imports.
+      // wants more than one day names its imports or its day.
       return query.order('trading_date', { ascending: false }).order('account_name', { ascending: true }).limit(5000);
     })();
 
@@ -3163,6 +3169,50 @@ export async function updateSupabaseOperationalFlag(flagId, status) {
     .maybeSingle();
   if (error) throw new Error(error.message);
   return data;
+}
+
+/**
+ * One flag, added from the screen: the tracker against the close panel's "Add
+ * flag" (src/domain/trackerCloseFlag.js). The same row shape
+ * replaceSupabaseOperationalFlags writes, for one row, with nothing deleted:
+ * step 52's policy lets a CAM insert on their own client, so no migration.
+ * The id is the browser's uuid when it has one, so the optimistic row and the
+ * stored row are the same flag and resolving it later needs no reload.
+ */
+export async function insertSupabaseOperationalFlag(clientId, importId, flag) {
+  if (!isSupabaseConfigured || !supabase) return null;
+  if (!flag?.message) throw new Error('A flag needs a message.');
+  const [clientUuid, importUuid] = await Promise.all([
+    getClientUuid(clientId),
+    getDailyImportUuid(importId),
+  ]);
+  const accountId = await getOptionalTradingAccountId(clientId, flag.accountName);
+  const row = {
+    daily_import_id: importUuid,
+    client_id: clientUuid,
+    trading_account_id: accountId,
+    type: flag.type,
+    severity: flag.severity || 'Warning',
+    message: flag.message,
+    status: flag.status || 'Open',
+    resolved_at: null,
+  };
+  if (isUuid(flag.id)) row.id = flag.id;
+  const { data, error } = await supabase
+    .from('operational_flags')
+    .insert(row)
+    .select('*, trading_accounts(account_name)')
+    .single();
+  if (error) throw new Error(error.message);
+  return {
+    id: data.id,
+    type: data.type,
+    severity: data.severity,
+    accountName: data.trading_accounts?.account_name || flag.accountName || '',
+    message: data.message,
+    status: data.status || 'Open',
+    resolvedAt: data.resolved_at || '',
+  };
 }
 
 export async function replaceSupabaseOperationalFlags(clientId, importId, flags = [], status = 'Needs review') {

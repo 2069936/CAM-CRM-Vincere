@@ -138,6 +138,25 @@ describe('buildTodayBriefing', () => {
     expect(briefing.closeStatus).toBe('uploaded');
   });
 
+  it('promotes pending to uploaded when today\'s tracker readings are pinned for the client, by uuid or by id, and never otherwise', () => {
+    // Step 66: the pinned rows arrive by a two minute read while the login
+    // state still has no close for today, so the dot moves without a reload.
+    // A recent contact, so the urgency ladder reaches the close status.
+    const contact = [{ id: 'a1', text: 'call', createdAt: new Date('2026-06-24T12:00:00').toISOString() }];
+    const client = { ...makeClient({ hasImportToday: false }), uuid: 'u-1', activityLog: contact };
+    expect(buildTodayBriefing([client])[0].urgency).toBe('pending');
+    expect(buildTodayBriefing([client], { pinnedCloseClientKeys: new Set(['u-1']) })[0].closeStatus).toBe('uploaded');
+    expect(buildTodayBriefing([client], { pinnedCloseClientKeys: new Set(['c1']) })[0].closeStatus).toBe('uploaded');
+    expect(buildTodayBriefing([client], { pinnedCloseClientKeys: new Set(['u-1']) })[0].urgency).toBe('ok');
+    expect(buildTodayBriefing([client], { pinnedCloseClientKeys: new Set(['someone-else']) })[0].closeStatus).toBe('pending');
+    expect(buildTodayBriefing([client], { pinnedCloseClientKeys: new Set() })[0].closeStatus).toBe('pending');
+    expect(buildTodayBriefing([client], { pinnedCloseClientKeys: null })[0].closeStatus).toBe('pending');
+    // A close already in the session keeps its own word: Closed stays closed.
+    const closed = { ...makeClient({ hasImportToday: true }), uuid: 'u-1' };
+    closed.dailyImports[0].status = 'Closed';
+    expect(buildTodayBriefing([closed], { pinnedCloseClientKeys: new Set(['u-1']) })[0].closeStatus).toBe('closed');
+  });
+
   it('assigns info urgency when last activity was 7+ days ago (stale contact)', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
     const staleClient = {

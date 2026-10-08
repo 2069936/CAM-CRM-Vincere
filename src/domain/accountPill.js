@@ -1,4 +1,5 @@
 import { accountRunStateCopy } from './autoCollectionFleet';
+import { ATTENTION_VERDICTS } from './trackerCloseComparison';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * THE PILL: ONE ACCOUNT, THE THREE THINGS PEDRO WANTS TO READ ON IT.
@@ -36,6 +37,21 @@ export const NO_CONNECTION_WORD = 'No connection name';
  * state, same faint colour, a different word and a sentence that says since when. */
 export const NEW_NOT_SAMPLED_WORD = 'New, not sampled yet';
 
+/* THE SECOND AMBER MARKER (step 66): the tracker and the close disagree about
+ * this account on today's close. Pedro's orange pill. A badge in words on the
+ * pill, never its colour, never red, and only for a verdict that asks for a
+ * look (trackerCloseComparison's ATTENTION_VERDICTS); agreement and "nothing to
+ * compare" leave the pill alone. */
+export const CLOSE_DIFFERS_WORD = 'Close differs';
+
+const CLOSE_VERDICT_SAID = Object.freeze({
+  differs: 'the realized figures differ',
+  tracker_reset: 'a tracker reset was seen',
+  tracker_only: 'tracker only',
+  close_only: 'close only',
+  stale_reading: 'the tracker reading was stale',
+});
+
 /* THE PALETTE, as words. Green for live, amber for disconnected or silent,
  * faded amber for never sampled, grey for anything only the device can say
  * (offline, paused, revoked, not installed, collector too old, not sampling
@@ -64,11 +80,12 @@ export function differsWords(count) {
   return n === 1 ? '1 algorithm differs from the desk' : `${n} algorithms differ from the desk`;
 }
 
-function titleOf({ accountName, label, connectionName, detail, run, differs }) {
+function titleOf({ accountName, label, connectionName, detail, run, differs, close = null }) {
   const connection = connectionName ? `Connection ${connectionName}.` : `${NO_CONNECTION_WORD}.`;
   const parts = [`${accountName}: ${label}.`, connection, detail];
   if (run) parts.push(`Strategies: ${run.label}.`);
   if (differs) parts.push(`${differs}.`);
+  if (close) parts.push(`${close}.`);
   return parts.filter(Boolean).join(' ');
 }
 
@@ -117,6 +134,9 @@ export function buildAccountPill({
     sampledAt: verdict?.sampledAt ?? null,
     differsCount: 0,
     differsWords: null,
+    closeDiffers: false,
+    closeVerdict: null,
+    closeDiffersWords: null,
     title: titleOf({ accountName, label, connectionName, detail, run, differs: null }),
   };
 }
@@ -140,6 +160,39 @@ export function withDiffers(pill, count) {
       detail: pill.detail,
       run,
       differs: words,
+      close: pill.closeDiffersWords || null,
+    }),
+  };
+}
+
+/** "Close differs: tracker only", or null for a verdict that asks for nothing. */
+export function closeDiffersWords(verdict) {
+  if (!verdict || !ATTENTION_VERDICTS.has(verdict)) return null;
+  return `${CLOSE_DIFFERS_WORD}: ${CLOSE_VERDICT_SAID[verdict] || String(verdict).replace(/_/g, ' ')}`;
+}
+
+/**
+ * The same pill with the "Close differs" badge, when today's verdict for the
+ * account asks for attention. Colour, state, label and the desk marker are
+ * left alone; any other verdict returns the pill untouched.
+ */
+export function withCloseDiffers(pill, verdict) {
+  const words = closeDiffersWords(verdict);
+  if (!words) return pill;
+  const run = pill.runLabel ? { label: pill.runLabel } : null;
+  return {
+    ...pill,
+    closeDiffers: true,
+    closeVerdict: verdict,
+    closeDiffersWords: words,
+    title: titleOf({
+      accountName: pill.accountName,
+      label: pill.label,
+      connectionName: pill.connectionName,
+      detail: pill.detail,
+      run,
+      differs: pill.differsWords || null,
+      close: words,
     }),
   };
 }

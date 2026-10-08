@@ -6,7 +6,7 @@ import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
 import RefreshNote from './RefreshNote';
 import { classifyAccountSample } from '../domain/autoCollectionFleet';
-import { buildAccountPill, withDiffers } from '../domain/accountPill';
+import { CLOSE_DIFFERS_WORD, buildAccountPill, withCloseDiffers, withDiffers } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
 
 /* ------------------------------------------------------------------------- *
@@ -154,6 +154,44 @@ describe('the pill', () => {
   });
 });
 
+describe('the amber "Close differs" badge (step 66)', () => {
+  it('is on the pill only for a verdict that asks for attention, in words, with the verdict in the title', () => {
+    const marked = render(<ol><AccountPill pill={withCloseDiffers(pillFor(), 'tracker_only')} /></ol>).container;
+    const pill = marked.querySelector('.account-pill');
+    expect(pill.className).toBe('account-pill tracker-live tone-live close-differs');
+    expect(pill.querySelector('.account-pill-close-differs').textContent).toBe(CLOSE_DIFFERS_WORD);
+    expect(CLOSE_DIFFERS_WORD).toBe('Close differs');
+    expect(pill.querySelector('.account-pill-close-differs').getAttribute('title')).toBe('Close differs: tracker only.');
+    expect(pill.querySelector('.account-pill-button').getAttribute('title')).toContain('Close differs: tracker only.');
+    // The pill keeps its own colour and state.
+    expect(pill.querySelector('.account-pill-state').textContent).toBe('Live');
+    expect(pill.querySelector('.account-pill-mark')).toBeNull();
+  });
+
+  it('rides beside the desk marker, and both are said in the title', () => {
+    const both = withCloseDiffers(withDiffers(pillFor(), 2), 'differs');
+    const { container } = render(<ol><AccountPill pill={both} /></ol>);
+    const pill = container.querySelector('.account-pill');
+    expect(pill.className).toBe('account-pill tracker-live tone-live differs close-differs');
+    expect(pill.querySelector('.account-pill-mark')).not.toBeNull();
+    const title = pill.querySelector('.account-pill-button').getAttribute('title');
+    expect(title).toContain('2 algorithms differ from the desk.');
+    expect(title).toContain('Close differs: the realized figures differ.');
+    expect(title).not.toMatch(/[\u2013\u2014]| - /);
+  });
+
+  it('leaves the pill alone for a verdict that agrees, for no verdict, and for one that says nothing to compare', () => {
+    for (const verdict of ['matches', 'settled_at_close', 'after_close', 'tracker_no_figure', null, undefined, 'nonsense']) {
+      const plain = withCloseDiffers(pillFor(), verdict);
+      expect(plain, String(verdict)).toEqual(pillFor());
+      const { container, unmount } = render(<ol><AccountPill pill={plain} /></ol>);
+      expect(container.querySelector('.account-pill-close-differs')).toBeNull();
+      expect(container.querySelector('.account-pill').className).not.toContain('close-differs');
+      unmount();
+    }
+  });
+});
+
 describe('the detail under a pill', () => {
   it('prints the connection, the account totals and one row per strategy instance', () => {
     const { container } = render(<AccountLiveDetail view={detailFor()} id="d-1" />);
@@ -291,6 +329,7 @@ describe('the styles', () => {
     const renders = [
       <ol><AccountPill pill={withDiffers(pillFor(), 1)} onToggle={vi.fn()} expanded controls="d" /></ol>,
       <ol><AccountPill pill={pillFor({ connectionName: null })} /></ol>,
+      <ol><AccountPill pill={withCloseDiffers(pillFor(), 'differs')} /></ol>,
       <AccountLiveDetail view={detailFor()} error="x" id="d" />,
       <AccountLiveDetail view={detailFor({ sample: null, strategies: null })} error="x" />,
       <AccountLiveDetail view={detailFor({ strategies: null })} reading />,
@@ -310,7 +349,7 @@ describe('the styles', () => {
     }
     expect([...seen]).toEqual(expect.arrayContaining([
       'account-pill', 'account-pill-button', 'account-pill-dot', 'account-pill-mark', 'account-pill-name',
-      'account-pill-connection', 'account-pill-state', 'account-pill-run',
+      'account-pill-connection', 'account-pill-state', 'account-pill-run', 'account-pill-close-differs',
       'account-live-detail', 'account-live-detail-head', 'account-live-detail-connection', 'account-live-detail-differs',
       'account-live-detail-totals', 'account-live-detail-absent', 'account-live-detail-none', 'account-live-detail-reading',
       'account-live-detail-failed', 'account-live-detail-empty', 'account-live-detail-strategies', 'account-live-strategy',
@@ -325,6 +364,7 @@ describe('the styles', () => {
     // warning token, and nothing in the pill or detail block touches the error one.
     const block = css.slice(css.indexOf('.account-pills'), css.indexOf('/* ── The status light for the whole book'));
     expect(block).toMatch(/\.account-pill-mark[^}]*var\(--warning\)/);
+    expect(block).toMatch(/\.account-pill-close-differs[^}]*var\(--warning\)/);
     expect(block).toMatch(/\.account-live-strategy\.differs[^}]*var\(--warning\)/);
     expect(block).not.toMatch(/--error|--red|#ff5a69/);
   });

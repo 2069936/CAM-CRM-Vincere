@@ -273,6 +273,39 @@ export function resolveFlagInImport(state, clientId, importId, flagId, status = 
   }));
 }
 
+/**
+ * A flag added from the screen, before its row exists: the tracker against the
+ * close panel's "Add flag" (src/domain/trackerCloseFlag.js). Matched to the
+ * close by id or by uuid, the way every lookup keyed by a close tries both;
+ * the same id twice is one flag.
+ */
+export function addFlagToImport(state, clientId, importId, flag) {
+  if (!flag?.id) return state;
+  return updateClient(state, clientId, (client) => ({
+    ...client,
+    dailyImports: (client.dailyImports || []).map((di) => {
+      if (di.id !== importId && di.uuid !== importId) return di;
+      const flags = di.flags || [];
+      if (flags.some((entry) => entry.id === flag.id)) return di;
+      return { ...di, flags: [...flags, flag] };
+    }),
+  }));
+}
+
+/** The undo of addFlagToImport, for a write that failed. */
+export function removeFlagFromImport(state, clientId, importId, flagId) {
+  return updateClient(state, clientId, (client) => ({
+    ...client,
+    dailyImports: (client.dailyImports || []).map((di) => {
+      if (di.id !== importId && di.uuid !== importId) return di;
+      // Not a count of open work, so no status test: the one flag that was
+      // never written leaves, whatever its status.
+      const held = di.flags || [];
+      return { ...di, flags: held.filter((entry) => entry.id !== flagId) };
+    }),
+  }));
+}
+
 export function addTask(state, clientId, task) {
   return updateClient(state, clientId, (client) => ({
     ...client,

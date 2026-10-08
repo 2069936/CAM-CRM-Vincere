@@ -17,14 +17,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   loadSupabaseAccountTracker: vi.fn(),
+  loadSupabaseTrackerCloseReadings: vi.fn(),
 }));
 
 vi.mock('./domain/supabaseStore', async (importOriginal) => ({
   ...(await importOriginal()),
   loadSupabaseAccountTracker: mocks.loadSupabaseAccountTracker,
+  loadSupabaseTrackerCloseReadings: mocks.loadSupabaseTrackerCloseReadings,
 }));
 
 import { CamOverview } from './App';
+import { todayIsoDate } from './domain/crmStateStore';
 
 function client(id, name, accounts) {
   return {
@@ -93,6 +96,8 @@ function indexOfHeading(container, text) {
 beforeEach(() => {
   mocks.loadSupabaseAccountTracker.mockReset();
   mocks.loadSupabaseAccountTracker.mockResolvedValue(TRACKER);
+  mocks.loadSupabaseTrackerCloseReadings.mockReset();
+  mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({ available: false, reason: 'not_deployed' });
 });
 afterEach(cleanup);
 
@@ -102,6 +107,7 @@ describe('the order of the panels for a CAM', () => {
     await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
     const live = indexOfHeading(container, 'Live accounts');
     const rollCall = indexOfHeading(container, 'Algorithm roll call');
+    const close = indexOfHeading(container, 'Tracker against the close');
     const flags = indexOfHeading(container, 'Open flags');
     const coverage = indexOfHeading(container, 'Book coverage and mix');
     const feed = indexOfHeading(container, 'Insight Feed');
@@ -109,6 +115,9 @@ describe('the order of the panels for a CAM', () => {
     // The roll call for the chat sits right under the light, before the flags
     // and well before the per account comparison it summarises.
     expect(rollCall).toBe(live + 1);
+    // The tracker against today's close, right under the roll call and before the flags.
+    expect(close).toBe(rollCall + 1);
+    expect(close).toBeLessThan(flags);
     expect(rollCall).toBeLessThan(flags);
     expect(rollCall).toBeLessThan(comparison);
     expect(flags).toBeLessThan(coverage);
@@ -179,6 +188,49 @@ describe('the order of the panels for a Manager', () => {
     expect(container.textContent).toContain('Total MRR');
     // Still one heading: the body renders without a panel of its own.
     expect(headings(container).filter((heading) => heading === 'Revenue health').length).toBe(1);
+  });
+});
+
+describe('the tracker against the close (step 66)', () => {
+  it('reads today\'s pinned rows once for the working book, and names the migration when there are none to read', async () => {
+    const { container } = mount();
+    await waitFor(() => expect(container.querySelector('.tracker-close-overview')).not.toBeNull());
+    await waitFor(() => expect(container.textContent).toContain('Migration step 66 has not been run'));
+    expect(mocks.loadSupabaseTrackerCloseReadings).toHaveBeenCalledTimes(1);
+    expect(mocks.loadSupabaseTrackerCloseReadings).toHaveBeenCalledWith({ clientIds: ['c-1', 'c-2'], importIds: null, tradingDate: todayIsoDate() });
+    expect(container.querySelectorAll('.tracker-close-verdict').length).toBe(0);
+    const toggle = [...container.querySelectorAll('.collapse-toggle')]
+      .find((button) => button.textContent.includes('Tracker against the close'));
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('moves the briefing close dot to uploaded when today\'s rows are pinned for a client this session has no close for, without a reload', async () => {
+    const today = todayIsoDate();
+    const pinned = (accountName) => ({
+      id: 1, dailyImportId: 'imp-today', clientId: 'c-1', tradingDate: today, accountName, source: 'crm_history',
+      connectionName: 'Live', connected: true, status: 'Connected', realizedPnl: 10, unrealizedPnl: 0, totalPnl: 10,
+      strategyCount: 1, enabledStrategyCount: 1, runState: 'running', sampledAt: `${today}T20:30:00.000Z`,
+      readingSince: `${today}T20:00:00.000Z`, resetSeen: false, nextSampledAt: null, strategies: [], closeBatchId: 'b',
+      closeCapturedAt: `${today}T20:31:00.000Z`, closeTimeBasis: 'captured', graceSeconds: 120, staleSeconds: 1500,
+      comparedAt: `${today}T20:31:05.000Z`,
+    });
+    mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({ available: true, readings: [pinned('CR-1'), pinned('CR-2')], settings: null });
+    const { container } = mount();
+    await waitFor(() => expect(container.textContent).toContain('after this session loaded'));
+    // Cedar Row's close is pinned and not in this session; Birch Lane has nothing.
+    const briefingToggle = [...container.querySelectorAll('.collapse-toggle, button')]
+      .find((button) => button.textContent.includes("Today's briefing"));
+    act(() => { briefingToggle.click(); });
+    const cards = [...container.querySelectorAll('.briefing-card')];
+    const cedar = cards.find((card) => card.textContent.includes('Cedar Row'));
+    const birch = cards.find((card) => card.textContent.includes('Birch Lane'));
+    expect(cedar.querySelector('.briefing-dot-uploaded')).not.toBeNull();
+    expect(cedar.querySelector('.briefing-dot-uploaded').getAttribute('title')).toBe('Uploaded');
+    expect(birch.querySelector('.briefing-dot-pending')).not.toBeNull();
+    // The overview line says what happened and what to do, with no verdict invented.
+    const line = container.querySelector('.tracker-close-line[data-client-id="c-1"]');
+    expect(line.textContent).toMatch(/Close compared at \d\d:\d\d, after this session loaded\. Reload to see it\./);
+    expect(container.querySelectorAll('.tracker-close-verdict').length).toBe(0);
   });
 });
 

@@ -178,6 +178,10 @@ import DeskClientLights from "./components/DeskClientLights";
 import useLiveAccountTracker from "./components/useLiveAccountTracker";
 import AlgorithmLivePanel from "./components/AlgorithmLivePanel";
 import AlgorithmRollCall from "./components/AlgorithmRollCall";
+import TrackerCloseOverview from "./components/TrackerCloseOverview";
+import useTrackerCloseComparison from "./components/useTrackerCloseComparison";
+import { buildTrackerCloseOverview } from "./domain/trackerClosePanel";
+import { createTrackerCloseFlagAdder } from "./domain/trackerCloseFlag";
 import BookList from "./components/BookList";
 import DeskMoneyPanel, { CAPITAL_DETAIL_ID } from "./components/DeskMoneyPanel";
 import { SEGMENTS } from "./domain/operationsSegments";
@@ -4506,6 +4510,9 @@ export function ManagerOverview({
   onUpdateClientAccount,
   onTransferClient,
   onResolveFlag,
+  // The tracker against the close (step 66), for the whole desk.
+  onAddFlag = null,
+  onNeedClose = null,
 }) {
   const [newCamName, setNewCamName] = useState("");
   const [showUserPanel, setShowUserPanel] = useState(false);
@@ -4534,6 +4541,14 @@ export function ManagerOverview({
     [deskWorkingClients],
   );
   const { tracker: deskTracker, clock: deskTrackerClock, refreshMs: deskTrackerRefreshMs } = useLiveAccountTracker(deskTrackerIds);
+  /* THE TRACKER AGAINST TODAY'S CLOSE for the whole desk (step 66): the same
+     read and the same lines the CAM overview shows for one book. */
+  const deskCloseDay = todayIsoDate();
+  const deskCloseRead = useTrackerCloseComparison({ clientIds: deskTrackerIds, tradingDate: deskCloseDay });
+  const deskCloseOverview = useMemo(
+    () => buildTrackerCloseOverview({ clients: deskWorkingClients, today: deskCloseDay, answer: deskCloseRead.answer, error: deskCloseRead.error }),
+    [deskWorkingClients, deskCloseDay, deskCloseRead.answer, deskCloseRead.error],
+  );
 
   function readFileText(file) {
     return new Promise((resolve, reject) => {
@@ -6032,6 +6047,34 @@ export function ManagerOverview({
             clients={deskWorkingClients}
             tracker={deskTracker}
             bookWords="the desk's clients"
+          />
+        </CollapsiblePanel>
+
+        {/* The tracker against today's close for every working client, right
+            after the roll call: one line per client, worst first, the client
+            page's table behind a click. A client opens inside its CAM's
+            workspace, the Manager's one route to a client page. */}
+        <CollapsiblePanel
+          title="Tracker against the close"
+          defaultOpen
+          badges={deskCloseOverview.state === 'ready' && deskCloseOverview.attentionClients ? (
+            <span className="badge warning">
+              {`${deskCloseOverview.attentionClients} ${deskCloseOverview.attentionClients === 1 ? 'client asks' : 'clients ask'} for a look`}
+            </span>
+          ) : null}
+        >
+          <TrackerCloseOverview
+            view={deskCloseOverview}
+            read={deskCloseRead}
+            refreshMs={deskCloseRead.refreshMs}
+            onSelectClient={(clientId) => {
+              const cam = activeCamProfiles.find((p) =>
+                (p.clientIds || []).includes(clientId),
+              );
+              onOpenCam(cam?.id, clientId);
+            }}
+            onAddFlag={onAddFlag}
+            onNeedClose={onNeedClose}
           />
         </CollapsiblePanel>
 
@@ -9911,6 +9954,12 @@ export function buildTodayBriefing(clients, {
   liveByClientId = null,
   staleSeconds = 1500,
   now = () => new Date(),
+  // Step 66: the client keys (uuid or id) whose tracker readings are pinned
+  // for today's close. The pinned rows arrive by a two minute read while the
+  // login state may still hold no close for today, so a client in this set
+  // with no import today reads "uploaded" without a reload. A close already in
+  // the session keeps its own word.
+  pinnedCloseClientKeys = null,
 } = {}) {
   const today = todayIsoDate();
   const at = typeof now === "function" ? now() : now;
@@ -9939,8 +9988,12 @@ export function buildTodayBriefing(clients, {
         (s, snap) => s + Number(snap.grossRealizedPnl || 0),
         0,
       );
+      const pinnedToday = Boolean(
+        pinnedCloseClientKeys
+          && (pinnedCloseClientKeys.has(client.uuid) || pinnedCloseClientKeys.has(client.id)),
+      );
       const closeStatus = !todayImport
-        ? "pending"
+        ? (pinnedToday ? "uploaded" : "pending")
         : todayImport.status === "Closed"
           ? "closed"
           : "uploaded";
@@ -10767,6 +10820,10 @@ export function CamOverview({
   // The live per algorithm comparison (step 57). The parameter loader is the
   // same ensureStrategyParameters the manager's configuration panels use.
   onNeedParameters = null,
+  // The tracker against the close (step 66): the queue's own way of adding a
+  // flag, and App.jsx's way of loading a close's rows this session lacks.
+  onAddFlag = null,
+  onNeedClose = null,
   isManager = false,
   camName = "",
 }) {
@@ -10851,11 +10908,26 @@ export function CamOverview({
   );
   const { tracker: liveTracker, clock: liveClock, refreshMs: liveRefreshMs } = useLiveAccountTracker(trackerClientIds);
 
+  const today = todayIsoDate();
+  /* WHAT THE TRACKER SAID AGAINST TODAY'S CLOSE (step 66). One read for the
+   * whole book every two minutes, by uuid, of the rows pinned at today's
+   * close; the verdicts are computed in the browser against the closes the
+   * session holds (src/domain/trackerClosePanel.js). Three readers of one
+   * answer: the panel under the roll call, the amber "Close differs" badge on
+   * the tiles' pills, and the briefing's close dot, which moves to uploaded
+   * when a client's rows are pinned before this session has its close. */
+  const closeRead = useTrackerCloseComparison({ clientIds: trackerClientIds, tradingDate: today });
+  const closeOverview = useMemo(
+    () => buildTrackerCloseOverview({ clients: workingClients, today, answer: closeRead.answer, error: closeRead.error }),
+    [workingClients, today, closeRead.answer, closeRead.error],
+  );
+
   const briefing = useMemo(() => buildTodayBriefing(workingClients, {
     liveByClientId: liveTracker?.samplesByClientId || null,
     staleSeconds: liveTracker?.staleSeconds || 1500,
     now: () => new Date(liveClock),
-  }), [workingClients, liveTracker, liveClock]);
+    pinnedCloseClientKeys: closeOverview.pinnedClientKeys,
+  }), [workingClients, liveTracker, liveClock, closeOverview]);
   const insights = useMemo(
     () => buildPortfolioInsights(workingClients),
     [workingClients],
@@ -10866,7 +10938,6 @@ export function CamOverview({
     urgencyCounts[b.urgency] = (urgencyCounts[b.urgency] || 0) + 1;
   });
 
-  const today = todayIsoDate();
 
   // The day's whole close as one file. Progress is held rather than derived,
   // because a run of eleven takes long enough that a button with no state on it
@@ -11260,6 +11331,7 @@ export function CamOverview({
           now={liveClock}
           refreshMs={liveRefreshMs}
           onSelectClient={onSelectClient}
+          closeVerdicts={closeOverview.verdictsByClient}
         />
       </CollapsiblePanel>
 
@@ -11275,6 +11347,31 @@ export function CamOverview({
           clients={workingClients}
           tracker={liveTracker}
           bookWords={isManager ? "this book's clients" : 'your clients'}
+        />
+      </CollapsiblePanel>
+
+      {/* THE TRACKER AGAINST TODAY'S CLOSE, right under the roll call (step
+          66). Pedro's ask: compare what the tracker said during the day with
+          the end of day result and see what changed. One line per client,
+          worst first, the same table as the client page behind a click, "Add
+          flag" into the queue below. Open by default: before the first close
+          of the day it is one sentence, after it the thing to read. */}
+      <CollapsiblePanel
+        title="Tracker against the close"
+        defaultOpen
+        badges={closeOverview.state === 'ready' && closeOverview.attentionClients ? (
+          <span className="badge warning">
+            {`${closeOverview.attentionClients} ${closeOverview.attentionClients === 1 ? 'client asks' : 'clients ask'} for a look`}
+          </span>
+        ) : null}
+      >
+        <TrackerCloseOverview
+          view={closeOverview}
+          read={closeRead}
+          refreshMs={closeRead.refreshMs}
+          onSelectClient={onSelectClient}
+          onAddFlag={onAddFlag}
+          onNeedClose={onNeedClose}
         />
       </CollapsiblePanel>
 
@@ -12971,6 +13068,12 @@ function CredentialsTab({
   onDeleteClient,
   canDeleteClient = true,
   canManageAutoCollection = false,
+  // The close on the date picker and the picker's date, for the tracker
+  // against the close panel under the collector card (step 66), and the
+  // queue's own way of adding a flag from one of its rows.
+  dailyImport = null,
+  selectedDate = "",
+  onAddFlag = null,
 }) {
   const credentials = client.credentials || {};
   const profile = client.profile || {};
@@ -13371,6 +13474,10 @@ function CredentialsTab({
           clientUuid={client.uuid}
           clientName={client.name}
           accountRegistry={client.accountRegistry || {}}
+          client={client}
+          dailyImport={dailyImport}
+          selectedDate={selectedDate}
+          onAddFlag={onAddFlag}
         />
       ) : null}
 
@@ -15969,6 +16076,21 @@ export default function App() {
     },
   });
 
+  // The same path in the other direction (step 66): "Add flag" on a row of the
+  // tracker against the close puts one flag into the queue, by (clientId,
+  // importId, flag), with the optimistic patch undone if the insert fails.
+  const addFlagByIds = createTrackerCloseFlagAdder({
+    setState,
+    audit: auditSilently,
+    onError: (error) => {
+      console.error("[CRM] Failed to add a flag from the tracker comparison:", error);
+      window.alert(`Could not add the flag in Supabase: ${error.message}`);
+    },
+  });
+  // The overview's way of asking for a close's rows this session has not
+  // loaded; cached by id in ensureCloseDetail, so a repeat is free.
+  const needCloseRows = (ids) => ensureCloseDetail(ids, { label: "the close" });
+
   // Its default used to be "Acknowledged", so the only caller — the Dashboard's
   // "Resolve all" — was the one thing standing between this and bulk-writing a
   // status the manager has now removed. There is no parameter left to default.
@@ -16478,6 +16600,8 @@ export default function App() {
                 }),
               });
             }}
+            onAddFlag={addFlagByIds}
+            onNeedClose={needCloseRows}
             onResolveFlag={(clientId, importId, flagId) => {
               setState((current) =>
                 resolveFlagInImport(current, clientId, importId, flagId, "Resolved"),
@@ -17035,6 +17159,8 @@ export default function App() {
                 onAddClientTask={persistTask}
                 onLogClientActivity={persistActivity}
                 onResolveFlag={resolveFlagByIds}
+                onAddFlag={addFlagByIds}
+                onNeedClose={needCloseRows}
                 onClassifyAccount={classifyAccountOutcome}
                 onNeedParameters={ensureStrategyParameters}
                 isManager={session?.role === USER_ROLES.MANAGER}
@@ -17617,6 +17743,9 @@ export default function App() {
                         onUpdateClient={handleUpdateClient}
                         onDeleteClient={handleDeleteClient}
                         canDeleteClient={canCreateDeleteClients}
+                        dailyImport={dailyImport}
+                        selectedDate={selectedDate}
+                        onAddFlag={addFlagByIds}
                         canManageAutoCollection={
                           session?.role === USER_ROLES.MANAGER
                           || session?.role === USER_ROLES.CAM

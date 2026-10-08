@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_LIVE_SAMPLE_HISTORY_COLUMNS,
   TRACKER_CLOSE_READING_COLUMNS,
+  insertSupabaseOperationalFlag,
   isMissingTrackerCloseReadings,
   loadSupabaseAccountLiveSampleHistory,
   loadSupabaseTrackerCloseReadings,
@@ -35,6 +36,7 @@ function fakeClient({ settings, readings, history } = {}) {
       const chain = {
         select(columns) { asked.select[table] = columns; return chain; },
         in(column, values) { asked.filters[table].push({ op: 'in', column, values }); return chain; },
+        eq(column, value) { asked.filters[table].push({ op: 'eq', column, value }); return chain; },
         gte(column, value) { asked.filters[table].push({ op: 'gte', column, value }); return chain; },
         order(column, options) { asked.order[table].push({ column, ...options }); return chain; },
         limit(n) { asked.limit[table] = n; return chain; },
@@ -141,6 +143,18 @@ describe('loadSupabaseTrackerCloseReadings', () => {
     ]);
     expect(client.asked.limit.tracker_close_readings).toBe(5000);
     expect(client.asked.limit.account_tracker_settings).toBe(1);
+  });
+
+  it('narrows to one trading day for the overview, and only when asked', async () => {
+    const client = fakeClient();
+    await loadSupabaseTrackerCloseReadings({ clientIds: ['c1'], tradingDate: '2026-10-08', client });
+    expect(client.asked.filters.tracker_close_readings).toEqual([
+      { op: 'in', column: 'client_id', values: ['c1'] },
+      { op: 'eq', column: 'trading_date', value: '2026-10-08' },
+    ]);
+    const blank = fakeClient();
+    await loadSupabaseTrackerCloseReadings({ clientIds: ['c1'], tradingDate: '  ', client: blank });
+    expect(blank.asked.filters.tracker_close_readings).toEqual([{ op: 'in', column: 'client_id', values: ['c1'] }]);
   });
 
   it('a Manager (no clientIds) reads the whole desk with no client filter', async () => {
@@ -258,5 +272,12 @@ describe('loadSupabaseAccountLiveSampleHistory', () => {
     const client = fakeClient();
     expect(await loadSupabaseAccountLiveSampleHistory({ clientIds: [], client })).toEqual({ available: true, rows: [] });
     expect(client.asked.from).toEqual([]);
+  });
+});
+
+describe('insertSupabaseOperationalFlag', () => {
+  it('writes nothing without a database, and refuses a flag with no message before any request', async () => {
+    expect(await insertSupabaseOperationalFlag('c1', 'imp-1', { id: 'f', message: 'x' })).toBeNull();
+    expect(await insertSupabaseOperationalFlag('c1', 'imp-1', { id: 'f', message: '' })).toBeNull();
   });
 });
