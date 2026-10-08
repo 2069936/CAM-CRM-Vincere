@@ -41,6 +41,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 62 | `step_62_payment_status.sql` | `clients.payment_status` text not null default `undetermined`, CHECK in (paying, free, undetermined, paused, idle, cancelled); a backfill from `subscription_price` (`$N` to paying, `Free` to free, everything else left undetermined) that touches only rows still at the default; the table's grants restated per step 56 (anon nothing, authenticated select, insert, update, RLS on). `subscription_price` stays and now holds any whole dollar amount as `$N` | A client at $400, $375, $333 or $183 is filed as paying what they pay instead of Undetermined, and a paused, idle or cancelled client has a status of their own. Run it BEFORE deploying the build that reads the column: the login selects `payment_status` and fails on a database without it |
 | 63 | `step_63_heartbeat_without_ninjatrader_version.sql` | replaces `record_ingest_heartbeat` so a null `p_ninjatrader_version` is accepted: the stored `ingest_devices.ninjatrader_version` is kept (coalesce) and stays null only while no heartbeat has ever carried one; a non null value is still validated as a version, every other check is step 41's unchanged, and the grants are restated (service_role only). Replaces one function and rewrites no row | Agent 1.2.0 sends ninjaTraderVersion null until the first capture has told it the real one, and after every service restart until that day's capture. The route has passed null through since 2026-09-02; the RPC still refused it, so each heartbeat was a 400 and `last_seen_at` froze. Leading hypothesis for the eight VPS silent since their 1.2.0 update on 2026-10-08. Run it ANY time; nothing in the app changes. If step 41 is ever run again, run 63 again after it: 41 carries the old body |
 | 64 | `step_64_algorithm_live_position.sql` | `market_position` (long, short, flat), `position_quantity` (0 to 100000) and `trades_this_run` (0 to 1000000) on `algorithm_live_samples`, all nullable with their own CHECK constraints, and `record_algorithm_live_sample` replaced with the SAME signature so each item's `marketPosition`, `positionQuantity` and `tradesThisRun` are validated and written (a reading without them clears the columns: the row is the latest reading, not a merge). Grants restated (service_role only). Rewrites no row | Agent 1.2.1 reads each live strategy's position off NinjaTrader and posts it with the reading, so the desk sees whether BulletBot fired long or short, how many contracts it holds and how many trades this run has made, instead of asking in the team chat. Agents 1.2.0 send none of the three and store null. Run it AFTER merging the CRM and BEFORE installing agent 1.2.1 anywhere; a 1.2.1 agent against a database without it still lands and only loses the three values until it runs. If step 57 is ever run again, run 64 again after it: 57 carries the old function body |
+| 65 | `step_65_account_observations.sql` | seven columns on `trading_accounts` written by the database only: `observed_state` (`seen`, `breached`, `absent`, `never_seen`), `last_close_seen_on`, `closes_missed`, `breached_on`, `breach_reading`, `observed_at`, `auto_fail_flag_id`; `account_observation_settings`, one row (`stale_closes` 5, `auto_fail_on_breach` true, `new_account_days` 14, edited in the SQL editor); `refresh_account_observations(client)`, which recomputes every account of a client from every close of that client with the browser's own breach rule (0 is not measured, model 1 `abs(reading) >= limit`, model 2 `reading < 0`, cash and simulation never breach, the latest measured reading decides) and marks an account Failed with `date_failed`, an audit row (`trading_account.auto_failed`) and a flag for the CAM when its state becomes breached while Active or Payout Hold; deferred triggers on `account_snapshots`, `daily_imports` and `trading_accounts` that run the refresh at commit; a guard trigger that refuses a browser write to the seven columns; and a one pass backfill over every client with a close | An account the prop firm already failed stops reading Active and stops lighting up as never sampled: the close that breached marks it Failed, says so in a flag, and files absent and never seen as observations a CAM can read on the row. Needs step 52 (the policy helpers) and nothing after it; 64 and 65 touch different tables. Run it ANY time, before or after the build that reads the columns (the login tolerates an absent column). To turn the auto fail off: `update public.account_observation_settings set auto_fail_on_breach = false, updated_at = now() where id;`. The backfill marks every Active or Payout Hold account whose latest measured reading is a breach; on production that is about 281 accounts, with one flag per client naming them when more than three flip at once. Re-running it changes nothing |
 
 ## These three groups behave differently
 
@@ -114,7 +115,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -823,6 +824,40 @@ lands and loses only the three values. The file refuses to run before 57 and
 says so. Running 64 twice is a no-op (the columns say "already exists,
 skipping"); running 57 after 64 keeps the columns but stops filling them, so
 64 is run again after any re-run of 57.
+Step 65 makes the database classify accounts from the closes, which the browser
+could only do over each client's latest close. Seven columns land on
+`trading_accounts` and only the database writes them: `observed_state` says
+`seen`, `breached`, `absent` or `never_seen`; `last_close_seen_on` and
+`closes_missed` say when the account last appeared and how many of the client's
+closes have gone by since (counted in closes, not days, to match the browser's
+`staleCloses` of 5); `breached_on` and `breach_reading` say where the current
+run of breached trailing readings began and what it read; `observed_at` says
+when the row was last refreshed; `auto_fail_flag_id` remembers the flag the
+close wrote. The rule is the browser's own, from `src/domain/accountLifecycle.js`:
+a trailing reading of exactly 0 (or null) is not a measurement, a cash or
+simulation account never breaches, an account with `max_drawdown_limit > 0`
+breaches when `abs(reading) >= limit`, every other account breaches when
+`reading < 0`, and the latest measured reading decides, so a breach followed by
+a healthy reading is cleared. `refresh_account_observations(client)` recomputes
+one client; deferred triggers run it at commit whenever a close lands or a
+registry row is inserted, which is also why the flag it writes survives the
+ingest RPC deleting the close's flags a few statements later. When an account's
+state becomes `breached` while its status is Active or Payout Hold and
+`auto_fail_on_breach` is on, the refresh sets `status = 'Failed'`, fills
+`date_failed` with the breach date if it was empty (never overwrites one),
+writes an audit row (`trading_account.auto_failed`) and a flag typed `Marked
+Failed by the close`; when more than three accounts of one client flip in one
+refresh the client gets one flag naming them all. Reserve, Inactive and already
+Failed accounts are never touched, absence and never seen never move a status,
+and a cleared breach never moves a status back. The backfill at the end runs
+the refresh once per client with a close and says how many accounts it
+touched; a re-run touches the same rows and marks nothing, because the auto
+fail fires on the transition into `breached` only. Turning the auto fail off is
+one statement in the SQL editor: `update public.account_observation_settings
+set auto_fail_on_breach = false, updated_at = now() where id;` (the observation
+is still written, the status is left alone). The browser reads the seven
+columns and the settings row; the lights and the client page start reading
+them in the PR after this one.
 
 Step 39 adds columns and rewrites nothing. Every client already marked Inactive
 keeps a null reason and a null date, which the app reports as "Not recorded"

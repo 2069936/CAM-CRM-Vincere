@@ -119,6 +119,10 @@ const EXPECTED = {
    * median every other CAM reads. */
   algorithm_live_samples: 'S',
   algorithm_live_settings: 'S',
+  /* STEP 65'S SETTINGS ROW, read-only for the same reason: the thresholds are
+   * edited in the SQL editor and a CAM must not be able to turn the auto fail
+   * off from the browser. */
+  account_observation_settings: 'S',
   // nothing at all
   ingest_admission_settings: '',
   ingest_quarantine_reports: '',

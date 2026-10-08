@@ -530,6 +530,10 @@ begin
     -- expected, and the 57 runbook row says so.
     ('algorithm_live_samples',   'select', 'step 57, read-only so a CAM cannot forge a strategy reading'),
     ('algorithm_live_settings',  'select', 'step 57, read-only; the screens read the floors'),
+    -- STEP 65'S SETTINGS ROW, the same decision again: the browser reads the
+    -- thresholds and never writes them. Named before 65 exists for the same
+    -- reason as 57's pair, and the same NOTICE on a re-run before 65 is applied.
+    ('account_observation_settings', 'select', 'step 65, read-only; the screens read the thresholds'),
 
     -- NOTHING AT ALL. ingest_admission_settings and ingest_quarantine_reports
     -- each carry a restrictive `deny browser direct access` policy (step_45:490,
