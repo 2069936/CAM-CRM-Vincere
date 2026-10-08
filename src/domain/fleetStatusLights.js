@@ -1,10 +1,10 @@
 import { ACCOUNT_STATUSES } from './reconcile';
 import {
-  accountRunStateCopy,
   accountTrackerHeadline,
   classifyAccountSample,
   summarizeAccountTracker,
 } from './autoCollectionFleet';
+import { PILL_TONES, buildAccountPill } from './accountPill';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * THE STATUS LIGHT FOR A WHOLE BOOK, one tile per client, one dot per account.
@@ -21,6 +21,14 @@ import {
  * the overview's live line are. The four device-side states (offline, paused,
  * revoked, collector too old) belong to the client page, which has the device.
  * This module never claims one of them.
+ *
+ * EVERY DOT IS A PILL. Pedro's words: the dot on the client page says more,
+ * the account, what kind of connection it is, and whether it is active; the
+ * overview's dots should say the same. So each dot here is built by
+ * buildAccountPill, the same fields the client page strip renders, and the
+ * component renders the same AccountPill. A click on a pill opens what the
+ * account is running (AccountLiveDetail); a click on the tile's head opens the
+ * client.
  *
  * WHICH ACCOUNTS GET A DOT. Every account the VPS has sampled, plus every
  * account on the client's registry that is still expected to trade (Active or
@@ -42,16 +50,12 @@ import {
  * so the day step 55 is run says what to install, not just what is missing. */
 export const LIVE_SAMPLING_BUILD = '1.2.0';
 
-/* THE PALETTE, as words. The same three colours AccountTrackerPanel uses on the
- * client page: green for live, amber for disconnected or silent, faded amber
- * for never sampled. A tile nothing has sampled is grey. Every tone has a word
- * beside it on screen; the tone is never the only encoding. */
-export const DOT_TONES = Object.freeze({
-  live: 'live',
-  disconnected: 'attention',
-  sample_stale: 'attention',
-  never_sampled: 'faint',
-});
+/* THE PALETTE, as words: the pill's own (src/domain/accountPill.js), the same
+ * three colours AccountTrackerPanel uses on the client page: green for live,
+ * amber for disconnected or silent, faded amber for never sampled. A tile
+ * nothing has sampled is grey. Every tone has a word beside it on screen; the
+ * tone is never the only encoding. */
+export const DOT_TONES = PILL_TONES;
 
 export const TONE_WORDS = Object.freeze({
   live: 'Live',
@@ -79,7 +83,8 @@ export const LEGEND = Object.freeze([
 
 const EXPECTED_TO_TRADE = new Set([ACCOUNT_STATUSES.ACTIVE, ACCOUNT_STATUSES.PAYOUT_HOLD]);
 
-function expectedAccountNames(client) {
+/** The registry accounts still expected to trade (Active or Payout Hold); shared with the desk bulbs. */
+export function expectedAccountNames(client) {
   const registry = client?.accountRegistry;
   if (!registry || typeof registry !== 'object') return [];
   return Object.entries(registry)
@@ -101,40 +106,15 @@ export function agedWords(minutes) {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/* The tiny word under a dot. For a live account it is the run state, because
- * "live" is the colour and what the account is DOING is the question; for the
- * others it is the state itself. */
-function dotWord(verdict) {
-  if (verdict.state === 'live') return accountRunStateCopy(verdict.runState).label;
-  if (verdict.state === 'sample_stale') return 'silent';
-  if (verdict.state === 'disconnected') return 'disconnected';
-  return 'never sampled';
-}
-
+/* One dot is one pill (accountPill.js) plus its rank and its sample. sampleOnly:
+ * this screen has no device, so a never sampled account gets the honest
+ * sentence rather than the one that claims a paired and answering VPS. */
 function buildDot(accountName, sample, inRegistry, { now, staleSeconds }) {
   const verdict = classifyAccountSample({ now, sample, staleSeconds });
-  const run = verdict.state === 'live' || verdict.state === 'disconnected'
-    ? accountRunStateCopy(verdict.runState)
-    : null;
-  /* The sample-only never_sampled sentence claims a paired and answering VPS,
-   * which this screen cannot know. Said honestly instead. */
-  const detail = verdict.state === 'never_sampled'
-    ? 'No live sample of this account has arrived. Open the client to see whether a VPS is paired.'
-    : verdict.detail;
   return {
-    accountName,
-    inRegistry,
-    state: verdict.state,
-    tone: DOT_TONES[verdict.state] || 'faint',
-    label: verdict.label,
-    word: dotWord(verdict),
-    detail,
-    runLabel: run ? run.label : null,
-    runDetail: run ? run.detail : null,
-    ageMinutes: verdict.ageMinutes,
-    sampledAt: verdict.sampledAt,
+    ...buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: true }),
+    sample,
     rank: STATE_RANK[verdict.state] || STATE_RANK.never_sampled,
-    title: `${accountName}: ${verdict.label}. ${detail}${run ? ` Strategies: ${run.label}.` : ''}`,
   };
 }
 
@@ -170,6 +150,9 @@ export function buildClientTile(client, samples, { now, staleSeconds }) {
       : 'No account on the registry and none sampled.');
   return {
     clientId: client.id,
+    // The key the rows carry: the uuid, or the id for a client without one.
+    // What the strategies read for a pill's detail is scoped by.
+    clientKey: client.uuid || client.id,
     clientName: client.name || String(client.id),
     dots,
     worst,

@@ -4590,29 +4590,78 @@ tr:nth-child(2) .rank-badge {
   .account-tracker-row { grid-template-columns: 10px minmax(0, 1fr) auto; }
   .account-tracker-detail { grid-column: 2 / -1; }
 }
-/* ── The traffic light over the tracker rows ──────────────────────────────────
-   One large dot per account with the name and the state in WORDS under it, so
-   the panel can be read from across the desk; the rows with every sentence sit
-   behind "Details". The same three colours as the rows, and never alone. */
-.account-tracker-lights { margin: 10px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 10px 16px; }
-.account-tracker-light { display: grid; justify-items: center; gap: 3px; min-width: 64px; max-width: 120px; font-size: 10px; color: var(--muted); text-align: center; }
-.account-tracker-light-dot { width: 18px; height: 18px; border-radius: 50%; background: #94a3b8; box-shadow: 0 0 0 3px var(--surface-2), 0 0 0 4px var(--border); margin: 2px 0 3px; }
-.account-tracker-light-name { color: var(--text); font-weight: 600; font-size: 10.5px; overflow-wrap: anywhere; }
-.account-tracker-light-state { color: var(--text); }
-.account-tracker-light-run { font-style: italic; }
-.account-tracker-light.tracker-live .account-tracker-light-dot { background: var(--success); }
-.account-tracker-light.tracker-disconnected .account-tracker-light-dot,
-.account-tracker-light.tracker-sample_stale .account-tracker-light-dot { background: var(--warning); }
-.account-tracker-light.tracker-never_sampled .account-tracker-light-dot { background: var(--warning); opacity: 0.55; }
+/* ── The pill: one account, the three things it says (AccountPill) ────────────
+   Pedro's words, from the client page he likes best: the dot says the account,
+   what kind of connection it is, and whether it is active. The same pill on the
+   client page strip and on the overview tiles, evenly spaced in a wrapping grid,
+   and a button: a click opens what the account is running. The same three
+   colours as the rows, and never alone. */
+.account-pills { margin: 10px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.account-pill { min-width: 0; }
+.account-pill-button { display: grid; justify-items: center; gap: 2px; width: 100%; padding: 6px 4px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-size: 10px; line-height: 1.25; text-align: center; cursor: default; }
+button.account-pill-button { cursor: pointer; }
+button.account-pill-button:hover, button.account-pill-button:focus-visible { background: rgba(255, 255, 255, 0.04); border-color: var(--border); }
+.account-pill.expanded .account-pill-button { background: var(--surface-3); border-color: var(--border); }
+.account-pill-dot { position: relative; width: 16px; height: 16px; border-radius: 50%; background: #94a3b8; box-shadow: 0 0 0 3px var(--surface-2), 0 0 0 4px var(--border); margin: 2px 0 3px; }
+.account-pill-name { color: var(--text); font-weight: 600; font-size: 10.5px; overflow-wrap: anywhere; }
+.account-pill-connection { color: var(--text); overflow-wrap: anywhere; }
+.account-pill-connection.absent { color: var(--muted); font-style: italic; }
+.account-pill-state { color: var(--text); }
+.account-pill-run { font-style: italic; }
+.account-pill.tracker-live .account-pill-dot { background: var(--success); }
+.account-pill.tracker-disconnected .account-pill-dot,
+.account-pill.tracker-sample_stale .account-pill-dot { background: var(--warning); }
+.account-pill.tracker-never_sampled .account-pill-dot { background: var(--warning); opacity: 0.55; }
+/* THE AMBER MARKER: a corner dot for an algorithm that differs from the desk in
+   this cycle. A question about where to look, so it is amber and never red, and
+   it is never the pill's own colour: the dot under it keeps the account's state. */
+.account-pill-mark { position: absolute; right: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2px var(--surface-2); }
+.account-pill.differs .account-pill-button { border-color: var(--warning-border); }
+
+/* ── What one account is running, under its pill (AccountLiveDetail) ──────────
+   The connection, the totals the account sample measured, then one row per
+   strategy instance with its own figures and how it sits against the desk. */
+.account-live-detail { margin: 8px 0 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-3); font-size: 10.5px; display: grid; gap: 6px; min-width: 0; }
+.account-live-detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.account-live-detail-head strong { color: var(--text); font-size: 11px; }
+.account-live-detail-connection { color: var(--text); }
+.account-live-detail-connection.absent { color: var(--muted); font-style: italic; }
+.account-live-detail-differs { font-size: 10px; padding: 1px 6px; }
+.account-live-detail-totals { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.account-live-detail-totals > div { display: grid; gap: 1px; min-width: 0; }
+.account-live-detail-totals dt { color: var(--muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.02em; }
+.account-live-detail-totals dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.account-live-detail-absent { color: var(--muted); font-style: italic; }
+.account-live-detail-none, .account-live-detail-reading, .account-live-detail-failed, .account-live-detail-empty { margin: 0; color: var(--muted); }
+.account-live-detail-strategies { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.account-live-strategy { display: grid; grid-template-columns: minmax(0, 1.4fr) auto auto auto auto; gap: 2px 10px; align-items: baseline; padding-top: 4px; border-top: 1px solid var(--border); }
+.account-live-strategy-name { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.account-live-strategy-instrument { color: var(--muted); font-weight: 500; }
+.account-live-strategy-instance { display: block; color: var(--muted); font-weight: 400; font-size: 10px; }
+.account-live-strategy-figure { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.account-live-strategy-figure.strong { font-weight: 600; }
+.account-live-strategy-figure-label { color: var(--muted); }
+.account-live-strategy-differs { font-size: 10px; padding: 1px 6px; }
+.account-live-strategy-words { grid-column: 1 / -1; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+/* The row that differs carries an amber bar beside its sentence; the sentence
+   says it, the bar only helps the eye find it. Amber, never red. */
+.account-live-strategy.differs { border-left: 3px solid var(--warning); padding-left: 8px; }
+@media (max-width: 720px) {
+  .account-live-strategy { grid-template-columns: minmax(0, 1fr) auto; }
+}
+
+/* ── "Updated 40 s ago, refreshes every 2 min." (RefreshNote) ─────────────── */
+.live-refresh { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+
 .account-tracker-details-toggle { margin: 10px 0 0; padding: 0; border: 0; background: none; color: var(--muted); font-size: 10.5px; text-decoration: underline dotted; cursor: pointer; }
 .account-tracker-details-toggle:hover { color: var(--text); }
 
 /* ── The status light for the whole book (FleetStatusLights) ──────────────────
-   One tile per client tinted by its worst account, one dot per account inside,
-   worst first. Tone classes carry the colour and a word sits beside every one
-   of them: the legend, the tile's state word, the word under each dot. The
-   selectors use the direct child so a tile's tone never recolours the dots of
-   the accounts inside it. */
+   One tile per client tinted by its worst account, one pill per account inside
+   (the same AccountPill the client page strip renders), worst first. Tone
+   classes carry the colour and a word sits beside every one of them: the
+   legend, the tile's state word, the words on each pill. The legend selectors
+   use the direct child so a tile's tone never recolours the pills inside it. */
 .fleet-lights-panel .panel-heading { margin-bottom: 8px; }
 .fsl, .fsl-empty { font-size: 11px; }
 .fsl-empty { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); }
@@ -4625,17 +4674,17 @@ tr:nth-child(2) .rank-badge {
 .fsl-legend { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 10.5px; }
 .fsl-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .fsl-dot { width: 10px; height: 10px; border-radius: 50%; background: #94a3b8; flex-shrink: 0; }
-.fsl-legend-item.tone-live > .fsl-dot, .fsl-dot-item.tone-live > .fsl-dot { background: var(--success); }
-.fsl-legend-item.tone-attention > .fsl-dot, .fsl-dot-item.tone-attention > .fsl-dot { background: var(--warning); }
-.fsl-legend-item.tone-faint > .fsl-dot, .fsl-dot-item.tone-faint > .fsl-dot { background: var(--warning); opacity: 0.55; }
+.fsl-legend-item.tone-live > .fsl-dot { background: var(--success); }
+.fsl-legend-item.tone-attention > .fsl-dot { background: var(--warning); }
+.fsl-legend-item.tone-faint > .fsl-dot { background: var(--warning); opacity: 0.55; }
 .fsl-legend-item.tone-none > .fsl-dot { background: #94a3b8; }
 .fsl-grid { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
-.fsl-tile { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.fsl-tile { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface-2); min-width: 0; padding: 10px 12px; display: grid; gap: 8px; align-content: start; }
 .fsl-tile.tone-live { border-left-color: var(--success); }
 .fsl-tile.tone-attention { border-left-color: var(--warning); background: var(--warning-bg); }
 .fsl-tile.tone-faint { border-left-color: rgba(var(--warning-rgb), 0.55); }
 .fsl-tile.tone-none { border-left-color: #94a3b8; }
-.fsl-tile-button { display: grid; gap: 8px; width: 100%; padding: 10px 12px; border: 0; background: none; color: inherit; text-align: left; font: inherit; cursor: default; border-radius: 8px; }
+.fsl-tile-button { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; font: inherit; cursor: default; border-radius: 6px; }
 button.fsl-tile-button { cursor: pointer; }
 button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background: rgba(255, 255, 255, 0.04); }
 .fsl-tile-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -4644,13 +4693,64 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .fsl-tile.tone-attention .fsl-tile-state { color: var(--warning); font-weight: 600; }
 .fsl-tile.tone-live .fsl-tile-state { color: var(--success); }
 .fsl-tile.tone-none .fsl-tile-state, .fsl-tile.tone-faint .fsl-tile-state { color: var(--muted); }
-.fsl-dots { display: flex; flex-wrap: wrap; gap: 6px 10px; }
-.fsl-dot-item { display: inline-grid; justify-items: center; gap: 2px; font-size: 9px; color: var(--muted); }
-.fsl-dot-item > .fsl-dot { width: 14px; height: 14px; }
-.fsl-dot-word { white-space: nowrap; }
+.fsl-pills { margin: 0; }
+.fsl-legend-mark > .fsl-dot { position: relative; overflow: visible; }
+.fsl-legend-mark .account-pill-mark { right: -3px; top: -3px; width: 7px; height: 7px; }
 .fsl-tile-words { color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
   .fsl-grid { grid-template-columns: 1fr; }
+}
+/* ── One bulb per client on the desk view (DeskClientLights) ─────────────────
+   Pedro's words: the Manager cannot read 109 tiles; one light per client, is
+   NinjaTrader up and are the connections active, amber when some are and some
+   that should be are not, red only when nothing is up. A click opens the
+   breakdown under the grid. Every colour has a word beside it: the legend, the
+   visually hidden state word on each bulb, the sentence in its title. */
+.dcl { font-size: 11px; }
+.dcl-head { display: flex; align-items: flex-start; gap: 8px; }
+.dcl-head svg { flex-shrink: 0; margin-top: 2px; color: var(--muted); }
+.dcl-summary { margin: 0; color: var(--text); }
+.dcl-source { color: var(--muted); font-size: 10.5px; }
+.dcl-legend { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 10.5px; }
+.dcl-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.dcl-light { position: relative; width: 16px; height: 16px; border-radius: 50%; background: #94a3b8; box-shadow: 0 0 0 3px var(--surface-2), 0 0 0 4px var(--border); flex-shrink: 0; }
+.dcl-legend-item .dcl-light { width: 10px; height: 10px; box-shadow: none; }
+.dcl-legend-mark .dcl-light { overflow: visible; }
+.dcl-legend-mark .account-pill-mark { right: -3px; top: -3px; width: 7px; height: 7px; }
+.dcl-bulb.tone-live .dcl-light, .dcl-legend-item.tone-live .dcl-light, .dcl-drawer.tone-live .dcl-light { background: var(--success); }
+.dcl-bulb.tone-partly .dcl-light, .dcl-legend-item.tone-partly .dcl-light, .dcl-drawer.tone-partly .dcl-light { background: var(--warning); }
+/* Silent is amber too, drawn hollow: lit, and nothing fresh inside. Never red; a stale sample is not a lost connection. */
+.dcl-bulb.tone-silent .dcl-light, .dcl-legend-item.tone-silent .dcl-light, .dcl-drawer.tone-silent .dcl-light { background: radial-gradient(circle closest-side, var(--surface-2) 0 38%, var(--warning) 46%); }
+.dcl-bulb.tone-off .dcl-light, .dcl-legend-item.tone-off .dcl-light, .dcl-drawer.tone-off .dcl-light { background: var(--error); }
+.dcl-bulb.tone-faint .dcl-light, .dcl-legend-item.tone-faint .dcl-light, .dcl-drawer.tone-faint .dcl-light { background: var(--warning); opacity: 0.55; }
+.dcl-bulb.tone-none .dcl-light, .dcl-legend-item.tone-none .dcl-light { background: #94a3b8; }
+.dcl-grid { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 4px 8px; }
+.dcl-bulb { min-width: 0; }
+.dcl-bulb-button { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+.dcl-bulb-button:hover, .dcl-bulb-button:focus-visible { background: rgba(255, 255, 255, 0.04); border-color: var(--border); }
+.dcl-bulb.open .dcl-bulb-button { background: var(--surface-3); border-color: var(--border); }
+.dcl-bulb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcl-drawer { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); display: grid; gap: 10px; min-width: 0; }
+.dcl-drawer-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.dcl-drawer-name { color: var(--text); font-size: 12px; }
+.dcl-drawer-sentence { color: var(--text); font-size: 11px; flex: 1 1 auto; min-width: 0; }
+.dcl-drawer-actions { display: inline-flex; gap: 6px; margin-left: auto; }
+.dcl-drawer-open, .dcl-drawer-close { font-size: 10.5px; padding: 2px 8px; }
+.dcl-drawer-empty { margin: 0; color: var(--muted); }
+.dcl-connections { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.dcl-connection { padding-top: 8px; border-top: 1px solid var(--border); min-width: 0; }
+.dcl-connection-head { display: flex; align-items: baseline; gap: 10px; }
+.dcl-connection-name { color: var(--text); font-size: 11px; }
+.dcl-connection-name.absent, .dcl-connection.never .dcl-connection-name { color: var(--muted); font-style: italic; }
+.dcl-connection-words { color: var(--muted); font-size: 10.5px; }
+.dcl-pills { margin-top: 6px; }
+.dcl-hidden { margin: 10px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--muted); font-size: 10.5px; }
+.dcl-hidden-toggle { padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 10.5px; text-decoration: underline dotted; cursor: pointer; }
+.dcl-hidden-toggle:hover { color: var(--text); }
+.dcl-hidden-words { color: var(--muted); }
+.dcl-hidden-list { flex-basis: 100%; margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); }
+@media (max-width: 720px) {
+  .dcl-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
 /* ── Each algorithm today, against the desk (step 57) ─────────────────────────
    The same box and type scale as the account tracker above it, so the two live

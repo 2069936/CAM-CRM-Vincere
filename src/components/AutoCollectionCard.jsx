@@ -760,6 +760,7 @@ export default function AutoCollectionCard({
       {device ? (
         <AccountTrackerPanel
           clientUuid={clientUuid}
+          clientName={clientName}
           tracker={status?.accountTracker ?? null}
           device={device}
           accountNames={accountNames}

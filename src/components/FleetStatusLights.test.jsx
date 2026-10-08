@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FleetStatusLights from './FleetStatusLights';
+import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
 import {
   DOT_TONES,
   LEGEND,
@@ -13,13 +14,17 @@ import {
  * THE STATUS LIGHT FOR THE WHOLE BOOK.
  *
  * Pedro's words: the "semáforo" first, for all of my clients, as a picture and
- * not as text to read. These assertions are about what a glance has to get
- * right: the colour of each dot matches its state, the worst client is at the
- * top, every colour has a word beside it, the summary line counts what the
- * grid shows, and each of the three empty states says a different true thing.
+ * not as text to read; and the dots should say what the client page's say, the
+ * account, the connection, whether it is active. These assertions are about
+ * what a glance has to get right: the colour of each pill matches its state,
+ * the three words are on it, the worst client is at the top, every colour has
+ * a word beside it, the summary line counts what the grid shows, a click on a
+ * pill shows what the account is running, and each of the three empty states
+ * says a different true thing.
  * ------------------------------------------------------------------------- */
 
 const NOW = new Date('2026-10-05T15:00:00.000Z');
+const CYCLE = '2026-10-05T14:50:00.000Z';
 
 function sample(accountName, overrides = {}) {
   return {
@@ -27,6 +32,8 @@ function sample(accountName, overrides = {}) {
     connectionName: 'Rithmic',
     connected: true,
     status: 'Connected',
+    realizedPnl: 100,
+    unrealizedPnl: 20,
     totalPnl: 120,
     strategyCount: 2,
     enabledStrategyCount: 2,
@@ -38,7 +45,7 @@ function sample(accountName, overrides = {}) {
 
 const disconnected = (name) => sample(name, { connected: false, status: 'ConnectionLost' });
 const silent = (name) => sample(name, { sampledAt: '2026-10-05T13:00:00.000Z' });
-const allOff = (name) => sample(name, { runState: 'idle', enabledStrategyCount: 0 });
+const allOff = (name, extra = {}) => sample(name, { runState: 'idle', enabledStrategyCount: 0, ...extra });
 
 function client(id, name, accounts = []) {
   return {
@@ -69,10 +76,44 @@ const CLIENTS = [
 ];
 
 const SAMPLES = {
-  'c-green': [sample('G-1'), allOff('G-2')],
-  'c-amber': [sample('A-1'), disconnected('A-2'), sample('A-3')],
+  'c-green': [sample('G-1'), allOff('G-2', { connectionName: 'Bluesky' })],
+  'c-amber': [sample('A-1'), disconnected('A-2'), sample('A-3', { connectionName: null })],
   'c-silent': [sample('E-1'), silent('E-2')],
 };
+
+/* What one client is running, as the on demand loader answers it. */
+function strategyRow(clientId, accountName, overrides = {}) {
+  return {
+    clientId,
+    accountName,
+    strategyId: '1',
+    strategyName: '0 - OGX-PF-2.4',
+    algorithm: 'OGX_PF',
+    instrument: 'MNQ 12-26',
+    instrumentRoot: 'MNQ',
+    realizedPnl: -950,
+    unrealizedPnl: -50,
+    restartedAt: null,
+    sampledAt: '2026-10-05T14:50:02.000Z',
+    cycleStart: CYCLE,
+    ...overrides,
+  };
+}
+
+function strategiesAnswer(clientId, rows) {
+  return {
+    available: true,
+    clientId,
+    desk: {
+      available: true, cycleStart: CYCLE, filling: false, scope: 'desk',
+      cohorts: [{ algorithm: 'OGX_PF', instrumentRoot: 'MNQ', status: 'compared', nAccounts: 12, nClients: 8, median: -500, spread: 100, nFlat: 0 }],
+    },
+    rows,
+    settings: { minCohortAccounts: 5, minCohortClients: 3, differsAtSpread: 3, minSpreadDollars: 50, cycleSeconds: 600, fallback: false },
+  };
+}
+
+const neverAnswers = vi.fn(() => new Promise(() => {}));
 
 function mount(props = {}) {
   return render(<FleetStatusLights
@@ -80,6 +121,7 @@ function mount(props = {}) {
     tracker={tracker(SAMPLES)}
     now={NOW}
     onSelectClient={vi.fn()}
+    loadStrategies={neverAnswers}
     {...props}
   />);
 }
@@ -87,34 +129,56 @@ function mount(props = {}) {
 const tileNames = (container) => [...container.querySelectorAll('.fsl-tile')]
   .map((tile) => tile.querySelector('.fsl-tile-name').textContent);
 
+const pillsOf = (tile) => [...tile.querySelectorAll('.account-pill')];
+const pillText = (pill, part) => pill.querySelector(`.account-pill-${part}`)?.textContent ?? null;
+
+beforeEach(() => resetClientLiveStrategiesCache());
 afterEach(cleanup);
 
-describe('one dot per account, coloured by its state and never by colour alone', () => {
-  it('paints live green, disconnected and silent amber, never sampled faded amber, each with its word', () => {
+describe('one pill per account: the account, the connection, the state, never colour alone', () => {
+  it('paints live green, disconnected and silent amber, never sampled faded amber, each with its words', () => {
     const { container } = mount();
     const amber = container.querySelector('[data-client-id="c-amber"]');
-    const dots = [...amber.querySelectorAll('.fsl-dot-item')];
-    expect(dots.map((dot) => dot.className)).toEqual([
-      'fsl-dot-item tone-live tracker-live',
-      'fsl-dot-item tone-attention tracker-disconnected',
-      'fsl-dot-item tone-live tracker-live',
+    const pills = pillsOf(amber);
+    expect(pills.map((pill) => pill.className)).toEqual([
+      'account-pill tracker-live tone-live',
+      'account-pill tracker-disconnected tone-attention',
+      'account-pill tracker-live tone-live',
     ]);
-    expect(dots.map((dot) => dot.querySelector('.fsl-dot-word').textContent))
-      .toEqual(['running', 'disconnected', 'running']);
-    expect(dots[1].getAttribute('title')).toContain('A-2: Disconnected.');
-    expect(dots[1].getAttribute('title')).toContain('not connected to its broker');
-    expect(dots[1].getAttribute('title')).toContain('ConnectionLost');
+    expect(pills.map((pill) => pillText(pill, 'name'))).toEqual(['A-1', 'A-2', 'A-3']);
+    expect(pills.map((pill) => pillText(pill, 'state'))).toEqual(['Live', 'Disconnected', 'Live']);
+    expect(pills.map((pill) => pillText(pill, 'run'))).toEqual(['running', 'running', 'running']);
+    const title = pills[1].querySelector('.account-pill-button').getAttribute('title');
+    expect(title).toContain('A-2: Disconnected.');
+    expect(title).toContain('Connection Rithmic.');
+    expect(title).toContain('not connected to its broker');
+    expect(title).toContain('ConnectionLost');
 
     const quiet = container.querySelector('[data-client-id="c-silent"]');
-    const quietDots = [...quiet.querySelectorAll('.fsl-dot-item')];
-    expect(quietDots[1].className).toBe('fsl-dot-item tone-attention tracker-sample_stale');
-    expect(quietDots[1].querySelector('.fsl-dot-word').textContent).toBe('silent');
+    const quietPills = pillsOf(quiet);
+    expect(quietPills[1].className).toBe('account-pill tracker-sample_stale tone-attention');
+    expect(pillText(quietPills[1], 'state')).toBe('Silent');
+    // No run word under a silent account: its last "running" is about a machine that stopped answering.
+    expect(pillText(quietPills[1], 'run')).toBeNull();
 
-    // The run state is the word under a live dot, because what a live account is
-    // DOING is the question once its colour has said it is alive.
+    // The run state is the second word under a live pill, because what a live
+    // account is DOING is the question once its colour has said it is alive.
     const green = container.querySelector('[data-client-id="c-green"]');
-    expect([...green.querySelectorAll('.fsl-dot-word')].map((word) => word.textContent))
-      .toEqual(['running', 'all off']);
+    expect(pillsOf(green).map((pill) => pillText(pill, 'run'))).toEqual(['running', 'all off']);
+  });
+
+  it('says the connection on every pill, and "No connection name" muted when the sample has none', () => {
+    const { container } = mount();
+    const amber = container.querySelector('[data-client-id="c-amber"]');
+    const connections = pillsOf(amber).map((pill) => pill.querySelector('.account-pill-connection'));
+    expect(connections.map((node) => node.textContent)).toEqual(['Rithmic', 'Rithmic', 'No connection name']);
+    expect(connections.map((node) => node.className)).toEqual([
+      'account-pill-connection', 'account-pill-connection', 'account-pill-connection absent',
+    ]);
+    // Still live and green: the missing name is a label, not a health signal.
+    expect(pillsOf(amber)[2].className).toBe('account-pill tracker-live tone-live');
+    const green = container.querySelector('[data-client-id="c-green"]');
+    expect(pillsOf(green).map((pill) => pillText(pill, 'connection'))).toEqual(['Rithmic', 'Bluesky']);
   });
 
   it('the palette is the client page\'s: live green, disconnected or silent amber, never sampled faint', () => {
@@ -126,38 +190,41 @@ describe('one dot per account, coloured by its state and never by colour alone',
     });
   });
 
-  it('gives a registered account nobody has sampled a dot of its own, and leaves retired accounts out', () => {
+  it('gives a registered account nobody has sampled a pill of its own, and leaves retired accounts out', () => {
     const clients = [client('c-1', 'One', [['S-1'], ['S-2'], ['S-old', 'Inactive'], ['S-dead', 'Failed'], ['S-hold', 'Payout Hold']])];
     const { container } = render(<FleetStatusLights
       clients={clients}
       tracker={tracker({ 'c-1': [sample('S-1')] })}
       now={NOW}
+      loadStrategies={neverAnswers}
     />);
-    const dots = [...container.querySelectorAll('.fsl-dot-item')];
-    // One sampled, two registered and expected to trade: three dots. Inactive and
+    const pills = [...container.querySelectorAll('.account-pill')];
+    // One sampled, two registered and expected to trade: three pills. Inactive and
     // Failed are not expected to sample, so a light on them would be a false alarm.
-    expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual([
+    expect(pills.map((pill) => `${pillText(pill, 'name')}: ${pillText(pill, 'state')}${pillText(pill, 'run') ? `, ${pillText(pill, 'run')}` : ''}`)).toEqual([
       'S-1: Live, running',
       'S-2: Never sampled',
       'S-hold: Never sampled',
     ]);
-    expect(dots[1].className).toBe('fsl-dot-item tone-faint tracker-never_sampled');
-    expect(dots[1].querySelector('.fsl-dot-word').textContent).toBe('never sampled');
+    expect(pills[1].className).toBe('account-pill tracker-never_sampled tone-faint');
+    expect(pillText(pills[1], 'connection')).toBe('No connection name');
     // Honest about what the browser cannot see: it does not claim a paired VPS.
-    expect(dots[1].getAttribute('title')).toContain('Open the client to see whether a VPS is paired');
-    expect(dots[1].getAttribute('title')).not.toContain('paired and answering');
+    const title = pills[1].querySelector('.account-pill-button').getAttribute('title');
+    expect(title).toContain('Open the client to see whether a VPS is paired');
+    expect(title).not.toContain('paired and answering');
     expect(container.textContent).toContain('2 registered and never sampled');
   });
 
-  it('counts one dot per account and no more, whatever the sample order', () => {
+  it('counts one pill per account and no more, whatever the sample order', () => {
     const clients = [client('c-1', 'One', [['Z-1'], ['Y-2']])];
     const { container } = render(<FleetStatusLights
       clients={clients}
       tracker={tracker({ 'c-1': [sample('Y-2'), sample('Z-1'), sample('X-3')] })}
       now={NOW}
+      loadStrategies={neverAnswers}
     />);
-    expect(container.querySelectorAll('.fsl-dot-item').length).toBe(3);
-    expect([...container.querySelectorAll('.fsl-dot-item')].map((dot) => dot.getAttribute('aria-label').split(':')[0]))
+    expect(container.querySelectorAll('.account-pill').length).toBe(3);
+    expect([...container.querySelectorAll('.account-pill')].map((pill) => pill.getAttribute('data-account')))
       .toEqual(['X-3', 'Y-2', 'Z-1']);
   });
 });
@@ -192,6 +259,7 @@ describe('worst first', () => {
       clients={clients}
       tracker={tracker({ 'c-faint': [sample('H-1')] })}
       now={NOW}
+      loadStrategies={neverAnswers}
     />);
     expect(tileNames(container)).toEqual(['Half Sampled', 'Nothing Yet']);
     expect(container.querySelector('[data-client-id="c-faint"]').className).toBe('fsl-tile tone-faint');
@@ -214,10 +282,22 @@ describe('worst first', () => {
     });
     expect(view.tiles.map((tile) => tile.clientName)).toEqual(['Beta', 'Alpha', 'Gamma']);
   });
+
+  it('builds every dot as the shared pill, with the connection and the rank', () => {
+    const view = buildFleetStatusLights({ clients: CLIENTS, tracker: tracker(SAMPLES), now: NOW });
+    const amber = view.tiles.find((tile) => tile.clientId === 'c-amber');
+    expect(amber.dots.map((dot) => [dot.accountName, dot.connectionWord, dot.label, dot.runLabel, dot.rank])).toEqual([
+      ['A-1', 'Rithmic', 'Live', 'running', 1],
+      ['A-2', 'Rithmic', 'Disconnected', 'running', 5],
+      ['A-3', 'No connection name', 'Live', 'running', 1],
+    ]);
+    expect(amber.dots[0].title).toBe('A-1: Live. Connection Rithmic. Sampled 4 minutes ago. Strategies: running.');
+    expect(amber.clientKey).toBe('c-amber');
+  });
 });
 
 describe('words beside every colour', () => {
-  it('prints a legend naming all four tones', () => {
+  it('prints a legend naming all four tones and the amber marker', () => {
     const { container } = mount();
     const legend = [...container.querySelectorAll('.fsl-legend-item')];
     expect(legend.map((item) => item.className)).toEqual([
@@ -225,24 +305,27 @@ describe('words beside every colour', () => {
       'fsl-legend-item tone-attention',
       'fsl-legend-item tone-faint',
       'fsl-legend-item tone-none',
+      'fsl-legend-item fsl-legend-mark',
     ]);
     expect(legend.map((item) => item.textContent)).toEqual([
       'Live',
       'Disconnected or silent',
       'Never sampled',
       'No sample for this client',
+      'Amber corner: an algorithm differs from the desk',
     ]);
     expect(LEGEND.length).toBe(4);
   });
 
-  it('every dot has a visible word and every tile a visible state word', () => {
+  it('every pill has visible words and every tile a visible state word', () => {
     const { container } = mount();
-    const dots = [...container.querySelectorAll('.fsl-dot-item')];
-    expect(dots.length).toBe(8);
-    for (const dot of dots) {
-      expect(dot.querySelector('.fsl-dot-word').textContent.trim()).not.toBe('');
-      expect(dot.getAttribute('title')).toMatch(/\w/);
-      expect(dot.getAttribute('aria-label')).toMatch(/: /);
+    const pills = [...container.querySelectorAll('.account-pill')];
+    expect(pills.length).toBe(8);
+    for (const pill of pills) {
+      expect(pillText(pill, 'name').trim()).not.toBe('');
+      expect(pillText(pill, 'connection').trim()).not.toBe('');
+      expect(pillText(pill, 'state').trim()).not.toBe('');
+      expect(pill.querySelector('.account-pill-button').getAttribute('title')).toMatch(/: /);
     }
     for (const tile of container.querySelectorAll('.fsl-tile')) {
       expect(tile.querySelector('.fsl-tile-state').textContent.trim()).not.toBe('');
@@ -250,7 +333,7 @@ describe('words beside every colour', () => {
     }
   });
 
-  it('says on the tile what the dots add up to, and when the latest sample was', () => {
+  it('says on the tile what the pills add up to, and when the latest sample was', () => {
     const { container } = mount();
     const amber = container.querySelector('[data-client-id="c-amber"] .fsl-tile-words').textContent;
     expect(amber).toBe('3 accounts sampled: 2 running, 1 disconnected. Latest sample 4m ago.');
@@ -261,12 +344,31 @@ describe('words beside every colour', () => {
 });
 
 describe('the one line over the grid', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('reuses the tracker summary and says how many clients it covers', () => {
     const { container } = mount();
     const line = container.querySelector('.fsl-summary').textContent;
     // 7 sampled across three clients: 5 running, 1 all off, 1 disconnected, 1 silent.
     expect(line).toContain('7 accounts sampled: 4 running, 1 all off, 1 disconnected, 1 silent, across 3 of 4 clients. Latest sample 4m ago.');
-    expect(line).toContain('As of ');
+  });
+
+  it('says when it was updated and that it refreshes every two minutes, and ages that without a read', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-05T15:00:40.000Z'));
+    const { container } = mount();
+    const note = () => container.querySelector('.fsl-summary .live-refresh').textContent;
+    expect(note()).toBe('Updated 40 s ago, refreshes every 2 min.');
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(note()).toBe('Updated 50 s ago, refreshes every 2 min.');
+    expect(neverAnswers).not.toHaveBeenCalled();
+  });
+
+  it('prints the cadence it is handed, never a literal of its own', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-05T15:00:05.000Z'));
+    const { container } = mount({ refreshMs: 60_000 });
+    expect(container.querySelector('.live-refresh').textContent).toBe('Updated just now, refreshes every 1 min.');
   });
 
   it('is computed from the same rows the tiles show, so the two cannot disagree', () => {
@@ -280,19 +382,122 @@ describe('the one line over the grid', () => {
   });
 });
 
-describe('a tile opens its client', () => {
-  it('calls onSelectClient with the client id', () => {
+describe('a tile opens its client, a pill opens its account', () => {
+  it('calls onSelectClient with the client id from the tile head, and never from a pill', () => {
     const onSelectClient = vi.fn();
     const { container } = mount({ onSelectClient });
-    container.querySelector('[data-client-id="c-silent"] button').click();
+    container.querySelector('[data-client-id="c-silent"] .fsl-tile-button').click();
     expect(onSelectClient).toHaveBeenCalledTimes(1);
     expect(onSelectClient).toHaveBeenCalledWith('c-silent');
+    act(() => { container.querySelector('[data-client-id="c-silent"] .account-pill-button').click(); });
+    expect(onSelectClient).toHaveBeenCalledTimes(1);
   });
 
-  it('renders no button at all when nothing can be opened', () => {
+  it('renders no head button when nothing can be opened, and the pills stay buttons', () => {
     const { container } = mount({ onSelectClient: null });
-    expect(container.querySelectorAll('button').length).toBe(0);
+    expect(container.querySelectorAll('button.fsl-tile-button').length).toBe(0);
     expect(container.querySelectorAll('.fsl-tile').length).toBe(4);
+    expect(container.querySelectorAll('button.account-pill-button').length).toBe(8);
+    // No button inside a button, anywhere.
+    expect(container.querySelectorAll('button button').length).toBe(0);
+  });
+
+  it('expands one account per tile with what it is running, read on demand for that client', async () => {
+    const loadStrategies = vi.fn(async ({ clientId }) => strategiesAnswer(clientId, [
+      strategyRow('c-amber', 'A-1', { realizedPnl: -480, unrealizedPnl: 0 }),
+      strategyRow('c-amber', 'A-2', { strategyId: '2' }),
+    ]));
+    const { container } = mount({ loadStrategies });
+    const amber = container.querySelector('[data-client-id="c-amber"]');
+    const [a1, a2] = pillsOf(amber).map((pill) => pill.querySelector('.account-pill-button'));
+    expect(amber.querySelector('.account-live-detail')).toBeNull();
+    expect(loadStrategies).not.toHaveBeenCalled();
+
+    act(() => { a1.click(); });
+    expect(a1.getAttribute('aria-expanded')).toBe('true');
+    expect(a1.getAttribute('aria-controls')).toBe(amber.querySelector('.account-live-detail').getAttribute('id'));
+    expect(amber.querySelectorAll('.account-live-detail').length).toBe(1);
+    // One select for the client, by the key the rows carry.
+    await waitFor(() => expect(loadStrategies).toHaveBeenCalledTimes(1));
+    expect(loadStrategies).toHaveBeenCalledWith({ clientId: 'c-amber' });
+    await waitFor(() => expect(amber.querySelectorAll('.account-live-strategy').length).toBe(1));
+    const detail = amber.querySelector('.account-live-detail');
+    expect(detail.querySelector('.account-live-detail-connection').textContent).toBe('Connection Rithmic');
+    expect(detail.textContent).toContain('OGX_PF');
+    expect(detail.textContent).toContain('MNQ 12-26');
+    expect(detail.textContent).toContain('Within the usual spread of the desk');
+    expect(detail.querySelector('.account-live-strategy-differs')).toBeNull();
+
+    // A second pill on the same tile replaces the first: one open per tile, and
+    // no second read, the client's rows are already in hand.
+    act(() => { a2.click(); });
+    expect(a1.getAttribute('aria-expanded')).toBe('false');
+    expect(a2.getAttribute('aria-expanded')).toBe('true');
+    expect(amber.querySelectorAll('.account-live-detail').length).toBe(1);
+    expect(amber.querySelector('.account-live-detail strong').textContent).toBe('A-2');
+    expect(amber.querySelector('.account-live-strategy-differs').textContent).toBe('Differs from the desk');
+    expect(loadStrategies).toHaveBeenCalledTimes(1);
+
+    // The same pill again closes it.
+    act(() => { a2.click(); });
+    expect(amber.querySelector('.account-live-detail')).toBeNull();
+    expect(a2.getAttribute('aria-expanded')).toBe('false');
+    // Other tiles are untouched and have read nothing.
+    expect(container.querySelectorAll('.account-live-detail').length).toBe(0);
+    expect(loadStrategies.mock.calls.every(([args]) => args.clientId === 'c-amber')).toBe(true);
+  });
+
+  it('puts the amber marker on the pill whose algorithm differs, and on no other, once the rows are known', async () => {
+    const loadStrategies = vi.fn(async ({ clientId }) => strategiesAnswer(clientId, [
+      strategyRow('c-amber', 'A-1', { realizedPnl: -480, unrealizedPnl: 0 }),
+      strategyRow('c-amber', 'A-2', { strategyId: '2' }),
+    ]));
+    const { container } = mount({ loadStrategies });
+    const amber = container.querySelector('[data-client-id="c-amber"]');
+    expect(amber.querySelectorAll('.account-pill.differs').length).toBe(0);
+    act(() => { pillsOf(amber)[0].querySelector('button').click(); });
+    await waitFor(() => expect(amber.querySelectorAll('.account-pill.differs').length).toBe(1));
+    const marked = amber.querySelector('.account-pill.differs');
+    expect(marked.getAttribute('data-account')).toBe('A-2');
+    expect(marked.querySelector('.account-pill-mark')).not.toBeNull();
+    expect(marked.querySelector('button').getAttribute('title')).toContain('1 algorithm differs from the desk.');
+    // The marker is not the colour: A-2 is still the disconnected amber pill it was.
+    expect(marked.className).toBe('account-pill tracker-disconnected tone-attention differs');
+    // (A-1 is the open one, so it also carries `expanded`; it carries no marker.)
+    expect(pillsOf(amber)[0].className).toBe('account-pill tracker-live tone-live expanded');
+    // Closing the detail keeps the marker: the answer is cached for the client.
+    act(() => { pillsOf(amber)[0].querySelector('button').click(); });
+    expect(amber.querySelector('.account-live-detail')).toBeNull();
+    expect(amber.querySelectorAll('.account-pill.differs').length).toBe(1);
+  });
+
+  it('reads the rows by the uuid when the client has a legacy key, and finds them under it', async () => {
+    const UUID = '4b0e5c8f-8c3f-4b2a-9d2e-1b2c3d4e5f60';
+    const legacy = { ...client('act-1700000000-ash', 'Ash', [['APEX-1']]), uuid: UUID };
+    const loadStrategies = vi.fn(async ({ clientId }) => strategiesAnswer(clientId, [strategyRow(UUID, 'APEX-1')]));
+    const { container } = render(<FleetStatusLights
+      clients={[legacy]}
+      tracker={tracker({ [UUID]: [sample('APEX-1')] })}
+      now={NOW}
+      loadStrategies={loadStrategies}
+    />);
+    act(() => { container.querySelector('.account-pill-button').click(); });
+    await waitFor(() => expect(loadStrategies).toHaveBeenCalledWith({ clientId: UUID }));
+    await waitFor(() => expect(container.querySelectorAll('.account-live-strategy').length).toBe(1));
+    expect(container.querySelector('.account-pill.differs')).not.toBeNull();
+  });
+
+  it('says it could not read what is running, inside the detail and never as a banner', async () => {
+    const loadStrategies = vi.fn(async () => { throw new Error('timeout'); });
+    const { container } = mount({ loadStrategies });
+    const amber = container.querySelector('[data-client-id="c-amber"]');
+    act(() => { pillsOf(amber)[0].querySelector('button').click(); });
+    await waitFor(() => expect(amber.textContent).toContain('Could not read what is running.'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    // The account totals from the tracker sample are still shown.
+    expect(amber.querySelector('.account-live-detail').textContent).toContain('$120');
+    // And the pills keep their colour and carry no marker.
+    expect(amber.querySelectorAll('.account-pill.differs').length).toBe(0);
   });
 });
 
@@ -329,8 +534,8 @@ describe('three honest empty states', () => {
     expect(grey.className).toBe('fsl-tile tone-none');
     expect(grey.querySelector('.fsl-tile-state').textContent).toBe('No sample yet');
     expect(grey.textContent).toContain('Either no VPS is paired with this client or it has not sampled yet.');
-    // Its registered account still gets a dot, faint, so it is visibly unsampled.
-    expect(grey.querySelectorAll('.fsl-dot-item.tone-faint').length).toBe(1);
+    // Its registered account still gets a pill, faint, so it is visibly unsampled.
+    expect(grey.querySelectorAll('.account-pill.tone-faint').length).toBe(1);
   });
 
   it('an empty book says so instead of rendering nothing', () => {
@@ -351,11 +556,15 @@ describe('a client with a legacy key', () => {
     expect(view.kind).toBe('ready');
     expect(view.tiles[0].summary.rows[0].sample.accountName).toBe('APEX-1');
     expect(view.tiles[0].worst.state).toBe('live');
+    // And the key the strategies read is scoped by is the uuid too.
+    expect(view.tiles[0].clientKey).toBe(UUID);
+    expect(view.tiles[0].clientId).toBe('act-1700000000-ash');
   });
 
   it('still finds samples keyed by id for a client without a uuid', () => {
     const plain = client('c-plain', 'Plain', [['APEX-2']]);
     const view = buildFleetStatusLights({ clients: [plain], tracker: tracker({ 'c-plain': [sample('APEX-2')] }), now: NOW });
     expect(view.tiles[0].summary.rows[0].sample.accountName).toBe('APEX-2');
+    expect(view.tiles[0].clientKey).toBe('c-plain');
   });
 });

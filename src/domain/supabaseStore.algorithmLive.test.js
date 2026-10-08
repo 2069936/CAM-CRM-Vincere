@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   loadSupabaseAlgorithmLive,
+  loadSupabaseClientLiveStrategies,
   resetAlgorithmLiveSettingsCache,
 } from './supabaseStore';
 
@@ -122,5 +123,53 @@ describe('loadSupabaseAlgorithmLive', () => {
 
   it('answers available:false when there is no database at all', async () => {
     expect(await loadSupabaseAlgorithmLive({ client: null })).toEqual({ available: false, reason: 'not_configured' });
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * ONE CLIENT'S STRATEGY ROWS, ON DEMAND.
+ *
+ * The account detail under a pill reads what one client is running when the
+ * pill is opened: one select scoped to that client_id, the desk figure from
+ * algorithm_live_desk(), the floors from the cached settings. Same columns,
+ * same missing-table rule, same refusal to answer zeros for a failed read.
+ * ------------------------------------------------------------------------- */
+describe('loadSupabaseClientLiveStrategies', () => {
+  const UUID = '4b0e5c8f-8c3f-4b2a-9d2e-1b2c3d4e5f60';
+  beforeEach(() => resetAlgorithmLiveSettingsCache());
+
+  it('scopes one select to the client_id and asks the desk function once', async () => {
+    const client = fakeClient({
+      samples: {
+        data: [{ client_id: UUID, account_name: 'ACC 01', strategy_id: '1', strategy_name: '0 - OGX-PF-2.4', algorithm: 'OGX_PF', instrument: 'MNQ 12-26', instrument_root: 'MNQ', realized_pnl: '-950', unrealized_pnl: '-50', restarted_at: null, sampled_at: '2026-10-08T14:10:02+00:00', cycle_start: '2026-10-08T14:10:00+00:00' }],
+        error: null,
+      },
+    });
+    const result = await loadSupabaseClientLiveStrategies({ clientId: UUID, client });
+    expect(client.asked.inFilter).toEqual({ column: 'client_id', values: [UUID] });
+    expect(client.asked.from.filter((table) => table === 'algorithm_live_samples')).toHaveLength(1);
+    expect(client.asked.rpc).toEqual([{ name: 'algorithm_live_desk', args: undefined }]);
+    expect(result.available).toBe(true);
+    expect(result.clientId).toBe(UUID);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ clientId: UUID, accountName: 'ACC 01', algorithm: 'OGX_PF', realizedPnl: -950, unrealizedPnl: -50 });
+    expect(result.desk).toMatchObject({ available: true });
+    expect(result.settings).toMatchObject({ minCohortAccounts: 6, cycleSeconds: 900 });
+  });
+
+  it('answers available:false when step 57 is missing, and throws on any other failure', async () => {
+    const missing = await loadSupabaseClientLiveStrategies({ clientId: UUID, client: fakeClient({ samples: { data: null, error: MISSING[0] } }) });
+    expect(missing).toEqual({ available: false, reason: 'not_deployed' });
+    const error = { code: '57014', message: 'canceling statement due to statement timeout' };
+    await expect(loadSupabaseClientLiveStrategies({ clientId: UUID, client: fakeClient({ samples: { data: null, error } }) }))
+      .rejects.toThrow(/statement timeout/);
+  });
+
+  it('reads nothing for an empty client id', async () => {
+    const client = fakeClient();
+    const result = await loadSupabaseClientLiveStrategies({ clientId: '', client });
+    expect(client.asked.from).toEqual([]);
+    expect(client.asked.rpc).toEqual([]);
+    expect(result).toMatchObject({ available: true, clientId: '', rows: [] });
   });
 });
