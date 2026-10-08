@@ -176,14 +176,51 @@ function lookupDay(index, client, dailyImport) {
  *
  * @returns {{state: object, missingImportIds: string[]}}
  */
+/**
+ * THE SAME DEFECT, ONE LEVEL UP: THE CLIENT'S OWN DETAIL.
+ *
+ * A login carries no passwords and no prop firm logins either. They are
+ * fetched when a client is opened (loadSupabaseClientDetail) and merged in with
+ * `detailLoaded: true`. A wholesale reload then rebuilt every client with blank
+ * credentials and `detailLoaded` unset, and the fetch was never repeated, because
+ * the session's cache still said that client was loaded. On screen: the VPS and
+ * platform access block read full on the first paint, blanked on the reload a
+ * few seconds later, and stayed blank until the client was reopened in a fresh
+ * tab. What a reload could not have fetched is carried across here, exactly as
+ * the fills are. A client the reload DID load in full (detailLoaded on the new
+ * copy) keeps the new copy: the server owns what it alone can know.
+ */
+function indexClientDetail(current) {
+  const byKey = new Map();
+  for (const client of current?.clients || []) {
+    if (!client?.detailLoaded) continue;
+    if (client.id) byKey.set(client.id, client);
+    if (client.uuid) byKey.set(client.uuid, client);
+  }
+  return byKey;
+}
+
+function carriedClientDetail(client, detailByClient) {
+  if (client?.detailLoaded) return {};
+  const previous = detailByClient.get(client?.id) || (client?.uuid ? detailByClient.get(client.uuid) : null);
+  if (!previous) return {};
+  return {
+    credentials: previous.credentials,
+    propFirms: previous.propFirms,
+    detailLoaded: true,
+  };
+}
+
 export function carryTradeHistoryForward(current, next) {
   if (!next) return { state: next, missingImportIds: [] };
   const known = indexDays(current);
+  const detailByClient = indexClientDetail(current);
   const missingImportIds = [];
   const state = {
     ...next,
     clients: (next.clients || []).map((client) => ({
       ...client,
+      ...carriedClientDetail(client, detailByClient),
       dailyImports: (client.dailyImports || []).map((dailyImport) => {
         const previous = lookupDay(known, client, dailyImport);
         if (!previous) {

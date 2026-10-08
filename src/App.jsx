@@ -14940,9 +14940,16 @@ export default function App() {
   useEffect(() => {
     if (!isSupabaseConfigured || isLocalSnapshotEnabled()) return;
     if (!selectedClient?.id || selectedClient.detailLoaded) return;
+    // A client on screen without its detail while the cache says it was loaded
+    // is a client a reload rebuilt from a login (see carryTradeHistoryForward,
+    // which carries the detail across so this rarely fires). The cache is
+    // dropped so the fetch is repeated rather than refused.
+    if (clientDetailCache.current.get(selectedClient.id)?.status === "loaded") {
+      clientDetailCache.current.delete(selectedClient.id);
+    }
     ensureClientDetail(selectedClient.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClient?.id]);
+  }, [selectedClient?.id, selectedClient?.detailLoaded]);
 
   const openCloseId = dailyImport && !dailyImport.detailLoaded
     ? dailyImport.uuid || dailyImport.id
