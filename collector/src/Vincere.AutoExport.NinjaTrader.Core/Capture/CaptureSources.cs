@@ -105,6 +105,20 @@ namespace Vincere.AutoExport.NinjaTrader.Core.Capture
         /// re-enable, which is how the agent sees a restart between two readings.
         /// </summary>
         public int? RealtimeTradeCount { get; set; }
+
+        /// <summary>
+        /// Position.MarketPosition as a lower case word, "long", "short" or
+        /// "flat"; null when the position could not be read or answered a word
+        /// that is none of the three. The desk reads it to know which way
+        /// BulletBot fired today, which the strategy catalogue cannot say.
+        /// </summary>
+        public string MarketPosition { get; set; }
+
+        /// <summary>
+        /// Position.Quantity, the contracts held, zero when flat; null when it
+        /// could not be read or is not a whole non-negative number.
+        /// </summary>
+        public int? PositionQuantity { get; set; }
     }
 
     public sealed class SnapshotBuildContext

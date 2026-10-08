@@ -245,6 +245,8 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
                     RealizedPnl = measure ? StrategyPnlRead.Realized(strategy) : null,
                     UnrealizedPnl = measure ? StrategyPnlRead.Unrealized(strategy) : null,
                     RealtimeTradeCount = measure ? StrategyPnlRead.RealtimeTradeCount(strategy) : null,
+                    MarketPosition = measure ? StrategyPnlRead.MarketPosition(strategy) : null,
+                    PositionQuantity = measure ? StrategyPnlRead.PositionQuantity(strategy) : null,
                 };
             }
             catch
@@ -276,9 +278,71 @@ namespace Vincere.AutoExport.NinjaTrader.Capture
          * Each half has its own try, so a realized figure survives an unreadable
          * position and the reverse. ReflectedValue is used rather than PublicValue
          * because it does not walk the type descriptor, which on a NinjaScript
-         * object is platform code answering property by property. */
+         * object is platform code answering property by property.
+         *
+         * THE POSITION ITSELF, SINCE 1.2.1: Position.MarketPosition as a word and
+         * Position.Quantity as a count, read the same way and under the same rule,
+         * each in its own try. The CAMs ask each other in the team chat whether
+         * BulletBot fired long or short today; the strategy catalogue cannot say,
+         * so the reading has to. A word that is not long, short or flat, and a
+         * quantity that is not a whole non-negative number, read null. */
         private static class StrategyPnlRead
         {
+            /* The three words the wire accepts, lower case. NinjaTrader.Cbi
+             * .MarketPosition is an enum (Flat, Long, Short) and Convert.ToString
+             * on an enum gives its name, which is what the Unrealized read has
+             * compared against "Flat" since 1.2.0. Anything else is null: an
+             * answer the desk cannot act on must not be dressed as one. */
+            public static string MarketPosition(StrategyBase strategy)
+            {
+                try
+                {
+                    object position = ReflectedValue(strategy, "Position");
+                    if (position == null)
+                        return null;
+                    string word = Convert.ToString(
+                        ReflectedValue(position, "MarketPosition"),
+                        CultureInfo.InvariantCulture);
+                    if (String.IsNullOrWhiteSpace(word))
+                        return null;
+                    word = word.Trim().ToLowerInvariant();
+                    switch (word)
+                    {
+                        case "long":
+                        case "short":
+                        case "flat":
+                            return word;
+                        default:
+                            return null;
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            /* Position.Quantity is an int on the platform (contracts held, zero
+             * when flat). The same rule as the run count: an int that is not
+             * negative, or null. */
+            public static int? PositionQuantity(StrategyBase strategy)
+            {
+                try
+                {
+                    object position = ReflectedValue(strategy, "Position");
+                    if (position == null)
+                        return null;
+                    object value = ReflectedValue(position, "Quantity");
+                    if (!(value is int quantity) || quantity < 0)
+                        return null;
+                    return quantity;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
             public static decimal? Realized(StrategyBase strategy)
             {
                 try
