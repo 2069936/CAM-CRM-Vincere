@@ -4719,6 +4719,8 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .dcl-legend-mark .account-pill-mark { right: -3px; top: -3px; width: 7px; height: 7px; }
 .dcl-bulb.tone-live .dcl-light, .dcl-legend-item.tone-live .dcl-light, .dcl-drawer.tone-live .dcl-light { background: var(--success); }
 .dcl-bulb.tone-partly .dcl-light, .dcl-legend-item.tone-partly .dcl-light, .dcl-drawer.tone-partly .dcl-light { background: var(--warning); }
+/* Silent is amber too, drawn hollow: lit, and nothing fresh inside. Never red; a stale sample is not a lost connection. */
+.dcl-bulb.tone-silent .dcl-light, .dcl-legend-item.tone-silent .dcl-light, .dcl-drawer.tone-silent .dcl-light { background: radial-gradient(circle closest-side, var(--surface-2) 0 38%, var(--warning) 46%); }
 .dcl-bulb.tone-off .dcl-light, .dcl-legend-item.tone-off .dcl-light, .dcl-drawer.tone-off .dcl-light { background: var(--error); }
 .dcl-bulb.tone-faint .dcl-light, .dcl-legend-item.tone-faint .dcl-light, .dcl-drawer.tone-faint .dcl-light { background: var(--warning); opacity: 0.55; }
 .dcl-bulb.tone-none .dcl-light, .dcl-legend-item.tone-none .dcl-light { background: #94a3b8; }

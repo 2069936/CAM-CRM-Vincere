@@ -17,9 +17,16 @@ import {
  * too much to read; one light per client instead, is NinjaTrader up and are the
  * connections active, amber when some connections are up and others that should
  * be are not, and a click for the breakdown. These assertions are about the
- * five states a bulb can be in, the sentence beside each, the order of the
+ * six states a bulb can be in, the sentence beside each, the order of the
  * grid, the counts line, the grouping by connection under a bulb, and the two
  * identity keys a client can carry.
+ *
+ * RED IS EVIDENCE, NOT ABSENCE. A client whose samples have merely gone stale
+ * is silent, amber: the sampler has not reported, which is not the same as a
+ * lost connection. Red needs the heartbeat to say NinjaTrader is down, or a
+ * fresh sample to say disconnected. Before the open and after the close every
+ * sampled client is stale, and painting the whole desk red twice a day was the
+ * bug this distinction exists for.
  * ------------------------------------------------------------------------- */
 
 const NOW = new Date('2026-10-08T15:00:00.000Z');
@@ -79,7 +86,7 @@ function bulb(samples, devices = [device()], overrides = {}) {
   });
 }
 
-describe('the five states of a bulb', () => {
+describe('the six states of a bulb', () => {
   it('is live when every fresh account is connected and the VPS reports no error', () => {
     const view = bulb([sample('ACC 01'), sample('ACC 02', { connectionName: 'Bluesky' })]);
     expect(view.state).toBe('live');
@@ -108,10 +115,45 @@ describe('the five states of a bulb', () => {
     expect(view.sentence).toMatch(/^Off, NinjaTrader not running since \d\d:\d\d\.$/);
   });
 
-  it('is off when every sample is stale', () => {
-    const view = bulb([silent('ACC 01'), silent('ACC 02')]);
+  it('is off when the VPS reports NinjaTrader not running and nothing has ever been sampled', () => {
+    // The bulb's answer to "is NinjaTrader up" for a paired VPS that has sent
+    // no sample, which is the shape of most of the desk today.
+    const view = bulb([], [device({ healthStatus: 'error', lastErrorCode: 'ninjatrader_not_running' })]);
     expect(view.state).toBe('off');
-    expect(view.sentence).toBe('Off, no connection for 42 minutes.');
+    expect(view.tone).toBe('off');
+    expect(view.word).toBe('Off');
+    expect(view.sentence).toBe('Off, NinjaTrader not running.');
+    expect(view.title).toBe('Client A: Off, NinjaTrader not running.');
+  });
+
+  it('is silent, amber, when every sample is stale and the VPS reports nothing wrong', () => {
+    const view = bulb([silent('ACC 01'), silent('ACC 02')]);
+    expect(view.state).toBe('silent');
+    expect(view.tone).toBe(BULB_TONES.silent);
+    expect(view.tone).not.toBe(BULB_TONES.off);
+    expect(view.word).toBe('Silent');
+    expect(view.sentence).toBe('Silent, no sample for 42 minutes.');
+    expect(view.counts.silent).toBe(2);
+  });
+
+  it('stays silent, not off, when the samples are hours old and the heartbeat is online with no error', () => {
+    // Before the open and after the close: the sampler has not reported since
+    // yesterday, the VPS is up. The data shows no lost connection, so no red.
+    const fourteenHoursAgo = new Date(NOW.getTime() - 14 * 60 * 60_000).toISOString();
+    const view = bulb(
+      [silent('ACC 01', { sampledAt: fourteenHoursAgo }), silent('ACC 02', { sampledAt: fourteenHoursAgo })],
+      [device({ healthStatus: 'online', lastErrorCode: null })],
+    );
+    expect(view.state).toBe('silent');
+    expect(view.tone).not.toBe('off');
+    expect(view.sentence).toBe('Silent, no sample for 14 hours.');
+    expect(view.sentence).not.toMatch(/connection/);
+  });
+
+  it('is silent and names the VPS error when the samples are stale and the heartbeat reports a fault other than NinjaTrader down', () => {
+    const view = bulb([silent('ACC 01')], [device({ healthStatus: 'error', lastErrorCode: 'capture_failed' })]);
+    expect(view.state).toBe('silent');
+    expect(view.sentence).toBe('Silent, no sample for 42 minutes, VPS reports capture failed.');
   });
 
   it('is off when every fresh account is disconnected', () => {
@@ -119,7 +161,8 @@ describe('the five states of a bulb', () => {
     expect(bulb([disconnected('ACC 01')]).sentence).toBe('Off, 1 account disconnected.');
   });
 
-  it('is off, naming both, when the accounts are disconnected or silent and none is live', () => {
+  it('is off, naming both, when a fresh account is disconnected beside a silent one and none is live', () => {
+    // The fresh sample is the evidence: it says disconnected, so red holds.
     const view = bulb([disconnected('ACC 01'), silent('ACC 02')]);
     expect(view.state).toBe('off');
     expect(view.sentence).toBe('Off, 1 disconnected, 1 silent.');
@@ -159,10 +202,15 @@ describe('without the devices (a role that cannot read them)', () => {
     expect(view.state).toBe('no_vps');
   });
 
-  it('still reads live, partly and off from the samples', () => {
+  it('still reads live, partly, silent and off from the samples', () => {
     expect(bulb([sample('ACC 01')], null).state).toBe('live');
     expect(bulb([sample('ACC 01'), disconnected('ACC 02')], null).state).toBe('partly');
-    expect(bulb([silent('ACC 01')], null).state).toBe('off');
+    expect(bulb([silent('ACC 01')], null).state).toBe('silent');
+    expect(bulb([disconnected('ACC 01')], null).state).toBe('off');
+  });
+
+  it('cannot see NinjaTrader without the device, so no sample and a registry is never sampled, not off', () => {
+    expect(bulb([], null).state).toBe('never_sampled');
   });
 });
 
@@ -172,7 +220,7 @@ describe('stale against fresh, with a fixed clock', () => {
     const past = new Date(NOW.getTime() - 1501 * 1000).toISOString();
     expect(bulb([sample('ACC 01', { sampledAt: inside })]).state).toBe('live');
     const stale = bulb([sample('ACC 01', { sampledAt: past })]);
-    expect(stale.state).toBe('off');
+    expect(stale.state).toBe('silent');
     expect(stale.counts.silent).toBe(1);
   });
 
@@ -242,19 +290,22 @@ describe('the breakdown under a bulb: connections, then accounts', () => {
 });
 
 describe('the order of the grid', () => {
-  it('is off, then partly, then never sampled, then live, alphabetical inside each group', () => {
+  it('is off, then partly, then silent, then never sampled, then live, alphabetical inside each group', () => {
     const list = [
       { state: 'live', clientName: 'Zed' },
       { state: 'never_sampled', clientName: 'Maple Ridge' },
+      { state: 'silent', clientName: 'Willow' },
       { state: 'off', clientName: 'Northwind' },
       { state: 'partly', clientName: 'Client B' },
       { state: 'live', clientName: 'Alder' },
+      { state: 'silent', clientName: 'Elm' },
       { state: 'off', clientName: 'Client A' },
       { state: 'partly', clientName: 'Birch' },
     ].sort(compareBulbs);
     expect(list.map((entry) => `${entry.state}:${entry.clientName}`)).toEqual([
       'off:Client A', 'off:Northwind',
       'partly:Birch', 'partly:Client B',
+      'silent:Elm', 'silent:Willow',
       'never_sampled:Maple Ridge',
       'live:Alder', 'live:Zed',
     ]);
@@ -266,6 +317,9 @@ describe('the whole desk', () => {
     client('c-live', 'Green Oak', ['G-1']),
     client('c-partly', 'Amber Pine', ['A-1', 'A-2']),
     client('c-off', 'Red Cedar', ['R-1']),
+    client('c-silent', 'Silent Elm', ['S-1']),
+    // A paired VPS whose heartbeat says NinjaTrader is down, and no sample ever.
+    client('c-down', 'Dark Fir', ['D-1']),
     client('c-never', 'Brown Elm', ['E-1', 'E-2']),
     client('c-none-1', 'Grey Birch', ['B-1']),
     client('c-none-2', 'Grey Ash', []),
@@ -273,12 +327,15 @@ describe('the whole desk', () => {
   const SAMPLES = new Map([
     ['c-live', [sample('G-1')]],
     ['c-partly', [sample('A-1'), disconnected('A-2')]],
-    ['c-off', [silent('R-1')]],
+    ['c-off', [disconnected('R-1')]],
+    ['c-silent', [silent('S-1')]],
   ]);
   const DEVICES = new Map([
     ['c-live', [device()]],
     ['c-partly', [device()]],
     ['c-off', [device()]],
+    ['c-silent', [device()]],
+    ['c-down', [device({ healthStatus: 'error', lastErrorCode: 'ninjatrader_not_running' })]],
     ['c-never', [device()]],
   ]);
   const tracker = (overrides = {}) => ({ available: true, staleSeconds: 1500, minAgentVersion: '1.2.0', samplesByClientId: SAMPLES, ...overrides });
@@ -289,26 +346,33 @@ describe('the whole desk', () => {
     expect(view.kind).toBe('ready');
     expect(view.deviceAware).toBe(true);
     expect(view.bulbs.map((entry) => `${entry.state}:${entry.clientName}`)).toEqual([
-      'off:Red Cedar', 'partly:Amber Pine', 'never_sampled:Brown Elm', 'live:Green Oak',
+      'off:Dark Fir', 'off:Red Cedar', 'partly:Amber Pine', 'silent:Silent Elm', 'never_sampled:Brown Elm', 'live:Green Oak',
     ]);
     expect(view.hidden.map((entry) => entry.clientName)).toEqual(['Grey Ash', 'Grey Birch']);
-    expect(view.counts).toEqual({ live: 1, partly: 1, off: 1, never_sampled: 1, no_vps: 2 });
+    expect(view.counts).toEqual({ live: 1, partly: 1, silent: 1, off: 2, never_sampled: 1, no_vps: 2 });
+    // Red on evidence only: the heartbeat for Dark Fir, the fresh disconnected sample for Red Cedar.
+    expect(view.bulbs.find((entry) => entry.clientName === 'Dark Fir').sentence).toBe('Off, NinjaTrader not running.');
+    expect(view.bulbs.find((entry) => entry.clientName === 'Red Cedar').sentence).toBe('Off, 1 account disconnected.');
+    expect(view.bulbs.find((entry) => entry.clientName === 'Silent Elm').sentence).toBe('Silent, no sample for 42 minutes.');
   });
 
   it('says the counts and the latest sample in one line', () => {
     const view = buildDeskClientLights({ clients: CLIENTS, tracker: tracker(), devices: devices(), now: NOW });
     expect(view.ageMinutes).toBe(4);
-    expect(view.words).toBe('1 live, 1 partly live, 1 off, 1 never sampled, 2 without a VPS. Latest sample 4m ago.');
-    expect(deskWords({ live: 12, partly: 3, off: 1, never_sampled: 2, no_vps: 91 }, 2))
-      .toBe('12 live, 3 partly live, 1 off, 2 never sampled, 91 without a VPS. Latest sample 2m ago.');
+    expect(view.words).toBe('1 live, 1 partly live, 1 silent, 2 off, 1 never sampled, 2 without a VPS. Latest sample 4m ago.');
+    expect(deskWords({ live: 12, partly: 3, silent: 2, off: 1, never_sampled: 2, no_vps: 91 }, 2))
+      .toBe('12 live, 3 partly live, 2 silent, 1 off, 2 never sampled, 91 without a VPS. Latest sample 2m ago.');
   });
 
   it('falls back to samples and registry when the devices are not readable', () => {
     const view = buildDeskClientLights({ clients: CLIENTS, tracker: tracker(), devices: null, now: NOW });
     expect(view.deviceAware).toBe(false);
     // Grey Birch has a registry and no sample: never sampled without the device; Grey Ash has nothing.
+    // Dark Fir too: without the heartbeat nothing says NinjaTrader is down.
     expect(view.bulbs.map((entry) => `${entry.state}:${entry.clientName}`)).toEqual([
-      'off:Red Cedar', 'partly:Amber Pine', 'never_sampled:Brown Elm', 'never_sampled:Grey Birch', 'live:Green Oak',
+      'off:Red Cedar', 'partly:Amber Pine', 'silent:Silent Elm',
+      'never_sampled:Brown Elm', 'never_sampled:Dark Fir', 'never_sampled:Grey Birch',
+      'live:Green Oak',
     ]);
     expect(view.hidden.map((entry) => entry.clientName)).toEqual(['Grey Ash']);
     expect(buildDeskClientLights({ clients: CLIENTS, tracker: tracker(), devices: { available: false }, now: NOW }).deviceAware).toBe(false);
@@ -354,16 +418,20 @@ describe('the whole desk', () => {
     expect(empty.minAgentVersion).toBe('1.2.0');
     const paired = buildDeskClientLights({ clients: CLIENTS, tracker: tracker({ samplesByClientId: new Map() }), devices: devices(), now: NOW });
     expect(paired.kind).toBe('ready');
-    expect(paired.words).toBe('0 live, 0 partly live, 0 off, 4 never sampled, 2 without a VPS. Latest sample never.');
+    // With no sample anywhere, the one red bulb is the heartbeat that says NinjaTrader is down.
+    expect(paired.words).toBe('0 live, 0 partly live, 0 silent, 1 off, 5 never sampled, 2 without a VPS. Latest sample never.');
+    expect(paired.bulbs[0]).toMatchObject({ state: 'off', clientName: 'Dark Fir', sentence: 'Off, NinjaTrader not running.' });
   });
 });
 
 describe('the words beside every colour', () => {
   it('names every bulb tone in the legend, and red is only ever the off bulb', () => {
-    expect(DESK_LEGEND.map((entry) => entry.state)).toEqual(['live', 'partly', 'off', 'never_sampled', 'no_vps']);
-    expect(DESK_LEGEND.map((entry) => entry.word)).toEqual(['Live', 'Partly live', 'Off', 'Never sampled', 'No VPS paired']);
+    expect(DESK_LEGEND.map((entry) => entry.state)).toEqual(['live', 'partly', 'silent', 'off', 'never_sampled', 'no_vps']);
+    expect(DESK_LEGEND.map((entry) => entry.word)).toEqual(['Live', 'Partly live', 'Silent', 'Off', 'Never sampled', 'No VPS paired']);
     expect(BULB_WORDS.partly).toBe('Partly live');
+    expect(BULB_WORDS.silent).toBe('Silent');
     expect(BULB_TONES.partly).not.toBe(BULB_TONES.off);
+    expect(BULB_TONES.silent).not.toBe(BULB_TONES.off);
     expect(Object.values(BULB_TONES).filter((tone) => tone === 'off')).toEqual(['off']);
   });
 });

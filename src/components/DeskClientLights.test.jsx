@@ -61,7 +61,12 @@ const CLIENTS = [
   client('c-live', 'Green Oak', ['G-1']),
   // Legacy key plus uuid: the rows carry the uuid, the app names it by the key.
   client('act-1700000000-client-a', 'Client A', ['ACC 01', 'ACC 02', 'ACC 03', 'ACC 04'], { uuid: UUID_A }),
+  // A fresh sample that says disconnected: red on evidence.
   client('c-off', 'Red Cedar', ['R-1']),
+  // Every sample stale, VPS fine: amber silent, never red.
+  client('c-silent', 'Silent Elm', ['S-1']),
+  // A paired VPS whose heartbeat says NinjaTrader is down, and no sample ever: red.
+  client('c-down', 'Dark Fir', ['D-1']),
   // A legacy key with a uuid and no sample: only the device, keyed by the uuid, makes it a bulb.
   client('c-never', 'Brown Elm', ['E-1', 'E-2'], { uuid: UUID_B }),
   client('c-none-1', 'Grey Birch', ['B-1']),
@@ -76,15 +81,24 @@ const SAMPLES = new Map([
     sample('ACC 03', { connectionName: 'Live' }),
     sample('ACC 04', { connectionName: null }),
   ]],
-  ['c-off', [silent('R-1')]],
+  ['c-off', [disconnected('R-1')]],
+  ['c-silent', [silent('S-1')]],
 ]);
 
 const DEVICES = new Map([
   ['c-live', [device()]],
   [UUID_A, [device()]],
   ['c-off', [device()]],
+  ['c-silent', [device()]],
+  ['c-down', [device({ healthStatus: 'error', lastErrorCode: 'ninjatrader_not_running' })]],
   [UUID_B, [device()]],
 ]);
+
+/* The grid with the fleet in hand: six bulbs. From samples and registry alone
+ * (before the fleet answers, or when it refuses the role) Dark Fir and Grey
+ * Birch are brown too: seven. */
+const BULBS_WITH_FLEET = 6;
+const BULBS_SAMPLES_ONLY = 7;
 
 function tracker(overrides = {}) {
   return { available: true, staleSeconds: 1500, minAgentVersion: '1.2.0', samplesByClientId: SAMPLES, ...overrides };
@@ -130,7 +144,7 @@ function mount(props = {}) {
 
 const bulbs = (container) => [...container.querySelectorAll('.dcl-bulb')];
 const bulbFor = (container, id) => container.querySelector(`.dcl-bulb[data-client-id="${id}"] .dcl-bulb-button`);
-async function ready(container, count = 4) {
+async function ready(container, count = BULBS_WITH_FLEET) {
   await waitFor(() => expect(bulbs(container).length).toBe(count));
 }
 
@@ -142,15 +156,27 @@ describe('one bulb per client', () => {
     const { container } = mount();
     await ready(container);
     expect(bulbs(container).map((node) => `${node.dataset.state}:${node.querySelector('.dcl-bulb-name').textContent}`)).toEqual([
-      'off:Red Cedar', 'partly:Client A', 'never_sampled:Brown Elm', 'live:Green Oak',
+      'off:Dark Fir', 'off:Red Cedar', 'partly:Client A', 'silent:Silent Elm', 'never_sampled:Brown Elm', 'live:Green Oak',
     ]);
     expect(container.querySelectorAll('.account-pill').length).toBe(0);
     expect(container.querySelectorAll('.fsl-tile').length).toBe(0);
-    // Colour, word and sentence on every bulb.
+    // Colour, word and sentence on every bulb. Red on evidence only: a fresh
+    // sample that says disconnected, or the heartbeat saying NinjaTrader is down.
     const off = container.querySelector('.dcl-bulb[data-client-id="c-off"]');
     expect(off.className).toContain('tone-off');
     expect(off.querySelector('.sr-only').textContent).toBe('Off');
-    expect(off.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Red Cedar: Off, no connection for 42 minutes.');
+    expect(off.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Red Cedar: Off, 1 account disconnected.');
+    const down = container.querySelector('.dcl-bulb[data-client-id="c-down"]');
+    expect(down.className).toContain('tone-off');
+    expect(down.querySelector('.sr-only').textContent).toBe('Off');
+    expect(down.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Dark Fir: Off, NinjaTrader not running.');
+    // Every sample stale and the VPS fine is amber silent, never the red bulb.
+    const silentBulb = container.querySelector('.dcl-bulb[data-client-id="c-silent"]');
+    expect(silentBulb.className).toContain('tone-silent');
+    expect(silentBulb.className).not.toContain('tone-off');
+    expect(silentBulb.querySelector('.sr-only').textContent).toBe('Silent');
+    expect(silentBulb.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Silent Elm: Silent, no sample for 42 minutes.');
+    expect([...container.querySelectorAll('.dcl-bulb.tone-off .dcl-bulb-name')].map((node) => node.textContent)).toEqual(['Dark Fir', 'Red Cedar']);
     const partly = container.querySelector('.dcl-bulb[data-client-id="act-1700000000-client-a"]');
     expect(partly.className).toContain('tone-partly');
     expect(partly.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Client A: Partly live, 3 connected, 1 disconnected.');
@@ -162,11 +188,11 @@ describe('one bulb per client', () => {
   it('says the counts, the latest sample and the refresh over the grid, with the legend', async () => {
     const { container } = mount();
     await ready(container);
-    expect(container.querySelector('.dcl-summary').textContent).toContain('1 live, 1 partly live, 1 off, 1 never sampled, 2 without a VPS. Latest sample 4m ago.');
+    expect(container.querySelector('.dcl-summary').textContent).toContain('1 live, 1 partly live, 1 silent, 2 off, 1 never sampled, 2 without a VPS. Latest sample 4m ago.');
     expect(container.querySelector('.live-refresh').textContent).toMatch(/^Updated .*refreshes every 2 min\.$/);
     expect(container.querySelector('.dcl-source').textContent).toBe('VPS health from the collector fleet.');
     const legend = [...container.querySelectorAll('.dcl-legend-item')].map((node) => node.textContent.trim());
-    expect(legend).toEqual(['Live', 'Partly live', 'Off', 'Never sampled', 'No VPS paired', 'Amber corner: an algorithm differs from the desk']);
+    expect(legend).toEqual(['Live', 'Partly live', 'Silent', 'Off', 'Never sampled', 'No VPS paired', 'Amber corner: an algorithm differs from the desk']);
   });
 
   it('folds the clients without a VPS into one line with a Show toggle that lists their names', async () => {
@@ -306,11 +332,14 @@ describe('the devices, when the role can read them', () => {
     let release;
     const loadDevices = vi.fn(() => new Promise((resolve) => { release = resolve; }));
     const { container } = mount({ loadDevices });
-    // Before the fleet answers: samples and registry only, so Grey Birch is a brown bulb.
-    await waitFor(() => expect(bulbs(container).length).toBe(5));
+    // Before the fleet answers: samples and registry only, so Grey Birch and Dark Fir are brown bulbs.
+    await waitFor(() => expect(bulbs(container).length).toBe(BULBS_SAMPLES_ONLY));
     expect(container.querySelector('.dcl-source').textContent).toBe('Reading VPS health from the collector fleet.');
+    expect(bulbFor(container, 'c-down').closest('.dcl-bulb').dataset.state).toBe('never_sampled');
     await act(async () => { release({ available: true, byClientId: DEVICES }); });
-    await ready(container, 4);
+    await ready(container, BULBS_WITH_FLEET);
+    // The heartbeat arrived: Dark Fir's VPS says NinjaTrader is down, so its bulb turns red.
+    expect(bulbFor(container, 'c-down').closest('.dcl-bulb').dataset.state).toBe('off');
     expect(loadDevices).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.dcl-source').textContent).toBe('VPS health from the collector fleet.');
   });
@@ -319,12 +348,16 @@ describe('the devices, when the role can read them', () => {
     const loadDevices = vi.fn(async () => { throw new AutoCollectionApiError('permission_denied', { status: 403 }); });
     const { container } = mount({ loadDevices });
     await waitFor(() => expect(container.querySelector('.dcl-source').textContent).toBe('VPS health is not readable for this role, so the lights come from the samples and the registry alone.'));
-    expect(bulbs(container).map((node) => node.dataset.state)).toEqual(['off', 'partly', 'never_sampled', 'never_sampled', 'live']);
+    expect(bulbs(container).map((node) => `${node.dataset.state}:${node.querySelector('.dcl-bulb-name').textContent}`)).toEqual([
+      'off:Red Cedar', 'partly:Client A', 'silent:Silent Elm',
+      'never_sampled:Brown Elm', 'never_sampled:Dark Fir', 'never_sampled:Grey Birch',
+      'live:Green Oak',
+    ]);
   });
 
   it('reads nothing when told the role cannot, and says the lights are from samples alone', async () => {
     const { container, loadDevices } = mount({ deviceAware: false });
-    await waitFor(() => expect(bulbs(container).length).toBe(5));
+    await waitFor(() => expect(bulbs(container).length).toBe(BULBS_SAMPLES_ONLY));
     expect(loadDevices).not.toHaveBeenCalled();
     expect(container.querySelector('.dcl-source').textContent).toBe('VPS health is not readable for this role, so the lights come from the samples and the registry alone.');
   });
@@ -363,7 +396,7 @@ describe('the stylesheet', () => {
     for (const name of classes) expect(has(`.${name}`), `.${name} is styled`).toBe(true);
   });
 
-  it('colours the off bulb red and nothing else, and the partly bulb amber', () => {
+  it('colours the off bulb red and nothing else, and the partly and silent bulbs amber', () => {
     const start = css.indexOf('(DeskClientLights)');
     expect(start).toBeGreaterThan(0);
     const end = css.indexOf('/* ──', start + 1);
@@ -372,6 +405,8 @@ describe('the stylesheet', () => {
     expect(line('.dcl-bulb.tone-off .dcl-light')).toContain('var(--error)');
     expect(line('.dcl-bulb.tone-partly .dcl-light')).toContain('var(--warning)');
     expect(line('.dcl-bulb.tone-partly .dcl-light')).not.toContain('--error');
+    expect(line('.dcl-bulb.tone-silent .dcl-light')).toContain('var(--warning)');
+    expect(line('.dcl-bulb.tone-silent .dcl-light')).not.toContain('--error');
     expect(line('.dcl-bulb.tone-live .dcl-light')).toContain('var(--success)');
     const redLines = block.split('\n').filter((row) => /--error|--red\b|\.danger/.test(row));
     expect(redLines.every((row) => row.includes('tone-off'))).toBe(true);

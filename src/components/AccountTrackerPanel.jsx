@@ -316,7 +316,7 @@ function TrackerRow({ row }) {
           {total}
         </span>
       ) : (
-        <span className="account-tracker-absent" title="This sample carried no profit and loss figure. Not measured - not zero.">
+        <span className="account-tracker-absent" title="This sample carried no profit and loss figure. Not measured, not zero.">
           no figure
         </span>
       )}
@@ -342,7 +342,7 @@ function runTone(runState) {
 }
 
 function agedLabel(minutes) {
-  if (!Number.isInteger(minutes)) return '—';
+  if (!Number.isInteger(minutes)) return 'unknown';
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);

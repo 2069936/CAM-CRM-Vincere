@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -312,6 +313,20 @@ describe('what the panel refuses to print', () => {
     expect(unknownHtml).not.toContain('no strategies loaded at all');
     // A reading the desk did not get IS worth a second look.
     expect(unknownHtml).toMatch(/badge warning"[^>]*>no strategy data</);
+  });
+
+  it('prints no dash of any kind in the rows, in the text or in a title', () => {
+    /* House rule: commas and periods, never an em dash, an en dash or a spaced
+     * hyphen in anything the desk reads. The no figure tooltip said "Not
+     * measured - not zero" and the age cell fell back to an em dash. */
+    const html = markup({ tracker: tracker({ accounts: [sample({ totalPnl: null })] }) });
+    expect(html).toContain('Not measured, not zero.');
+    expect(html).not.toMatch(/—|–| - /);
+    // The age fallback is unreachable through the classifier (an unreadable
+    // clock is never sampled, which prints "never"), so the source is held to it.
+    const source = readFileSync('src/components/AccountTrackerPanel.jsx', 'utf8');
+    expect(source).not.toMatch(/['"`][^'"`\n]*[—–][^'"`\n]*['"`]/);
+    expect(source).not.toMatch(/(title|label)="[^"\n]* - [^"\n]*"/);
   });
 
   it('never turns a missing P&L into a zero', () => {

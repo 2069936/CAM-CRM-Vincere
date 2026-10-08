@@ -13,7 +13,7 @@ import { agedWords, expectedAccountNames } from './fleetStatusLights';
  * breakdown: the connections, under each its accounts, under each account what
  * it has been doing, the same information the tracker already carries.
  *
- * FIVE STATES, FIVE COLOURS, EACH WITH A SENTENCE.
+ * SIX STATES, FIVE COLOURS, EACH WITH A SENTENCE.
  *
  *   live           green   at least one fresh sample, every fresh account is
  *                          connected, and no device of the client reports an
@@ -22,13 +22,23 @@ import { agedWords, expectedAccountNames } from './fleetStatusLights';
  *                          is not: a disconnected or silent account beside a
  *                          live one, or a device error beside live accounts.
  *                          "Partly live, 3 connected, 1 disconnected, 1 silent."
- *   off            red     the client has a device or samples and nothing fresh
- *                          and connected: all stale, all disconnected, or the
- *                          device reports NinjaTrader not running. The only
- *                          red on the screen. "Off, no connection for 42 minutes."
+ *   silent         amber   every sample is stale and nothing says the connection
+ *                          is lost: the sampler has not reported, which is all
+ *                          the data shows. Before the open and after the close
+ *                          this is every sampled client on the desk.
+ *                          "Silent, no sample for 14 hours."
+ *   off            red     evidence that nothing is up: the device reports
+ *                          NinjaTrader not running, or a fresh sample says
+ *                          disconnected and no fresh account is connected. The
+ *                          only red on the screen. "Off, 2 accounts disconnected."
  *   never_sampled  brown   a VPS is paired and no account has ever been sampled.
  *   no_vps         grey    no device and no sample. Not a bulb: these clients
  *                          are one folded line under the grid.
+ *
+ * RED IS EVIDENCE, NOT ABSENCE. A stale sample only says the sampler has not
+ * reported; painting it red claimed a lost connection the data did not show,
+ * and did so for the whole desk twice a day. Red needs the heartbeat to say
+ * NinjaTrader is down, or a fresh sample to say disconnected.
  *
  * WITH OR WITHOUT THE DEVICES. The browser cannot read ingest_devices; a
  * Manager reaches the fleet through /api/admin/ingest-fleet, a CAM is refused.
@@ -48,13 +58,15 @@ import { agedWords, expectedAccountNames } from './fleetStatusLights';
  * Pure: no React, no Supabase.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-export const BULB_STATES = Object.freeze(['off', 'partly', 'never_sampled', 'live', 'no_vps']);
+export const BULB_STATES = Object.freeze(['off', 'partly', 'silent', 'never_sampled', 'live', 'no_vps']);
 
 /* The colour, as a word. Red belongs to `off` and to nothing else: "differs
- * from the desk" stays amber on the pills, and partly is amber here. */
+ * from the desk" stays amber on the pills, and partly and silent are amber
+ * here (silent is drawn hollow, so the two amber bulbs read apart). */
 export const BULB_TONES = Object.freeze({
   live: 'live',
   partly: 'partly',
+  silent: 'silent',
   off: 'off',
   never_sampled: 'faint',
   no_vps: 'none',
@@ -63,15 +75,16 @@ export const BULB_TONES = Object.freeze({
 export const BULB_WORDS = Object.freeze({
   live: 'Live',
   partly: 'Partly live',
+  silent: 'Silent',
   off: 'Off',
   never_sampled: 'Never sampled',
   no_vps: 'No VPS paired',
 });
 
-/* Worst first: off, partly, never sampled, live. no_vps is listed, not lit. */
-const BULB_ORDER = Object.freeze({ off: 0, partly: 1, never_sampled: 2, live: 3, no_vps: 4 });
+/* Worst first: off, partly, silent, never sampled, live. no_vps is listed, not lit. */
+const BULB_ORDER = Object.freeze({ off: 0, partly: 1, silent: 2, never_sampled: 3, live: 4, no_vps: 5 });
 
-export const DESK_LEGEND = Object.freeze(['live', 'partly', 'off', 'never_sampled', 'no_vps']
+export const DESK_LEGEND = Object.freeze(['live', 'partly', 'silent', 'off', 'never_sampled', 'no_vps']
   .map((state) => ({ state, tone: BULB_TONES[state], word: BULB_WORDS[state] })));
 
 /** The group under the connections for registry accounts nobody has sampled. */
@@ -187,7 +200,13 @@ function stateOf({ sampled, live, disconnected, silent, registry, device, device
     }
     return registry > 0 ? 'never_sampled' : 'no_vps';
   }
-  if (live === 0) return 'off';
+  if (live === 0) {
+    // Nothing fresh and connected. Red only on evidence: the heartbeat says
+    // NinjaTrader is down, or a fresh sample says disconnected. All stale is
+    // silent, amber: the sampler has not reported, and that is all we know.
+    if (device?.ninjaDown) return 'off';
+    return disconnected > 0 ? 'off' : 'silent';
+  }
   if (disconnected > 0 || silent > 0 || (device && device.error)) return 'partly';
   return 'live';
 }
@@ -208,9 +227,12 @@ function sentenceOf(state, { counts, device, deviceAware, newestSampledAt, ageMi
         const since = newestSampledAt ? ` since ${cycleClock(newestSampledAt)}` : '';
         return `Off, NinjaTrader not running${since}.`;
       }
-      if (counts.disconnected && !counts.silent) return `Off, ${plural(counts.disconnected, 'account')} disconnected.`;
-      if (counts.silent && !counts.disconnected) return `Off, no connection for ${durationWords(ageMinutes)}.`;
+      if (!counts.silent) return `Off, ${plural(counts.disconnected, 'account')} disconnected.`;
       return `Off, ${counts.disconnected} disconnected, ${counts.silent} silent.`;
+    }
+    case 'silent': {
+      const head = `Silent, no sample for ${durationWords(ageMinutes)}`;
+      return device?.error ? `${head}, VPS reports ${device.errorWords}.` : `${head}.`;
     }
     case 'never_sampled':
       return deviceAware
@@ -298,7 +320,7 @@ export function buildDeskClientLight(client, { samples = [], devices = null, dev
   };
 }
 
-/** Off, partly, never sampled, live; alphabetical inside each group. */
+/** Off, partly, silent, never sampled, live; alphabetical inside each group. */
 export function compareBulbs(left, right) {
   const order = (BULB_ORDER[left.state] ?? 9) - (BULB_ORDER[right.state] ?? 9);
   if (order !== 0) return order;
@@ -307,7 +329,7 @@ export function compareBulbs(left, right) {
 
 /** The one line over the grid. */
 export function deskWords(counts, ageMinutes) {
-  return `${counts.live} live, ${counts.partly} partly live, ${counts.off} off, `
+  return `${counts.live} live, ${counts.partly} partly live, ${counts.silent} silent, ${counts.off} off, `
     + `${counts.never_sampled} never sampled, ${counts.no_vps} without a VPS. `
     + `Latest sample ${agedWords(ageMinutes)}.`;
 }
@@ -347,7 +369,7 @@ export function buildDeskClientLights({ clients = [], tracker = null, devices = 
   }
   const bulbs = all.filter((bulb) => bulb.state !== 'no_vps').sort(compareBulbs);
   const hidden = all.filter((bulb) => bulb.state === 'no_vps').sort((a, b) => compareText(a.clientName, b.clientName));
-  const counts = { live: 0, partly: 0, off: 0, never_sampled: 0, no_vps: 0 };
+  const counts = { live: 0, partly: 0, silent: 0, off: 0, never_sampled: 0, no_vps: 0 };
   for (const bulb of all) counts[bulb.state] += 1;
   let newest = null;
   for (const bulb of all) if (bulb.newestSampledAt && (!newest || bulb.newestSampledAt > newest)) newest = bulb.newestSampledAt;

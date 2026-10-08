@@ -22,7 +22,8 @@ import useDeskDevices, { loadDeskDevices } from './useDeskDevices';
  * it has been doing. The clients with no VPS are one folded line, not bulbs.
  *
  * THE GRID IS A ROW OF LIGHTS AND NAMES, nothing per account, worst first (off,
- * partly, never sampled, live) and alphabetical inside each group. The state
+ * partly, silent, never sampled, live) and alphabetical inside each group. The
+ * state
  * is decided in src/domain/deskClientLights.js from the client's samples, its
  * registry and, when the role can read the fleet, its devices.
  *
