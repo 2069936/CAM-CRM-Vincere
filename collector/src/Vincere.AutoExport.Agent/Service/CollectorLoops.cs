@@ -45,10 +45,52 @@ public sealed record CollectorStatusSnapshot(
     bool UpdateRequired,
     string DeviceStatus,
     string NinjaTraderVersion = null,
-    string AddonVersion = null);
+    string AddonVersion = null,
+    /* WHICH LOOP WROTE LastErrorCode: CollectorState.CaptureErrorSource or
+     * CollectorState.UploadErrorSource, null when there is no error. The code
+     * alone cannot say: the uploader and the capture path each speak words
+     * the heartbeat does not know, and the nearest heartbeat word for a
+     * refused upload is not the nearest one for a refused capture. */
+    string LastErrorSource = null)
+{
+    /* THE WORD THE HEARTBEAT MAY USE FOR WHAT THIS MACHINE RECORDED.
+     *
+     * The CRM's heartbeat route records eight codes and, until it was patched,
+     * refused the whole heartbeat for any other word. The heartbeat loop used
+     * to record the CRM's refusal of a heartbeat as this machine's error, so
+     * the refusal was back in the next heartbeat's lastErrorCode: the client
+     * dropped the word before sending, which is why the fleet never saw it,
+     * but the agent's own state carried a heartbeat refusal as the machine's
+     * fault until something else overwrote it. Two VPS updated to 1.2.0 on
+     * 2026-10-08 went silent on the fleet screen and were found this way.
+     * The heartbeat loop no longer records anything about itself; what
+     * remains is the uploader and the capture path, both of which record the
+     * CRM's or the add-on's own word for the fault, which is the right word
+     * for the log and the diagnostics bundle and usually not a heartbeat word.
+     *
+     * So this is the one place the translation happens. A word the heartbeat
+     * knows goes through as it is. Anything else becomes the nearest word the
+     * heartbeat has for the loop that recorded it: upload_failed for whatever
+     * the uploader recorded, capture_failed for whatever the capture path
+     * recorded. The original stays in LastErrorCode for everything that is
+     * not the heartbeat. */
+    public string ErrorCodeForHeartbeat()
+    {
+        if (string.IsNullOrEmpty(LastErrorCode)) return null;
+        if (HeartbeatErrorCodes.IsKnown(LastErrorCode)) return LastErrorCode;
+        return string.Equals(LastErrorSource, CollectorState.UploadErrorSource, StringComparison.Ordinal)
+            ? HeartbeatErrorCodes.UploadFailed
+            : HeartbeatErrorCodes.CaptureFailed;
+    }
+}
 
 public sealed class CollectorState
 {
+    /// <summary>LastErrorSource when the capture path recorded the error.</summary>
+    public const string CaptureErrorSource = "capture";
+    /// <summary>LastErrorSource when the uploader recorded the error.</summary>
+    public const string UploadErrorSource = "upload";
+
     private readonly object gate = new();
     private CollectorStatusSnapshot value = new(null, null, null, null, null, false, "unpaired");
 
@@ -113,6 +155,9 @@ public sealed class CollectorState
                 LastErrorMessage = result.CaptureQueued
                     ? null
                     : result.ErrorCode == null ? value.LastErrorMessage : "The scheduled capture did not complete.",
+                LastErrorSource = result.CaptureQueued
+                    ? null
+                    : result.ErrorCode == null ? value.LastErrorSource : CaptureErrorSource,
                 AddonAvailable = addonAvailable,
             };
         }
@@ -126,22 +171,42 @@ public sealed class CollectorState
      * snapshot had landed. The heartbeat carries the code and the fleet view
      * reads it before it reads the batch, so the desk saw a failure that was
      * already over. Only upload errors are cleared here: a capture error is
-     * the capture's to clear. */
+     * the capture's to clear.
+     *
+     * An upload error is whatever the heartbeat would report as upload_failed.
+     * This used to be a list of four codes, and a quarantine (snapshot_rejected)
+     * was not on it: it did not matter while the client dropped that word on
+     * the way out, and it matters now that the heartbeat says upload_failed
+     * for it, because a red row for a refusal the next upload has already
+     * answered is the picture this method exists to prevent. */
     public void RecordUploadSuccess(DateTimeOffset acknowledgedAt)
     {
         lock (gate)
         {
-            bool uploadError = value.LastErrorCode is "upload_failed" or "ingest_at_capacity"
-                or "capture_requires_replay" or "capture_conflict";
+            bool uploadError = value.ErrorCodeForHeartbeat() == HeartbeatErrorCodes.UploadFailed;
             value = uploadError
-                ? value with { LastSuccessAt = acknowledgedAt, LastErrorCode = null, LastErrorMessage = null }
+                ? value with { LastSuccessAt = acknowledgedAt, LastErrorCode = null, LastErrorMessage = null, LastErrorSource = null }
                 : value with { LastSuccessAt = acknowledgedAt };
         }
     }
 
+    /// <summary>
+    /// What the uploader records when the CRM refuses a snapshot or cannot be
+    /// reached, in the CRM's own words. The capture path records through
+    /// RecordCapture, and the heartbeat records nothing about itself: a refused
+    /// heartbeat is reported to the log and never becomes this machine's error.
+    /// </summary>
     public void RecordError(string code, string safeMessage)
     {
-        lock (gate) value = value with { LastErrorCode = code, LastErrorMessage = safeMessage };
+        lock (gate)
+        {
+            value = value with
+            {
+                LastErrorCode = code,
+                LastErrorMessage = safeMessage,
+                LastErrorSource = code == null ? null : UploadErrorSource,
+            };
+        }
     }
 
     public void RecordHeartbeat(HeartbeatResult heartbeat)
@@ -373,8 +438,10 @@ public sealed class UploadLoop : ICollectorLoop
             // said come back, the item is queued, and the next pass goes. It
             // reaches the log through ReportChange but never the heartbeat,
             // because a red row for a machine doing exactly what it was asked
-            // is the wrong picture, and the heartbeat's own vocabulary would
-            // refuse the code anyway.
+            // is the wrong picture. Every other code is recorded as the CRM
+            // said it; the heartbeat translates what it does not know into
+            // upload_failed when it builds its payload, so this one has to be
+            // kept out here or it would arrive at the fleet as a failed upload.
             if (exception.Code != "ingest_at_capacity")
                 state.RecordError(exception.Code, exception.Message);
             ReportChange(exception.Code, exception);
@@ -459,11 +526,24 @@ public sealed class HeartbeatLoop : ICollectorLoop
             string.IsNullOrWhiteSpace(current.NinjaTraderVersion) ? ninjaTraderVersion : current.NinjaTraderVersion,
             current.LastCaptureAt,
             current.LastSuccessAt,
-            current.LastErrorCode,
+            // The one place a recorded code is translated into a word the
+            // heartbeat knows. The original stays in the snapshot for the log
+            // and the diagnostics bundle.
+            current.ErrorCodeForHeartbeat(),
             current.LastErrorMessage,
             queueStatus.PendingCount + queueStatus.UploadingCount,
             queueStatus.TotalBytes,
             current.AddonAvailable);
+        /* A REFUSED HEARTBEAT IS NOT THIS MACHINE'S ERROR.
+         *
+         * Both catches below used to call state.RecordError with the CRM's
+         * refusal, and the payload above copies state into lastErrorCode, so
+         * the refusal rode in the next heartbeat, was refused again, and was
+         * recorded again. The client dropped the word on the way out, which
+         * kept the wire clean, but the agent still described itself by the
+         * last thing the CRM said about its heartbeat rather than by anything
+         * about captures or uploads. The heartbeat is a liveness signal: its
+         * own failures go to the log through ReportChange and nowhere else. */
         try
         {
             HeartbeatResult result = await crm.SendHeartbeatAsync(payload, cancellationToken).ConfigureAwait(false);
@@ -476,11 +556,10 @@ public sealed class HeartbeatLoop : ICollectorLoop
         {
             await tokenStore.DeleteTokenAsync(cancellationToken).ConfigureAwait(false);
             state.RecordUnpaired();
-            state.RecordError(exception.Code, exception.Message);
+            ReportChange(exception.Code, exception);
         }
         catch (CrmClientException exception)
         {
-            state.RecordError(exception.Code, exception.Message);
             ReportChange(exception.Code, exception);
         }
     }

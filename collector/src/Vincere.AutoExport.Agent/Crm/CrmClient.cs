@@ -862,27 +862,21 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
         HeartbeatPayload payload,
         string[] knownSecrets)
     {
-        string[] allowedErrorCodes =
-        {
-            "ninjatrader_not_running",
-            "addon_unavailable",
-            "capture_timeout",
-            "capture_failed",
-            "contract_mismatch",
-            "queue_capacity_warning",
-            "upload_failed",
-            "configuration_error",
-        };
         // An unrecognised code is DROPPED, never a reason to refuse to send. This
         // used to throw, and the agent set `heartbeat_failed` on itself whenever a
-        // heartbeat failed -- a code missing from the list above. So one failed
-        // heartbeat poisoned every heartbeat after it: send, fail, record
+        // heartbeat failed -- a code missing from HeartbeatErrorCodes. So one
+        // failed heartbeat poisoned every heartbeat after it: send, fail, record
         // heartbeat_failed, refuse to send because of heartbeat_failed, forever,
         // every five seconds, with the CRM showing the VPS as never having paired.
         // A heartbeat is a liveness signal; the diagnostic field is the least
         // important thing in it and must not be able to suppress it.
+        //
+        // The loop that builds the payload now maps what the agent recorded to
+        // the nearest word the heartbeat knows, so this is the last line of
+        // defence rather than the only one, and it stays a drop: a code that
+        // got past the loop is one this client has no basis to rename.
         string errorCode = string.IsNullOrEmpty(payload.LastErrorCode)
-            || allowedErrorCodes.Contains(payload.LastErrorCode, StringComparer.Ordinal)
+            || HeartbeatErrorCodes.IsKnown(payload.LastErrorCode)
             ? payload.LastErrorCode
             : null;
         // Deliberately NOT rejecting LastSuccessAt > LastCaptureAt. An upload

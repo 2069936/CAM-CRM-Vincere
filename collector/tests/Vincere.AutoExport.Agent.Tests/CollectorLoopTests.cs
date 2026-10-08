@@ -233,6 +233,184 @@ public sealed class CollectorLoopTests
         Assert.Contains("server_permission_denied", Assert.Single(reporter.Messages));
     }
 
+    /* A REFUSED HEARTBEAT MUST NOT RIDE IN THE NEXT HEARTBEAT.
+     *
+     * The loop recorded the CRM's refusal as this machine's error, the payload
+     * copies that error into lastErrorCode, and the CRM's heartbeat route only
+     * knew eight words: so a refusal was sent back, refused again, recorded
+     * again. Two VPS updated to 1.2.0 on 2026-10-08 went silent on the fleet
+     * screen and were found that way. The refusal still reaches the log; the
+     * machine's own error stays whatever the capture or the upload last said. */
+    [Fact]
+    public async Task ARefusedHeartbeatDoesNotChangeTheNextHeartbeatsErrorCode()
+    {
+        CollectorState state = new();
+        state.RecordCapture(
+            new CaptureRunResult(
+                new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-10-08", null),
+                false,
+                "addon_unavailable",
+                null),
+            DateTimeOffset.UtcNow);
+        RecordingReporter reporter = new();
+        ThrowingHeartbeatCrm crm = new()
+        {
+            HeartbeatError = new CrmClientException(
+                "heartbeat_failed",
+                "The CRM did not accept the heartbeat. Cause: invalid_heartbeat.",
+                false,
+                disposition: CrmFailureDisposition.Stop),
+        };
+        HeartbeatLoop loop = new(new FakeQueue(), crm, new FakeTokenStore("token"), state, "1.0.0", "1.0.0", "8.1.0", reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+        crm.HeartbeatError = null;
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        HeartbeatPayload next = Assert.Single(crm.Payloads.Skip(1));
+        Assert.Equal("addon_unavailable", next.LastErrorCode);
+        Assert.Equal("The scheduled capture did not complete.", next.LastErrorMessage);
+        Assert.Equal("addon_unavailable", state.Snapshot().LastErrorCode);
+        Assert.Equal(new[] { "heartbeat_failed" }, reporter.Codes);
+        Assert.Contains("invalid_heartbeat", Assert.Single(reporter.Messages));
+    }
+
+    [Fact]
+    public async Task ARefusedHeartbeatLeavesAMachineWithNoErrorClean()
+    {
+        ThrowingHeartbeatCrm crm = new()
+        {
+            HeartbeatError = new CrmClientException(
+                "heartbeat_failed",
+                "The CRM did not accept the heartbeat. Cause: invalid_heartbeat.",
+                false,
+                disposition: CrmFailureDisposition.Stop),
+        };
+        CollectorState state = new();
+        HeartbeatLoop loop = new(new FakeQueue(), crm, new FakeTokenStore("token"), state, "1.0.0", "1.0.0", "8.1.0");
+
+        await loop.RunOnceAsync(CancellationToken.None);
+        crm.HeartbeatError = null;
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.Null(crm.Payloads[1].LastErrorCode);
+        Assert.Null(crm.Payloads[1].LastErrorMessage);
+        Assert.Null(state.Snapshot().LastErrorCode);
+    }
+
+    [Fact]
+    public async Task ARevokedCredentialOnTheHeartbeatStillUnpairsAndIsLogged()
+    {
+        // The RePair path is untouched: the token goes, the status says
+        // unpaired, and the refusal is written to the log, which it was not
+        // before. What it no longer does is become the machine's error code.
+        FakeTokenStore token = new("token");
+        RecordingReporter reporter = new();
+        ThrowingHeartbeatCrm crm = new()
+        {
+            HeartbeatError = new CrmClientException(
+                "device_credential_revoked",
+                "The collector credential is invalid or revoked.",
+                false,
+                disposition: CrmFailureDisposition.RePair),
+        };
+        CollectorState state = new();
+        HeartbeatLoop loop = new(new FakeQueue(), crm, token, state, "1.0.0", "1.0.0", "8.1.0", reporter);
+
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        Assert.True(token.Deleted);
+        Assert.Equal("unpaired", state.Snapshot().DeviceStatus);
+        Assert.Null(state.Snapshot().LastErrorCode);
+        Assert.Equal(new[] { "device_credential_revoked" }, reporter.Codes);
+    }
+
+    /* THE UPLOADER SPEAKS THE CRM'S WORDS; THE HEARTBEAT KNOWS EIGHT.
+     *
+     * A quarantine is recorded as snapshot_rejected, which is the right word
+     * for the log and the diagnostics bundle and not a word the heartbeat may
+     * say. Until now the client dropped it on the way out and the fleet view
+     * showed a machine whose upload had been refused as online with no error.
+     * The payload build is the one place the translation happens. */
+    [Fact]
+    public async Task AnUploadRefusalReachesTheHeartbeatAsUploadFailed()
+    {
+        FakeQueue queue = new() { Next = Item };
+        CollectorState state = new();
+        RecordingReporter reporter = new();
+        FakeCrm crm = new()
+        {
+            UploadError = new CrmClientException(
+                "snapshot_rejected",
+                "The CRM rejected the snapshot. Cause: schema_mismatch.",
+                false,
+                disposition: CrmFailureDisposition.Quarantine),
+        };
+        UploadLoop uploader = new(queue, crm, new FakeTokenStore("token"), state, new FakeCaptureHistory(), reporter);
+        HeartbeatLoop heartbeat = new(queue, crm, new FakeTokenStore("token"), state, "1.0.0", "1.0.0", "8.1.0");
+
+        await uploader.RunOnceAsync(CancellationToken.None);
+        await heartbeat.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal("upload_failed", crm.Heartbeat.LastErrorCode);
+        Assert.Contains("schema_mismatch", crm.Heartbeat.LastErrorMessage);
+        // The original word for the log and the bundle, not the translation.
+        Assert.Equal("snapshot_rejected", state.Snapshot().LastErrorCode);
+        Assert.Equal(new[] { "snapshot_rejected" }, reporter.Codes);
+    }
+
+    [Theory]
+    [InlineData("ninjatrader_not_running")]
+    [InlineData("addon_unavailable")]
+    [InlineData("capture_timeout")]
+    [InlineData("capture_failed")]
+    [InlineData("contract_mismatch")]
+    [InlineData("queue_capacity_warning")]
+    [InlineData("upload_failed")]
+    [InlineData("configuration_error")]
+    public void AWordTheHeartbeatKnowsGoesThroughAsItIs(string code)
+    {
+        CollectorState state = new();
+        state.RecordError(code, "as recorded");
+
+        Assert.Equal(code, state.Snapshot().ErrorCodeForHeartbeat());
+    }
+
+    [Fact]
+    public void ACaptureFailureTheHeartbeatDoesNotKnowBecomesCaptureFailed()
+    {
+        // positions_open is the add-on's word for a manual capture refused
+        // with positions still open. It is the capture's word, so the
+        // nearest heartbeat word is the capture's, not the uploader's.
+        CollectorState state = new();
+        state.RecordCapture(
+            new CaptureRunResult(
+                new CaptureScheduleDecision(CaptureScheduleDecisionKind.Due, "2026-10-08", null),
+                false,
+                "positions_open",
+                null),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal("capture_failed", state.Snapshot().ErrorCodeForHeartbeat());
+        Assert.Equal("positions_open", state.Snapshot().LastErrorCode);
+        Assert.Null(new CollectorState().Snapshot().ErrorCodeForHeartbeat());
+    }
+
+    [Fact]
+    public void ASuccessfulUploadClearsARefusalTheHeartbeatReportsAsUploadFailed()
+    {
+        // The clearing rule and the heartbeat's word are the same rule: a
+        // quarantine is reported as upload_failed, so the next acknowledged
+        // upload is the end of it, exactly as it is for upload_failed itself.
+        CollectorState state = new();
+        state.RecordError("snapshot_rejected", "refused");
+        state.RecordUploadSuccess(DateTimeOffset.UtcNow);
+
+        Assert.Null(state.Snapshot().LastErrorCode);
+        Assert.Null(state.Snapshot().LastErrorMessage);
+        Assert.Null(state.Snapshot().LastErrorSource);
+    }
+
     /* THE SECRET THE HEARTBEAT HANDS OUT HAS TO ACTUALLY BE WRITTEN.
      *
      * The loop takes the store as an optional last argument, which is how it
@@ -593,11 +771,14 @@ public sealed class CollectorLoopTests
     private sealed class ThrowingHeartbeatCrm : ICollectorCrmClient
     {
         public CrmClientException HeartbeatError { get; set; }
+        /// <summary>Every payload handed over, refused or not, in order.</summary>
+        public List<HeartbeatPayload> Payloads { get; } = new();
 
         public Task<PairingResult> PairAsync(string code, string agentVersion, string addonVersion, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<UploadAcknowledgement> UploadAsync(QueueItem item, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<HeartbeatResult> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken cancellationToken = default)
         {
+            Payloads.Add(payload);
             if (HeartbeatError != null) throw HeartbeatError;
             return Task.FromResult(new HeartbeatResult("device-id", "online", false, false, "16:45", "America/New_York"));
         }

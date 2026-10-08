@@ -236,6 +236,40 @@ public sealed record HeartbeatPayload(
     [property: JsonProperty("queueBytes")] long QueueBytes,
     [property: JsonProperty("addonAvailable")] bool? AddonAvailable);
 
+/* THE EIGHT WORDS THE HEARTBEAT MAY SAY ABOUT WHAT WENT WRONG.
+ *
+ * The CRM's heartbeat route records lastErrorCode from a fixed list and, until
+ * it was patched, refused the whole heartbeat for any other word. The agent
+ * speaks many more codes than these: the uploader records what the CRM said
+ * about a snapshot (snapshot_rejected, capture_requires_replay), the capture
+ * path records what the add-on or the queue said (positions_open,
+ * queue_capacity_exceeded), and for a while the heartbeat loop recorded the
+ * CRM's refusal of the heartbeat itself. None of those is a heartbeat word.
+ *
+ * The list lives here, next to the payload, so the one place that builds the
+ * payload and the client that sends it agree on it. */
+public static class HeartbeatErrorCodes
+{
+    public const string CaptureFailed = "capture_failed";
+    public const string UploadFailed = "upload_failed";
+
+    private static readonly HashSet<string> known = new(StringComparer.Ordinal)
+    {
+        "ninjatrader_not_running",
+        "addon_unavailable",
+        "capture_timeout",
+        CaptureFailed,
+        "contract_mismatch",
+        "queue_capacity_warning",
+        UploadFailed,
+        "configuration_error",
+    };
+
+    public static IReadOnlyCollection<string> Known => known;
+
+    public static bool IsKnown(string code) => !string.IsNullOrEmpty(code) && known.Contains(code);
+}
+
 public sealed record HeartbeatResult(
     string DeviceId,
     string Status,
