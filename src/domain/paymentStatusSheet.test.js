@@ -133,6 +133,19 @@ describe('reading the paste', () => {
     ]);
   });
 
+  it('lets the last group run to the end of a header row wider than its title row', () => {
+    // A title pasted without its trailing tabs is one cell wide; the header
+    // under it still has four columns and they all belong to that group.
+    const narrow = [
+      'Paying a subscription',
+      line('Name', 'Email', 'Amount', 'Notes'),
+      line('Ada Quill', 'ada@quill.test', '$400', 'ok'),
+    ].join('\n');
+    expect(parsePaymentStatusSheet(narrow).rows).toMatchObject([
+      { name: 'Ada Quill', emails: ['ada@quill.test'], amount: 400, notes: 'ok', status: 'paying' },
+    ]);
+  });
+
   it('falls back to Name, Email, Amount, Notes when a group has no header row', () => {
     const bare = [
       line('Paying a subscription', '', '', '', 'Free CAM'),

@@ -161,11 +161,13 @@ export function parsePaymentStatusSheet(text) {
 
     if (isHeaderRow(cells)) {
       if (pendingTitles) {
-        groups = pendingTitles.map((group) => ({
-          ...group,
-          end: Math.max(group.end, group.start),
-          columns: columnsFromHeader(group, cells),
-        }));
+        // The last group runs to the end of the header row: a title row pasted
+        // without its trailing tabs is narrower than the header under it.
+        const last = pendingTitles.length - 1;
+        groups = pendingTitles.map((group, i) => {
+          const widened = { ...group, end: i === last ? Math.max(group.end, cells.length - 1) : group.end };
+          return { ...widened, columns: columnsFromHeader(widened, cells) };
+        });
         pendingTitles = null;
       } else {
         // A header with no group title above it is the Cancelled tab: Name and
