@@ -1165,6 +1165,186 @@ export async function loadSupabaseClientLiveStrategies({ clientId = '', client =
   return result.available ? { ...result, clientId: id } : result;
 }
 
+/* ── The tracker against the close (step 66) ────────────────────────────── */
+
+/**
+ * The tracker side of each close, pinned by record_tracker_close_readings.
+ * Never the close money: the caller joins account_snapshots and
+ * strategy_snapshots (LATEST_CLOSE_COLUMNS) and src/domain/trackerCloseComparison.js
+ * says the verdict at read time.
+ */
+export const TRACKER_CLOSE_READING_COLUMNS = 'id, daily_import_id, client_id, device_id, trading_date, '
+  + 'account_name, source, connection_name, connected, status, realized_pnl, unrealized_pnl, total_pnl, '
+  + 'strategy_count, enabled_strategy_count, run_state, sampled_at, reading_since, reset_seen, '
+  + 'next_sampled_at, strategies, close_batch_id, close_captured_at, close_time_basis, grace_seconds, '
+  + 'stale_seconds, compared_at';
+
+/** One value run of one account on one machine: the day's trail, for a sparkline. */
+export const ACCOUNT_LIVE_SAMPLE_HISTORY_COLUMNS = 'id, client_id, device_id, account_name, connection_name, '
+  + 'connected, status, realized_pnl, unrealized_pnl, total_pnl, strategy_count, enabled_strategy_count, '
+  + 'run_state, first_sampled_at, last_sampled_at, samples';
+
+const TRACKER_CLOSE_SETTINGS_COLUMNS = 'stale_sample_seconds, pre_close_grace_seconds, '
+  + 'close_match_tolerance_dollars, close_match_tolerance_ratio, max_strategies_per_account, history_retention_days';
+
+/**
+ * Step 66 not run yet: a table is missing (PGRST205, 42P01) or the settings
+ * columns are (42703 from PostgREST, "column ... does not exist"). That is a
+ * state the panel names, not an error.
+ */
+export function isMissingTrackerCloseReadings(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '');
+  if (['PGRST205', '42P01'].includes(code)) return true;
+  if (code === '42703' || code === 'PGRST204') return true;
+  return /tracker_close_readings|account_live_sample_history|account_tracker_settings/i.test(message)
+    && /(does not exist|schema cache)/i.test(message);
+}
+
+export function mapTrackerCloseReading(row = {}) {
+  return {
+    id: row.id ?? null,
+    dailyImportId: row.daily_import_id,
+    clientId: row.client_id,
+    deviceId: row.device_id || null,
+    tradingDate: row.trading_date || null,
+    accountName: row.account_name,
+    source: row.source || 'none',
+    connectionName: row.connection_name || null,
+    connected: row.connected === true ? true : row.connected === false ? false : null,
+    status: row.status || null,
+    // NULL IS NOT ZERO, in step 55's words: a none row has no figure.
+    realizedPnl: sampleNumber(row.realized_pnl),
+    unrealizedPnl: sampleNumber(row.unrealized_pnl),
+    totalPnl: sampleNumber(row.total_pnl),
+    strategyCount: sampleInteger(row.strategy_count),
+    enabledStrategyCount: sampleInteger(row.enabled_strategy_count),
+    runState: row.run_state || null,
+    sampledAt: row.sampled_at || null,
+    readingSince: row.reading_since || null,
+    resetSeen: row.reset_seen === true,
+    nextSampledAt: row.next_sampled_at || null,
+    strategies: Array.isArray(row.strategies) ? row.strategies : [],
+    closeBatchId: row.close_batch_id || null,
+    closeCapturedAt: row.close_captured_at || null,
+    closeTimeBasis: row.close_time_basis === 'scheduled' ? 'scheduled' : 'captured',
+    graceSeconds: sampleInteger(row.grace_seconds),
+    staleSeconds: sampleInteger(row.stale_seconds),
+    comparedAt: row.compared_at || null,
+  };
+}
+
+export function mapAccountLiveSampleHistory(row = {}) {
+  return {
+    id: row.id ?? null,
+    clientId: row.client_id,
+    deviceId: row.device_id || null,
+    accountName: row.account_name,
+    connectionName: row.connection_name || null,
+    connected: row.connected === true,
+    status: row.status || null,
+    realizedPnl: sampleNumber(row.realized_pnl),
+    unrealizedPnl: sampleNumber(row.unrealized_pnl),
+    totalPnl: sampleNumber(row.total_pnl),
+    strategyCount: sampleInteger(row.strategy_count),
+    enabledStrategyCount: sampleInteger(row.enabled_strategy_count),
+    runState: row.run_state || 'unmeasured',
+    firstSampledAt: row.first_sampled_at || null,
+    lastSampledAt: row.last_sampled_at || null,
+    samples: sampleInteger(row.samples) ?? 1,
+  };
+}
+
+/** The five tunables and the staleness horizon, in the domain module's names. */
+export function mapTrackerCloseSettings(row) {
+  if (!row) return null;
+  const dollars = sampleNumber(row.close_match_tolerance_dollars);
+  const ratio = sampleNumber(row.close_match_tolerance_ratio);
+  const stale = sampleInteger(row.stale_sample_seconds);
+  const grace = sampleInteger(row.pre_close_grace_seconds);
+  return {
+    toleranceDollars: dollars !== null && dollars >= 0 ? dollars : 5,
+    toleranceRatio: ratio !== null && ratio >= 0 ? ratio : 0.02,
+    staleSeconds: stale !== null && stale > 0 ? stale : 1500,
+    graceSeconds: grace !== null && grace >= 0 ? grace : 120,
+    maxStrategiesPerAccount: sampleInteger(row.max_strategies_per_account) ?? 50,
+    historyRetentionDays: sampleInteger(row.history_retention_days) ?? 5,
+    fallback: false,
+  };
+}
+
+/**
+ * The pinned tracker readings of a set of closes, plus the tunables the
+ * comparison reads, in two requests and no serverless invocation.
+ *
+ * @param {{clientIds?: string[]|null, importIds?: string[]|null, client?: object|null}} options
+ *   clientIds narrows to a book (null is the whole desk, for a Manager);
+ *   importIds narrows to named closes; `client` is injectable for tests.
+ * @returns {Promise<{available: boolean, reason?: string, readings?: object[], settings?: object|null}>}
+ *   available:false when step 66 has not run (or there is no database). Any
+ *   other failure THROWS, so the panel says it could not read, never zeros.
+ */
+export async function loadSupabaseTrackerCloseReadings({ clientIds = null, importIds = null, client = undefined } = {}) {
+  const db = client === undefined ? (isSupabaseConfigured ? supabase : null) : client;
+  if (!db) return { available: false, reason: 'not_configured' };
+  const scope = Array.isArray(clientIds) ? [...new Set(clientIds.filter(Boolean))] : null;
+  const imports = Array.isArray(importIds) ? [...new Set(importIds.filter(Boolean))] : null;
+
+  const settingsRead = db.from('account_tracker_settings').select(TRACKER_CLOSE_SETTINGS_COLUMNS).limit(1);
+  const rowsRead = (scope && !scope.length) || (imports && !imports.length)
+    ? Promise.resolve({ data: [], error: null })
+    : (() => {
+      let query = db.from('tracker_close_readings').select(TRACKER_CLOSE_READING_COLUMNS);
+      if (scope) query = query.in('client_id', scope);
+      if (imports) query = query.in('daily_import_id', imports);
+      // Bounded, not paged: a few rows per client per close, and a caller that
+      // wants more than one day names its imports.
+      return query.order('trading_date', { ascending: false }).order('account_name', { ascending: true }).limit(5000);
+    })();
+
+  const [settingsResult, rowsResult] = await Promise.all([settingsRead, rowsRead]);
+  for (const result of [settingsResult, rowsResult]) {
+    if (result?.error && isMissingTrackerCloseReadings(result.error)) {
+      return { available: false, reason: 'not_deployed' };
+    }
+  }
+  if (rowsResult?.error) throw new Error(`tracker_close_readings: ${rowsResult.error.message}`);
+
+  return {
+    available: true,
+    readings: (rowsResult?.data || []).filter((row) => row?.client_id && row?.account_name).map(mapTrackerCloseReading),
+    settings: settingsResult?.error ? null : mapTrackerCloseSettings(settingsResult?.data?.[0] || null),
+  };
+}
+
+/**
+ * The value runs of a book's accounts since an instant, for the day's trail
+ * beside a pinned reading.
+ *
+ * @param {{clientIds?: string[]|null, since?: string|Date|null, client?: object|null}} options
+ * @returns {Promise<{available: boolean, reason?: string, rows?: object[]}>}
+ */
+export async function loadSupabaseAccountLiveSampleHistory({ clientIds = null, since = null, client = undefined } = {}) {
+  const db = client === undefined ? (isSupabaseConfigured ? supabase : null) : client;
+  if (!db) return { available: false, reason: 'not_configured' };
+  const scope = Array.isArray(clientIds) ? [...new Set(clientIds.filter(Boolean))] : null;
+  if (scope && !scope.length) return { available: true, rows: [] };
+
+  let query = db.from('account_live_sample_history').select(ACCOUNT_LIVE_SAMPLE_HISTORY_COLUMNS);
+  if (scope) query = query.in('client_id', scope);
+  const sinceIso = since instanceof Date ? since.toISOString() : (since || null);
+  if (sinceIso) query = query.gte('last_sampled_at', sinceIso);
+  const result = await query.order('first_sampled_at', { ascending: true }).limit(5000);
+  if (result?.error) {
+    if (isMissingTrackerCloseReadings(result.error)) return { available: false, reason: 'not_deployed' };
+    throw new Error(`account_live_sample_history: ${result.error.message}`);
+  }
+  return {
+    available: true,
+    rows: (result?.data || []).filter((row) => row?.client_id && row?.account_name).map(mapAccountLiveSampleHistory),
+  };
+}
+
 export function isMissingCloseSummaries(error) {
   const message = error?.message || '';
   return error?.code === 'PGRST205'

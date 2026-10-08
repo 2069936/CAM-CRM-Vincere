@@ -534,6 +534,12 @@ begin
     -- thresholds and never writes them. Named before 65 exists for the same
     -- reason as 57's pair, and the same NOTICE on a re-run before 65 is applied.
     ('account_observation_settings', 'select', 'step 65, read-only; the screens read the thresholds'),
+    -- STEP 66'S PAIR, the same decision again. Both are written only by
+    -- triggers on the service role's own writes; a CAM able to write either
+    -- could forge the tracker side of a close. Named before step 66 exists for
+    -- the same reason as 57's; a re-run of 56 before 66 names these two in its NOTICE.
+    ('account_live_sample_history', 'select', 'step 66, read-only; the browser draws the day from it'),
+    ('tracker_close_readings',   'select', 'step 66, read-only so a CAM cannot forge the tracker side of a close'),
 
     -- NOTHING AT ALL. ingest_admission_settings and ingest_quarantine_reports
     -- each carry a restrictive `deny browser direct access` policy (step_45:490,

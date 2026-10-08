@@ -42,6 +42,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 63 | `step_63_heartbeat_without_ninjatrader_version.sql` | replaces `record_ingest_heartbeat` so a null `p_ninjatrader_version` is accepted: the stored `ingest_devices.ninjatrader_version` is kept (coalesce) and stays null only while no heartbeat has ever carried one; a non null value is still validated as a version, every other check is step 41's unchanged, and the grants are restated (service_role only). Replaces one function and rewrites no row | Agent 1.2.0 sends ninjaTraderVersion null until the first capture has told it the real one, and after every service restart until that day's capture. The route has passed null through since 2026-09-02; the RPC still refused it, so each heartbeat was a 400 and `last_seen_at` froze. Leading hypothesis for the eight VPS silent since their 1.2.0 update on 2026-10-08. Run it ANY time; nothing in the app changes. If step 41 is ever run again, run 63 again after it: 41 carries the old body |
 | 64 | `step_64_algorithm_live_position.sql` | `market_position` (long, short, flat), `position_quantity` (0 to 100000) and `trades_this_run` (0 to 1000000) on `algorithm_live_samples`, all nullable with their own CHECK constraints, and `record_algorithm_live_sample` replaced with the SAME signature so each item's `marketPosition`, `positionQuantity` and `tradesThisRun` are validated and written (a reading without them clears the columns: the row is the latest reading, not a merge). Grants restated (service_role only). Rewrites no row | Agent 1.2.1 reads each live strategy's position off NinjaTrader and posts it with the reading, so the desk sees whether BulletBot fired long or short, how many contracts it holds and how many trades this run has made, instead of asking in the team chat. Agents 1.2.0 send none of the three and store null. Run it AFTER merging the CRM and BEFORE installing agent 1.2.1 anywhere; a 1.2.1 agent against a database without it still lands and only loses the three values until it runs. If step 57 is ever run again, run 64 again after it: 57 carries the old function body |
 | 65 | `step_65_account_observations.sql` | seven columns on `trading_accounts` written by the database only: `observed_state` (`seen`, `breached`, `absent`, `never_seen`), `last_close_seen_on`, `closes_missed`, `breached_on`, `breach_reading`, `observed_at`, `auto_fail_flag_id`; `account_observation_settings`, one row (`stale_closes` 5, `auto_fail_on_breach` true, `new_account_days` 14, edited in the SQL editor); `refresh_account_observations(client)`, which recomputes every account of a client from every close of that client with the browser's own breach rule (0 is not measured, model 1 `abs(reading) >= limit`, model 2 `reading < 0`, cash and simulation never breach, the latest measured reading decides) and marks an account Failed with `date_failed`, an audit row (`trading_account.auto_failed`) and a flag for the CAM when its state becomes breached while Active or Payout Hold; deferred triggers on `account_snapshots`, `daily_imports` and `trading_accounts` that run the refresh at commit; a guard trigger that refuses a browser write to the seven columns; and a one pass backfill over every client with a close | An account the prop firm already failed stops reading Active and stops lighting up as never sampled: the close that breached marks it Failed, says so in a flag, and files absent and never seen as observations a CAM can read on the row. Needs step 52 (the policy helpers) and nothing after it; 64 and 65 touch different tables. Run it ANY time, before or after the build that reads the columns (the login tolerates an absent column). To turn the auto fail off: `update public.account_observation_settings set auto_fail_on_breach = false, updated_at = now() where id;`. The backfill marks every Active or Payout Hold account whose latest measured reading is a breach; on production that is about 281 accounts, with one flag per client naming them when more than three flip at once. Re-running it changes nothing |
+| 66 | `step_66_tracker_close_readings.sql` | `account_live_sample_history`: the account tracker's samples kept as value runs (one row per account per machine while the reading does not change, with first and last sampled_at and the sample count), filled by a trigger on `account_live_samples`, swept at `history_retention_days`; `tracker_close_readings`: the tracker side of each close, one row per account, pinned by a trigger on `ingest_batches` when a batch becomes `processed` or `incomplete`, through `record_tracker_close_readings(daily_import_id)`, with the reading in force at the capture plus a grace, the day's strategy readings, `next_sampled_at`, `reset_seen` and the two clocks, replaced wholesale on a second close; five tunables on `account_tracker_settings` (`history_retention_days` 5, `pre_close_grace_seconds` 120, `close_match_tolerance_dollars` 5, `close_match_tolerance_ratio` 0.02, `max_strategies_per_account` 50); one `audit_logs` row per comparison (`daily_import`, `tracker_close_compared`); grants and RLS in step 55's shape, two rows in step 56's exception table | The tracker against the close: per account, what NinjaTrader said just before the capture beside what the close says, with the verdict in words computed in the browser at read time. Needs 55, 57, 52, 28 and 47 first and refuses to run without them. Run it ANY time, between closes; history starts with the next sample and the next close pins the first readings. The client page and the overview arrive in later PRs; until then the two tables fill quietly. Numbered 66 because 64 landed first and 65 is in flight on another branch |
 
 ## These three groups behave differently
 
@@ -115,7 +116,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65 → 66. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -449,11 +450,13 @@ within the hour. The overview panel says "Migration step 57 has not been run".
 Agents older than 1.2.0 never call the route at all. The account tracker (step
 55's route, function and table) is not touched by anything in this step.
 
-Re-running step 56 BEFORE this file is applied prints the NOTICE "2 exception
-row(s) name a table that is not in public: algorithm_live_samples,
-algorithm_live_settings". That is expected: step 56 already names these two as
-read only, so that whichever order the two files run in, a CAM never gets a
-write on them. After 57 runs, the NOTICE goes away.
+Re-running step 56 BEFORE this file is applied prints the NOTICE "exception
+row(s) name a table that is not in public: ... algorithm_live_samples,
+algorithm_live_settings ...". That is expected: step 56 already names these two
+as read only, so that whichever order the two files run in, a CAM never gets a
+write on them. After 57 runs, those two leave the NOTICE; step 65's settings
+row and step 66's two tables are named the same way and leave it when 65 and 66
+run.
 
 What it compares. One reading per strategy instance, Realized plus Unrealized as
 the Strategies tab shows it, gross and counted since the instance was enabled.
@@ -488,6 +491,55 @@ trades as the old one by the next reading, on an add-on that cannot read the
 count, or while the agent service itself is down. Such a row is compared with
 a figure that counts only since it came back on, and the panel says so in its
 basis line.
+
+**66 degrades gracefully in every order, and it needs 55, 57, 52, 28 and 47
+first.** The file refuses to run without them and says which: "step 66 needs
+step 55 (account_live_samples) and step 52 (is_manager): run them first", or
+"step 66 needs step 57 (algorithm_live_samples), step 28 (ingest_batches) and
+step 47 (strategy_snapshots.ran): run them first". Both refusals leave nothing
+behind. It adds two tables and five columns and rewrites no row. Nothing in the
+agents or the ingest routes changes: the history fills from the samples the
+fleet already posts, through a trigger on `account_live_samples`, and the close
+pin fires from the batch transition `finalize_ingest_batch` already makes, so
+the daily route and the reprocess tool are both covered without touching either.
+A fault in either trigger is a WARNING in the Postgres log and the sample or
+the finalize lands exactly as before; nothing in this step can refuse a report
+or fail a close. The browser reads both tables through guarded loaders and
+answers "not run yet" until the tables exist, so the CRM may be deployed before
+or after you run it.
+
+What it keeps. `account_live_sample_history` holds one row per value run: ten
+minute samples of an account whose reading does not change are one row with
+`samples` counting them, so a flat night is one row and a trading day a handful.
+A retried report with the same `sampled_at` is a no op (step 55's upsert accepts
+it, so the trigger has to). Rows older than `history_retention_days` (5) leave on
+the next sample from that machine and on the next comparison for that client.
+`tracker_close_readings` holds, per close and account, the reading in force at
+the capture plus `pre_close_grace_seconds` (120): the run with the latest start
+at or before that cutoff, its clock capped at the cutoff, how long it had held,
+whether a NinjaTrader restart was seen during the day (`reset_seen`), the first
+reading after the cutoff if any (`next_sampled_at`), and the day's strategy
+readings from step 57 capped at `max_strategies_per_account` (50). Accounts the
+close lists that the tracker never saw are rows with `source = 'none'`, so
+absence is stored and not inferred. The close money is never copied: the browser
+joins `account_snapshots` and `strategy_snapshots` when it compares, so a manual
+re-upload or a tolerance edit never leaves a stale verdict.
+
+Tuning without a deploy: `update public.account_tracker_settings set
+close_match_tolerance_dollars = 10, updated_at = now() where id;`. The browser
+compares with max(dollars, ratio times the absolute close figure). The CHECK
+constraints are the review.
+
+A manual close (uploaded by hand in the browser) is not pinned automatically in
+this step: it never touches `ingest_batches`. To pin one, run `select
+public.record_tracker_close_readings('<daily_import_id>');` in the SQL editor;
+it then takes the capture time from the client's latest active machine schedule
+(16:30 America/New_York by default) and says so with `close_time_basis =
+'scheduled'`. A close replayed more than `history_retention_days` later finds no
+history and pins `source = 'none'` rows, which the browser names as that
+possibility. The function returns `{recorded: true, ...counts}` or `{recorded:
+false, reason}` and never raises. Re-running the file is a no op; your hand edits
+to `account_tracker_settings` survive it.
 
 **58 replaces one function and nothing else, and it is safe to run at any
 time.** Step 48's `replace_close_summaries` is SECURITY DEFINER, granted to
