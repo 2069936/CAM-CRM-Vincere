@@ -83,7 +83,12 @@ function clientDirectory(clients) {
   if (clients instanceof Map) {
     for (const [id, client] of clients) byId.set(id, client);
   } else {
-    for (const client of clients || []) if (client?.id) byId.set(client.id, client);
+    // Rows name the client by uuid; the app names it by legacy key when it has
+    // one. Both keys resolve, so neither side has to know which the other used.
+    for (const client of clients || []) {
+      if (client?.id) byId.set(client.id, client);
+      if (client?.uuid) byId.set(client.uuid, client);
+    }
   }
   return byId;
 }

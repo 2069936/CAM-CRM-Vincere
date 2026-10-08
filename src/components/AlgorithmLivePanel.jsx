@@ -50,8 +50,11 @@ export default function AlgorithmLivePanel({
   refreshMs = 120_000,
   now = () => new Date(),
 }) {
+  // The rows carry client_id, a uuid. A client's `id` is its legacy key when
+  // it has one, so scoping the read by `id` handed PostgREST strings that are
+  // not uuids and the whole panel read "could not read" on a real book.
   const clientIds = useMemo(
-    () => (clients || []).map((client) => client?.id).filter(Boolean).sort(),
+    () => (clients || []).map((client) => client?.uuid || client?.id).filter(Boolean).sort(),
     [clients],
   );
   const scopeKey = clientIds.join(',');
@@ -134,10 +137,14 @@ export default function AlgorithmLivePanel({
 
   const shown = comparison;
 
-  const clientById = useMemo(
-    () => new Map((clients || []).filter(Boolean).map((client) => [client.id, client])),
-    [clients],
-  );
+  const clientById = useMemo(() => {
+    const map = new Map();
+    for (const client of (clients || []).filter(Boolean)) {
+      if (client.id) map.set(client.id, client);
+      if (client.uuid) map.set(client.uuid, client);
+    }
+    return map;
+  }, [clients]);
 
   if (error && !shown) {
     return (

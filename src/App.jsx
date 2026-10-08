@@ -9893,7 +9893,8 @@ export function buildTodayBriefing(clients, {
 
       /* Null when no sample for this client has ever arrived, so every reader
          below can tell "nothing to say" from "nothing is running". */
-      const samples = liveByClientId?.get(client.id) || null;
+      // Samples are keyed by the row's uuid; `id` is the legacy key when there is one.
+      const samples = liveByClientId?.get(client.uuid) || liveByClientId?.get(client.id) || null;
       const live = samples?.length
         ? summarizeAccountTracker(samples, { now: at, staleSeconds })
         : null;
@@ -10799,7 +10800,9 @@ function CamOverview({
   const [liveTracker, setLiveTracker] = useState(null);
   const [liveClock, setLiveClock] = useState(() => Date.now());
   const trackerScope = useMemo(
-    () => workingClients.map((client) => client.id).filter(Boolean).sort().join(","),
+    // By uuid: account_live_samples.client_id is the uuid, and a client's `id`
+    // is its legacy key when it has one, which PostgREST refuses as a uuid.
+    () => workingClients.map((client) => client.uuid || client.id).filter(Boolean).sort().join(","),
     [workingClients],
   );
   useEffect(() => {

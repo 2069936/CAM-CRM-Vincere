@@ -264,6 +264,28 @@ describe('the styles', () => {
   });
 });
 
+describe('a client with a legacy key', () => {
+  /* On a real book a client's `id` is its legacy key and `uuid` is the row's
+   * uuid. The rows carry client_id = uuid, and PostgREST refuses a legacy key
+   * as a uuid, so scoping by `id` made the whole panel read "could not read". */
+  const legacy = [
+    { id: 'act-1700000000-ash', uuid: '4b0e5c8f-8c3f-4b2a-9d2e-1b2c3d4e5f60', name: 'Ash', activityLog: [] },
+    { id: 'act-1700000000-birch', uuid: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d', name: 'Birch', activityLog: [] },
+  ];
+
+  it('scopes the read by uuid, never by the legacy key', async () => {
+    const { load } = await show({ clients: legacy, load: vi.fn(async () => live({ rows: [] })) });
+    expect(load).toHaveBeenCalledWith({ clientIds: [legacy[0].uuid, legacy[1].uuid].sort() });
+  });
+
+  it('names the account by its client when the row carries the uuid', async () => {
+    const rows = [sample({ clientId: legacy[0].uuid })];
+    const { container } = await show({ clients: legacy, load: async () => live({ rows }) });
+    expect(panelText(container)).toContain('Ash / ACC-1');
+    expect(panelText(container)).not.toContain(legacy[0].uuid);
+  });
+});
+
 describe('the words', () => {
   it('has no verdict word and no dash used as punctuation, in any state it renders', async () => {
     const states = [
