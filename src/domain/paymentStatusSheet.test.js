@@ -38,7 +38,7 @@ const ACTIVE_TAB = [
   HEADER_ROW,
   line(
     'Ada Quill', 'ADA@Quill.test ', '$400', '',
-    'Bo Finch', 'bo@finch.test / bo.finch@other.test', '3 months free start Sept',
+    'Bo Finch', 'bo@finch.test/bo.finch@other.test', '3 months free start Sept',
     'Cal Reed', 'cal@reed.test', '',
     'Dee Vane', 'dee@vane.test', 'payment failed',
     'Eli Moss', 'eli@moss.test',
@@ -163,6 +163,10 @@ describe('reading the paste', () => {
     expect(rows[0].emails).toEqual(['ada@quill.test']);
     expect(rows[1].emails).toEqual(['bo@finch.test', 'bo.finch@other.test']);
     expect(normalizeEmails(' A@B.test, c@d.test; E@F.test ')).toEqual(['a@b.test', 'c@d.test', 'e@f.test']);
+    // A slash with no spaces around it, which is how the sheet writes most of them.
+    expect(normalizeEmails('one@x.test/two@y.test')).toEqual(['one@x.test', 'two@y.test']);
+    expect(normalizeEmails('one@x.test / two@y.test')).toEqual(['one@x.test', 'two@y.test']);
+    expect(normalizeEmails('one@x.test two@y.test')).toEqual(['one@x.test', 'two@y.test']);
     expect(normalizeEmails('not an email')).toEqual([]);
   });
 
