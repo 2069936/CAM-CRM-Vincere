@@ -294,3 +294,16 @@ describe('whose rows these are', () => {
     }
   });
 });
+
+describe('since when it has been disconnected', () => {
+  it('carries "Disconnected since" for a sample that is not connected, and nothing for one that is', () => {
+    const down = buildAccountLiveDetail({
+      client: CLIENT, accountName: 'ACC 01', sample: sample({ connected: false }), now: NOW, disconnectedSince: 'Disconnected since 09:40',
+    });
+    expect(down.disconnectedSince).toBe('Disconnected since 09:40');
+    const up = buildAccountLiveDetail({ client: CLIENT, accountName: 'ACC 01', sample: sample(), now: NOW, disconnectedSince: 'Disconnected since 09:40' });
+    expect(up.disconnectedSince).toBeNull();
+    expect(buildAccountLiveDetail({ client: CLIENT, accountName: 'ACC 01', sample: null, now: NOW, disconnectedSince: 'Disconnected since 09:40' }).disconnectedSince).toBeNull();
+    expect(buildAccountLiveDetail({ client: CLIENT, accountName: 'ACC 01', sample: sample({ connected: false }), now: NOW }).disconnectedSince).toBeNull();
+  });
+});

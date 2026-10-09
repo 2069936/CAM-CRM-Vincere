@@ -3204,6 +3204,60 @@ function normalizeAccountFocus(value) {
 	return ACCOUNT_FOCUS_LIST.filter((focus) => wanted.has(focus.toLowerCase()));
 }
 Object.freeze({
+	Sun: 0,
+	Mon: 1,
+	Tue: 2,
+	Wed: 3,
+	Thu: 4,
+	Fri: 5,
+	Sat: 6
+});
+Object.freeze({
+	pending: ["Pending", "The scheduled capture time has not arrived."],
+	expected: ["Expected", "Waiting within the normal upload grace period."],
+	received: ["Received", "Today's batch is available."],
+	deferred: ["Held at the door", "The CRM was full and asked this VPS to come back. Nothing is stored yet; the agent retries on its own."],
+	late: ["Late", "Today's batch has not arrived."],
+	incomplete: ["Incomplete", "The latest batch is missing required sections or rows."],
+	offline: ["Offline", "The VPS has stopped reporting heartbeats."],
+	failed: ["Failed", "The collector reported an operational error."],
+	revoked: ["Revoked", "Automatic collection access was revoked."],
+	paused: ["Paused", "Automatic collection is intentionally paused for this VPS."],
+	update_required: ["Update required", "The Windows collector must be updated."],
+	not_installed: ["Not installed", "No VPS is paired with this client."],
+	not_expected: ["Weekend", "No regular weekday capture is expected."],
+	quarantine: ["Quarantine", "The VPS holds captures the CRM refused."],
+	tracker_off: ["Not sampling yet", "No collector build sends live samples yet, so nothing here is live."],
+	tracker_unsupported: ["Collector too old to sample", "This VPS runs a collector build from before live sampling. Its daily close is unaffected."],
+	never_sampled: ["Never sampled", "This VPS is paired and answering, and no live sample of this account has ever arrived."],
+	sample_stale: ["Silent", "The VPS is answering heartbeats but has stopped sampling this account."],
+	disconnected: ["Disconnected", "The VPS is sampling and this account is not connected to its broker."],
+	live: ["Live", "Sampled within the last few minutes."]
+});
+Object.freeze({
+	running: ["running", "strategies are enabled on this account right now"],
+	idle: ["all off", "strategies are loaded and every one of them is switched off"],
+	no_strategies: ["none loaded", "the VPS read this account and it has no strategies loaded at all. Measured, and nothing to run."],
+	unmeasured: ["no strategy data", "the sample carried no strategy count. Not measured - not zero."]
+});
+Object.freeze(/* @__PURE__ */ new Set([
+	"disconnected",
+	"sample_stale",
+	"never_sampled"
+]));
+Object.freeze([
+	"not_installed",
+	"revoked",
+	"paused",
+	"tracker_off",
+	"offline",
+	"tracker_unsupported",
+	"never_sampled",
+	"sample_stale",
+	"disconnected",
+	"live"
+]);
+Object.freeze({
 	SEEN: "seen",
 	BREACHED: "breached",
 	ABSENT: "absent",
@@ -3233,6 +3287,24 @@ Object.freeze({
 	[ACCOUNT_STATUSES.RESERVE]: ACCOUNT_STATUSES.RESERVE,
 	Ignored: "Ignored"
 });
+Object.freeze({
+	disconnected: "still listed by NinjaTrader, disconnected",
+	no_strategies: "still listed by NinjaTrader, connected, nothing loaded",
+	idle: "still listed by NinjaTrader, connected, all off",
+	unmeasured: "still listed by NinjaTrader, connected, no strategy data"
+});
+Object.freeze({
+	disconnected: "disconnected",
+	no_strategies: "connected with nothing loaded",
+	idle: "connected with every strategy off",
+	unmeasured: "connected with no strategy data"
+});
+Object.freeze([
+	"disconnected",
+	"no_strategies",
+	"idle",
+	"unmeasured"
+]);
 //#endregion
 //#region src/domain/supabaseStore.js
 function pickId(row) {

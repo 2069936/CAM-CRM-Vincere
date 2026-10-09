@@ -34,6 +34,7 @@ export default function AccountLiveDetail({ view, reading = false, error = null,
         <span className={`account-live-detail-connection${view.connectionName ? '' : ' absent'}`}>
           {view.connectionName ? `Connection ${view.connectionName}` : view.connectionWord}
         </span>
+        {view.disconnectedSince ? <span className="account-live-detail-since">{view.disconnectedSince}</span> : null}
         {view.differsWords ? <span className="badge warning account-live-detail-differs">{view.differsWords}</span> : null}
       </div>
 

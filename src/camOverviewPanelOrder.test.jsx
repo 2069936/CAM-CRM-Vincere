@@ -18,12 +18,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   loadSupabaseAccountTracker: vi.fn(),
   loadSupabaseTrackerCloseReadings: vi.fn(),
+  loadSupabaseAccountLiveSampleHistory: vi.fn(),
 }));
 
 vi.mock('./domain/supabaseStore', async (importOriginal) => ({
   ...(await importOriginal()),
   loadSupabaseAccountTracker: mocks.loadSupabaseAccountTracker,
   loadSupabaseTrackerCloseReadings: mocks.loadSupabaseTrackerCloseReadings,
+  // Cedar Row has a disconnected account, so the light reads since when.
+  loadSupabaseAccountLiveSampleHistory: mocks.loadSupabaseAccountLiveSampleHistory,
 }));
 
 import { CamOverview } from './App';
@@ -93,18 +96,29 @@ function indexOfHeading(container, text) {
   return index;
 }
 
+/* The Live accounts panel opens Compact (one bulb per client) unless this
+ * browser remembered Tiles; every case starts from an empty store. */
+const bulbs = (container) => [...container.querySelectorAll('.fsl-bulb')];
+const viewButton = (container, word) => [...container.querySelectorAll('.fsl-view-toggle button')].find((node) => node.textContent === word);
+
 beforeEach(() => {
+  window.localStorage.clear();
   mocks.loadSupabaseAccountTracker.mockReset();
   mocks.loadSupabaseAccountTracker.mockResolvedValue(TRACKER);
   mocks.loadSupabaseTrackerCloseReadings.mockReset();
   mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({ available: false, reason: 'not_deployed' });
+  mocks.loadSupabaseAccountLiveSampleHistory.mockReset();
+  mocks.loadSupabaseAccountLiveSampleHistory.mockResolvedValue({ available: false, reason: 'not_deployed' });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 describe('the order of the panels for a CAM', () => {
   it('puts Live accounts first, then Open flags, then the rest as before', async () => {
     const { container } = mount();
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     const live = indexOfHeading(container, 'Live accounts');
     const rollCall = indexOfHeading(container, 'Algorithm roll call');
     const close = indexOfHeading(container, 'Tracker against the close');
@@ -126,21 +140,49 @@ describe('the order of the panels for a CAM', () => {
     expect(headings(container)[0]).toBe('Live accounts');
   });
 
-  it('opens the Live accounts panel by default, as a grid of tiles and not a sentence', async () => {
+  it('opens the Live accounts panel by default, as one bulb per client and not a sentence, each bulb opening its tile', async () => {
     const { container } = mount();
-    await waitFor(() => expect(container.querySelectorAll('.fsl-tile').length).toBe(2));
+    await waitFor(() => expect(bulbs(container).length).toBe(2));
     const toggle = [...container.querySelectorAll('.collapse-toggle')]
       .find((button) => button.textContent.includes('Live accounts'));
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     // Worst first: Cedar Row has a disconnected account, Birch Lane has no sample.
-    expect([...container.querySelectorAll('.fsl-tile-name')].map((node) => node.textContent))
-      .toEqual(['Cedar Row', 'Birch Lane']);
+    expect(bulbs(container).map((node) => node.querySelector('.fsl-bulb-name').textContent)).toEqual(['Cedar Row', 'Birch Lane']);
+    expect(bulbs(container).map((node) => node.className)).toEqual(['fsl-bulb tone-attention', 'fsl-bulb tone-none']);
+    expect(bulbs(container).map((node) => node.querySelector('.fsl-bulb-count').textContent)).toEqual(['1 of 2 live', '0 of 1 live']);
+    expect(container.querySelectorAll('.fsl-tile').length).toBe(0);
     expect(container.querySelector('.fsl-summary').textContent).toContain('2 accounts sampled: 1 running, 1 disconnected, across 1 of 2 clients.');
+    // A bulb opens that client's tile under the bulbs.
+    act(() => { bulbs(container)[0].querySelector('.fsl-bulb-button').click(); });
+    expect([...container.querySelectorAll('.fsl-drawer .fsl-tile-name')].map((node) => node.textContent)).toEqual(['Cedar Row']);
+    // And Tiles is the full grid, in the same order.
+    act(() => { viewButton(container, 'Tiles').click(); });
+    expect([...container.querySelectorAll('.fsl-tile-name')].map((node) => node.textContent)).toEqual(['Cedar Row', 'Birch Lane']);
+  });
+
+  it('reads since when Cedar Row\'s account has been disconnected, for Cedar Row only', async () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const startedAt = new Date(Date.now() - 50 * 60_000);
+    mocks.loadSupabaseAccountLiveSampleHistory.mockResolvedValue({
+      available: true,
+      rows: [{
+        clientId: 'c-1', deviceId: 'dev-1', accountName: 'CR-2', connected: false,
+        firstSampledAt: (startedAt < midnight ? midnight : startedAt).toISOString(), lastSampledAt: new Date().toISOString(),
+      }],
+    });
+    const { container } = mount();
+    await waitFor(() => expect(mocks.loadSupabaseAccountLiveSampleHistory).toHaveBeenCalled());
+    expect(mocks.loadSupabaseAccountLiveSampleHistory).toHaveBeenCalledWith({ clientIds: ['c-1'], since: midnight.toISOString() });
+    act(() => { bulbs(container)[0].querySelector('.fsl-bulb-button').click(); });
+    await waitFor(() => expect(container.querySelector('.fsl-drawer .account-pill[data-account="CR-2"] .account-pill-button').getAttribute('title'))
+      .toMatch(/^CR-2: Disconnected since \d\d:\d\d\. /));
+    expect(container.querySelector('.fsl-drawer .account-pill[data-account="CR-2"] .account-pill-state').textContent).toBe('Disconnected');
   });
 
   it('opens the roll call by default, as a region the CAM can paste from', async () => {
     const { container } = mount();
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     const toggle = [...container.querySelectorAll('.collapse-toggle')]
       .find((button) => button.textContent.includes('Algorithm roll call'));
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
@@ -149,14 +191,14 @@ describe('the order of the panels for a CAM', () => {
 
   it('does not show Revenue health to a CAM at all', async () => {
     const { container } = mount();
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     expect(headings(container)).not.toContain('Revenue health');
     expect(container.textContent).not.toContain('Total MRR');
   });
 
   it('no longer repeats the live count as a line of text in the header', async () => {
     const { container } = mount();
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     const header = container.querySelector('.page-header');
     expect(header.textContent).not.toMatch(/live: \d+ of \d+ accounts/);
   });
@@ -165,7 +207,7 @@ describe('the order of the panels for a CAM', () => {
 describe('the order of the panels for a Manager', () => {
   it('keeps Revenue health first, folded, with Live accounts right after it and the flags after that', async () => {
     const { container } = mount({ isManager: true });
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     const revenue = indexOfHeading(container, 'Revenue health');
     const live = indexOfHeading(container, 'Live accounts');
     const flags = indexOfHeading(container, 'Open flags');
@@ -178,7 +220,7 @@ describe('the order of the panels for a Manager', () => {
 
   it('renders Revenue health collapsed, and a click opens the figures', async () => {
     const { container } = mount({ isManager: true });
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     const toggle = [...container.querySelectorAll('.collapse-toggle')]
       .find((button) => button.textContent.includes('Revenue health'));
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -256,6 +298,12 @@ describe('the tracker against the close (step 66)', () => {
     mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({ available: true, readings: [pinned('CR-1', { realizedPnl: 340, totalPnl: 340 })], settings: null });
     const { container } = mount({ clients: book, allClients: book });
     await waitFor(() => expect(text(container.querySelector('.tracker-close-line[data-client-id="c-1"]'))).toContain('Cedar Row: 1 differs'));
+    // Compact first: the badge is on CR-1 in Cedar Row's drawer.
+    await waitFor(() => expect(bulbs(container).length).toBe(2));
+    act(() => { container.querySelector('.fsl-bulb[data-client-id="c-1"] .fsl-bulb-button').click(); });
+    expect([...container.querySelectorAll('.fsl-drawer .account-pill-close-differs')].map((node) => node.closest('.account-pill').dataset.account)).toEqual(['CR-1']);
+    // Then the full grid.
+    act(() => { viewButton(container, 'Tiles').click(); });
     await waitFor(() => expect(container.querySelectorAll('.fsl-tile').length).toBe(2));
     const badges = container.querySelectorAll('.fsl-tile[data-client-id="c-1"] .account-pill-close-differs');
     expect(badges.length).toBe(1);
@@ -305,7 +353,7 @@ describe('the tracker against the close (step 66)', () => {
 describe('one read for the whole page', () => {
   it('asks the tracker once for the working book and feeds the light from that answer', async () => {
     const { container } = mount();
-    await waitFor(() => expect(container.querySelector('.fsl-grid')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('.fsl-bulbs')).not.toBeNull());
     expect(mocks.loadSupabaseAccountTracker).toHaveBeenCalledTimes(1);
     expect(mocks.loadSupabaseAccountTracker).toHaveBeenCalledWith({ clientIds: ['c-1', 'c-2'] });
   });
@@ -316,5 +364,7 @@ describe('one read for the whole page', () => {
     await waitFor(() => expect(container.textContent).toContain('Migration step 55 has not been run'));
     expect(headings(container)[0]).toBe('Live accounts');
     expect(container.querySelectorAll('.fsl-tile').length).toBe(0);
+    expect(container.querySelectorAll('.fsl-bulb').length).toBe(0);
+    expect(mocks.loadSupabaseAccountLiveSampleHistory).not.toHaveBeenCalled();
   });
 });

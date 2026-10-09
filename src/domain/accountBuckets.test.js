@@ -3,10 +3,13 @@ import {
   ACCOUNT_OBSERVATION_DEFAULTS,
   BUCKET_KEYS,
   NOT_SHOWN_WORDS,
+  STILL_LISTED_WORDS,
   bucketRegistryAccounts,
   expectedAccountNameSet,
   notShownAccounts,
   registryLights,
+  retiredSampleFate,
+  stillRunningWords,
 } from './accountBuckets';
 
 /* Fictional registry rows in the shape accountMetaFromRow builds. */
@@ -279,19 +282,125 @@ describe('registryLights: which accounts get a light, and the folded line for th
     expect(lights.notShown.sentence).toContain('2 registered and never seen in a close, added more than 2 days ago');
   });
 
-  it('an account the VPS is sampling keeps its light even when the close hid it, and leaves the line', () => {
-    // NinjaTrader still naming an account that looks failed is a question worth a
-    // pill; the line then counts only what has no light anywhere.
-    const lights = registryLights(REGISTRY, { now: NOW, sampled: ['ACC 03', 'ACC 09'] });
+  /* A live sample, fresh at NOW (15:00Z), connected and running by default. */
+  const live = (accountName, over = {}) => ({
+    accountName, connectionName: 'Rithmic', connected: true, status: 'Connected', totalPnl: 120,
+    strategyCount: 2, enabledStrategyCount: 2, runState: 'running', sampledAt: '2026-10-08T14:56:00Z', ...over,
+  });
+
+  it('an account the VPS samples connected and running keeps its light even when the close hid it, with the marker for a retired one', () => {
+    // ACC 03 looks failed on the close and ACC 06 is Failed, and NinjaTrader
+    // has both connected and running: a real question, so both keep a pill
+    // (they leave the line) and say so. ACC 09 is not on the registry at all.
+    const lights = registryLights(REGISTRY, { now: NOW, samples: [live('ACC 03'), live('ACC 06'), live('ACC 09')] });
     expect(lights.names).toEqual(['ACC 01', 'ACC 02', 'ACC 05']);
-    expect(lights.notShown.count).toBe(3);
+    expect(lights.hidden.size).toBe(0);
+    expect(Object.fromEntries(lights.stillRunning)).toEqual({
+      'ACC 03': { word: 'Looks failed', words: 'Looks failed on the close but still running' },
+      'ACC 06': { word: 'Marked Failed', words: 'Marked Failed but still running' },
+    });
+    expect(lights.notShown.accounts.map((row) => row.accountName)).toEqual(['ACC 04', 'ACC 07']);
     expect(lights.notShown.sentence).toBe(
-      'Not shown: 1 gone from the close for 6 closes. '
-      + '1 registered and never seen in a close, added more than 14 days ago. 1 retired: 1 Failed.',
+      'Not shown: 1 gone from the close for 6 closes. 1 registered and never seen in a close, added more than 14 days ago.',
     );
-    expect(lights.notShown.accounts.map((row) => row.accountName)).toEqual(['ACC 04', 'ACC 07', 'ACC 06']);
-    const sampledAll = registryLights(REGISTRY, { now: NOW, sampled: ['ACC 03', 'ACC 04', 'ACC 06', 'ACC 07'] });
+    // Gone and never seen keep the old rule: a sampled one has a light, whatever it says.
+    const sampledAll = registryLights(REGISTRY, {
+      now: NOW, samples: [live('ACC 03'), live('ACC 04', { connected: false }), live('ACC 06'), live('ACC 07', { runState: 'idle' })],
+    });
     expect(sampledAll.notShown).toBeNull();
+    expect(sampledAll.hidden.size).toBe(0);
+  });
+
+  it('a Failed or looks failed account NinjaTrader still lists disconnected gets no light: the line says so', () => {
+    const lights = registryLights(REGISTRY, {
+      now: NOW,
+      samples: [live('ACC 03', { connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 }),
+        live('ACC 06', { connected: false, status: 'Disconnected' })],
+    });
+    expect([...lights.hidden].sort()).toEqual(['ACC 03', 'ACC 06']);
+    expect(lights.stillRunning.size).toBe(0);
+    expect(lights.notShown.sentence).toBe(
+      'Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. '
+      + '1 registered and never seen in a close, added more than 14 days ago. 1 retired: 1 Failed. '
+      + '2 still listed by NinjaTrader, disconnected.',
+    );
+    const rows = Object.fromEntries(lights.notShown.accounts.map((row) => [row.accountName, row]));
+    expect(rows['ACC 06'].word).toBe('Failed, still listed by NinjaTrader, disconnected');
+    expect(rows['ACC 03'].word).toBe('looks failed, still listed by NinjaTrader, disconnected');
+    expect(rows['ACC 06'].detail).toBe('Status Failed. NinjaTrader still lists it, not connected, sampled 4m ago.');
+    expect(rows['ACC 03'].detail).toBe('Breached on 2026-10-07, reading -$264, status still Active. NinjaTrader still lists it, not connected, sampled 4m ago.');
+    // The plain hidden rows say exactly what they said before.
+    expect(rows['ACC 04'].word).toBe('gone from the close');
+  });
+
+  it('connected with nothing loaded, every strategy off or no strategy data is no light either, each said in its own words', () => {
+    const registry = {
+      F1: meta({ status: 'Failed' }),
+      F2: meta({ status: 'Inactive' }),
+      F3: meta({ status: 'Reserve' }),
+      F4: meta({ accountType: 'Inactive / Ignore' }),
+    };
+    const lights = registryLights(registry, {
+      now: NOW,
+      samples: [
+        live('F1', { runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 }),
+        live('F2', { runState: 'idle', enabledStrategyCount: 0 }),
+        live('F3', { runState: 'unmeasured', strategyCount: null, enabledStrategyCount: null }),
+        live('F4', { connected: false }),
+      ],
+    });
+    expect([...lights.hidden].sort()).toEqual(['F1', 'F2', 'F3', 'F4']);
+    expect(lights.notShown.accounts.map((row) => `${row.accountName} ${row.word}`)).toEqual([
+      'F1 Failed, still listed by NinjaTrader, connected, nothing loaded',
+      'F2 Inactive, still listed by NinjaTrader, connected, all off',
+      'F3 Reserve, still listed by NinjaTrader, connected, no strategy data',
+      'F4 Ignored, still listed by NinjaTrader, disconnected',
+    ]);
+    expect(lights.notShown.sentence).toBe(
+      'Not shown: 4 retired: 1 Failed, 1 Inactive, 1 Reserve, 1 Ignored. 4 still listed by NinjaTrader: '
+      + '1 disconnected, 1 connected with nothing loaded, 1 connected with every strategy off, 1 connected with no strategy data.',
+    );
+    expect(STILL_LISTED_WORDS.no_strategies).toBe('still listed by NinjaTrader, connected, nothing loaded');
+  });
+
+  it('a stale sample of a retired account says nothing about now: no light, the plain reason word, and when it was last sampled', () => {
+    // Running at its last sample, two hours ago. That is not "still running".
+    const lights = registryLights(REGISTRY, { now: NOW, samples: [live('ACC 06', { sampledAt: '2026-10-08T13:00:00Z' })] });
+    expect([...lights.hidden]).toEqual(['ACC 06']);
+    expect(lights.stillRunning.size).toBe(0);
+    const row = lights.notShown.accounts.find((entry) => entry.accountName === 'ACC 06');
+    expect(row.word).toBe('Failed');
+    expect(row.detail).toBe('Status Failed. The VPS last sampled it 2h ago and has not since.');
+    expect(lights.notShown.sentence).not.toContain('still listed');
+    // The tracker's horizon decides what stale is.
+    const wide = registryLights(REGISTRY, { now: NOW, samples: [live('ACC 06', { sampledAt: '2026-10-08T13:00:00Z' })], staleSeconds: 3 * 3600 });
+    expect(wide.stillRunning.get('ACC 06')).toEqual({ word: 'Marked Failed', words: 'Marked Failed but still running' });
+  });
+
+  it('retiredSampleFate keeps only a fresh sample that is connected and running', () => {
+    const at = { now: NOW, staleSeconds: 1500 };
+    expect(retiredSampleFate(live('X'), at)).toMatchObject({ keep: true, listed: null });
+    expect(retiredSampleFate(live('X', { connected: false }), at)).toMatchObject({ keep: false, listed: 'disconnected' });
+    // Disconnected with strategies enabled still cannot trade: no light.
+    expect(retiredSampleFate(live('X', { connected: false, runState: 'running' }), at)).toMatchObject({ keep: false, listed: 'disconnected' });
+    expect(retiredSampleFate(live('X', { runState: 'idle' }), at)).toMatchObject({ keep: false, listed: 'idle' });
+    expect(retiredSampleFate(live('X', { runState: 'no_strategies' }), at)).toMatchObject({ keep: false, listed: 'no_strategies' });
+    expect(retiredSampleFate(live('X', { runState: 'unmeasured' }), at)).toMatchObject({ keep: false, listed: 'unmeasured' });
+    expect(retiredSampleFate(live('X', { sampledAt: '2026-10-08T13:00:00Z' }), at)).toMatchObject({ keep: false, listed: 'silent' });
+    expect(retiredSampleFate(live('X', { sampledAt: '' }), at)).toMatchObject({ keep: false, listed: null });
+  });
+
+  it('the marker says the status the registry carries, so it is never "Failed" about an account that is not', () => {
+    expect(stillRunningWords({ reason: 'Failed' }).words).toBe('Marked Failed but still running');
+    expect(stillRunningWords({ reason: 'Inactive' })).toEqual({ word: 'Marked Inactive', words: 'Marked Inactive but still running' });
+    expect(stillRunningWords({ reason: 'Reserve' }).word).toBe('Marked Reserve');
+    expect(stillRunningWords({ reason: 'Ignored' })).toEqual({ word: 'Marked Ignore', words: 'Marked Inactive / Ignore but still running' });
+    expect(stillRunningWords({ reason: 'breached', status: 'Active' }).words).toBe('Looks failed on the close but still running');
+  });
+
+  it('takes the samples as a Map of name to row as well as a list', () => {
+    const samples = new Map([['ACC 06', live('ACC 06', { connected: false })]]);
+    expect([...registryLights(REGISTRY, { now: NOW, samples }).hidden]).toEqual(['ACC 06']);
   });
 
   it('an empty or missing registry lights nothing and hides nothing', () => {
@@ -307,7 +416,16 @@ describe('registryLights: which accounts get a light, and the folded line for th
       U: meta({ observedState: 'never_seen', dateAdded: '' }),
       M: meta({ observedState: 'absent', closesMissed: null, lastCloseSeenOn: '' }),
       B: meta({ observedState: 'breached', breachedOn: '', breachReading: null }),
-    }, { now: NOW });
+    }, {
+      now: NOW,
+      // Every way NinjaTrader can still list a retired account, so their words are checked too.
+      samples: [
+        { accountName: 'G', connected: false, runState: 'running', sampledAt: '2026-10-08T14:56:00Z' },
+        { accountName: 'R', connected: true, runState: 'idle', sampledAt: '2026-10-08T14:56:00Z' },
+        { accountName: 'B', connected: true, runState: 'unmeasured', sampledAt: '2026-10-08T14:56:00Z' },
+        { accountName: 'ACC 06', connected: true, runState: 'running', sampledAt: '2026-10-08T10:00:00Z' },
+      ],
+    });
     expect(notShown.sentence).not.toMatch(/[—–]| - /);
     for (const row of notShown.accounts) {
       expect(row.word, row.accountName).not.toMatch(/[—–]| - /);
@@ -316,8 +434,9 @@ describe('registryLights: which accounts get a light, and the folded line for th
     }
     const detail = Object.fromEntries(notShown.accounts.map((row) => [row.accountName, row.detail]));
     expect(detail.M).toBe('Gone from the close.');
-    expect(detail.B).toBe('Breached on the close, status still Active.');
+    expect(detail.B).toBe('Breached on the close, status still Active. NinjaTrader still lists it, connected with no strategy count in the sample, sampled 4m ago.');
     expect(detail.U).toBe('Never seen in a close, no date added.');
-    expect(detail.G).toBe('Account type Inactive / Ignore.');
+    expect(detail.G).toBe('Account type Inactive / Ignore. NinjaTrader still lists it, not connected, sampled 4m ago.');
+    for (const words of Object.values(stillRunningWords({ reason: 'Ignored' }))) expect(words).not.toMatch(/[—–]| - /);
   });
 });

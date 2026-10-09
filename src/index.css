@@ -4680,7 +4680,7 @@ button.account-pill-button:hover, button.account-pill-button:focus-visible { bac
 .fsl-empty strong { color: var(--text); }
 .fsl-head { display: flex; align-items: flex-start; gap: 8px; }
 .fsl-head svg { flex-shrink: 0; margin-top: 2px; color: var(--muted); }
-.fsl-summary { margin: 0; color: var(--text); }
+.fsl-summary { margin: 0; color: var(--text); flex: 1 1 auto; min-width: 0; }
 .fsl-legend { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 10.5px; }
 .fsl-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .fsl-dot { width: 10px; height: 10px; border-radius: 50%; background: #94a3b8; flex-shrink: 0; }
@@ -4707,8 +4707,45 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .fsl-legend-mark > .fsl-dot { position: relative; overflow: visible; }
 .fsl-legend-mark .account-pill-mark { right: -3px; top: -3px; width: 7px; height: 7px; }
 .fsl-tile-words { color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+/* ── Compact: one bulb per client (FleetStatusLights) ─────────────────────────
+   Pedro's words: the tiles are the expanded view; summarised, one circle per
+   client in the tile's own colour, so the whole book fits without scrolling.
+   The light is the desk bulb's (.dcl-light, 16px with its ring) and the tone
+   is the tile's; the name ellipses with the full sentence in the title, and
+   "5 of 6 live" sits under it. A click opens that client's tile in a drawer
+   under the bulbs. The toggle is the shared segmented control, kept small. */
+.fsl-head .fsl-view-toggle { flex-shrink: 0; width: auto; display: inline-flex; margin-left: auto; }
+.fsl-head .fsl-view-toggle button { min-height: 24px; min-width: 0; padding: 0 9px; font-size: 10.5px; font-weight: 700; }
+.fsl-bulbs { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 4px 6px; }
+.fsl-bulb { min-width: 0; }
+.fsl-bulb-button { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 1px; align-items: center; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 11px; line-height: 1.25; text-align: left; cursor: pointer; }
+.fsl-bulb-button:hover, .fsl-bulb-button:focus-visible { background: rgba(255, 255, 255, 0.04); border-color: var(--border); }
+.fsl-bulb.open .fsl-bulb-button { background: var(--surface-3); border-color: var(--border); }
+.fsl-light { grid-row: 1 / span 2; overflow: visible; }
+.fsl-bulb-name { font-weight: 600; }
+.fsl-bulb-count { grid-column: 2; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fsl-bulb.tone-live .fsl-light { background: var(--success); }
+.fsl-bulb.tone-attention .fsl-light { background: var(--warning); }
+.fsl-bulb.tone-faint .fsl-light { background: var(--warning); opacity: 0.55; }
+.fsl-bulb.tone-none .fsl-light { background: #94a3b8; }
+.fsl-bulb.tone-attention .fsl-bulb-count { color: var(--warning); }
+.fsl-bulb.marked .fsl-bulb-button { border-color: var(--warning-border); }
+.fsl-drawer { margin: 10px 0 0; min-width: 0; }
+.fsl-drawer-tile { margin: 0; padding: 0; list-style: none; }
+.fsl-tile-top { display: flex; align-items: flex-start; gap: 8px; }
+.fsl-tile-top > .fsl-tile-button { flex: 1 1 auto; min-width: 0; }
+.fsl-tile-close { flex-shrink: 0; font-size: 10.5px; padding: 2px 8px; }
+/* THE THIRD AMBER MARKER: "Marked Failed", in words, on the pill of an account
+   the registry retired that is still connected and running. A question for
+   the CAM, amber and never red, and never the pill's own colour. */
+.account-pill-marked { display: inline-block; padding: 0 5px; border: 1px solid var(--warning-border); border-radius: 999px; background: var(--warning-bg); color: var(--warning); font-size: 9.5px; font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.account-pill.marked .account-pill-button { border-color: var(--warning-border); }
+.fsl-legend-marked .account-pill-marked { font-size: 9px; }
+.account-live-detail-since { color: var(--warning); font-weight: 600; }
 @media (max-width: 720px) {
   .fsl-grid { grid-template-columns: 1fr; }
+  .fsl-bulbs { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .fsl-head { flex-wrap: wrap; }
 }
 /* ── One bulb per client on the desk view (DeskClientLights) ─────────────────
    Pedro's words: the Manager cannot read 109 tiles; one light per client, is
