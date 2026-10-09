@@ -2435,6 +2435,31 @@ function groupStrategiesByAccount(strategies = []) {
 		return map;
 	}, {});
 }
+Object.freeze([
+	"Missing account",
+	"Strategy disabled",
+	"Expected strategy missing",
+	"Drawdown approaching limit",
+	"Drawdown near limit"
+]);
+var PAST_LIVE_FLAG_STATUSES = [
+	ACCOUNT_STATUSES.FAILED,
+	ACCOUNT_STATUSES.INACTIVE,
+	ACCOUNT_STATUSES.RESERVE
+];
+var PAST_LIVE_FLAG_OBSERVATIONS = ["breached", "absent"];
+/**
+* Whether an account is past the five flags above: the registry says Failed,
+* Inactive or Reserve, or the type is Inactive / Ignore, or the closes say it
+* breached or has been absent for stale_closes closes. Payout Hold is alive:
+* the account is held, not gone.
+*/
+function accountIsPastLiveFlags(meta) {
+	if (!meta) return false;
+	if (PAST_LIVE_FLAG_STATUSES.includes(meta.status)) return true;
+	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return true;
+	return PAST_LIVE_FLAG_OBSERVATIONS.includes(meta.observedState);
+}
 function shouldExpectStrategy(meta) {
 	if (!meta) return false;
 	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
@@ -2660,6 +2685,10 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			isSimulated: account.isSimulated
 		});
 		const isRealMoney = nature.nature === ACCOUNT_NATURES.LIVE;
+		const pastLiveFlags = accountIsPastLiveFlags({
+			...meta,
+			observedState: existing?.observedState
+		});
 		accountsByName[account.accountName] = meta;
 		const todayClose = {
 			date,
@@ -2700,7 +2729,7 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			accountName: account.accountName,
 			message: `${meta.alias} needs an account type before close.`
 		}));
-		if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies) && nothingRanIsKnown(strategies)) flags.push(makeFlag({
+		if (isRealMoney && !pastLiveFlags && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies) && nothingRanIsKnown(strategies)) flags.push(makeFlag({
 			type: "Expected strategy missing",
 			severity: "Critical",
 			accountName: account.accountName,
@@ -2721,13 +2750,13 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 					accountName: account.accountName,
 					message: `${meta.alias} has exceeded its $${ddLimit.toLocaleString()} max drawdown limit. Account may be terminated.${derivedNote}`
 				}));
-				else if (remaining <= limits.critical) flags.push(makeFlag({
+				else if (!pastLiveFlags && remaining <= limits.critical) flags.push(makeFlag({
 					type: "Drawdown near limit",
 					severity: "Critical",
 					accountName: account.accountName,
 					message: `${meta.alias} is $${Math.round(remaining)} from its $${ddLimit.toLocaleString()} max drawdown limit. Immediate action required.${derivedNote}`
 				}));
-				else if (remaining <= limits.warning) flags.push(makeFlag({
+				else if (!pastLiveFlags && remaining <= limits.warning) flags.push(makeFlag({
 					type: "Drawdown approaching limit",
 					severity: "Warning",
 					accountName: account.accountName,
@@ -2741,13 +2770,13 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 				accountName: account.accountName,
 				message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} - account limit reached or exceeded. Verify with prop firm immediately.`
 			}));
-			else if (rawDD <= limits.critical) flags.push(makeFlag({
+			else if (!pastLiveFlags && rawDD <= limits.critical) flags.push(makeFlag({
 				type: "Drawdown near limit",
 				severity: "Critical",
 				accountName: account.accountName,
 				message: `${meta.alias} has only $${Math.round(rawDD)} of trailing drawdown buffer remaining. Immediate action required.`
 			}));
-			else if (rawDD <= limits.warning) flags.push(makeFlag({
+			else if (!pastLiveFlags && rawDD <= limits.warning) flags.push(makeFlag({
 				type: "Drawdown approaching limit",
 				severity: "Warning",
 				accountName: account.accountName,
@@ -2783,7 +2812,7 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			accountName: account.accountName,
 			message: `${meta.alias} is ${meta.status} but ran a strategy.`
 		}));
-		for (const strategy of strategies) if (!strategyRan(strategy) && ranIsKnown(strategy)) flags.push(makeFlag({
+		for (const strategy of strategies) if (!pastLiveFlags && !strategyRan(strategy) && ranIsKnown(strategy)) flags.push(makeFlag({
 			type: "Strategy disabled",
 			severity: "Warning",
 			accountName: account.accountName,
@@ -2793,7 +2822,7 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 	for (const [accountName, meta] of Object.entries(registry || {})) {
 		if (seen.has(accountName.toLowerCase())) continue;
 		accountsByName[accountName] = meta;
-		if (!(classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION) && meta.accountType !== ACCOUNT_TYPES.IGNORE && meta.status !== ACCOUNT_STATUSES.INACTIVE) flags.push(makeFlag({
+		if (!(classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION) && !accountIsPastLiveFlags(meta)) flags.push(makeFlag({
 			type: "Missing account",
 			severity: "Warning",
 			accountName,

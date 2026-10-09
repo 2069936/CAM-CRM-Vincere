@@ -241,6 +241,47 @@ function groupStrategiesByAccount(strategies = []) {
   }, {});
 }
 
+/* THE FIVE FLAGS THAT ONLY MEAN SOMETHING ON A LIVE ACCOUNT.
+ *
+ * A dead account cannot be missing from a close, cannot have a strategy
+ * switched off, cannot be expected to run one and cannot be approaching a limit
+ * it already went through. Production on 2026-10-09 held 6,808 Open flags and
+ * 2,758 of them pointed at an account whose status was Failed; one close alone
+ * raised 160 Missing account flags. Drawdown breached is NOT on this list: it
+ * is the evidence of the breach, and it is raised whatever the account says.
+ *
+ * supabase/step_67_flag_hygiene.sql holds the same list in
+ * live_account_flag_types() and the same rule in account_is_past_live_flags(),
+ * refuses these five at insert for a dead account, and resolves the open ones
+ * when the close marks an account Failed. The step 67 cluster test compares
+ * both lists and both rules, so the two languages cannot drift apart.
+ */
+export const LIVE_ACCOUNT_FLAG_TYPES = Object.freeze([
+  'Missing account',
+  'Strategy disabled',
+  'Expected strategy missing',
+  'Drawdown approaching limit',
+  'Drawdown near limit',
+]);
+
+const PAST_LIVE_FLAG_STATUSES = [ACCOUNT_STATUSES.FAILED, ACCOUNT_STATUSES.INACTIVE, ACCOUNT_STATUSES.RESERVE];
+// What the closes say (trading_accounts.observed_state, step 65). 'seen' and
+// 'never_seen' are not death; null is no observation, which is not evidence.
+const PAST_LIVE_FLAG_OBSERVATIONS = ['breached', 'absent'];
+
+/**
+ * Whether an account is past the five flags above: the registry says Failed,
+ * Inactive or Reserve, or the type is Inactive / Ignore, or the closes say it
+ * breached or has been absent for stale_closes closes. Payout Hold is alive:
+ * the account is held, not gone.
+ */
+export function accountIsPastLiveFlags(meta) {
+  if (!meta) return false;
+  if (PAST_LIVE_FLAG_STATUSES.includes(meta.status)) return true;
+  if (meta.accountType === ACCOUNT_TYPES.IGNORE) return true;
+  return PAST_LIVE_FLAG_OBSERVATIONS.includes(meta.observedState);
+}
+
 function shouldExpectStrategy(meta) {
   if (!meta) return false;
   if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
@@ -620,6 +661,10 @@ export function reconcileDailyImport({
     // an account whose nature is undetermined must not be told it breached a
     // limit we are not sure applies to it.
     const isRealMoney = nature.nature === ACCOUNT_NATURES.LIVE;
+    // Read off the stored record: `meta` is what this import writes back to
+    // trading_accounts and the observation is the database's to write, so it is
+    // deliberately not copied onto it.
+    const pastLiveFlags = accountIsPastLiveFlags({ ...meta, observedState: existing?.observedState });
 
     accountsByName[account.accountName] = meta;
 
@@ -692,7 +737,7 @@ export function reconcileDailyImport({
       }));
     }
 
-    if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies)
+    if (isRealMoney && !pastLiveFlags && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies)
       && nothingRanIsKnown(strategies)) {
       flags.push(makeFlag({
         type: 'Expected strategy missing',
@@ -739,14 +784,16 @@ export function reconcileDailyImport({
             accountName: account.accountName,
             message: `${meta.alias} has exceeded its $${ddLimit.toLocaleString()} max drawdown limit. Account may be terminated.${derivedNote}`,
           }));
-        } else if (remaining <= limits.critical) {
+        // Breached above is kept for a dead account; near and approaching are
+        // not, because a limit already gone through cannot be approached.
+        } else if (!pastLiveFlags && remaining <= limits.critical) {
           flags.push(makeFlag({
             type: 'Drawdown near limit',
             severity: 'Critical',
             accountName: account.accountName,
             message: `${meta.alias} is $${Math.round(remaining)} from its $${ddLimit.toLocaleString()} max drawdown limit. Immediate action required.${derivedNote}`,
           }));
-        } else if (remaining <= limits.warning) {
+        } else if (!pastLiveFlags && remaining <= limits.warning) {
           flags.push(makeFlag({
             type: 'Drawdown approaching limit',
             severity: 'Warning',
@@ -765,14 +812,15 @@ export function reconcileDailyImport({
           accountName: account.accountName,
           message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} - account limit reached or exceeded. Verify with prop firm immediately.`,
         }));
-      } else if (rawDD <= limits.critical) {
+      // The same rule as model 1: breached stays, the warnings before it go.
+      } else if (!pastLiveFlags && rawDD <= limits.critical) {
         flags.push(makeFlag({
           type: 'Drawdown near limit',
           severity: 'Critical',
           accountName: account.accountName,
           message: `${meta.alias} has only $${Math.round(rawDD)} of trailing drawdown buffer remaining. Immediate action required.`,
         }));
-      } else if (rawDD <= limits.warning) {
+      } else if (!pastLiveFlags && rawDD <= limits.warning) {
         flags.push(makeFlag({
           type: 'Drawdown approaching limit',
           severity: 'Warning',
@@ -845,7 +893,7 @@ export function reconcileDailyImport({
       // algorithm somebody forgot to turn on: it is the day's work, exported
       // after the desk shut it down. 1,011 of the 2,288 switched-off rows on
       // the stored book traded, and each of them raised this warning.
-      if (!strategyRan(strategy) && ranIsKnown(strategy)) {
+      if (!pastLiveFlags && !strategyRan(strategy) && ranIsKnown(strategy)) {
         flags.push(makeFlag({
           type: 'Strategy disabled',
           severity: 'Warning',
@@ -866,7 +914,11 @@ export function reconcileDailyImport({
     // single close and dragged the whole import to Needs review, forever. There
     // was no way to register a sim without permanently poisoning the flag queue.
     const isSimulated = classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION;
-    if (!isSimulated && meta.accountType !== ACCOUNT_TYPES.IGNORE && meta.status !== ACCOUNT_STATUSES.INACTIVE) {
+    // Ignore and Inactive were the only exemptions here, so a Failed, Reserve,
+    // breached or absent account was "missing" from every close for good: 3,330
+    // Open on 2026-10-09, 160 of them from one close. accountIsPastLiveFlags
+    // covers the old two and those four.
+    if (!isSimulated && !accountIsPastLiveFlags(meta)) {
       flags.push(makeFlag({
         type: 'Missing account',
         severity: 'Warning',
