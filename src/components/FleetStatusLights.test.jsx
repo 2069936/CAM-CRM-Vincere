@@ -10,6 +10,8 @@ import {
   LEGEND,
   LIVE_ACCOUNTS_VIEW_KEY,
   LIVE_SAMPLING_BUILD,
+  ONLY_RETIRED_LEGEND,
+  TONE_WORDS,
   buildFleetStatusLights,
   compareTiles,
   disconnectedClientKeys,
@@ -135,6 +137,18 @@ function mount(props = {}) {
     {...props}
   />);
 }
+
+/* A client with an account marked Failed that is still connected and running. */
+const MAPLE_MARKED = {
+  id: 'c-maple', name: 'Maple Ridge', profile: { stage: 'Active' },
+  accountRegistry: { 'ACC 01': { accountName: 'ACC 01', status: 'Active' }, 'ACC 06': { accountName: 'ACC 06', status: 'Failed' } },
+};
+const MARKED_SAMPLES = { 'c-maple': [sample('ACC 01'), sample('ACC 06')], 'c-green': SAMPLES['c-green'] };
+
+/* The review's fixture: a client whose VPS sends only ACC 41, marked Failed,
+ * a few minutes old, not connected, nothing loaded. */
+const QUIET_LARCH = { id: 'c-quiet', name: 'Quiet Larch', profile: { stage: 'Active' }, accountRegistry: { 'ACC 41': { status: 'Failed' } } };
+const quietLarchSample = () => sample('ACC 41', { connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 });
 
 const tileNames = (container) => [...container.querySelectorAll('.fsl-tile')]
   .map((tile) => tile.querySelector('.fsl-tile-name').textContent);
@@ -873,7 +887,8 @@ describe('only the accounts expected to trade get a light', () => {
       tracker: tracker({ 'c-maple': [disconnected('ACC 06')], 'c-green': [sample('G-1')] }),
     });
     const tile = container.querySelector('.fsl-tile[data-client-id="c-maple"]');
-    expect(tile.className).toBe('fsl-tile tone-none');
+    // The desk's hollow grey, never the solid grey of a client nothing has sampled.
+    expect(tile.className).toBe('fsl-tile tone-retired');
     expect(tile.querySelector('.fsl-tile-state').textContent).toBe('Only retired accounts sampled');
     expect(tile.querySelector('.fsl-tile-words').textContent).toBe('NinjaTrader lists only accounts not expected to trade, in the line below.');
   });
@@ -924,6 +939,109 @@ describe('only the accounts expected to trade get a light', () => {
     expect(tile.querySelectorAll('.account-pill').length).toBe(0);
     expect(tile.querySelector('.fsl-tile-words').textContent).toBe('No account expected on the close and none sampled.');
     expect(lineWords(container)).toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * A BOOK WHERE THE ONLY SAMPLES ARE OF RETIRED ACCOUNTS.
+ *
+ * The review's fixture: ACC 41 is marked Failed, and the VPS still sends it,
+ * a few minutes old, not connected, nothing loaded. With that client alone in
+ * the book, the panel said "No collector sends live samples yet", which is
+ * false: a collector is sending. The grid shows the client with the tile's
+ * words, and the line over it says the same.
+ * ------------------------------------------------------------------------- */
+describe('a book whose only samples are of retired accounts', () => {
+  beforeEach(() => window.localStorage.clear());
+  const QUIET = QUIET_LARCH;
+  const dead = quietLarchSample;
+  // A client nothing has sampled: the solid grey the hollow one is told from.
+  const GREY = CLIENTS[2];
+  const legendOf = (container) => [...container.querySelectorAll('.fsl-legend-item')].map((item) => [item.className, item.textContent]);
+  const toTiles = (container) => act(() => { [...container.querySelectorAll('.fsl-view-toggle button')].find((node) => node.textContent === 'Tiles').click(); });
+
+  it('reaches the grid, never "no collector sends live samples", and says only retired accounts are sampled', () => {
+    const view = buildFleetStatusLights({ clients: [QUIET], tracker: tracker({ 'c-quiet': [dead()] }), now: NOW });
+    expect(view.kind).toBe('ready');
+    expect(view.onlyRetiredClients).toBe(1);
+    expect(view.words).toBe('Only retired accounts sampled, across 1 of 1 client. Latest sample 4m ago.');
+    expect(view.tiles[0].worst.word).toBe('Only retired accounts sampled');
+    expect(view.tiles[0].lastSampledAt.toISOString()).toBe('2026-10-05T14:56:00.000Z');
+
+    const { container } = mount({ clients: [QUIET], tracker: tracker({ 'c-quiet': [dead()] }) });
+    expect(container.textContent).not.toContain('No collector sends live samples yet');
+    expect(container.querySelector('.fsl-summary').textContent).toContain('Only retired accounts sampled, across 1 of 1 client. Latest sample 4m ago.');
+    const bulb = container.querySelector('.fsl-bulb[data-client-id="c-quiet"]');
+    expect(bulb.querySelector('.sr-only').textContent).toBe('Only retired accounts sampled');
+    act(() => { bulb.querySelector('.fsl-bulb-button').click(); });
+    const tile = container.querySelector('.fsl-drawer .fsl-tile');
+    expect(tile.querySelector('.fsl-tile-words').textContent).toBe('NinjaTrader lists only accounts not expected to trade, in the line below.');
+    act(() => { tile.querySelector('.not-shown-toggle').click(); });
+    expect([...tile.querySelectorAll('.not-shown-list li')].map((node) => node.textContent)).toEqual(['ACC 41 Failed, still listed by NinjaTrader, disconnected']);
+  });
+
+  it('a book with nothing sampled at all still says no collector sends samples', () => {
+    const view = buildFleetStatusLights({ clients: [QUIET], tracker: tracker({}), now: NOW });
+    expect(view.kind).toBe('no_samples');
+  });
+
+  /* ONE GREY, ONE MEANING. Solid grey is a client nothing has sampled. A VPS
+   * that sends only retired accounts IS sampling, so its bulb and its tile are
+   * the desk's hollow grey (tone-retired, deskClientLights BULB_TONES), never
+   * the solid one, and its count never says "No account". */
+  it('gives the tile its own tone and state, never the ones of a client with no sample', () => {
+    const view = buildFleetStatusLights({ clients: [QUIET, GREY], tracker: tracker({ 'c-quiet': [dead()] }), now: NOW });
+    const quiet = view.tiles.find((tile) => tile.clientId === 'c-quiet');
+    const grey = view.tiles.find((tile) => tile.clientId === 'c-grey');
+    expect(quiet.worst).toMatchObject({ state: 'only_retired', tone: 'retired', word: 'Only retired accounts sampled' });
+    expect(grey.worst).toMatchObject({ state: 'none', tone: 'none', word: 'No sample yet' });
+    expect(quiet.worst.tone).not.toBe(grey.worst.tone);
+    expect(quiet.countWords).toBe('Only retired');
+    expect(grey.countWords).toBe('0 of 1 live');
+    expect(TONE_WORDS.retired).toBe('Only retired accounts sampled');
+    expect(ONLY_RETIRED_LEGEND).toEqual({ tone: 'retired', word: 'Only retired accounts sampled' });
+    // The four tones every book can show stay four; this one is named on demand.
+    expect(LEGEND.map((entry) => entry.tone)).toEqual(['live', 'attention', 'faint', 'none']);
+  });
+
+  it('draws the compact bulb and the tile hollow grey, beside a client with no sample in solid grey', () => {
+    const { container } = mount({ clients: [QUIET, GREY], tracker: tracker({ 'c-quiet': [dead()] }) });
+    const bulb = (id) => container.querySelector(`.fsl-bulb[data-client-id="${id}"]`);
+    expect(bulb('c-quiet').className).toBe('fsl-bulb tone-retired');
+    expect(bulb('c-grey').className).toBe('fsl-bulb tone-none');
+    expect(bulb('c-quiet').dataset.worst).toBe('only_retired');
+    expect(bulb('c-grey').dataset.worst).toBe('none');
+    expect(bulb('c-quiet').querySelector('.fsl-bulb-count').textContent).toBe('Only retired');
+    expect(bulb('c-grey').querySelector('.fsl-bulb-count').textContent).toBe('0 of 1 live');
+    act(() => { bulb('c-quiet').querySelector('.fsl-bulb-button').click(); });
+    expect(container.querySelector('.fsl-drawer .fsl-tile').className).toBe('fsl-tile tone-retired');
+    toTiles(container);
+    expect(container.querySelector('.fsl-tile[data-client-id="c-quiet"]').className).toBe('fsl-tile tone-retired');
+    expect(container.querySelector('.fsl-tile[data-client-id="c-quiet"] .fsl-tile-state').textContent).toBe('Only retired accounts sampled');
+    expect(container.querySelector('.fsl-tile[data-client-id="c-grey"]').className).toBe('fsl-tile tone-none');
+    expect(container.querySelector('.fsl-tile[data-client-id="c-grey"] .fsl-tile-state').textContent).toBe('No sample yet');
+  });
+
+  it('names the hollow grey in the legend right after the solid one, in both views, only while such a client is on screen', () => {
+    const { container, unmount } = mount({ clients: [QUIET, GREY], tracker: tracker({ 'c-quiet': [dead()] }) });
+    const expected = [
+      ['fsl-legend-item tone-live', 'Live'],
+      ['fsl-legend-item tone-attention', 'Disconnected or silent'],
+      ['fsl-legend-item tone-faint', 'Never sampled'],
+      ['fsl-legend-item tone-none', 'No sample for this client'],
+      ['fsl-legend-item tone-retired', 'Only retired accounts sampled'],
+      ['fsl-legend-item fsl-legend-mark', 'Amber corner: an algorithm differs from the desk'],
+    ];
+    expect(legendOf(container)).toEqual(expected);
+    toTiles(container);
+    expect(legendOf(container)).toEqual(expected);
+    unmount();
+    // A book with no such client: no line for it, in either view.
+    const other = mount({ clients: [GREY, CLIENTS[0]], tracker: tracker({ 'c-green': SAMPLES['c-green'] }) });
+    expect(other.container.querySelector('.fsl-legend-item.tone-retired')).toBeNull();
+    expect(legendOf(other.container).map(([, word]) => word)).not.toContain('Only retired accounts sampled');
+    toTiles(other.container);
+    expect(other.container.querySelector('.fsl-legend-item.tone-retired')).toBeNull();
   });
 });
 
@@ -1097,21 +1215,144 @@ describe('compact: one bulb per client, and its tile in a drawer', () => {
     expect([...view.tiles].sort(compareTiles).map((tile) => tile.clientId)).toEqual(bulbsOf(container).map((node) => node.dataset.clientId));
   });
 
-  it('a client with a retired account still running carries the amber corner on its bulb, said in words', () => {
-    const maple = {
-      id: 'c-maple', name: 'Maple Ridge', profile: { stage: 'Active' },
-      accountRegistry: { 'ACC 01': { accountName: 'ACC 01', status: 'Active' }, 'ACC 06': { accountName: 'ACC 06', status: 'Failed' } },
-    };
-    const { container } = mount({ clients: [maple, CLIENTS[0]], tracker: tracker({ 'c-maple': [sample('ACC 01'), sample('ACC 06')], 'c-green': SAMPLES['c-green'] }) });
+  it('a client with a retired account still running carries the amber ring on its bulb, said in words', () => {
+    const { container } = mount({ clients: [MAPLE_MARKED, CLIENTS[0]], tracker: tracker(MARKED_SAMPLES) });
     const bulb = container.querySelector('.fsl-bulb[data-client-id="c-maple"]');
     expect(bulb.className).toBe('fsl-bulb tone-live marked');
-    expect(bulb.querySelector('.fsl-light .account-pill-mark')).not.toBeNull();
+    expect(bulb.querySelector('.fsl-light').className).toBe('dcl-light fsl-light fsl-bulb-still-running');
+    // The ring, not the pill's amber corner: that one means "differs from the desk".
+    expect(bulb.querySelector('.account-pill-mark')).toBeNull();
     expect(bulb.querySelector('.sr-only').textContent).toBe('All live, ACC 06 marked Failed but still running');
     expect(bulb.querySelector('.fsl-bulb-button').getAttribute('title')).toContain('ACC 06 marked Failed but still running.');
-    expect(container.querySelector('.fsl-bulb[data-client-id="c-green"] .account-pill-mark')).toBeNull();
-    expect(container.querySelector('.fsl-legend-mark').textContent).toBe('Amber corner: an account marked retired is still running');
+    const green = container.querySelector('.fsl-bulb[data-client-id="c-green"]');
+    expect(green.querySelector('.fsl-light').className).toBe('dcl-light fsl-light');
+    expect(green.querySelector('.account-pill-mark')).toBeNull();
     // Sorted ahead of an all live client with nothing to ask about.
     expect(bulbsOf(container).map((node) => node.dataset.clientId)).toEqual(['c-maple', 'c-green']);
+  });
+
+  /* ONE SYMBOL, ONE MEANING. The amber corner on a pill says an algorithm
+   * differs from the desk, in the drawer as in the tiles, so its legend line
+   * says that in both views; the bulb's still running signal is a ring, with
+   * its own line in Compact; and the Marked badge's line is there whenever a
+   * pill on screen carries the badge. */
+  it('keeps the amber corner\'s one meaning in both views, names the ring in Compact, and the Marked badge when the drawer shows one', () => {
+    const { container } = mount({ clients: [MAPLE_MARKED, CLIENTS[0]], tracker: tracker(MARKED_SAMPLES) });
+    const legend = () => [...container.querySelectorAll('.fsl-legend-item')].map((item) => item.textContent);
+    expect(container.querySelector('.fsl-legend-mark').textContent).toBe('Amber corner: an algorithm differs from the desk');
+    expect(legend()).not.toContain('Amber corner: an account marked retired is still running');
+    const ring = container.querySelector('.fsl-legend-still-running');
+    expect(ring.textContent).toBe('Amber ring: an account marked retired is still running');
+    expect(ring.querySelector('.fsl-dot').className).toBe('fsl-dot fsl-bulb-still-running');
+    expect(ring.querySelector('.account-pill-mark')).toBeNull();
+    // No pill with the badge on screen yet: no badge line.
+    expect(container.querySelector('.fsl-legend-marked')).toBeNull();
+    // The drawer of the client with the marked pill: the badge line appears.
+    act(() => { bulbButton(container, 'c-maple').click(); });
+    expect(container.querySelector('.fsl-drawer .account-pill-marked').textContent).toBe('Marked Failed');
+    expect(container.querySelector('.fsl-legend-marked').textContent).toBe('MarkedThe registry retired the account and it is still running');
+    expect(container.querySelector('.fsl-legend-mark').textContent).toBe('Amber corner: an algorithm differs from the desk');
+    // Another client's drawer has no Marked pill: the line goes.
+    act(() => { bulbButton(container, 'c-green').click(); });
+    expect(container.querySelector('.fsl-legend-marked')).toBeNull();
+    act(() => { bulbButton(container, 'c-green').click(); });
+    // Tiles: the same corner line, no ring line, and the badge line since a tile shows the badge.
+    act(() => { toggleButton(container, 'Tiles').click(); });
+    expect(container.querySelector('.fsl-legend-mark').textContent).toBe('Amber corner: an algorithm differs from the desk');
+    expect(container.querySelector('.fsl-legend-still-running')).toBeNull();
+    expect(container.querySelector('.fsl-legend-marked')).not.toBeNull();
+  });
+
+  it('a book with no retired account still running has no ring and no ring line', () => {
+    const { container } = mount();
+    expect(container.querySelector('.fsl-bulb-still-running')).toBeNull();
+    expect(container.querySelector('.fsl-legend-still-running')).toBeNull();
+    expect(container.querySelector('.fsl-legend-mark').textContent).toBe('Amber corner: an algorithm differs from the desk');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE COMPACT DRAWER AND THE KEYBOARD.
+ *
+ * Escape closes the drawer and no other key does; an Escape pressed while
+ * typing in a field or inside a dialog belongs to that field or dialog. And
+ * whichever way the drawer closes (Escape, Close, the bulb again), focus goes
+ * back to the bulb that opened it.
+ * ------------------------------------------------------------------------- */
+describe('the compact drawer and the keyboard', () => {
+  beforeEach(() => window.localStorage.clear());
+  const extras = [];
+  afterEach(() => { for (const node of extras.splice(0)) node.remove(); });
+  const bulbButton = (container, id) => container.querySelector(`.fsl-bulb[data-client-id="${id}"] .fsl-bulb-button`);
+  function opened() {
+    const utils = mount();
+    act(() => { bulbButton(utils.container, 'c-amber').click(); });
+    expect(utils.container.querySelector('.fsl-drawer')).not.toBeNull();
+    return utils;
+  }
+
+  it('closes on Escape and on no other key', () => {
+    const { container } = opened();
+    for (const key of ['Enter', ' ', 'a', 'Tab', 'ArrowDown', 'Esc']) {
+      act(() => { fireEvent.keyDown(document, { key }); });
+      expect(container.querySelector('.fsl-drawer'), key).not.toBeNull();
+    }
+    act(() => { fireEvent.keyDown(document, { key: 'Escape' }); });
+    expect(container.querySelector('.fsl-drawer')).toBeNull();
+  });
+
+  it('leaves an Escape pressed in an input, a textarea, a select or a dialog to them', () => {
+    const { container } = opened();
+    const host = document.createElement('div');
+    host.innerHTML = `
+      <input aria-label="Search" />
+      <textarea aria-label="Note"></textarea>
+      <select aria-label="Pick"><option>One</option></select>
+      <div role="dialog" aria-label="Confirm"><button type="button">Inside a dialog</button></div>
+      <dialog open><button type="button">Inside a dialog element</button></dialog>
+    `;
+    document.body.appendChild(host);
+    extras.push(host);
+    for (const node of host.querySelectorAll('input, textarea, select, button')) {
+      node.focus();
+      expect(document.activeElement).toBe(node);
+      act(() => { fireEvent.keyDown(node, { key: 'Escape' }); });
+      expect(container.querySelector('.fsl-drawer'), node.outerHTML).not.toBeNull();
+    }
+    const pill = container.querySelector('.fsl-drawer .account-pill-button');
+    pill.focus();
+    act(() => { fireEvent.keyDown(pill, { key: 'Escape' }); });
+    expect(container.querySelector('.fsl-drawer')).toBeNull();
+  });
+
+  it('hands focus back to the bulb that opened it, after Escape, Close or the bulb again', () => {
+    const { container } = opened();
+    const bulb = bulbButton(container, 'c-amber');
+    container.querySelector('.fsl-drawer .account-pill-button').focus();
+    act(() => { fireEvent.keyDown(document.activeElement, { key: 'Escape' }); });
+    expect(container.querySelector('.fsl-drawer')).toBeNull();
+    expect(document.activeElement).toBe(bulb);
+
+    act(() => { bulb.click(); });
+    const close = container.querySelector('.fsl-drawer button[aria-label="Close Amber Pine"]');
+    close.focus();
+    act(() => { close.click(); });
+    expect(container.querySelector('.fsl-drawer')).toBeNull();
+    expect(document.activeElement).toBe(bulb);
+
+    act(() => { bulb.click(); });
+    container.querySelector('.fsl-drawer .account-pill-button').focus();
+    act(() => { bulb.click(); });
+    expect(container.querySelector('.fsl-drawer')).toBeNull();
+    expect(document.activeElement).toBe(bulb);
+
+    // Another bulb opens its own drawer, and Escape returns to that one.
+    const other = bulbButton(container, 'c-silent');
+    act(() => { bulb.click(); });
+    act(() => { other.click(); });
+    container.querySelector('.fsl-drawer .account-pill-button').focus();
+    act(() => { fireEvent.keyDown(document.activeElement, { key: 'Escape' }); });
+    expect(document.activeElement).toBe(other);
   });
 });
 
@@ -1228,17 +1469,34 @@ describe('the stylesheet', () => {
       id: 'c-maple', name: 'Maple Ridge', profile: { stage: 'Active' },
       accountRegistry: { 'ACC 01': { accountName: 'ACC 01', status: 'Active' }, 'ACC 06': { accountName: 'ACC 06', status: 'Failed' } },
     };
-    const clients = [...CLIENTS, maple];
-    const samples = tracker({ ...SAMPLES, 'c-maple': [sample('ACC 01'), sample('ACC 06')] });
+    // Quiet Larch sends only a retired account: its hollow grey is on screen too.
+    const clients = [...CLIENTS, maple, QUIET_LARCH];
+    const samples = tracker({ ...SAMPLES, 'c-maple': [sample('ACC 01'), sample('ACC 06')], 'c-quiet': [quietLarchSample()] });
     const loadHistory = vi.fn(async () => ({ available: true, rows: [{ clientId: 'c-amber', deviceId: 'd', accountName: 'A-2', connected: false, firstSampledAt: NOW.toISOString(), lastSampledAt: NOW.toISOString() }] }));
     const { container } = mount({ clients, tracker: samples, loadHistory, closeVerdicts: new Map() });
     const classes = new Set();
+    // A tone class is styled through its element: the bulb's light, the tile,
+    // the legend's dot. Each tone on screen needs that compound rule.
+    const toneRules = new Set();
+    const toneRule = {
+      'fsl-bulb': (tone) => `.fsl-bulb.${tone} .fsl-light`,
+      'fsl-tile': (tone) => `.fsl-tile.${tone}`,
+      'fsl-legend-item': (tone) => `.fsl-legend-item.${tone} > .fsl-dot`,
+    };
     const collect = () => {
+      for (const [owner, rule] of Object.entries(toneRule)) {
+        for (const node of container.querySelectorAll(`.${owner}`)) {
+          for (const name of node.classList) if (name.startsWith('tone-')) toneRules.add(rule(name));
+        }
+      }
       for (const node of container.querySelectorAll('[class]')) {
         for (const name of String(node.getAttribute('class') || '').split(/\s+/)) {
           if (name.startsWith('fsl-') || name.startsWith('account-pill-marked') || name.startsWith('account-live-detail-since')) classes.add(name);
         }
       }
+      // Every class on the panel's own root, whatever its prefix: a class
+      // added there for a view (view-compact, view-tiles) needs a rule too.
+      for (const name of container.querySelector('.fsl').classList) classes.add(name);
     };
     await waitFor(() => expect(loadHistory).toHaveBeenCalled());
     act(() => { container.querySelector('.fsl-bulb[data-client-id="c-amber"] .fsl-bulb-button').click(); });
@@ -1249,9 +1507,49 @@ describe('the stylesheet', () => {
     collect();
     expect(classes.size).toBeGreaterThan(20);
     for (const name of classes) expect(has(`.${name}`), `.${name} is styled`).toBe(true);
-    for (const name of ['fsl-bulbs', 'fsl-bulb-button', 'fsl-light', 'fsl-bulb-count', 'fsl-drawer', 'fsl-tile-close', 'account-pill-marked', 'account-live-detail-since']) {
+    for (const name of ['fsl', 'fsl-bulbs', 'fsl-bulb-button', 'fsl-light', 'fsl-bulb-count', 'fsl-drawer', 'fsl-tile-close', 'fsl-bulb-still-running', 'fsl-legend-still-running', 'account-pill-marked', 'account-live-detail-since']) {
       expect(classes.has(name), name).toBe(true);
     }
+    for (const selector of toneRules) expect(has(selector), `${selector} is styled`).toBe(true);
+    for (const selector of ['.fsl-bulb.tone-retired .fsl-light', '.fsl-tile.tone-retired', '.fsl-legend-item.tone-retired > .fsl-dot', '.fsl-bulb.tone-none .fsl-light', '.fsl-tile.tone-none']) {
+      expect(toneRules.has(selector), selector).toBe(true);
+    }
+  });
+
+  /* The two overviews draw "only retired accounts sampled" the same: the
+   * desk's hollow grey, which is never the solid grey of no sample. */
+  it('draws only retired hollow grey, as the desk does, and never as the solid grey of no sample', () => {
+    const background = (selector) => {
+      const row = css.split('\n').find((line) => line.startsWith(selector)) || '';
+      return (row.match(/background: ([^;]+);/) || [])[1] || null;
+    };
+    const desk = background('.dcl-bulb.tone-retired .dcl-light');
+    expect(desk).toContain('radial-gradient');
+    expect(background('.fsl-bulb.tone-retired .fsl-light')).toBe(desk);
+    expect(background('.fsl-legend-item.tone-retired > .fsl-dot')).toBe(desk);
+    expect(background('.fsl-bulb.tone-none .fsl-light')).toBe('#94a3b8');
+    expect(background('.fsl-bulb.tone-retired .fsl-light')).not.toBe(background('.fsl-bulb.tone-none .fsl-light'));
+    // The tile's edge is hollow too: grey, drawn double, never the solid grey edge alone.
+    const tile = css.split('\n').find((line) => line.startsWith('.fsl-tile.tone-retired')) || '';
+    expect(tile).toContain('#94a3b8');
+    expect(tile).toContain('border-left-style: double');
+    expect(css.split('\n').find((line) => line.startsWith('.fsl-tile.tone-none'))).not.toContain('double');
+  });
+
+  it('draws the still running ring amber, with a rule of its own, and never as the pill\'s corner', () => {
+    const rule = (selector) => css.split('\n').find((row) => row.startsWith(selector)) || '';
+    expect(rule('.fsl-light.fsl-bulb-still-running')).toContain('var(--warning)');
+    expect(rule('.fsl-dot.fsl-bulb-still-running')).toContain('var(--warning)');
+    expect(rule('.fsl-light.fsl-bulb-still-running')).not.toMatch(/--error|position: absolute/);
+    expect(css).not.toMatch(/fsl-bulb-still-running[^{]*account-pill-mark/);
+  });
+
+  it('the panel\'s root carries no class without a rule, in either view', () => {
+    window.localStorage.clear();
+    const { container } = mount();
+    expect(container.querySelector('[role="region"]').className).toBe('fsl');
+    act(() => { [...container.querySelectorAll('.fsl-view-toggle button')].find((node) => node.textContent === 'Tiles').click(); });
+    expect(container.querySelector('[role="region"]').className).toBe('fsl');
   });
 
   it('paints the bulb with the tile tones and never red', () => {

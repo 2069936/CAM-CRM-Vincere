@@ -3,6 +3,7 @@ import {
   BULB_TONES,
   BULB_WORDS,
   DESK_LEGEND,
+  ONLY_RETIRED_LEGEND,
   buildDeskClientLight,
   buildDeskClientLights,
   compareBulbs,
@@ -359,7 +360,7 @@ describe('the whole desk', () => {
       'off:Dark Fir', 'off:Red Cedar', 'partly:Amber Pine', 'silent:Silent Elm', 'never_sampled:Brown Elm', 'live:Green Oak',
     ]);
     expect(view.hidden.map((entry) => entry.clientName)).toEqual(['Grey Ash', 'Grey Birch']);
-    expect(view.counts).toEqual({ live: 1, partly: 1, silent: 1, off: 2, never_sampled: 1, no_vps: 2 });
+    expect(view.counts).toEqual({ live: 1, partly: 1, silent: 1, off: 2, never_sampled: 1, only_retired: 0, no_vps: 2 });
     // Red on evidence only: the heartbeat for Dark Fir, the fresh disconnected sample for Red Cedar.
     expect(view.bulbs.find((entry) => entry.clientName === 'Dark Fir').sentence).toBe('Off, NinjaTrader not running.');
     expect(view.bulbs.find((entry) => entry.clientName === 'Red Cedar').sentence).toBe('Off, 1 account disconnected.');
@@ -508,5 +509,76 @@ describe('a retired account NinjaTrader still lists', () => {
     });
     expect(view.dots.map((pill) => `${pill.accountName}:${pill.state}:${pill.inRegistry}`)).toEqual(['ACC 01:live:true', 'ACC 09:disconnected:false']);
     expect(view.state).toBe('partly');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * A VPS THAT SAMPLES ONLY RETIRED ACCOUNTS.
+ *
+ * The tile said "Only retired accounts sampled"; the desk did not. Without the
+ * devices the client was folded into "without a VPS paired", with them its
+ * bulb said "Never sampled, VPS paired, 0 accounts on the registry.", and a
+ * desk where that was the only client said no collector sends samples at all.
+ * The VPS IS sampling: every account it sends is retired and not running. The
+ * fixture is the one the review found: ACC 41 marked Failed, sampled a few
+ * minutes ago, not connected, nothing loaded.
+ * ------------------------------------------------------------------------- */
+describe('a VPS that samples only retired accounts', () => {
+  const RETIRED = { 'ACC 41': { status: 'Failed' } };
+  const dead = () => sample('ACC 41', { connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 });
+  const quiet = (registry = RETIRED) => ({ ...client('c-quiet', 'Quiet Larch'), accountRegistry: registry });
+  const ONLY_RETIRED_SENTENCE = 'Only retired accounts sampled. NinjaTrader lists only accounts not expected to trade, in the line below.';
+
+  it('without the devices, is its own bulb with the tile\'s word, never a client without a VPS', () => {
+    const light = buildDeskClientLight(quiet(), { samples: [dead()], devices: null, deviceAware: false, now: NOW, staleSeconds: 1500 });
+    expect(light).toMatchObject({ state: 'only_retired', tone: 'retired', word: 'Only retired accounts sampled', sentence: ONLY_RETIRED_SENTENCE });
+    expect(light.title).toBe(`Quiet Larch: ${ONLY_RETIRED_SENTENCE}`);
+    expect(light.counts).toMatchObject({ sampled: 0, retiredSampled: 1, disconnected: 0, registry: 0 });
+    expect(light.dots).toEqual([]);
+    // The folded line names what the VPS sends.
+    expect(light.notShown.accounts.map((row) => `${row.accountName} ${row.word}`)).toEqual(['ACC 41 Failed, still listed by NinjaTrader, disconnected']);
+
+    const view = buildDeskClientLights({ clients: [quiet()], tracker: { available: true, staleSeconds: 1500, samplesByClientId: new Map([['c-quiet', [dead()]]]) }, now: NOW });
+    expect(view.kind).toBe('ready');
+    expect(view.bulbs.map((entry) => entry.clientName)).toEqual(['Quiet Larch']);
+    expect(view.hidden).toEqual([]);
+    expect(view.counts).toMatchObject({ only_retired: 1, no_vps: 0, never_sampled: 0 });
+    expect(view.words).toBe('0 live, 0 partly live, 0 silent, 0 off, 0 never sampled, 1 with only retired accounts sampled, 0 without a VPS. Latest sample 4m ago.');
+  });
+
+  it('with a paired VPS, says only retired accounts are sampled, not "Never sampled, VPS paired, 0 accounts on the registry"', () => {
+    const light = buildDeskClientLight(quiet(), { samples: [dead()], devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500 });
+    expect(light.state).toBe('only_retired');
+    expect(light.sentence).toBe(ONLY_RETIRED_SENTENCE);
+    expect(light.sentence).not.toMatch(/Never sampled|0 accounts/);
+    // And with a VPS the fleet does not list (a device revoked since), the samples still prove one.
+    expect(buildDeskClientLight(quiet(), { samples: [dead()], devices: [], deviceAware: true, now: NOW, staleSeconds: 1500 }).state).toBe('only_retired');
+  });
+
+  it('counts the expected accounts nobody sampled in its sentence, and lists them under the connections', () => {
+    const light = buildDeskClientLight(quiet({ ...RETIRED, 'ACC 42': { status: 'Active' } }), { samples: [dead()], devices: null, deviceAware: false, now: NOW, staleSeconds: 1500 });
+    expect(light.state).toBe('only_retired');
+    expect(light.sentence).toBe('Only retired accounts sampled. 1 account on the registry, none sampled. NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(light.connections.map((group) => `${group.name}: ${group.accounts.map((pill) => pill.accountName).join(', ')}`)).toEqual(['Never sampled: ACC 42']);
+  });
+
+  it('is off when the heartbeat says NinjaTrader is down: evidence outranks a dead account\'s sample', () => {
+    const light = buildDeskClientLight(quiet(), {
+      samples: [dead()], devices: [device({ healthStatus: 'error', lastErrorCode: 'ninjatrader_not_running' })], deviceAware: true, now: NOW, staleSeconds: 1500,
+    });
+    expect(light.state).toBe('off');
+  });
+
+  it('sorts after never sampled and before live, and is named in the legend only by its own entry', () => {
+    const lights = [
+      buildDeskClientLight(client('c-live', 'Aspen', ['G-1']), { samples: [sample('G-1')], devices: null, deviceAware: false, now: NOW, staleSeconds: 1500 }),
+      buildDeskClientLight(quiet(), { samples: [dead()], devices: null, deviceAware: false, now: NOW, staleSeconds: 1500 }),
+      buildDeskClientLight(client('c-never', 'Zelkova', ['Z-1']), { samples: [], devices: null, deviceAware: false, now: NOW, staleSeconds: 1500 }),
+    ];
+    expect([...lights].sort(compareBulbs).map((entry) => entry.state)).toEqual(['never_sampled', 'only_retired', 'live']);
+    expect(ONLY_RETIRED_LEGEND).toEqual({ state: 'only_retired', tone: 'retired', word: 'Only retired accounts sampled' });
+    // Its look is its own: not the grey of no VPS, not an amber, never red.
+    expect(BULB_TONES.only_retired).not.toBe(BULB_TONES.no_vps);
+    expect(DESK_LEGEND.map((entry) => entry.tone)).not.toContain(BULB_TONES.only_retired);
   });
 });

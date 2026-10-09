@@ -4688,12 +4688,16 @@ button.account-pill-button:hover, button.account-pill-button:focus-visible { bac
 .fsl-legend-item.tone-attention > .fsl-dot { background: var(--warning); }
 .fsl-legend-item.tone-faint > .fsl-dot { background: var(--warning); opacity: 0.55; }
 .fsl-legend-item.tone-none > .fsl-dot { background: #94a3b8; }
+/* Only retired accounts sampled: the desk's hollow grey (.dcl-bulb.tone-retired),
+   so it is never read as the solid grey of a client with no sample. */
+.fsl-legend-item.tone-retired > .fsl-dot { background: radial-gradient(circle closest-side, var(--surface-2) 0 38%, #94a3b8 46%); }
 .fsl-grid { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
 .fsl-tile { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface-2); min-width: 0; padding: 10px 12px; display: grid; gap: 8px; align-content: start; }
 .fsl-tile.tone-live { border-left-color: var(--success); }
 .fsl-tile.tone-attention { border-left-color: var(--warning); background: var(--warning-bg); }
 .fsl-tile.tone-faint { border-left-color: rgba(var(--warning-rgb), 0.55); }
 .fsl-tile.tone-none { border-left-color: #94a3b8; }
+.fsl-tile.tone-retired { border-left-color: #94a3b8; border-left-style: double; }
 .fsl-tile-button { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; font: inherit; cursor: default; border-radius: 6px; }
 button.fsl-tile-button { cursor: pointer; }
 button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background: rgba(255, 255, 255, 0.04); }
@@ -4702,7 +4706,7 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .fsl-tile-state { color: var(--text); font-size: 10.5px; white-space: nowrap; }
 .fsl-tile.tone-attention .fsl-tile-state { color: var(--warning); font-weight: 600; }
 .fsl-tile.tone-live .fsl-tile-state { color: var(--success); }
-.fsl-tile.tone-none .fsl-tile-state, .fsl-tile.tone-faint .fsl-tile-state { color: var(--muted); }
+.fsl-tile.tone-none .fsl-tile-state, .fsl-tile.tone-faint .fsl-tile-state, .fsl-tile.tone-retired .fsl-tile-state { color: var(--muted); }
 .fsl-pills { margin: 0; }
 .fsl-legend-mark > .fsl-dot { position: relative; overflow: visible; }
 .fsl-legend-mark .account-pill-mark { right: -3px; top: -3px; width: 7px; height: 7px; }
@@ -4728,8 +4732,16 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .fsl-bulb.tone-attention .fsl-light { background: var(--warning); }
 .fsl-bulb.tone-faint .fsl-light { background: var(--warning); opacity: 0.55; }
 .fsl-bulb.tone-none .fsl-light { background: #94a3b8; }
+.fsl-bulb.tone-retired .fsl-light { background: radial-gradient(circle closest-side, var(--surface-2) 0 38%, #94a3b8 46%); }
 .fsl-bulb.tone-attention .fsl-bulb-count { color: var(--warning); }
 .fsl-bulb.marked .fsl-bulb-button { border-color: var(--warning-border); }
+/* THE STILL RUNNING RING: an amber ring around a bulb whose client has an
+   account marked retired that is still running. Its own glyph, because the
+   amber corner on a pill means an algorithm differs from the desk, and one
+   symbol carries one meaning. Amber, never red, never the bulb's colour. */
+.fsl-light.fsl-bulb-still-running { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 4px var(--warning); }
+.fsl-dot.fsl-bulb-still-running { box-shadow: 0 0 0 1.5px var(--surface-2), 0 0 0 3px var(--warning); }
+.fsl-legend-still-running > .fsl-dot { margin: 0 3px; }
 .fsl-drawer { margin: 10px 0 0; min-width: 0; }
 .fsl-drawer-tile { margin: 0; padding: 0; list-style: none; }
 .fsl-tile-top { display: flex; align-items: flex-start; gap: 8px; }
@@ -4771,6 +4783,9 @@ button.fsl-tile-button:hover, button.fsl-tile-button:focus-visible { background:
 .dcl-bulb.tone-off .dcl-light, .dcl-legend-item.tone-off .dcl-light, .dcl-drawer.tone-off .dcl-light { background: var(--error); }
 .dcl-bulb.tone-faint .dcl-light, .dcl-legend-item.tone-faint .dcl-light, .dcl-drawer.tone-faint .dcl-light { background: var(--warning); opacity: 0.55; }
 .dcl-bulb.tone-none .dcl-light, .dcl-legend-item.tone-none .dcl-light { background: #94a3b8; }
+/* Only retired accounts sampled: grey like a client nothing expected has
+   sampled, drawn hollow so it is never read as the grey of no VPS. */
+.dcl-bulb.tone-retired .dcl-light, .dcl-legend-item.tone-retired .dcl-light, .dcl-drawer.tone-retired .dcl-light { background: radial-gradient(circle closest-side, var(--surface-2) 0 38%, #94a3b8 46%); }
 .dcl-grid { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 4px 8px; }
 .dcl-bulb { min-width: 0; }
 .dcl-bulb-button { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }

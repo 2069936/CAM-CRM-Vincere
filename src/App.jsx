@@ -322,6 +322,7 @@ import {
   upsertSupabaseTradingAccount,
 } from "./domain/supabaseStore";
 import { summarizeAccountTracker } from "./domain/autoCollectionFleet";
+import { registryLights } from "./domain/accountBuckets";
 import {
   persistEdit,
   refreshFailedMessage,
@@ -10004,7 +10005,18 @@ export function buildTodayBriefing(clients, {
       /* Null when no sample for this client has ever arrived, so every reader
          below can tell "nothing to say" from "nothing is running". */
       // Samples are keyed by the row's uuid; `id` is the legacy key when there is one.
-      const samples = liveByClientId?.get(client.uuid) || liveByClientId?.get(client.id) || null;
+      const every = liveByClientId?.get(client.uuid) || liveByClientId?.get(client.id) || null;
+      /* THE SAME ACCOUNTS THE LIGHTS COUNT. A retired account NinjaTrader
+         still lists, disconnected or with nothing running, has no pill and no
+         count on the lights (accountBuckets.registryLights), so it has no
+         "disc." here either; one still running keeps its count. A client
+         whose VPS sends only such accounts makes no live claim at all. */
+      const hidden = every?.length
+        ? registryLights(client.accountRegistry, { now: at, samples: every, staleSeconds }).hidden
+        : null;
+      const samples = hidden?.size
+        ? every.filter((sample) => !hidden.has(sample?.accountName))
+        : every;
       const live = samples?.length
         ? summarizeAccountTracker(samples, { now: at, staleSeconds })
         : null;

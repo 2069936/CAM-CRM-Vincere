@@ -1,5 +1,6 @@
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES } from './reconcile.js';
 import { classifyAccountSample } from './autoCollectionFleet.js';
+import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountObservationDefaults.js';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * WHERE EACH REGISTRY ACCOUNT GOES, now that the database says what the closes
@@ -56,13 +57,11 @@ export const OBSERVED_STATES = Object.freeze({
   NEVER_SEEN: 'never_seen',
 });
 
-/** The column defaults of account_observation_settings, for a database that
- * has not run step 65 or a read that failed. */
-export const ACCOUNT_OBSERVATION_DEFAULTS = Object.freeze({
-  staleCloses: 5,
-  autoFailOnBreach: true,
-  newAccountDays: 14,
-});
+/* The column defaults of account_observation_settings live in their own module
+ * with no imports (accountObservationDefaults.js), so supabaseStore.js can read
+ * them without bringing this module and autoCollectionFleet.js into the daily
+ * email bundle. Re-exported here under the same name. */
+export { ACCOUNT_OBSERVATION_DEFAULTS };
 
 export const BUCKET_KEYS = Object.freeze([
   'expected', 'looksFailed', 'goneFromClose', 'newNotSeen', 'registeredNeverSeen', 'retired',
@@ -543,6 +542,41 @@ function samplesOf(samples) {
   return list.filter((sample) => sample && sample.accountName);
 }
 
+/* ── A VPS that lists only accounts nothing is expected of ─────────────────────
+ *
+ * The VPS is sampling, and every account it sends is retired (or looks failed)
+ * and not running, so every sample is in the folded line and none is a pill.
+ * Before this was said once, the tile said it and the other two screens did
+ * not: the desk folded the client into "without a VPS paired", or said "Never
+ * sampled, VPS paired, 0 accounts on the registry", and the client page said
+ * "none has been sampled", three false sentences about a VPS that is sampling.
+ * One word and one sentence, for the tile, the desk bulb and its drawer, and
+ * the client page strip; the folded line under each names the accounts.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The state's word on the tile, the desk bulb and the client page strip. */
+export const ONLY_RETIRED_WORD = 'Only retired accounts sampled';
+
+/**
+ * The sentence beside it: the expected accounts first when there are any
+ * (none of them is sampled, by definition), then where the sampled ones are.
+ *
+ * @param {number} expectedCount the registry accounts expected on the close.
+ */
+export function onlyRetiredWords(expectedCount = 0) {
+  const n = Number.isInteger(expectedCount) && expectedCount > 0 ? expectedCount : 0;
+  const registry = n ? `${n} ${plural(n, 'account')} on the registry, none sampled. ` : '';
+  return `${registry}NinjaTrader lists only accounts not expected to trade, in the line below.`;
+}
+
+function sampledAtOf(sample) {
+  const value = sample?.sampledAt;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 /**
  * Everything a light needs from one registry.
  *
@@ -552,12 +586,16 @@ function samplesOf(samples) {
  *   `samples` are the client's live samples (mapped rows, or a Map of name to
  *   row); `staleSeconds` is the tracker's horizon.
  * @returns {{buckets: object, names: string[], fresh: Map<string, string>, notShown: object|null,
- *   hidden: Set<string>, stillRunning: Map<string, {word: string, words: string}>}}
+ *   hidden: Set<string>, stillRunning: Map<string, {word: string, words: string}>,
+ *   onlyRetiredSampled: boolean, hiddenSampledAt: Date|null}}
  *   `names` are the expected accounts, sorted, a pill each; `fresh` maps the
  *   new ones among them to their sentence; `notShown` is the folded line or
  *   null; `hidden` are sampled names that get no light (retired or looks failed,
  *   not running), which the caller leaves out of its pills AND its counts;
- *   `stillRunning` are sampled names that keep a pill with the amber marker.
+ *   `stillRunning` are sampled names that keep a pill with the amber marker;
+ *   `onlyRetiredSampled` says the VPS is sampling and every sample is hidden
+ *   (ONLY_RETIRED_WORD); `hiddenSampledAt` is the newest of the hidden samples,
+ *   so a screen with nothing else can still say when the VPS last sampled.
  */
 export function registryLights(registry, { now = Date.now(), settings = null, samples = [], staleSeconds = 1500 } = {}) {
   const buckets = bucketRegistryAccounts(registry, { now, settings });
@@ -566,6 +604,7 @@ export function registryLights(registry, { now = Date.now(), settings = null, sa
   const kept = [];
   const listed = new Map();
   const stillRunning = new Map();
+  let hiddenSampledAt = null;
   for (const sample of samplesOf(samples)) {
     const name = sample.accountName;
     const row = closed.get(name);
@@ -580,6 +619,8 @@ export function registryLights(registry, { now = Date.now(), settings = null, sa
       stillRunning.set(name, stillRunningWords(row));
     } else {
       listed.set(name, fate);
+      const at = sampledAtOf(sample);
+      if (at && (!hiddenSampledAt || at > hiddenSampledAt)) hiddenSampledAt = at;
     }
   }
   return {
@@ -589,5 +630,7 @@ export function registryLights(registry, { now = Date.now(), settings = null, sa
     notShown: notShownAccounts(buckets, { except: kept, listed }),
     hidden: new Set(listed.keys()),
     stillRunning,
+    onlyRetiredSampled: kept.length === 0 && listed.size > 0,
+    hiddenSampledAt,
   };
 }

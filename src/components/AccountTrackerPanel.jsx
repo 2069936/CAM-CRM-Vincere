@@ -6,16 +6,22 @@ import {
   classifyAccountTracker,
   summarizeAccountTracker,
 } from '../domain/autoCollectionFleet';
-import { registryLights } from '../domain/accountBuckets';
-import { buildAccountPill, withCloseDiffers, withDiffers } from '../domain/accountPill';
+import { ONLY_RETIRED_WORD, onlyRetiredWords, registryLights } from '../domain/accountBuckets';
+import { buildAccountPill, withCloseDiffers, withDiffers, withDisconnectedSince } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
-import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import { disconnectedSinceByClient } from '../domain/disconnectedSince';
+import {
+  loadSupabaseAccountLiveSampleHistory,
+  loadSupabaseAccountObservationSettings,
+  loadSupabaseClientLiveStrategies,
+} from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
 import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
 import useAccountObservationSettings from './useAccountObservationSettings';
 import useClientLiveStrategies from './useClientLiveStrategies';
+import useDisconnectedSince from './useDisconnectedSince';
 
 /**
  * WHAT IS HAPPENING NOW, ONE ROW PER ACCOUNT.
@@ -69,7 +75,14 @@ import useClientLiveStrategies from './useClientLiveStrategies';
  * keeps listing a dead account, and that is the folded line, not a pill or a
  * count. One that is still running keeps its pill with an amber "Marked
  * Failed" in words. The rule is accountBuckets.registryLights', the same for
- * the overview tiles and the desk drawer.
+ * the overview tiles and the desk drawer. When every account the VPS sends is
+ * such a one, the strip says "Only retired accounts sampled", the tile's own
+ * words, and never "none has been sampled": the VPS is sampling.
+ *
+ * SINCE WHEN IT IS DISCONNECTED, as on the overviews: when a pill here is
+ * disconnected, and only then, today's tracker history for this client is read
+ * once per tracker read (useDisconnectedSince) and the pill's title and its
+ * detail say "Disconnected since 09:40".
  *
  * THE SECOND AMBER MARKER (step 66). `closeVerdicts` is today's verdict per
  * account (lower case name to verdict) from the tracker against the close
@@ -91,6 +104,7 @@ export default function AccountTrackerPanel({
   loadStrategies = loadSupabaseClientLiveStrategies,
   loadObservationSettings = loadSupabaseAccountObservationSettings,
   closeVerdicts = null,
+  loadHistory = loadSupabaseAccountLiveSampleHistory,
 }) {
   /* THE PICTURE FIRST, THE SENTENCES BEHIND A CLICK. Pedro's words: the tracker
    * is good but there is a lot to read. The strip above the rows is one pill
@@ -212,13 +226,37 @@ export default function AccountTrackerPanel({
       // A collector is sampling (any row, a retired one included), which is
       // what the header's sentence is about; the counts are the kept rows'.
       everySampled: every.length > 0,
+      // Every row it sends is retired and not running (ONLY_RETIRED_WORD).
+      onlyRetiredSampled: lights.onlyRetiredSampled,
+      expectedCount: lights.names.length,
       enabled: Boolean(shownTracker.minAgentVersion),
     };
   }, [shownTracker, shownDevice, accountNames, accountRegistry, observation.settings, at]);
+  /* "Disconnected since": today's history for this client, read only while a
+   * pill here is disconnected, again on every tracker read (the clock moves
+   * only on a successful one). */
+  const disconnectedKeys = useMemo(
+    () => (clientUuid && (view?.rows || []).some((row) => row.pill.state === 'disconnected') ? [clientUuid] : []),
+    [clientUuid, view],
+  );
+  const clockMs = clockMillis(at);
+  const history = useDisconnectedSince({ clientIds: disconnectedKeys, clock: clockMs, load: loadHistory });
+  const since = useMemo(
+    () => (clientUuid ? disconnectedSinceByClient(history, { now: clockMs }).get(clientUuid) || null : null),
+    [history, clockMs, clientUuid],
+  );
+  const sinceOf = (row) => (row.pill.state === 'disconnected' ? since?.get(row.accountName) || null : null);
   const details = useMemo(() => new Map((view?.rows || []).map((row) => [
     row.accountName,
-    buildAccountLiveDetail({ client, accountName: row.accountName, sample: row.sample, strategies: strategies.data, now: at }),
-  ])), [view, client, strategies.data, at]);
+    buildAccountLiveDetail({
+      client,
+      accountName: row.accountName,
+      sample: row.sample,
+      strategies: strategies.data,
+      now: at,
+      disconnectedSince: row.pill.state === 'disconnected' ? since?.get(row.accountName) || null : null,
+    }),
+  ])), [view, client, strategies.data, at, since]);
   const openRow = expanded && view ? view.rows.find((row) => row.accountName === expanded) || null : null;
 
   if (!shownTracker) {
@@ -241,6 +279,7 @@ export default function AccountTrackerPanel({
           <strong>
             Live accounts
             {view.everySampled && headline(view.summary) ? ` · ${headline(view.summary)}` : ''}
+            {view.onlyRetiredSampled ? ` · ${ONLY_RETIRED_WORD}` : ''}
           </strong>
           {/* THREE SENTENCES, BECAUSE THERE ARE THREE STATES AND THE MIDDLE ONE
               USED TO BE MISSING. With no build named AND nothing sampled, the
@@ -269,7 +308,7 @@ export default function AccountTrackerPanel({
               <AccountPill
                 key={row.accountName}
                 pill={withCloseDiffers(
-                  withDiffers(row.pill, details.get(row.accountName)?.differsCount || 0),
+                  withDiffers(withDisconnectedSince(row.pill, sinceOf(row)), details.get(row.accountName)?.differsCount || 0),
                   closeVerdicts?.get(String(row.accountName).trim().toLowerCase()) || null,
                 )}
                 expanded={expanded === row.accountName}
@@ -306,15 +345,30 @@ export default function AccountTrackerPanel({
       ) : (
         <>
           <p className="account-tracker-none">
-            {view.notShown
-              ? 'No account is expected on the close for this client and none has been sampled.'
-              : 'No account is registered for this client and none has been sampled.'}
+            {noneWords(view)}
           </p>
           <NotShownLine notShown={view.notShown} label={`${clientName || 'this client'}, accounts not shown`} />
         </>
       )}
     </div>
   );
+}
+
+/* The strip's line when no pill is drawn. A VPS that sends only retired
+ * accounts IS sampling, so "none has been sampled" would be false about it. */
+function noneWords(view) {
+  // The header already says "Only retired accounts sampled"; this says where.
+  if (view.onlyRetiredSampled) return onlyRetiredWords(view.expectedCount);
+  return view.notShown
+    ? 'No account is expected on the close for this client and none has been sampled.'
+    : 'No account is registered for this client and none has been sampled.';
+}
+
+/* The panel's clock as epoch milliseconds, whatever the caller's `now` gave:
+ * a Date, a number or a string. Null when it cannot be read. */
+function clockMillis(value) {
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /** The one line the header prints, when there is anything to print it about. */

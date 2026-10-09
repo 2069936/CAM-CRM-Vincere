@@ -297,7 +297,7 @@ describe('loadSupabaseAccountLiveSampleHistory', () => {
     await expect(loadSupabaseAccountLiveSampleHistory({ clientIds: ['c1'], client })).rejects.toThrow(/statement timeout/);
   });
 
-  it('scopes to the book and to runs still alive since the instant, in run order, bounded', async () => {
+  it('scopes to the book and to runs still alive since the instant, newest first at the database, bounded', async () => {
     const client = fakeClient({
       history: {
         data: [{
@@ -315,7 +315,8 @@ describe('loadSupabaseAccountLiveSampleHistory', () => {
       { op: 'in', column: 'client_id', values: ['c1'] },
       { op: 'gte', column: 'last_sampled_at', value: '2026-10-07T04:00:00.000Z' },
     ]);
-    expect(client.asked.order.account_live_sample_history).toEqual([{ column: 'first_sampled_at', ascending: true }]);
+    // Newest first, so a day past the bound loses its OLDEST runs, never its newest.
+    expect(client.asked.order.account_live_sample_history).toEqual([{ column: 'first_sampled_at', ascending: false }]);
     expect(client.asked.limit.account_live_sample_history).toBe(5000);
     expect(result.rows).toEqual([{
       id: 1, clientId: 'c1', deviceId: 'dev-1', accountName: 'ACC 01', connectionName: 'Northwind', connected: true,
@@ -328,6 +329,50 @@ describe('loadSupabaseAccountLiveSampleHistory', () => {
     const client = fakeClient();
     expect(await loadSupabaseAccountLiveSampleHistory({ clientIds: [], client })).toEqual({ available: true, rows: [] });
     expect(client.asked.from).toEqual([]);
+  });
+
+  /* A database that does what it is asked: orders and bounds the table the
+   * way PostgREST would. 5,003 runs today, over the 5,000 bound. Ascending at
+   * the database, the bound cut the three NEWEST runs, which are the ones
+   * "Disconnected since" and the day's trail read first. Newest first, the cut
+   * falls on the three oldest, and the rows still come back oldest first, the
+   * order every caller walks them in. */
+  it('past the bound keeps the newest runs and still hands them back oldest first', async () => {
+    const base = Date.parse('2026-10-07T04:00:00Z');
+    const table = Array.from({ length: 5003 }, (_, index) => ({
+      id: index + 1, client_id: 'c1', device_id: 'dev-1', account_name: `ACC ${String(index % 40).padStart(2, '0')}`,
+      connected: index % 2 === 0, run_state: 'running',
+      first_sampled_at: new Date(base + index * 5_000).toISOString(), last_sampled_at: new Date(base + index * 5_000 + 4_000).toISOString(), samples: 1,
+    }));
+    const shuffled = [...table].reverse();
+    const asked = [];
+    const client = {
+      from() {
+        let rows = shuffled;
+        const chain = {
+          select() { return chain; },
+          in() { return chain; },
+          gte() { return chain; },
+          order(column, { ascending = true } = {}) {
+            asked.push({ column, ascending });
+            rows = [...rows].sort((left, right) => (ascending ? 1 : -1) * left[column].localeCompare(right[column]));
+            return chain;
+          },
+          limit(n) { rows = rows.slice(0, n); return chain; },
+          then(resolve, reject) { return Promise.resolve({ data: rows, error: null }).then(resolve, reject); },
+        };
+        return chain;
+      },
+    };
+    const result = await loadSupabaseAccountLiveSampleHistory({ clientIds: ['c1'], since: new Date(base), client });
+    expect(asked).toEqual([{ column: 'first_sampled_at', ascending: false }]);
+    expect(result.rows).toHaveLength(5000);
+    // The newest run is in; the three oldest are the ones left out.
+    expect(result.rows.at(-1).id).toBe(5003);
+    expect(result.rows[0].id).toBe(4);
+    // Oldest first, as the callers walk them.
+    const starts = result.rows.map((row) => Date.parse(row.firstSampledAt));
+    expect(starts.every((value, index) => index === 0 || starts[index - 1] <= value)).toBe(true);
   });
 });
 

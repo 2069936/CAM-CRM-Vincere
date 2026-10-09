@@ -341,6 +341,39 @@ describe('buildTodayBriefing and the live tracker', () => {
     expect(liveCardTitle(entry.live)).toContain('No account reported a profit and loss figure');
   });
 
+  /* THE BRIEFING AGREES WITH THE LIGHTS. NinjaTrader keeps listing an account
+   * the registry retired, disconnected and empty, and the VPS keeps sampling
+   * it. The lights leave it out of every pill and count (accountBuckets
+   * registryLights); the briefing chip counted it "disc." and turned the
+   * card's dot amber. Fictional registry: ACC 41 is marked Failed. */
+  it('leaves a retired account NinjaTrader still lists out of the live counts, as the lights do', () => {
+    const registry = { 'ACC 01': { status: 'Active' }, 'ACC 41': { status: 'Failed' } };
+    const withRegistry = { ...client, uuid: 'u-41', accountRegistry: registry };
+    const dead = sample({ accountName: 'ACC 41', connected: false, status: 'Disconnected', runState: 'no_strategies', totalPnl: null });
+    const [entry] = buildTodayBriefing([withRegistry], {
+      liveByClientId: new Map([['u-41', [sample({ accountName: 'ACC 01' }), dead]]]),
+    });
+    expect(entry.live).toMatchObject({ total: 1, running: 1, disconnected: 0, attention: 0 });
+    expect(liveDotTone(entry.live)).toBe('running');
+    expect(liveCardTitle(entry.live)).not.toContain('not connected');
+
+    // Alone, it is no live claim at all: the lights say only retired accounts are sampled.
+    const [alone] = buildTodayBriefing([withRegistry], { liveByClientId: new Map([['u-41', [dead]]]) });
+    expect(alone.live).toBeNull();
+
+    // Still connected and running, it keeps its count, as it keeps its pill.
+    const [running] = buildTodayBriefing([withRegistry], {
+      liveByClientId: new Map([['u-41', [sample({ accountName: 'ACC 01' }), sample({ accountName: 'ACC 41' })]]]),
+    });
+    expect(running.live).toMatchObject({ total: 2, running: 2 });
+
+    // An account the registry does not hold keeps its count, disconnected or not.
+    const [unknown] = buildTodayBriefing([withRegistry], {
+      liveByClientId: new Map([['u-41', [sample({ accountName: 'ACC 01' }), sample({ accountName: 'ACC 77', connected: false })]]]),
+    });
+    expect(unknown.live).toMatchObject({ total: 2, disconnected: 1 });
+  });
+
   it('does not let the live half change a client\'s urgency', () => {
     /* Urgency drives the sort order and the "N clients critical" badge, both of
        which are about flags, tasks and the close. A tracker hiccup must not

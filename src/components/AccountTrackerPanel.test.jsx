@@ -7,6 +7,7 @@ import AccountTrackerPanel from './AccountTrackerPanel';
 import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
 import { resetAccountObservationSettingsCache } from './useAccountObservationSettings';
 import { ACCOUNT_TRACKER_STATES } from '../domain/autoCollectionFleet';
+import { historyWindowStart } from '../domain/disconnectedSince';
 import AutoCollectionCard from './AutoCollectionCard';
 
 /* WHAT A CAM MUST BE ABLE TO TELL APART WITHOUT LEAVING THE SCREEN.
@@ -1004,6 +1005,117 @@ describe('only the accounts expected to trade get a pill on the client page', ()
     act(() => { container.querySelector('.not-shown-toggle').click(); });
     expect(container.textContent).not.toMatch(/—|–| - /);
     for (const node of container.querySelectorAll('[title]')) expect(node.getAttribute('title')).not.toMatch(/—|–| - /);
+  });
+
+  /* The review's fixture: ACC 41 is marked Failed, and the VPS still sends it,
+   * a few minutes old, not connected, nothing loaded. The strip said "none has
+   * been sampled" over a folded line that named a sampled account. */
+  it('a VPS that sends only retired accounts: says so, with the folded line listing them, never "none has been sampled"', () => {
+    const dead = sample({ accountName: 'ACC 41', connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 });
+    const { container } = strip({ tracker: tracker({ accounts: [dead] }), accountRegistry: { 'ACC 41': { status: 'Failed' } } });
+    expect(container.querySelectorAll('.account-pill').length).toBe(0);
+    expect(container.querySelector('.account-tracker-head strong').textContent).toBe('Live accounts · Only retired accounts sampled');
+    expect(container.querySelector('.account-tracker-none').textContent).toBe('NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(container.textContent).not.toContain('none has been sampled');
+    const line = container.querySelector('.not-shown');
+    expect(line.querySelector('.not-shown-words').textContent).toBe('Not shown: 1 retired: 1 Failed. 1 still listed by NinjaTrader, disconnected.');
+    act(() => { line.querySelector('.not-shown-toggle').click(); });
+    expect([...line.querySelectorAll('.not-shown-list li')].map((item) => item.textContent)).toEqual(['ACC 41 Failed, still listed by NinjaTrader, disconnected']);
+  });
+
+  it('and with expected accounts nobody sampled, says it in the header over their pills', () => {
+    const dead = sample({ accountName: 'ACC 41', connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 });
+    const { container } = strip({ tracker: tracker({ accounts: [dead] }), accountRegistry: { 'ACC 41': { status: 'Failed' }, 'ACC 42': { status: 'Active' } } });
+    expect(names(container)).toEqual(['ACC 42: Never sampled']);
+    expect(container.querySelector('.account-tracker-head strong').textContent).toBe('Live accounts · Only retired accounts sampled');
+    // A strip with an expected account sampled says nothing of the kind.
+    cleanup();
+    const mixed = strip({ tracker: tracker({ accounts: [sample({ accountName: 'ACC 42' }), dead] }), accountRegistry: { 'ACC 41': { status: 'Failed' }, 'ACC 42': { status: 'Active' } } });
+    expect(mixed.container.querySelector('.account-tracker-head strong').textContent).toBe('Live accounts · 1 running');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * "DISCONNECTED SINCE 09:40" ON THE CLIENT PAGE STRIP.
+ *
+ * The same history and the same rule as the overviews: read only while a pill
+ * here is disconnected, once per tracker clock, from the viewer's midnight,
+ * and said in the pill's title and in its detail. The word stays short.
+ * ------------------------------------------------------------------------- */
+describe('since when an account has been disconnected, on the client page strip', () => {
+  afterEach(() => { cleanup(); resetClientLiveStrategiesCache(); resetAccountObservationSettingsCache(); });
+  const UUID = '33333333-3333-4333-8333-333333333333';
+  const dayStart = historyWindowStart(NOW).getTime();
+  const clock = (hours, minutes) => new Date(dayStart + (hours * 60 + minutes) * 60_000).toISOString();
+  const HISTORY = {
+    available: true,
+    rows: [
+      { clientId: UUID, deviceId: 'device-1', accountName: 'APEX-1', connected: true, firstSampledAt: clock(6, 30), lastSampledAt: clock(9, 30) },
+      { clientId: UUID, deviceId: 'device-1', accountName: 'APEX-1', connected: false, firstSampledAt: clock(9, 40), lastSampledAt: clock(10, 58) },
+    ],
+  };
+  function strip(props = {}) {
+    return render(<AccountTrackerPanel
+      clientUuid={UUID}
+      clientName="Cedar Row"
+      tracker={tracker({ accounts: [sample({ connected: false, status: 'ConnectionLost' })] })}
+      device={device()}
+      accountNames={['APEX-1']}
+      disableAutoRefresh
+      now={() => NOW}
+      loadStrategies={() => new Promise(() => {})}
+      loadObservationSettings={() => new Promise(() => {})}
+      {...props}
+    />);
+  }
+
+  it('reads today\'s history for this client once, and says it in the disconnected pill\'s title and detail', async () => {
+    const loadHistory = vi.fn(async () => HISTORY);
+    const { container } = strip({ loadHistory });
+    await waitFor(() => expect(loadHistory).toHaveBeenCalledTimes(1));
+    expect(loadHistory).toHaveBeenCalledWith({ clientIds: [UUID], since: new Date(dayStart).toISOString() });
+    const button = () => container.querySelector('.account-pill[data-account="APEX-1"] button');
+    await waitFor(() => expect(button().getAttribute('title')).toMatch(/^APEX-1: Disconnected since 09:40\. /));
+    expect(container.querySelector('.account-pill[data-account="APEX-1"] .account-pill-state').textContent).toBe('Disconnected');
+    act(() => { button().click(); });
+    expect(container.querySelector('.account-live-detail-since').textContent).toBe('Disconnected since 09:40');
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads nothing while no pill is disconnected', async () => {
+    const loadHistory = vi.fn(async () => HISTORY);
+    strip({ loadHistory, tracker: tracker({ accounts: [sample()] }) });
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(loadHistory).not.toHaveBeenCalled();
+  });
+
+  it('reads again when its own refresh moves the clock, and not otherwise', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    try {
+      const loadHistory = vi.fn(async () => HISTORY);
+      const api = { loadStatus: vi.fn(async () => ({ accountTracker: tracker({ accounts: [sample({ connected: false, status: 'ConnectionLost' })] }), device: device() })) };
+      strip({ loadHistory, api, disableAutoRefresh: false, refreshMs: 60_000 });
+      await vi.waitFor(() => expect(loadHistory).toHaveBeenCalledTimes(1));
+      // A re-render with the same clock reads nothing.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(loadHistory).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await vi.waitFor(() => expect(api.loadStatus).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(loadHistory).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says nothing when the history is not deployed or the read fails, and the pill stands', async () => {
+    const failing = vi.fn(async () => { throw new Error('account_live_sample_history: timeout'); });
+    const { container } = strip({ loadHistory: failing });
+    await waitFor(() => expect(failing).toHaveBeenCalled());
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(container.querySelector('.account-pill[data-account="APEX-1"] button').getAttribute('title')).toMatch(/^APEX-1: Disconnected\. /);
+    expect(container.textContent).not.toMatch(/timeout|could not/i);
   });
 });
 

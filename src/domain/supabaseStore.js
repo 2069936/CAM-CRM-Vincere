@@ -16,7 +16,7 @@ import {
 } from './closeSummary';
 import { createRequestGate } from './supabaseRetry';
 import { aggregateLogFamilyHistory } from './ninjaTraderLog';
-import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountBuckets';
+import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountObservationDefaults';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -1351,14 +1351,20 @@ export async function loadSupabaseAccountLiveSampleHistory({ clientIds = null, s
   if (scope) query = query.in('client_id', scope);
   const sinceIso = since instanceof Date ? since.toISOString() : (since || null);
   if (sinceIso) query = query.gte('last_sampled_at', sinceIso);
-  const result = await query.order('first_sampled_at', { ascending: true }).limit(5000);
+  /* NEWEST FIRST AT THE DATABASE, OLDEST FIRST IN THE ANSWER. The bound keeps
+   * a busy book's day to one request; asked oldest first, a day past it lost
+   * its NEWEST runs, which are what "Disconnected since" and the trail beside
+   * a pinned reading read first. Asked newest first, a cut falls on the oldest
+   * runs, and the rows are turned back so every caller walks them in run order
+   * as before. */
+  const result = await query.order('first_sampled_at', { ascending: false }).limit(5000);
   if (result?.error) {
     if (isMissingTrackerCloseReadings(result.error)) return { available: false, reason: 'not_deployed' };
     throw new Error(`account_live_sample_history: ${result.error.message}`);
   }
   return {
     available: true,
-    rows: (result?.data || []).filter((row) => row?.client_id && row?.account_name).map(mapAccountLiveSampleHistory),
+    rows: (result?.data || []).filter((row) => row?.client_id && row?.account_name).map(mapAccountLiveSampleHistory).reverse(),
   };
 }
 
