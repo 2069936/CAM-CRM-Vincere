@@ -136,3 +136,41 @@ export const VERDICT_TONES = Object.freeze({
   after_close: 'muted',
   tracker_no_figure: 'muted',
 });
+
+/* A CLIENT WHOSE VPS DOES NOT SAMPLE: today's close lists its accounts and
+ * every row pinned for that close is source 'none' with no later reading, the
+ * shape of a machine on an agent before 1.2.0. Fictional names. */
+export function noTrackerClient({ id, uuid = null, name, accounts = ['NT 01', 'NT 02'] }) {
+  const importUuid = `imp-${id}`;
+  const client = {
+    id,
+    ...(uuid ? { uuid } : {}),
+    name,
+    dailyImports: [dailyImport({
+      id: `di-${id}`,
+      uuid: importUuid,
+      clientId: id,
+      sourceSummary: { pnl_sources: { realized: accounts.length } },
+      snapshots: accounts.map((accountName, index) => snapshot(`snap-${id}-${index}`, accountName, 25 * (index + 1))),
+    })],
+  };
+  const readings = accounts.map((accountName, index) => reading({
+    id: `${id}-${index}`,
+    clientId: uuid || id,
+    dailyImportId: importUuid,
+    accountName,
+    source: 'none',
+    connectionName: null,
+    connected: null,
+    realizedPnl: null,
+    unrealizedPnl: null,
+    totalPnl: null,
+    strategyCount: null,
+    enabledStrategyCount: null,
+    runState: null,
+    sampledAt: null,
+    readingSince: null,
+    nextSampledAt: null,
+  }));
+  return { client, readings };
+}

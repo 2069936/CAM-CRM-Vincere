@@ -83,7 +83,9 @@ export function buildTrackerCloseFlag(row, { id = null } = {}) {
  * The onAddFlag the panels are wired with: (clientId, importId, flag).
  *
  * Everything is injected so this can be tested without a database, and so
- * App.jsx keeps passing its own setState and audit helper.
+ * App.jsx keeps passing its own setState and audit helper. The promise it
+ * returns REJECTS whenever no flag was written, after `onError` has been told:
+ * TrackerCloseTable reads that rejection to take back its "Flag added".
  */
 export function createTrackerCloseFlagAdder({
   setState = null,
@@ -99,9 +101,9 @@ export function createTrackerCloseFlagAdder({
       const error = new Error(
         `Adding a flag needs a client, an import and a message (got ${clientId || 'null'}, ${importId || 'null'}, ${flag?.message ? 'a message' : 'no message'}).`,
       );
-      if (onError) onError(error);
-      else throw error;
-      return null;
+      if (!onError) throw error;
+      onError(error);
+      return Promise.reject(error);
     }
     if (setState && patchState) setState((current) => patchState(current, clientId, importId, flag));
     return Promise.resolve()
@@ -124,8 +126,9 @@ export function createTrackerCloseFlagAdder({
         // never written must not stay in the queue as if it had been.
         if (setState && unpatchState) setState((current) => unpatchState(current, clientId, importId, flag.id));
         if (onError) onError(error);
-        else throw error;
-        return null;
+        // Still a rejection after onError: the cell that asked takes its
+        // "Flag added" back and says it could not.
+        throw error;
       });
   };
 }

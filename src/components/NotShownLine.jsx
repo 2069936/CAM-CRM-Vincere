@@ -16,6 +16,9 @@ import { useId, useState } from 'react';
  * aria-expanded, never a button inside a button), each beside its reason word
  * and with what the close saw of it one hover away. Nothing at all when every
  * account is expected: a new account is expected and lit, so it is never here.
+ *
+ * The tracker against the close folds its clients with no tracker reading the
+ * same way: a row there is a client name with its own `key` and no reason word.
  */
 export default function NotShownLine({ notShown = null, label = 'accounts not shown' }) {
   const [open, setOpen] = useState(false);
@@ -37,10 +40,14 @@ export default function NotShownLine({ notShown = null, label = 'accounts not sh
       {open ? (
         <ul id={listId} className="not-shown-list muted">
           {notShown.accounts.map((row) => (
-            <li key={row.accountName} title={row.detail} data-reason={row.reason}>
+            <li key={row.key || row.accountName} title={row.detail} data-reason={row.reason}>
               <span className="not-shown-name">{row.accountName}</span>
-              {' '}
-              <span className="not-shown-reason">{row.word}</span>
+              {row.word ? (
+                <>
+                  {' '}
+                  <span className="not-shown-reason">{row.word}</span>
+                </>
+              ) : null}
             </li>
           ))}
         </ul>

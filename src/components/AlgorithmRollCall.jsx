@@ -1,11 +1,11 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { loadSupabaseAlgorithmLive } from '../domain/supabaseStore';
-import { buildAlgorithmRollCall } from '../domain/algorithmRollCall';
+import { buildAlgorithmRollCall, rollCallScopeWords } from '../domain/algorithmRollCall';
 import { cycleClock } from '../domain/algorithmLiveComparison';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
 import { copyToClipboard } from '../lib/copyToClipboard';
 import RefreshNote from './RefreshNote';
-import useAlgorithmLiveRead from './useAlgorithmLiveRead';
+import useAlgorithmLiveRead, { algorithmLiveClientIds } from './useAlgorithmLiveRead';
 
 /* The first agent and add-on build that posts the position with the reading
  * (step 64). Only ever printed: the rows decide from the data whether a
@@ -32,24 +32,22 @@ export const COPIED_MS = 2000;
  * chip the pill and the drill down use; it is a question, never red, and the
  * word is beside it.
  *
- * READ ON THE SAME CADENCE AS THE COMPARISON PANEL, two minutes, by uuid, and
- * said out loud over the rows. The position and the trades come only from
+ * THE SAME READ AS THE COMPARISON PANEL (useAlgorithmLiveRead): two minutes,
+ * by uuid, said out loud over the rows, and one read for both panels when a
+ * CAM opens the comparison beside it. The position and the trades come only from
  * machines on agent 1.2.1 or newer; a 1.2.0 reading prints nothing of them.
  */
 export default function AlgorithmRollCall({
   clients = [],
   tracker = null,
-  bookWords = 'your clients',
+  scope = 'mine',
   load = loadSupabaseAlgorithmLive,
   refreshMs = LIVE_REFRESH_MS,
   now = () => new Date(),
   copy = null,
   copiedMs = COPIED_MS,
 }) {
-  const clientIds = useMemo(
-    () => (clients || []).map((client) => client?.uuid || client?.id).filter(Boolean),
-    [clients],
-  );
+  const clientIds = useMemo(() => algorithmLiveClientIds(clients), [clients]);
   const { data, error, reading, clock, retry } = useAlgorithmLiveRead({ clientIds, load, refreshMs, now });
   const view = useMemo(
     () => buildAlgorithmRollCall({ live: data, clients, tracker, now: clock }),
@@ -64,6 +62,7 @@ export default function AlgorithmRollCall({
     return () => clearTimeout(timer);
   }, [copied, copiedMs]);
   const baseId = useId();
+  const bookWords = rollCallScopeWords(scope);
   const copier = typeof copy === 'function' ? copy : copyToClipboard;
 
   if (error && !data) {

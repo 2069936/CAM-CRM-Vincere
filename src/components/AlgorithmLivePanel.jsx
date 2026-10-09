@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { loadSupabaseAlgorithmLive } from '../domain/supabaseStore';
 import {
   buildAlgorithmLiveComparison,
@@ -12,6 +12,8 @@ import {
   deskConfigDayFor,
   deskDayImportIds,
 } from '../domain/deskConfigOutliers';
+import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
+import useAlgorithmLiveRead, { algorithmLiveClientIds } from './useAlgorithmLiveRead';
 
 /**
  * The first agent and add-on build that sends per strategy readings. It matches
@@ -32,7 +34,10 @@ export const LIVE_STRATEGY_SAMPLE_VERSION = '1.2.0';
  *
  * IT LOADS ONLY WHILE IT IS OPEN. CollapsiblePanel renders its children only
  * when expanded, so this mounts on expand, reads, refreshes every two minutes,
- * and stops when the panel is collapsed.
+ * and stops when the panel is collapsed. The read is useAlgorithmLiveRead's,
+ * shared with the roll call: opened beside it on a CAM overview, the two
+ * panels make one read per cadence, and an answer the roll call already holds
+ * shows at once.
  *
  * THE WORDS. "Differs", never a verdict. The list at the top is questions about
  * where to look. No figure ever reads $0 for something nobody measured.
@@ -47,61 +52,15 @@ export default function AlgorithmLivePanel({
   onLogClientActivity = null,
   onAddClientTask = null,
   load = loadSupabaseAlgorithmLive,
-  refreshMs = 120_000,
+  refreshMs = LIVE_REFRESH_MS,
   now = () => new Date(),
 }) {
-  // The rows carry client_id, a uuid. A client's `id` is its legacy key when
-  // it has one, so scoping the read by `id` handed PostgREST strings that are
-  // not uuids and the whole panel read "could not read" on a real book.
-  const clientIds = useMemo(
-    () => (clients || []).map((client) => client?.uuid || client?.id).filter(Boolean).sort(),
-    [clients],
-  );
-  const scopeKey = clientIds.join(',');
-  const [data, setData] = useState(null);
-  const [error, setError] = useState('');
-  const [reading, setReading] = useState(true);
-  const [clock, setClock] = useState(() => now());
-
-  const [attempt, setAttempt] = useState(0);
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
-
-  useEffect(() => {
-    let live = true;
-    async function read() {
-      try {
-        const result = await load({ clientIds: scopeKey ? scopeKey.split(',') : [] });
-        if (!live) return;
-        /* While the newest cycle fills, keep the last complete one on screen and
-         * say a newer one is coming, rather than blanking a screen somebody is
-         * reading. The previous read's rows go with it, so desk and accounts are
-         * still from one cycle. */
-        setData((previous) => {
-          const filling = result?.available && result.desk?.filling;
-          const previousComplete = previous?.available && previous.desk?.cycleStart && !previous.desk.filling;
-          if (filling && previousComplete) return { ...previous, fillingCycleStart: result.desk.cycleStart };
-          return result;
-        });
-        setError('');
-      } catch (failure) {
-        if (live) setError(String(failure?.message || failure || 'failed'));
-      } finally {
-        if (live) {
-          setReading(false);
-          setClock(now());
-        }
-      }
-    }
-    read();
-    const timer = refreshMs ? setInterval(read, refreshMs) : null;
-    return () => {
-      live = false;
-      if (timer) clearInterval(timer);
-    };
-    // `now` is a clock, not a dependency: a new function each render must not
-    // turn the two minute refresh into a refresh every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load, scopeKey, refreshMs, attempt]);
+  // THE READ IS useAlgorithmLiveRead's, the same one the roll call makes: by
+  // uuid, the last complete cycle kept while the next one fills, the clock on
+  // success only, and ONE read per cadence for the same clients however many
+  // panels show it.
+  const clientIds = useMemo(() => algorithmLiveClientIds(clients), [clients]);
+  const { data, error, reading, clock, retry } = useAlgorithmLiveRead({ clientIds, load, refreshMs, now });
 
   /* THE SETTINGS BESIDE THE NUMBER come from a close, through the same desk
    * comparison the manager's configuration panel uses. For a CAM the consensus

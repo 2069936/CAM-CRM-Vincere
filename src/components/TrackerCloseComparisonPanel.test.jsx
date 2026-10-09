@@ -21,7 +21,7 @@ vi.mock('../domain/supabaseStore', async (importOriginal) => ({
 import TrackerCloseComparisonPanel from './TrackerCloseComparisonPanel';
 import AutoCollectionCard from './AutoCollectionCard';
 import { buildTrackerClosePanel } from '../domain/trackerClosePanel';
-import { ANSWER, CLIENT, DATE, SETTINGS, VERDICT_TONES, allVerdictsClose, dailyImport, history } from './trackerCloseFixtures.test-helpers';
+import { ANSWER, CLIENT, DATE, SETTINGS, VERDICT_TONES, allVerdictsClose, dailyImport, history, noTrackerClient } from './trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
  * THE TRACKER AGAINST THE CLOSE, ON THE CLIENT PAGE, AS A CAM READS IT.
@@ -112,6 +112,28 @@ describe('the rows', () => {
     expect(container.querySelector('.live-refresh')).not.toBeNull();
   });
 
+  it('says the tolerance is the default when the settings could not be read, and why, one hover away', () => {
+    const { container } = show({ answer: { ...ANSWER, settings: null } });
+    const header = container.querySelector('.tracker-close-header-words');
+    expect(text(header)).toMatch(/^Close captured \d\d:\d\d, compared \d\d:\d\d, tolerance \$5 \(default\)$/);
+    expect(header.getAttribute('title')).toBe(
+      'Tolerance per account is the larger of $5 and 2% of the close figure. The database settings could not be read, so these are the defaults.');
+    expect(text(container.querySelector('.tracker-close-head'))).toMatch(/tolerance \$5 \(default\)\./);
+  });
+
+  it('says a client whose VPS does not sample yet has no tracker reading, and lists no account as close only', () => {
+    const pine = noTrackerClient({ id: 'c-pine', uuid: 'pine-uuid', name: 'Lone Pine', accounts: ['LP 01', 'LP 02', 'LP 03'] });
+    const view = buildTrackerClosePanel({ client: pine.client, dailyImport: pine.client.dailyImports[0], date: DATE, answer: { available: true, readings: pine.readings, settings: SETTINGS } });
+    const { container } = render(<TrackerCloseComparisonPanel view={view} read={{ clock: NOW, error: null, reading: false, retry: vi.fn() }} clientId="c-pine" importId="di-c-pine" refreshMs={0} onAddFlag={vi.fn()} />);
+    expect(text(container.querySelector('.tracker-close-no-tracker'))).toBe(
+      "This client's VPS does not sample yet, so there is no tracker reading to compare. It needs agent 1.2.0 or newer.");
+    expect(text(container.querySelector('.tracker-close-head'))).toContain('No tracker reading for this close.');
+    expect(container.querySelector('.tracker-close-table')).toBeNull();
+    expect(container.querySelectorAll('.tracker-close-verdict').length).toBe(0);
+    expect(text(container)).not.toContain('Close only');
+    expect(container.querySelector('.tracker-close-flag')).toBeNull();
+  });
+
   it('names a scheduled capture time, since a manual close has no capture of its own', () => {
     const scheduled = { ...ANSWER, readings: ANSWER.readings.map((row) => ({ ...row, closeTimeBasis: 'scheduled' })) };
     const { container } = show({ answer: scheduled });
@@ -200,6 +222,42 @@ describe('"Add flag", confirmed inline', () => {
     expect(text(differs.querySelector('.tracker-close-flag-added'))).toBe('Flag added');
     expect(differs.querySelector('.tracker-close-flag')).toBeNull();
     expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it('takes "Flag added" back when the write is refused, and says it could not, inline', async () => {
+    let refuse;
+    const onAddFlag = vi.fn(() => new Promise((resolve, reject) => { refuse = () => reject(new Error('insert refused')); }));
+    const { container } = show({}, { onAddFlag });
+    const [differs] = rowsOf(container);
+    act(() => { differs.querySelector('.tracker-close-flag').click(); });
+    act(() => { differs.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    expect(onAddFlag).toHaveBeenCalledTimes(1);
+    // Said at once, while the write is out.
+    expect(text(differs.querySelector('.tracker-close-flag-added'))).toBe('Flag added');
+    await act(async () => { refuse(); });
+    expect(differs.querySelector('.tracker-close-flag-added')).toBeNull();
+    expect(text(differs.querySelector('.tracker-close-flag'))).toBe('Add flag');
+    const status = differs.querySelector('.tracker-close-actions [role="status"]');
+    expect(text(status)).toBe('Could not add the flag.');
+    expect(status.className).toContain('tracker-close-flag-failed');
+    // Another try clears the sentence, and a write that lands says Flag added for good.
+    onAddFlag.mockImplementation(() => Promise.resolve({ id: 'f-1' }));
+    act(() => { differs.querySelector('.tracker-close-flag').click(); });
+    expect(differs.querySelector('.tracker-close-flag-failed')).toBeNull();
+    act(() => { differs.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    await act(async () => {});
+    expect(text(differs.querySelector('.tracker-close-flag-added'))).toBe('Flag added');
+    expect(differs.querySelector('.tracker-close-flag-failed')).toBeNull();
+  });
+
+  it('takes "Flag added" back when onAddFlag throws before it returns', () => {
+    const onAddFlag = vi.fn(() => { throw new Error('no import'); });
+    const { container } = show({}, { onAddFlag });
+    const [differs] = rowsOf(container);
+    act(() => { differs.querySelector('.tracker-close-flag').click(); });
+    act(() => { differs.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    expect(differs.querySelector('.tracker-close-flag-added')).toBeNull();
+    expect(text(differs.querySelector('.tracker-close-flag-failed'))).toBe('Could not add the flag.');
   });
 
   it('cancel puts the button back and writes nothing, and the other rows carry their own titles', () => {
@@ -334,7 +392,12 @@ describe('the words and the styles', () => {
         for (const name of String(node.getAttribute('class')).split(/\s+/)) if (name.startsWith('tracker-close')) seen.add(name);
       }
     };
-    const states = [{}, { dailyImport: null }, { answer: { available: false, reason: 'not_deployed' } }, { answer: null, error: 'boom' }, { error: 'boom' }, { answer: { available: true, readings: [], settings: SETTINGS } }];
+    const unsampled = noTrackerClient({ id: 'c-pine', name: 'Lone Pine' });
+    const states = [
+      {}, { dailyImport: null }, { answer: { available: false, reason: 'not_deployed' } }, { answer: null, error: 'boom' }, { error: 'boom' },
+      { answer: { available: true, readings: [], settings: SETTINGS } },
+      { client: unsampled.client, dailyImport: unsampled.client.dailyImports[0], answer: { available: true, readings: unsampled.readings, settings: SETTINGS } },
+    ];
     for (const over of states) {
       const { container, unmount } = show(over);
       collect(container);
@@ -351,14 +414,21 @@ describe('the words and the styles', () => {
       collect(container);
       unmount();
     }
+    // A refused write: the cell says so beside the button.
+    const refused = show({}, { onAddFlag: vi.fn(() => { throw new Error('refused'); }) });
+    act(() => { refused.container.querySelector('.tracker-close-flag').click(); });
+    act(() => { refused.container.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    collect(refused.container);
+    refused.unmount();
     expect([...seen]).toEqual(expect.arrayContaining([
       'tracker-close', 'tracker-close-head', 'tracker-close-header-words', 'tracker-close-source', 'tracker-close-summary',
       'tracker-close-empty', 'tracker-close-failed', 'tracker-close-table-wrap', 'tracker-close-table', 'tracker-close-row',
       'tracker-close-toggle', 'tracker-close-account', 'tracker-close-connection', 'tracker-close-figure', 'tracker-close-figure-label',
       'tracker-close-sampled', 'tracker-close-absent', 'tracker-close-spark', 'tracker-close-spark-capture', 'tracker-close-delta',
       'tracker-close-verdict', 'tracker-close-sentence', 'tracker-close-flag', 'tracker-close-flag-confirm', 'tracker-close-flag-confirm-yes',
-      'tracker-close-flag-cancel', 'tracker-close-flag-added', 'tracker-close-detail', 'tracker-close-strategies', 'tracker-close-strategy',
+      'tracker-close-flag-cancel', 'tracker-close-flag-added', 'tracker-close-flag-failed', 'tracker-close-detail', 'tracker-close-strategies', 'tracker-close-strategy',
       'tracker-close-strategy-instrument', 'tracker-close-strategy-moved', 'tracker-close-strategy-words', 'tracker-close-strategies-empty',
+      'tracker-close-no-tracker',
     ]));
     for (const name of seen) {
       expect(css, name).toMatch(new RegExp(`\\.${name}(?![\\w-])`));

@@ -26,6 +26,8 @@
 //
 // Pure: no React, no Supabase.
 
+import { cycleClock } from './algorithmLiveComparison';
+
 /** The nine verdicts, in the order they are decided. The first that applies wins. */
 export const VERDICTS = Object.freeze([
   'tracker_only',
@@ -125,13 +127,13 @@ function minutesWord(minutes) {
   return minutes === 1 ? '1 minute' : `${minutes} minutes`;
 }
 
-function clock(value) {
-  const at = ms(value);
-  if (at === null) return 'an unknown time';
-  const date = new Date(at);
-  const hh = String(date.getUTCHours()).padStart(2, '0');
-  const mm = String(date.getUTCMinutes()).padStart(2, '0');
-  return `${hh}:${mm} UTC`;
+/* A clock in a sentence, through the formatter the caller hands in. The
+ * default is cycleClock, "HH:MM" in the viewer's own clock, the formatter the
+ * panel header uses (src/domain/trackerClosePanel.js), so a verdict sentence
+ * and the header beside it never print the same instant in two zones. */
+function clockWords(format, value) {
+  if (ms(value) === null) return 'an unknown time';
+  return format(value) || 'an unknown time';
 }
 
 /* ── Settings and tolerance ──────────────────────────────────────────────── */
@@ -304,10 +306,10 @@ function closeSide(snapshot) {
   };
 }
 
-function decide({ tracker, close, capturedAt, staleSeconds, tolerance }) {
+function decide({ tracker, close, capturedAt, staleSeconds, tolerance, clock }) {
   if (tracker && tracker.source !== 'none' && !close) {
     return ['tracker_only',
-      `The tracker saw this account at ${clock(tracker.sampledAt)} but the close does not list it.`];
+      `The tracker saw this account at ${clockWords(clock, tracker.sampledAt)} but the close does not list it.`];
   }
   if (!tracker || tracker.source === 'none') {
     if (tracker?.nextSampledAt) {
@@ -349,12 +351,12 @@ function decide({ tracker, close, capturedAt, staleSeconds, tolerance }) {
     `Tracker realized ${formatMoney(tracker.realized)} differs from the close ${formatMoney(closeRealized)} by ${formatMoney(Math.abs(delta))}, beyond the ${formatMoney(tolerance)} tolerance.`];
 }
 
-function accountRow({ accountName, reading, snapshot, closeStrategies, settings, capturedAt, cutoffMs }) {
+function accountRow({ accountName, reading, snapshot, closeStrategies, settings, capturedAt, cutoffMs, clock }) {
   const tracker = trackerSide(reading);
   const close = closeSide(snapshot);
   const staleSeconds = settings.staleSeconds;
   const tolerance = matchTolerance(close?.realized ?? null, settings);
-  const [verdict, sentence] = decide({ tracker, close, capturedAt, staleSeconds, tolerance });
+  const [verdict, sentence] = decide({ tracker, close, capturedAt, staleSeconds, tolerance, clock });
 
   const delta = tracker && close && tracker.realized !== null && close.realized !== null
     ? cents(tracker.realized - close.realized)
@@ -410,6 +412,8 @@ function accountRow({ accountName, reading, snapshot, closeStrategies, settings,
  * @param {object[]} input.strategySnapshots strategy_snapshots rows of that import.
  * @param {object} [input.pnlSources] daily_imports.source_summary.pnl_sources.
  * @param {object} [input.settings] the five tunables, mapped; defaults otherwise.
+ * @param {Function} [input.clock] value to "HH:MM" for the sentences; the
+ *   panel hands the formatter its header uses, cycleClock by default.
  * @returns {{available: boolean, rows: object[], summary: object}}
  */
 export function compareTrackerToClose({
@@ -418,6 +422,7 @@ export function compareTrackerToClose({
   strategySnapshots = [],
   pnlSources = null,
   settings = null,
+  clock = cycleClock,
 } = {}) {
   const resolved = resolveComparisonSettings(settings);
   const pinned = (Array.isArray(readings) ? readings : []).filter((row) => row && text(row.accountName));
@@ -489,6 +494,7 @@ export function compareTrackerToClose({
       settings: effective,
       capturedAt,
       cutoffMs,
+      clock,
     }));
   }
   rows.sort((a, b) => {

@@ -4,7 +4,7 @@ import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TrackerCloseOverview from './TrackerCloseOverview';
 import { buildTrackerCloseOverview } from '../domain/trackerClosePanel';
-import { CLIENT, DATE, READINGS, SETTINGS, dailyImport, reading, snapshot } from './trackerCloseFixtures.test-helpers';
+import { CLIENT, DATE, READINGS, SETTINGS, dailyImport, noTrackerClient, reading, snapshot } from './trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
  * THE OVERVIEW: ONE LINE PER CLIENT, WORST FIRST, THE TABLE BEHIND A CLICK.
@@ -48,7 +48,9 @@ describe('the lines', () => {
     expect(lines[0].className).toContain('attention');
     expect(lines[1].className).not.toContain('attention');
     expect(lines[2].className).toContain('state-no_close');
-    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 3 clients asks for a look.');
+    // Counted over the clients the tracker read: Quiet Pond has no close yet.
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 2 clients with a tracker asks for a look.');
+    expect(container.querySelector('.tracker-close-no-tracker')).toBeNull();
     expect(container.querySelector('.live-refresh')).not.toBeNull();
   });
 
@@ -121,7 +123,7 @@ describe('the lines', () => {
     ]);
     expect(lines.slice(0, 3).every((line) => line.className.includes('attention'))).toBe(true);
     expect(lines[3].className).not.toContain('attention');
-    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('3 of 5 clients ask for a look.');
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('3 of 4 clients with a tracker ask for a look.');
   });
 
   it('names a close pinned after this session loaded, and the one with no reading pinned', () => {
@@ -149,7 +151,72 @@ describe('the lines', () => {
     ]);
     expect(text(lines[3].querySelector('.tracker-close-line-words'))).toBe('Reading the close.');
     expect(onNeedClose).toHaveBeenCalledWith(['imp-s']);
-    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 5 clients asks for a look.');
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 2 clients with a tracker asks for a look.');
+  });
+});
+
+describe('the clients whose VPS does not sample yet', () => {
+  /* Production: 70 of 80 clients with pinned rows had no tracker reading at all
+   * for the close. They are one folded line under the list, not a line each,
+   * and the header counts the clients with a tracker. */
+  const pine = noTrackerClient({ id: 'c-pine', uuid: 'pine-uuid', name: 'Lone Pine', accounts: ['LP 01', 'LP 02', 'LP 03'] });
+  const creek = noTrackerClient({ id: 'act-1700000000-creek', name: 'Dry Creek', accounts: ['DC 01'] });
+  const withFold = () => show({
+    clients: [quiet, creek.client, maple, pine.client, northwind],
+    answer: { ...BOOK_ANSWER, readings: [...BOOK_ANSWER.readings, ...pine.readings, ...creek.readings] },
+  });
+
+  it('lists only the clients with a tracker (and the ones with no close), and counts only the ones with a tracker', () => {
+    const { container } = withFold();
+    expect(linesOf(container).map((line) => line.dataset.clientId)).toEqual([CLIENT.id, 'c-maple', 'c-quiet']);
+    expect(container.querySelector('.tracker-close-line[data-client-id="c-pine"]')).toBeNull();
+    expect(text(container)).not.toContain('Lone Pine: ');
+    expect(text(container)).not.toMatch(/3 close only/);
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 2 clients with a tracker asks for a look.');
+  });
+
+  it('folds them into ONE muted line under the list, the names behind a Show toggle', () => {
+    const { container } = withFold();
+    const fold = container.querySelector('.tracker-close-no-tracker');
+    expect(fold).not.toBeNull();
+    // Under the list, not among the lines.
+    expect(container.querySelector('.tracker-close-lines').compareDocumentPosition(fold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fold.closest('.tracker-close-lines')).toBeNull();
+    expect(text(fold.querySelector('.not-shown-words'))).toBe(
+      '2 clients have no tracker reading for this close. Their VPS does not sample yet, which needs agent 1.2.0 or newer.');
+    expect(fold.querySelector('.not-shown-words').className).toContain('muted');
+    const toggle = fold.querySelector('button.not-shown-toggle');
+    expect(toggle.textContent).toBe('Show');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.getAttribute('aria-label')).toBe('Show clients with no tracker reading');
+    expect(fold.querySelector('.not-shown-list')).toBeNull();
+    act(() => { toggle.click(); });
+    expect(toggle.textContent).toBe('Hide');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const list = fold.querySelector('.not-shown-list');
+    expect(list.className).toContain('muted');
+    expect(toggle.getAttribute('aria-controls')).toBe(list.id);
+    expect([...list.querySelectorAll('.not-shown-name')].map((node) => node.textContent)).toEqual(['Dry Creek', 'Lone Pine']);
+    // A name, nothing else: no reason word, no button, nothing to open.
+    expect(list.querySelector('.not-shown-reason')).toBeNull();
+    expect(list.querySelector('button')).toBeNull();
+    act(() => { toggle.click(); });
+    expect(fold.querySelector('.not-shown-list')).toBeNull();
+  });
+
+  it('a book where no client has a tracker shows only the folded line, no count and no list', () => {
+    const { container } = show({ clients: [pine.client, creek.client], answer: { available: true, readings: [...pine.readings, ...creek.readings], settings: SETTINGS } });
+    expect(container.querySelector('.tracker-close-overview-summary')).toBeNull();
+    expect(container.querySelector('.tracker-close-lines')).toBeNull();
+    expect(text(container.querySelector('.tracker-close-no-tracker .not-shown-words'))).toMatch(/^2 clients have no tracker reading for this close\./);
+  });
+
+  it('a book with no close yet and one client with no tracker is not the no close sentence', () => {
+    const { container } = show({ clients: [quiet, creek.client], answer: { available: true, readings: creek.readings, settings: SETTINGS } });
+    expect(text(container)).not.toContain('No close yet today for any of');
+    expect(linesOf(container).map((line) => line.dataset.clientId)).toEqual(['c-quiet']);
+    expect(text(container.querySelector('.tracker-close-no-tracker .not-shown-words'))).toBe(
+      '1 client has no tracker reading for this close. Its VPS does not sample yet, which needs agent 1.2.0 or newer.');
   });
 });
 
@@ -178,7 +245,9 @@ describe('the empty states and the styles', () => {
   it('has a rule for every class, no dash as punctuation, nothing red', () => {
     const css = readFileSync('src/index.css', 'utf8');
     const seen = new Set();
-    for (const options of [{}, { answer: { available: false, reason: 'not_deployed' } }, { answer: null, error: 'boom' }]) {
+    const pine = noTrackerClient({ id: 'c-pine', name: 'Lone Pine' });
+    const folded = { clients: [...BOOK, pine.client], answer: { ...BOOK_ANSWER, readings: [...BOOK_ANSWER.readings, ...pine.readings] } };
+    for (const options of [{}, { answer: { available: false, reason: 'not_deployed' } }, { answer: null, error: 'boom' }, folded]) {
       const { container, unmount } = show(options);
       const first = container.querySelector('.tracker-close-line-toggle');
       if (first) act(() => { first.click(); });
@@ -191,7 +260,7 @@ describe('the empty states and the styles', () => {
     expect([...seen]).toEqual(expect.arrayContaining([
       'tracker-close-overview', 'tracker-close-overview-head', 'tracker-close-overview-summary', 'tracker-close-lines', 'tracker-close-line',
       'tracker-close-line-head', 'tracker-close-line-toggle', 'tracker-close-line-name', 'tracker-close-line-words', 'tracker-close-line-open',
-      'tracker-close-line-table', 'tracker-close-empty',
+      'tracker-close-line-table', 'tracker-close-empty', 'tracker-close-no-tracker',
     ]));
     for (const name of seen) expect(css, name).toMatch(new RegExp(`\\.${name}(?![\\w-])`));
     const source = readFileSync('src/components/TrackerCloseOverview.jsx', 'utf8');

@@ -88,6 +88,12 @@ describe('the state patch', () => {
 describe('createTrackerCloseFlagAdder', () => {
   const flag = { id: 'f-new', type: TRACKER_CLOSE_FLAG_TYPE, severity: 'Warning', accountName: 'ACC 01', message: 'Tracker and close differ on ACC 01 by $140', status: 'Open' };
 
+  it('resolves with the written flag when the write succeeds', async () => {
+    const insertFlag = vi.fn(() => Promise.resolve({ ...flag, written: true }));
+    const add = createTrackerCloseFlagAdder({ insertFlag, onError: vi.fn() });
+    await expect(add('client-1', 'imp-1', flag)).resolves.toMatchObject({ id: 'f-new', written: true });
+  });
+
   it('patches state, inserts the one flag and audits it with its source', async () => {
     const insertFlag = vi.fn(() => Promise.resolve({ ...flag }));
     const audit = vi.fn();
@@ -115,7 +121,8 @@ describe('createTrackerCloseFlagAdder', () => {
     const patchState = vi.fn((state) => ({ ...state, patched: true }));
     const unpatchState = vi.fn((state) => ({ ...state, patched: false }));
     const add = createTrackerCloseFlagAdder({ setState, patchState, unpatchState, insertFlag, onError });
-    await add('client-1', 'imp-1', flag);
+    // Rejects after onError, so the cell that asked can take back its "Flag added".
+    await expect(add('client-1', 'imp-1', flag)).rejects.toThrow('boom');
     expect(patchState).toHaveBeenCalledTimes(1);
     expect(unpatchState).toHaveBeenCalledWith({ clients: [] }, 'client-1', 'imp-1', 'f-new');
     expect(calls).toEqual([{ clients: [], patched: true }, { clients: [], patched: false }]);
@@ -123,13 +130,13 @@ describe('createTrackerCloseFlagAdder', () => {
     expect(onError.mock.calls[0][0].message).toBe('boom');
   });
 
-  it('refuses a call missing a client, an import or a message instead of failing silently', () => {
+  it('refuses a call missing a client, an import or a message instead of failing silently', async () => {
     const insertFlag = vi.fn();
     const onError = vi.fn();
     const add = createTrackerCloseFlagAdder({ insertFlag, onError });
-    add(null, 'imp-1', flag);
-    add('client-1', null, flag);
-    add('client-1', 'imp-1', { ...flag, message: '' });
+    await expect(add(null, 'imp-1', flag)).rejects.toThrow(/client/);
+    await expect(add('client-1', null, flag)).rejects.toThrow(/import/);
+    await expect(add('client-1', 'imp-1', { ...flag, message: '' })).rejects.toThrow(/message/);
     expect(insertFlag).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(3);
     expect(() => createTrackerCloseFlagAdder({ insertFlag })('x', null, flag)).toThrow(/import/);

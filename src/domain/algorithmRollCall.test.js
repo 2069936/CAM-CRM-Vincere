@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAlgorithmRollCall, rollCallChatLine, signedDollars } from './algorithmRollCall';
+import { ROLL_CALL_SCOPE_WORDS, buildAlgorithmRollCall, rollCallChatLine, rollCallScopeWords, signedDollars } from './algorithmRollCall';
 import { NO_CONNECTION_WORD } from './accountPill';
 
 /* ------------------------------------------------------------------------- *
@@ -390,5 +390,16 @@ describe('the states before ready', () => {
     const view = roll();
     expect(view.cycleAgeSeconds).toBe(180);
     expect(view.settings.cycleSeconds).toBe(600);
+  });
+});
+
+describe('whose clients the roll call says it reads', () => {
+  it('has one set of words per scope, and an unknown scope reads as the viewer\'s own book', () => {
+    expect(ROLL_CALL_SCOPE_WORDS).toEqual({ mine: 'your clients', book: "this book's clients", desk: "the desk's clients" });
+    expect(rollCallScopeWords('desk')).toBe("the desk's clients");
+    expect(rollCallScopeWords('book')).toBe("this book's clients");
+    expect(rollCallScopeWords('mine')).toBe('your clients');
+    expect(rollCallScopeWords(undefined)).toBe('your clients');
+    expect(rollCallScopeWords('toString')).toBe('your clients');
   });
 });

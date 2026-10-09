@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AlgorithmRollCall from './AlgorithmRollCall';
+import { cycleClock } from '../domain/algorithmLiveComparison';
 
 /* ------------------------------------------------------------------------- *
  * THE ROLL CALL, AS THE CAM READS IT AND PASTES IT.
@@ -135,6 +136,23 @@ describe('one row per algorithm', () => {
     expect(head).toContain('Position and trades arrive from machines on agent 1.2.1 or newer.');
     expect(container.querySelector('.live-refresh')).not.toBeNull();
   });
+
+  it('names whose clients it reads by scope: the CAM\'s own, a book a Manager opened, the whole desk', async () => {
+    const intro = (container) => text(container.querySelector('.algorithm-rollcall-head'));
+    const mine = await show();
+    expect(intro(mine.container)).toMatch(/^One row per algorithm your clients run, cycle \d\d:\d\d:/);
+    mine.unmount();
+    const book = await show({ scope: 'book' });
+    expect(intro(book.container)).toMatch(/^One row per algorithm this book's clients run, cycle \d\d:\d\d:/);
+    book.unmount();
+    const desk = await show({ scope: 'desk' });
+    expect(intro(desk.container)).toMatch(/^One row per algorithm the desk's clients run, cycle \d\d:\d\d:/);
+    expect(intro(desk.container)).not.toContain('book');
+    desk.unmount();
+    // The empty cycle says the same words.
+    const empty = await show({ scope: 'desk', load: async () => live({ rows: [] }) });
+    expect(text(empty.container)).toMatch(/None of the desk's clients ran an algorithm in the \d\d:\d\d cycle\./);
+  });
 });
 
 describe('the instances behind a click, one row open at a time', () => {
@@ -262,6 +280,36 @@ describe('the states before the rows', () => {
     expect(text(failed.container)).not.toMatch(/\$/);
     await act(async () => { fireEvent.click(screen.getByText('Try again')); });
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('reopened an hour later in the filling window, says the new cycle is coming in and never offers the old one as the last complete', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(NOW);
+    const FILLING = '2026-10-08T15:20:00.000Z';
+    let release;
+    let call = 0;
+    const load = vi.fn(() => {
+      call += 1;
+      if (call === 1) return Promise.resolve(live());
+      return new Promise((resolve) => { release = () => resolve(live({ rows: [], cohorts: [], desk: { filling: true, cycleStart: FILLING } })); });
+    });
+    const props = { clients: CLIENTS, tracker: TRACKER, load, refreshMs: 120_000, now: () => new Date(), copy: vi.fn(async () => true) };
+    const first = render(<AlgorithmRollCall {...props} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(text(first.container)).toContain(`cycle ${cycleClock(CYCLE)}`);
+    first.unmount();
+
+    vi.setSystemTime(new Date('2026-10-08T15:20:40.000Z'));
+    const again = render(<AlgorithmRollCall {...props} />);
+    // While the new read is on its way, the hour old cycle is not on screen.
+    expect(text(again.container)).not.toContain(cycleClock(CYCLE));
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
+    expect(load).toHaveBeenCalledTimes(2);
+    const words = text(again.container);
+    expect(words).toContain(`The ${cycleClock(FILLING)} cycle is still coming in. The roll call shows once it is complete.`);
+    expect(words).not.toContain('so this shows the last complete one');
+    expect(words).not.toContain('Strategies are switched off after the close');
+    expect(words).not.toContain(cycleClock(CYCLE));
   });
 
   it('scopes the read by uuid, never by the legacy key, and re-reads on its cadence', async () => {
