@@ -1,21 +1,51 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Activity } from 'lucide-react';
 import {
   LEGEND,
+  LIVE_ACCOUNTS_VIEW_KEY,
   LIVE_SAMPLING_BUILD,
   agedWords,
   buildFleetStatusLights,
+  disconnectedClientKeys,
+  parseLiveAccountsView,
 } from '../domain/fleetStatusLights';
-import { CLOSE_DIFFERS_WORD, withCloseDiffers, withDiffers } from '../domain/accountPill';
+import { CLOSE_DIFFERS_WORD, withCloseDiffers, withDiffers, withDisconnectedSince } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
+import { disconnectedSinceByClient } from '../domain/disconnectedSince';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
-import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import {
+  loadSupabaseAccountLiveSampleHistory,
+  loadSupabaseAccountObservationSettings,
+  loadSupabaseClientLiveStrategies,
+} from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
 import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
 import useAccountObservationSettings from './useAccountObservationSettings';
 import useClientLiveStrategies from './useClientLiveStrategies';
+import useDisconnectedSince from './useDisconnectedSince';
+
+/* The remembered view, per browser. Storage can be missing, full or refused
+ * (a private window, blocked site data): every read and write is guarded, and
+ * a read that fails is the default, Compact. */
+function readStoredView() {
+  try {
+    return parseLiveAccountsView(window.localStorage.getItem(LIVE_ACCOUNTS_VIEW_KEY));
+  } catch {
+    return parseLiveAccountsView(null);
+  }
+}
+
+function writeStoredView(view) {
+  try {
+    window.localStorage.setItem(LIVE_ACCOUNTS_VIEW_KEY, view);
+  } catch {
+    // A convenience, not state: the panel works the same without it.
+  }
+}
+
+const VIEW_WORDS = Object.freeze({ compact: 'Compact', tiles: 'Tiles' });
 
 /**
  * THE STATUS LIGHT, FIRST, FOR EVERY CLIENT IN THE BOOK.
@@ -56,6 +86,23 @@ import useClientLiveStrategies from './useClientLiveStrategies';
  * THREE HONEST EMPTY STATES, each a different thing to do: step 55 not run
  * (nothing is recorded), nothing sampled yet (install the build that samples),
  * and a client nothing has reached (open it: the client page has the device).
+ *
+ * COMPACT BY DEFAULT, THE TILES ONE CLICK AWAY. Pedro's words: the tiles are
+ * the expanded view; summarised, one circle per client with the same colours,
+ * so every client fits at once without scrolling. Compact is one bulb per
+ * client in its tile's worst tone, the name and "5 of 6 live", worst first in
+ * the tiles' own order; a bulb is a button (aria-expanded, aria-controls) and
+ * opens THAT client's tile, the same component with its pills, its sentence,
+ * its folded line and its pill detail, in a drawer under the bulbs. One open at
+ * a time; the open bulb, Escape or Close shut it. "Compact" and "Tiles" in the
+ * header switch between the two and the choice is remembered per browser.
+ * The Manager's desk bulbs (DeskClientLights) are the same vocabulary: the
+ * same light, the same size, the same drawer under the grid.
+ *
+ * SINCE WHEN IT IS DISCONNECTED. For the clients with a disconnected pill, and
+ * only for them, today's tracker history is read once per tracker read
+ * (useDisconnectedSince) and the pill's title and its detail say
+ * "Disconnected since 09:40". The pill's word stays "Disconnected".
  */
 export default function FleetStatusLights({
   clients = [],
@@ -70,6 +117,7 @@ export default function FleetStatusLights({
   // read (step 66). A pill whose verdict asks for a look carries the amber
   // "Close differs" badge in words. Null says nothing about anything.
   closeVerdicts = null,
+  loadHistory = loadSupabaseAccountLiveSampleHistory,
 }) {
   // The clock is the caller's (the tracker hook moves it on every successful
   // read). A caller without one gets the mount time, held, never a fresh
@@ -90,6 +138,48 @@ export default function FleetStatusLights({
     for (const client of clients || []) if (client?.id) map.set(client.id, client);
     return map;
   }, [clients]);
+
+  const [mode, setMode] = useState(readStoredView);
+  const [open, setOpen] = useState(null);
+  const drawerId = useId();
+  const compact = mode === 'compact';
+  const openTile = compact && open ? view.tiles.find((tile) => tile.clientId === open) || null : null;
+  const drawerOpen = openTile !== null;
+
+  // Escape shuts the drawer; listened for only while one is open.
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    function onKey(event) {
+      if (event.key === 'Escape') setOpen(null);
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [drawerOpen]);
+
+  /* "Disconnected since": today's history for the clients with a disconnected
+   * pill, read again on every tracker read; nobody disconnected reads nothing. */
+  const disconnectedKeys = useMemo(() => disconnectedClientKeys(view.tiles), [view.tiles]);
+  const history = useDisconnectedSince({ clientIds: disconnectedKeys, clock: view.at.getTime(), load: loadHistory });
+  const sinceByClient = useMemo(() => disconnectedSinceByClient(history, { now: view.at }), [history, view.at]);
+
+  function chooseMode(next) {
+    setOpen(null);
+    setMode(next);
+    writeStoredView(next);
+  }
+
+  function tileProps(tile) {
+    return {
+      tile,
+      client: clientsById.get(tile.clientId) || { id: tile.clientId, uuid: tile.clientKey, name: tile.clientName },
+      now: view.at,
+      onSelectClient,
+      refreshMs,
+      loadStrategies,
+      closeVerdicts: closeVerdicts?.get(tile.clientKey) || closeVerdicts?.get(tile.clientId) || null,
+      since: sinceByClient.get(tile.clientKey) || sinceByClient.get(tile.clientId) || null,
+    };
+  }
 
   if (view.kind === 'unavailable') {
     return (
@@ -134,7 +224,7 @@ export default function FleetStatusLights({
   }
 
   return (
-    <div className="fsl" role="region" aria-label="Live accounts across the book">
+    <div className={`fsl view-${mode}`} role="region" aria-label="Live accounts across the book">
       <div className="fsl-head">
         <Activity size={14} aria-hidden="true" />
         <p className="fsl-summary">
@@ -142,6 +232,19 @@ export default function FleetStatusLights({
           {' '}
           <RefreshNote updatedAt={view.at} refreshMs={refreshMs} />
         </p>
+        <div className="segmented-control fsl-view-toggle" role="group" aria-label="Live accounts view">
+          {['compact', 'tiles'].map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={mode === value ? 'active' : ''}
+              aria-pressed={mode === value}
+              onClick={() => chooseMode(value)}
+            >
+              {VIEW_WORDS[value]}
+            </button>
+          ))}
+        </div>
       </div>
       <ul className="fsl-legend" aria-label="What the colours mean">
         {LEGEND.map((entry) => (
@@ -150,10 +253,23 @@ export default function FleetStatusLights({
             <span>{entry.word}</span>
           </li>
         ))}
-        <li className="fsl-legend-item fsl-legend-mark">
-          <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
-          <span>Amber corner: an algorithm differs from the desk</span>
-        </li>
+        {compact ? (
+          <li className="fsl-legend-item fsl-legend-mark">
+            <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
+            <span>Amber corner: an account marked retired is still running</span>
+          </li>
+        ) : (
+          <li className="fsl-legend-item fsl-legend-mark">
+            <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
+            <span>Amber corner: an algorithm differs from the desk</span>
+          </li>
+        )}
+        {!compact && view.tiles.some((tile) => tile.marked.length) ? (
+          <li className="fsl-legend-item fsl-legend-marked">
+            <span className="account-pill-marked" aria-hidden="true">Marked</span>
+            <span>The registry retired the account and it is still running</span>
+          </li>
+        ) : null}
         {closeVerdicts ? (
           <li className="fsl-legend-item fsl-legend-close">
             <span className="account-pill-close-differs" aria-hidden="true">{CLOSE_DIFFERS_WORD}</span>
@@ -161,25 +277,74 @@ export default function FleetStatusLights({
           </li>
         ) : null}
       </ul>
-      <ul className="fsl-grid">
-        {view.tiles.map((tile) => (
-          <Tile
-            key={tile.clientId}
-            tile={tile}
-            client={clientsById.get(tile.clientId) || { id: tile.clientId, uuid: tile.clientKey, name: tile.clientName }}
-            now={view.at}
-            onSelectClient={onSelectClient}
-            refreshMs={refreshMs}
-            loadStrategies={loadStrategies}
-            closeVerdicts={closeVerdicts?.get(tile.clientKey) || closeVerdicts?.get(tile.clientId) || null}
-          />
-        ))}
-      </ul>
+      {compact ? (
+        <>
+          <ul className="fsl-bulbs" aria-label="One light per client">
+            {view.tiles.map((tile) => {
+              const isOpen = open === tile.clientId;
+              return (
+                <li
+                  key={tile.clientId}
+                  className={`fsl-bulb tone-${tile.worst.tone}${isOpen ? ' open' : ''}${tile.marked.length ? ' marked' : ''}`}
+                  data-client-id={tile.clientId}
+                  data-worst={tile.worst.state}
+                >
+                  <button
+                    type="button"
+                    className="fsl-bulb-button"
+                    aria-expanded={isOpen}
+                    aria-controls={isOpen ? drawerId : undefined}
+                    title={bulbTitle(tile)}
+                    onClick={() => setOpen((value) => (value === tile.clientId ? null : tile.clientId))}
+                  >
+                    <span className="dcl-light fsl-light" aria-hidden="true">
+                      {tile.marked.length ? <span className="account-pill-mark" /> : null}
+                    </span>
+                    <span className="dcl-bulb-name fsl-bulb-name">{tile.clientName}</span>
+                    <span className="fsl-bulb-count">{tile.countWords}</span>
+                    <span className="sr-only">
+                      {tile.worst.word}
+                      {tile.marked.length ? `, ${markedWords(tile)}` : ''}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {openTile ? (
+            <div
+              className={`fsl-drawer tone-${openTile.worst.tone}`}
+              id={drawerId}
+              role="region"
+              aria-label={`${openTile.clientName}, accounts`}
+            >
+              <ul className="fsl-drawer-tile">
+                <Tile key={openTile.clientId} {...tileProps(openTile)} onClose={() => setOpen(null)} />
+              </ul>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <ul className="fsl-grid">
+          {view.tiles.map((tile) => <Tile key={tile.clientId} {...tileProps(tile)} />)}
+        </ul>
+      )}
     </div>
   );
 }
 
-function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies, closeVerdicts = null }) {
+function markedWords(tile) {
+  return tile.marked.map((entry) => `${entry.accountName} ${entry.words.charAt(0).toLowerCase()}${entry.words.slice(1)}`).join(', ');
+}
+
+/* The bulb's title: the client, its worst state, the tile's sentence, and the
+ * accounts marked retired that are still running. */
+function bulbTitle(tile) {
+  const marked = tile.marked.length ? ` ${markedWords(tile)}.` : '';
+  return `${tile.clientName}: ${tile.worst.word}. ${tile.words}${marked}`;
+}
+
+function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies, closeVerdicts = null, since = null, onClose = null }) {
   const [expanded, setExpanded] = useState(null);
   const detailId = useId();
   const openDot = expanded ? tile.dots.find((dot) => dot.accountName === expanded) || null : null;
@@ -191,10 +356,18 @@ function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies, cl
     refreshMs,
     load: loadStrategies,
   });
+  const sinceOf = (dot) => (dot.state === 'disconnected' ? since?.get(dot.accountName) || null : null);
   const details = useMemo(() => new Map(tile.dots.map((dot) => [
     dot.accountName,
-    buildAccountLiveDetail({ client, accountName: dot.accountName, sample: dot.sample, strategies: strategies.data, now }),
-  ])), [tile, client, strategies.data, now]);
+    buildAccountLiveDetail({
+      client,
+      accountName: dot.accountName,
+      sample: dot.sample,
+      strategies: strategies.data,
+      now,
+      disconnectedSince: dot.state === 'disconnected' ? since?.get(dot.accountName) || null : null,
+    }),
+  ])), [tile, client, strategies.data, now, since]);
 
   const clickable = typeof onSelectClient === 'function';
   const head = (
@@ -203,27 +376,35 @@ function Tile({ tile, client, now, onSelectClient, refreshMs, loadStrategies, cl
       <span className="fsl-tile-state">{tile.worst.word}</span>
     </span>
   );
+  const opener = clickable ? (
+    <button
+      type="button"
+      className="fsl-tile-button"
+      onClick={() => onSelectClient(tile.clientId)}
+      title={`Open ${tile.clientName}`}
+    >
+      {head}
+    </button>
+  ) : (
+    <div className="fsl-tile-button">{head}</div>
+  );
   return (
     <li className={`fsl-tile tone-${tile.worst.tone}`} data-client-id={tile.clientId} data-worst={tile.worst.state}>
-      {clickable ? (
-        <button
-          type="button"
-          className="fsl-tile-button"
-          onClick={() => onSelectClient(tile.clientId)}
-          title={`Open ${tile.clientName}`}
-        >
-          {head}
-        </button>
-      ) : (
-        <div className="fsl-tile-button">{head}</div>
-      )}
+      {typeof onClose === 'function' ? (
+        <div className="fsl-tile-top">
+          {opener}
+          <button type="button" className="ghost-button fsl-tile-close" aria-label={`Close ${tile.clientName}`} onClick={onClose}>
+            Close
+          </button>
+        </div>
+      ) : opener}
       {tile.dots.length ? (
         <ol className="account-pills fsl-pills" aria-label={`${tile.clientName} accounts`}>
           {tile.dots.map((dot) => (
             <AccountPill
               key={dot.accountName}
               pill={withCloseDiffers(
-                withDiffers(dot, details.get(dot.accountName)?.differsCount || 0),
+                withDiffers(withDisconnectedSince(dot, sinceOf(dot)), details.get(dot.accountName)?.differsCount || 0),
                 closeVerdicts?.get(String(dot.accountName).trim().toLowerCase()) || null,
               )}
               expanded={expanded === dot.accountName}

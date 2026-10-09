@@ -21,6 +21,11 @@ import { CLOSE_DIFFERS_WORD } from '../domain/accountPill';
  * THE SECOND MARKER (step 66) is a badge in words, "Close differs", for an
  * account whose tracker reading and close disagree today; its verdict is one
  * hover away in the badge's title. Amber, never red, never the pill's colour.
+ *
+ * THE THIRD, "Marked Failed" (or the status the registry carries, or "Looks
+ * failed"), is the same kind of badge for an account the registry retired that
+ * is still connected and running: a question for the CAM, with "Marked Failed
+ * but still running" in its title and in the pill's.
  */
 export default function AccountPill({
   pill,
@@ -34,6 +39,7 @@ export default function AccountPill({
     `tone-${pill.tone}`,
     pill.differsCount > 0 ? 'differs' : null,
     pill.closeDiffers ? 'close-differs' : null,
+    pill.marked ? 'marked' : null,
     expanded ? 'expanded' : null,
   ].filter(Boolean).join(' ');
   const body = (
@@ -47,6 +53,9 @@ export default function AccountPill({
       {pill.runLabel ? <span className="account-pill-run">{pill.runLabel}</span> : null}
       {pill.closeDiffers ? (
         <span className="account-pill-close-differs" title={`${pill.closeDiffersWords}.`}>{CLOSE_DIFFERS_WORD}</span>
+      ) : null}
+      {pill.marked ? (
+        <span className="account-pill-marked" title={`${pill.markedWords}.`}>{pill.markedWord}</span>
       ) : null}
       {pill.differsWords ? <span className="sr-only">{pill.differsWords}</span> : null}
     </>

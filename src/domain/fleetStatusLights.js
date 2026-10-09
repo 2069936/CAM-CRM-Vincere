@@ -41,7 +41,18 @@ import { PILL_TONES, buildAccountPill } from './accountPill';
  * seen and older than new_account_days, retired) gets no light: nothing is
  * expected of it, so a light on it was a false alarm every morning. The tile
  * carries one folded line (`notShown`) saying why, with the names behind a
- * toggle. An account the VPS is sampling keeps its dot whatever the close said.
+ * toggle. An account the VPS is sampling keeps its dot whatever the close said,
+ * unless the registry retired it or the close says it looks failed and it is
+ * not connected and running: NinjaTrader keeps listing a dead account,
+ * disconnected and empty, and that is a line in the fold, not an amber pill
+ * (accountBuckets.js says the rule once for the three screens). One that IS
+ * still running keeps its pill with an amber "Marked Failed" in words.
+ *
+ * ONE BULB PER CLIENT, OR ONE TILE. Pedro's words: the tiles are the expanded
+ * view; summarised, one circle per client in the tile's own colour, so the
+ * whole book fits without scrolling. The bulb reads the tile (its worst tone,
+ * its order, `liveCount` of `dots`), so the two views cannot disagree, and the
+ * choice between them is remembered per browser (LIVE_ACCOUNTS_VIEW_KEY).
  *
  * WORST FIRST. A tile is tinted by its worst account, and the grid is sorted so
  * the clients that need a look are at the top left. The rank is a desk
@@ -86,6 +97,37 @@ export const LEGEND = Object.freeze([
   { tone: 'none', word: TONE_WORDS.none },
 ]);
 
+/** Where the browser remembers Compact or Tiles for the Live accounts panel.
+ * A per viewer convenience only: nothing else reads it. */
+export const LIVE_ACCOUNTS_VIEW_KEY = 'cam.liveAccountsView';
+
+export const LIVE_ACCOUNTS_VIEWS = Object.freeze(['compact', 'tiles']);
+
+/** What was stored, as one of the two views. Anything else, a missing value
+ * included, is the default: Compact. */
+export function parseLiveAccountsView(value) {
+  return value === 'tiles' ? 'tiles' : 'compact';
+}
+
+/** "5 of 6 live" beside a bulb, over the tile's own pills. */
+export function bulbCountWords(tile) {
+  const total = Array.isArray(tile?.dots) ? tile.dots.length : 0;
+  if (!total) return 'No account';
+  const live = tile.dots.filter((dot) => dot.state === 'live').length;
+  return `${live} of ${total} live`;
+}
+
+/** The clients worth a history read for "Disconnected since": the keys the
+ * rows carry (uuid, else id) of every tile with a disconnected pill, sorted.
+ * Empty when nobody is disconnected, and then nothing is read. */
+export function disconnectedClientKeys(tiles) {
+  const keys = new Set();
+  for (const tile of Array.isArray(tiles) ? tiles : []) {
+    if ((tile?.dots || []).some((dot) => dot.state === 'disconnected')) keys.add(tile.clientKey);
+  }
+  return [...keys].filter(Boolean).sort();
+}
+
 /** Every name on the registry, hidden or not: a sampled account the registry
  * holds is never marked as unknown to it, whatever the close said of it. */
 export function registryNameSet(client) {
@@ -110,10 +152,10 @@ export function agedWords(minutes) {
 /* One dot is one pill (accountPill.js) plus its rank and its sample. sampleOnly:
  * this screen has no device, so a never sampled account gets the honest
  * sentence rather than the one that claims a paired and answering VPS. */
-function buildDot(accountName, sample, inRegistry, { now, staleSeconds, isNew = false, newWords = null }) {
+function buildDot(accountName, sample, inRegistry, { now, staleSeconds, isNew = false, newWords = null, marked = null }) {
   const verdict = classifyAccountSample({ now, sample, staleSeconds });
   return {
-    ...buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: true, isNew, newWords }),
+    ...buildAccountPill({ accountName, sample, verdict, inRegistry, sampleOnly: true, isNew, newWords, marked }),
     sample,
     rank: STATE_RANK[verdict.state] || STATE_RANK.never_sampled,
   };
@@ -126,30 +168,46 @@ function buildDot(accountName, sample, inRegistry, { now, staleSeconds, isNew = 
  * ({newAccountDays, staleCloses}), or null for the column defaults.
  */
 export function buildClientTile(client, samples, { now, staleSeconds, settings = null }) {
-  const list = (Array.isArray(samples) ? samples : []).filter((row) => row && row.accountName);
+  const every = (Array.isArray(samples) ? samples : []).filter((row) => row && row.accountName);
+  const lights = registryLights(client?.accountRegistry, { now, settings, samples: every, staleSeconds });
+  // A retired account NinjaTrader still lists, with nothing running, is in the
+  // fold and nowhere else: not a pill, not a count, not the tile's colour.
+  const list = every.filter((row) => !lights.hidden.has(row.accountName));
   const byName = new Map(list.map((row) => [row.accountName, row]));
   const sampledNames = list.map((row) => row.accountName);
-  const lights = registryLights(client?.accountRegistry, { now, settings, sampled: sampledNames });
   const registry = lights.names;
   const known = registryNameSet(client);
   const names = [...new Set([...sampledNames, ...registry])]
     .sort((left, right) => String(left).localeCompare(String(right)));
   const dots = names.map((name) => buildDot(name, byName.get(name) || null, known.has(name), {
-    now, staleSeconds, isNew: lights.fresh.has(name), newWords: lights.fresh.get(name) || null,
+    now,
+    staleSeconds,
+    isNew: lights.fresh.has(name),
+    newWords: lights.fresh.get(name) || null,
+    marked: lights.stillRunning.get(name) || null,
   }));
   const summary = summarizeAccountTracker(list, { now, staleSeconds });
   const sampled = list.length > 0;
+  const onlyRetiredSampled = !sampled && lights.hidden.size > 0;
 
   let worst;
   if (!sampled) {
-    worst = { state: 'none', tone: 'none', word: 'No sample yet', rank: STATE_RANK.none };
+    worst = {
+      state: 'none',
+      tone: 'none',
+      word: onlyRetiredSampled ? 'Only retired accounts sampled' : 'No sample yet',
+      rank: STATE_RANK.none,
+    };
   } else {
     const top = dots.reduce((best, dot) => (dot.rank > best.rank ? dot : best), dots[0]);
     worst = top.state === 'live'
       ? { state: 'live', tone: 'live', word: 'All live', rank: STATE_RANK.live }
       : { state: top.state, tone: top.tone, word: top.label, rank: top.rank };
   }
-  const attention = dots.filter((dot) => dot.rank >= STATE_RANK.never_sampled).length;
+  // A retired account still running is a question too: it counts toward the
+  // tie break, never toward the colour.
+  const markedCount = dots.filter((dot) => dot.marked).length;
+  const attention = dots.filter((dot) => dot.rank >= STATE_RANK.never_sampled || dot.marked).length;
   const newest = summary.newestSampledAt ? toDate(summary.newestSampledAt) : null;
   const ageMinutes = newest ? Math.max(0, Math.floor((toDate(now).getTime() - newest.getTime()) / 60_000)) : null;
   const unsampledRegistry = dots.filter((dot) => dot.state === 'never_sampled' && !dot.isNew).length;
@@ -158,7 +216,12 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
   if (sampled) {
     words = `${accountTrackerHeadline(summary).replace(/\.$/, '')}`
       + `${unsampledRegistry ? `, ${unsampledRegistry} registered and never sampled` : ''}`
-      + `${newUnsampled ? `, ${newUnsampled} new and not sampled yet` : ''}.`;
+      + `${newUnsampled ? `, ${newUnsampled} new and not sampled yet` : ''}`
+      + `${markedCount ? `, ${markedCount} retired but still running` : ''}.`;
+  } else if (onlyRetiredSampled) {
+    // The VPS samples, and everything it lists is retired or looks failed.
+    words = `${registry.length ? `${registry.length} account${registry.length === 1 ? '' : 's'} on the registry, none sampled. ` : ''}`
+      + 'NinjaTrader lists only accounts not expected to trade, in the line below.';
   } else if (registry.length) {
     words = `${registry.length} account${registry.length === 1 ? '' : 's'} on the registry, none sampled. Either no VPS is paired with this client or it has not sampled yet.`;
   } else {
@@ -176,6 +239,11 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
     worst,
     attention,
     words,
+    // The bulb's count, over the same pills: "5 of 6 live".
+    liveCount: dots.filter((dot) => dot.state === 'live').length,
+    countWords: bulbCountWords({ dots }),
+    // Pills that keep a light with the amber marker: retired, still running.
+    marked: dots.filter((dot) => dot.marked).map((dot) => ({ accountName: dot.accountName, words: dot.markedWords })),
     // The folded line under the tile: why the rest of the registry has no
     // light, or null when every account is expected.
     notShown: lights.notShown,

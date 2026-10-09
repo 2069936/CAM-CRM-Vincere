@@ -445,3 +445,68 @@ describe('the words beside every colour', () => {
     expect(Object.values(BULB_TONES).filter((tone) => tone === 'off')).toEqual(['off']);
   });
 });
+
+/* ------------------------------------------------------------------------- *
+ * A DEAD ACCOUNT NINJATRADER STILL LISTS.
+ *
+ * Measured in production: accounts the database marked Failed after the close
+ * are still in NinjaTrader's Accounts tab, disconnected with nothing loaded,
+ * so the VPS keeps sampling them. On the desk that made a bulb red ("Off, 1
+ * account disconnected") about an account nobody expects to trade. Now such an
+ * account is out of the pills and out of every count, and the drawer's folded
+ * line says NinjaTrader still lists it. One that is still running stays.
+ * ------------------------------------------------------------------------- */
+describe('a retired account NinjaTrader still lists', () => {
+  function withRegistry(registry) {
+    return { ...client('c-1', 'Client A'), accountRegistry: registry };
+  }
+  const REGISTRY = {
+    'ACC 01': { accountName: 'ACC 01', status: 'Active' },
+    'ACC 06': { accountName: 'ACC 06', status: 'Failed' },
+  };
+
+  it('a Failed account sampled disconnected is no pill and no count, so it cannot turn the bulb red', () => {
+    const view = buildDeskClientLight(withRegistry(REGISTRY), {
+      samples: [sample('ACC 01'), disconnected('ACC 06', { runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 })],
+      devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500,
+    });
+    expect(view.state).toBe('live');
+    expect(view.counts).toMatchObject({ sampled: 1, live: 1, disconnected: 0 });
+    expect(view.dots.map((pill) => pill.accountName)).toEqual(['ACC 01']);
+    expect(view.notShown.sentence).toBe('Not shown: 1 retired: 1 Failed. 1 still listed by NinjaTrader, disconnected.');
+    expect(view.notShown.accounts[0].word).toBe('Failed, still listed by NinjaTrader, disconnected');
+    // Alone, it was "Off, 1 account disconnected"; now the bulb is what the device says.
+    const alone = buildDeskClientLight(withRegistry({ 'ACC 06': REGISTRY['ACC 06'] }), {
+      samples: [disconnected('ACC 06')], devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500,
+    });
+    expect(alone.state).not.toBe('off');
+    expect(alone.counts.disconnected).toBe(0);
+  });
+
+  it('a Failed account sampled connected with nothing loaded is no pill either', () => {
+    const view = buildDeskClientLight(withRegistry(REGISTRY), {
+      samples: [sample('ACC 01'), sample('ACC 06', { runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 })],
+      devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500,
+    });
+    expect(view.dots.map((pill) => pill.accountName)).toEqual(['ACC 01']);
+    expect(view.notShown.accounts[0].word).toBe('Failed, still listed by NinjaTrader, connected, nothing loaded');
+  });
+
+  it('a Failed account still connected and running keeps its pill, with the marker in its title', () => {
+    const view = buildDeskClientLight(withRegistry(REGISTRY), {
+      samples: [sample('ACC 01'), sample('ACC 06')], devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500,
+    });
+    const marked = view.dots.find((pill) => pill.accountName === 'ACC 06');
+    expect(marked).toMatchObject({ state: 'live', marked: true, markedWord: 'Marked Failed' });
+    expect(marked.title).toContain('Marked Failed but still running.');
+    expect(view.notShown).toBeNull();
+  });
+
+  it('an account the registry does not have keeps its pill as before, disconnected or not', () => {
+    const view = buildDeskClientLight(withRegistry(REGISTRY), {
+      samples: [sample('ACC 01'), disconnected('ACC 09')], devices: [device()], deviceAware: true, now: NOW, staleSeconds: 1500,
+    });
+    expect(view.dots.map((pill) => `${pill.accountName}:${pill.state}:${pill.inRegistry}`)).toEqual(['ACC 01:live:true', 'ACC 09:disconnected:false']);
+    expect(view.state).toBe('partly');
+  });
+});

@@ -4,7 +4,9 @@ import {
   NO_CONNECTION_WORD,
   buildAccountPill,
   differsWords,
+  withCloseDiffers,
   withDiffers,
+  withDisconnectedSince,
 } from './accountPill';
 
 /* ------------------------------------------------------------------------- *
@@ -152,5 +154,56 @@ describe('the amber marker for an algorithm that differs from the desk', () => {
 
   it('is the word "differs" and nothing stronger', () => {
     expect(differsWords(3)).not.toMatch(/wrong|outlier|worse|fault/i);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * TWO MORE THINGS A PILL CAN SAY, AND NO BUILDER MAY DROP THEM.
+ *
+ * withDiffers and withCloseDiffers rebuild the title; the marker for a retired
+ * account still running and "Disconnected since" are pill fields, so the title
+ * carries them whichever builder ran last.
+ * ------------------------------------------------------------------------- */
+describe('the marker for a retired account still running', () => {
+  const MARKED = { word: 'Marked Failed', words: 'Marked Failed but still running' };
+
+  it('is a badge word and a sentence in the title, and leaves the colour, the state and the label alone', () => {
+    const marked = pill({}, { marked: MARKED });
+    expect(marked).toMatchObject({ marked: true, markedWord: 'Marked Failed', markedWords: 'Marked Failed but still running', state: 'live', tone: 'live', label: 'Live' });
+    expect(marked.title).toBe('ACC 01: Live. Marked Failed but still running. Connection Bluesky. Sampled 4 minutes ago. Strategies: running.');
+    expect(pill()).toMatchObject({ marked: false, markedWord: null, markedWords: null });
+  });
+
+  it('survives the desk marker and the close badge, in either order', () => {
+    const marked = pill({}, { marked: MARKED });
+    const both = withCloseDiffers(withDiffers(marked, 1), 'differs');
+    expect(both.title).toContain('Marked Failed but still running.');
+    expect(both.title).toContain('1 algorithm differs from the desk.');
+    expect(both.title).toContain('Close differs: the realized figures differ.');
+    expect(withDiffers(withCloseDiffers(marked, 'differs'), 2).title).toContain('Marked Failed but still running.');
+  });
+});
+
+describe('since when a pill has been disconnected', () => {
+  it('heads the title of a disconnected pill and keeps the pill word short', () => {
+    const down = withDisconnectedSince(pill({ connected: false, status: 'ConnectionLost' }), 'Disconnected since 09:40');
+    expect(down.label).toBe('Disconnected');
+    expect(down.sinceWords).toBe('Disconnected since 09:40');
+    expect(down.title.startsWith('ACC 01: Disconnected since 09:40. Connection Bluesky.')).toBe(true);
+    expect(down.title).toContain('NinjaTrader reports it as ConnectionLost.');
+  });
+
+  it('is kept by the desk marker and the close badge', () => {
+    const down = withDisconnectedSince(pill({ connected: false }), 'Disconnected since before 06:30');
+    expect(withCloseDiffers(withDiffers(down, 1), 'tracker_only').title).toContain('ACC 01: Disconnected since before 06:30.');
+  });
+
+  it('is never put on a pill that is not disconnected, and no words leave a pill untouched', () => {
+    const live = pill();
+    expect(withDisconnectedSince(live, 'Disconnected since 09:40')).toBe(live);
+    const silent = pill({ connected: false, sampledAt: '2026-10-08T13:00:00.000Z' });
+    expect(withDisconnectedSince(silent, 'Disconnected since 09:40')).toBe(silent);
+    const down = pill({ connected: false });
+    expect(withDisconnectedSince(down, null)).toBe(down);
   });
 });

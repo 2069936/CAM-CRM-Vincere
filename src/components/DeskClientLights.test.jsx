@@ -524,6 +524,65 @@ describe('only the accounts expected to trade are in the drawer', () => {
       .toBe('Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes.');
   });
 
+  /* A dead account NinjaTrader still lists: measured in production, ACC 06 was
+   * marked Failed by last night's close and is still in the Accounts tab,
+   * disconnected with nothing loaded. No pill, no count, no red bulb; the line
+   * says NinjaTrader still lists it. Still running is a pill with the marker. */
+  it('a Failed account NinjaTrader still lists disconnected is no pill and no red: the folded line says so', async () => {
+    const { container } = mountMaple({
+      tracker: tracker({ samplesByClientId: new Map([[UUID_M, [
+        sample('ACC 01', { connectionName: 'Bluesky' }),
+        disconnected('ACC 06', { connectionName: 'Bluesky', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 }),
+      ]]]) }),
+    });
+    await ready(container, 1);
+    const bulb = container.querySelector('.dcl-bulb');
+    expect(bulb.dataset.state).toBe('live');
+    expect(bulb.querySelector('.dcl-bulb-button').getAttribute('title')).toBe('Maple Ridge: Live, 1 account connected on 1 connection.');
+    act(() => { bulbFor(container, 'act-1700000000-maple').click(); });
+    expect(container.querySelector('.account-pill[data-account="ACC 06"]')).toBeNull();
+    expect(pillsIn(container, 'Bluesky')).toEqual(['ACC 01: Live']);
+    const line = container.querySelector('.dcl-drawer .not-shown');
+    expect(line.querySelector('.not-shown-words').textContent).toBe(
+      'Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. 1 retired: 1 Failed. '
+      + '1 still listed by NinjaTrader, disconnected.',
+    );
+    act(() => { line.querySelector('.not-shown-toggle').click(); });
+    const item = [...line.querySelectorAll('.not-shown-list li')].find((node) => node.textContent.startsWith('ACC 06'));
+    expect(item.textContent).toBe('ACC 06 Failed, still listed by NinjaTrader, disconnected');
+    expect(item.getAttribute('title')).toBe('Status Failed. NinjaTrader still lists it, not connected, sampled 4m ago.');
+  });
+
+  it('a Failed account still connected and running keeps its pill, with "Marked Failed" in words and in its title', async () => {
+    const { container } = mountMaple({
+      tracker: tracker({ samplesByClientId: new Map([[UUID_M, [
+        sample('ACC 01', { connectionName: 'Bluesky' }),
+        sample('ACC 06', { connectionName: 'Bluesky' }),
+      ]]]) }),
+    });
+    await ready(container, 1);
+    act(() => { bulbFor(container, 'act-1700000000-maple').click(); });
+    const pill = container.querySelector('.account-pill[data-account="ACC 06"]');
+    expect(pill.className).toBe('account-pill tracker-live tone-live marked');
+    expect(pill.querySelector('.account-pill-marked').textContent).toBe('Marked Failed');
+    expect(pill.querySelector('.account-pill-marked').getAttribute('title')).toBe('Marked Failed but still running.');
+    expect(pill.querySelector('.account-pill-button').getAttribute('title')).toContain('ACC 06: Live. Marked Failed but still running.');
+    expect(container.querySelector('.dcl-drawer .not-shown-words').textContent).not.toContain('Failed.');
+  });
+
+  it('an account the registry does not have keeps its pill, disconnected, as before', async () => {
+    const { container } = mountMaple({
+      tracker: tracker({ samplesByClientId: new Map([[UUID_M, [
+        sample('ACC 01', { connectionName: 'Bluesky' }),
+        disconnected('ACC 09', { connectionName: 'Bluesky' }),
+      ]]]) }),
+    });
+    await ready(container, 1);
+    expect(container.querySelector('.dcl-bulb').dataset.state).toBe('partly');
+    act(() => { bulbFor(container, 'act-1700000000-maple').click(); });
+    expect(pillsIn(container, 'Bluesky')).toEqual(['ACC 01: Live', 'ACC 09: Disconnected']);
+  });
+
   it('the setting moves the new account into the line', async () => {
     const loadObservationSettings = vi.fn(async () => ({ available: true, staleCloses: 5, autoFailOnBreach: true, newAccountDays: 2 }));
     const { container } = mountMaple({ loadObservationSettings });

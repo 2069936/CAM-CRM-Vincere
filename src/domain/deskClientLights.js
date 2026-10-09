@@ -45,7 +45,11 @@ import { agedWords, registryNameSet } from './fleetStatusLights';
  * database expects on the close (accountBuckets.js, step 65), a new one saying
  * so on its pill; the rest of the registry is one folded line at the bottom of
  * the drawer (`notShown`), never a bulb's reason to be brown. An account the
- * VPS is sampling keeps its pill whatever the close said of it.
+ * VPS is sampling keeps its pill whatever the close said of it, except a
+ * retired (or looks failed) one that is not connected and running: NinjaTrader
+ * keeps listing a dead account, and it is a line in the fold, never a pill and
+ * never a count, so it cannot turn a bulb red or amber. One that IS running
+ * keeps its pill with the amber "Marked Failed" in words (accountBuckets.js).
  *
  * WITH OR WITHOUT THE DEVICES. The browser cannot read ingest_devices; a
  * Manager reaches the fleet through /api/admin/ingest-fleet, a CAM is refused.
@@ -267,16 +271,25 @@ function sentenceOf(state, { counts, device, deviceAware, newestSampledAt, ageMi
  */
 export function buildDeskClientLight(client, { samples = [], devices = null, deviceAware = false, now, staleSeconds = 1500, settings = null } = {}) {
   const at = toDate(now) || new Date();
-  const list = (Array.isArray(samples) ? samples : []).filter((row) => row && row.accountName);
+  const every = (Array.isArray(samples) ? samples : []).filter((row) => row && row.accountName);
+  const lights = registryLights(client?.accountRegistry, { now: at, settings, samples: every, staleSeconds });
+  // Removed before any count: a dead account alone must not make a bulb off.
+  const list = every.filter((row) => !lights.hidden.has(row.accountName));
   const sampledNames = new Set(list.map((row) => row.accountName));
-  const lights = registryLights(client?.accountRegistry, { now: at, settings, sampled: [...sampledNames] });
   const registry = lights.names;
   const known = registryNameSet(client);
 
   const sampledPills = list.map((sample) => {
     const verdict = classifyAccountSample({ now: at, sample, staleSeconds });
     return {
-      ...buildAccountPill({ accountName: sample.accountName, sample, verdict, inRegistry: known.has(sample.accountName), sampleOnly: true }),
+      ...buildAccountPill({
+        accountName: sample.accountName,
+        sample,
+        verdict,
+        inRegistry: known.has(sample.accountName),
+        sampleOnly: true,
+        marked: lights.stillRunning.get(sample.accountName) || null,
+      }),
       sample,
     };
   });

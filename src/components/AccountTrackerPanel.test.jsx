@@ -886,6 +886,67 @@ describe('only the accounts expected to trade get a pill on the client page', ()
     expect(rows.filter((row) => row.querySelector('abbr')).map((row) => row.querySelector('.account-tracker-name').textContent.trim().replace(/\s+new$/, '')))
       .toEqual(['ACC 09']);
     expect(container.querySelector('.not-shown-words').textContent).toBe('Not shown: 1 gone from the close for 6 closes. 1 retired: 1 Failed.');
+    // ACC 03 looks failed on the close and is connected and running: a question,
+    // in words, on its pill. ACC 09 is simply not on the registry: no marker.
+    const marked = container.querySelector('.account-pill[data-account="ACC 03"]');
+    expect(marked.querySelector('.account-pill-marked').textContent).toBe('Looks failed');
+    expect(marked.querySelector('button').getAttribute('title')).toContain('ACC 03: Live. Looks failed on the close but still running.');
+    expect(container.querySelector('.account-pill[data-account="ACC 09"] .account-pill-marked')).toBeNull();
+  });
+
+  /* Measured in production: accounts marked Failed on last night's close are
+   * still in NinjaTrader's Accounts tab, disconnected and empty, and the VPS
+   * samples them. On the client page they were amber "Disconnected" pills and a
+   * "1 disconnected" in the header. Now they are the folded line only. */
+  it('a Failed account NinjaTrader still lists disconnected is no pill, no row and no count: the line says so', () => {
+    const { container, getByRole } = strip({
+      tracker: tracker({ accounts: [
+        sample({ accountName: 'ACC 01' }),
+        sample({ accountName: 'ACC 06', connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 }),
+      ] }),
+      defaultDetailsOpen: true,
+    });
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet']);
+    expect(container.querySelector('.account-tracker-head strong').textContent).toBe('Live accounts · 1 running');
+    expect(container.querySelector('.account-tracker-head strong').textContent).not.toContain('disconnected');
+    expect([...container.querySelectorAll('.account-tracker-row')].map((row) => row.querySelector('.account-tracker-name').textContent.trim()))
+      .toEqual(['ACC 01', 'ACC 02', 'ACC 05']);
+    expect(getByRole('button', { name: /^Hide details/ })).toBeTruthy();
+    const line = container.querySelector('.not-shown');
+    expect(line.querySelector('.not-shown-words').textContent).toBe(
+      'Not shown: 1 account looks failed, breached on the close. 1 gone from the close for 6 closes. 1 retired: 1 Failed. '
+      + '1 still listed by NinjaTrader, disconnected.',
+    );
+    act(() => { line.querySelector('.not-shown-toggle').click(); });
+    expect([...line.querySelectorAll('.not-shown-list li')].map((item) => item.textContent)).toContain('ACC 06 Failed, still listed by NinjaTrader, disconnected');
+  });
+
+  it('a Failed account still connected and running keeps its pill with "Marked Failed", and a connected one with nothing loaded does not', () => {
+    const { container } = strip({
+      tracker: tracker({ accounts: [
+        sample({ accountName: 'ACC 01' }),
+        sample({ accountName: 'ACC 06' }),
+        sample({ accountName: 'ACC 03', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 }),
+      ] }),
+    });
+    expect(names(container)).toEqual(['ACC 01: Live', 'ACC 02: Never sampled', 'ACC 05: New, not sampled yet', 'ACC 06: Live']);
+    const marked = container.querySelector('.account-pill[data-account="ACC 06"]');
+    expect(marked.className).toBe('account-pill tracker-live tone-live marked');
+    expect(marked.querySelector('.account-pill-marked').textContent).toBe('Marked Failed');
+    expect(marked.querySelector('button').getAttribute('title')).toContain('Marked Failed but still running.');
+    act(() => { container.querySelector('.not-shown-toggle').click(); });
+    expect([...container.querySelectorAll('.not-shown-list li')].map((item) => item.textContent))
+      .toEqual(['ACC 03 looks failed, still listed by NinjaTrader, connected, nothing loaded', 'ACC 04 gone from the close']);
+  });
+
+  it('an account the registry does not have keeps its pill and its "new" mark, disconnected or not', () => {
+    const { container } = strip({
+      tracker: tracker({ accounts: [sample({ accountName: 'ACC 01' }), sample({ accountName: 'ACC 09', connected: false, status: 'Disconnected' })] }),
+      defaultDetailsOpen: true,
+    });
+    expect(names(container)).toContain('ACC 09: Disconnected');
+    const row = [...container.querySelectorAll('.account-tracker-row')].find((node) => node.textContent.includes('ACC 09'));
+    expect(row.querySelector('abbr').textContent.trim()).toBe('new');
   });
 
   it('with nothing expected and nothing sampled, says so and still folds the rest', () => {

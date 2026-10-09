@@ -64,6 +64,12 @@ import useClientLiveStrategies from './useClientLiveStrategies';
  * so a CAM can tell a dead account from a new one from a missing one. The
  * plain `accountNames` prop still works and treats every name as expected.
  * new_account_days is read once per session by useAccountObservationSettings.
+ * A sampled account keeps its pill unless the registry retired it (or the
+ * close says it looks failed) and it is not connected and running: NinjaTrader
+ * keeps listing a dead account, and that is the folded line, not a pill or a
+ * count. One that is still running keeps its pill with an amber "Marked
+ * Failed" in words. The rule is accountBuckets.registryLights', the same for
+ * the overview tiles and the desk drawer.
  *
  * THE SECOND AMBER MARKER (step 66). `closeVerdicts` is today's verdict per
  * account (lower case name to verdict) from the tracker against the close
@@ -153,8 +159,7 @@ export default function AccountTrackerPanel({
   const view = useMemo(() => {
     if (!shownTracker) return null;
     const staleSeconds = shownTracker.staleSeconds;
-    const samples = Array.isArray(shownTracker.accounts) ? shownTracker.accounts : [];
-    const byName = new Map(samples.map((sample) => [sample.accountName, sample]));
+    const every = Array.isArray(shownTracker.accounts) ? shownTracker.accounts : [];
     /* The registry's EXPECTED accounts are listed beside the sampled ones, so an
      * account the desk knows about and the VPS has never mentioned is VISIBLE as
      * never sampled rather than simply missing from a list; what the close has
@@ -166,8 +171,12 @@ export default function AccountTrackerPanel({
     const registry = accountRegistry && typeof accountRegistry === 'object'
       ? accountRegistry
       : Object.fromEntries((accountNames || []).filter(Boolean).map((name) => [name, {}]));
+    const lights = registryLights(registry, { now: at, settings: observation.settings, samples: every, staleSeconds });
+    // A retired account NinjaTrader still lists, with nothing running, is the
+    // folded line and nothing else: not a pill, not a row, not a count.
+    const samples = every.filter((sample) => !lights.hidden.has(sample.accountName));
+    const byName = new Map(samples.map((sample) => [sample.accountName, sample]));
     const sampledNames = samples.map((sample) => sample.accountName);
-    const lights = registryLights(registry, { now: at, settings: observation.settings, sampled: sampledNames });
     const names = [...new Set([...sampledNames, ...lights.names])]
       .sort((left, right) => String(left).localeCompare(String(right)));
     const rows = names.map((accountName) => {
@@ -191,6 +200,7 @@ export default function AccountTrackerPanel({
         pill: buildAccountPill({
           accountName, sample, verdict, inRegistry, sampleOnly: false,
           isNew: lights.fresh.has(accountName), newWords: lights.fresh.get(accountName) || null,
+          marked: lights.stillRunning.get(accountName) || null,
         }),
       };
     });
@@ -199,7 +209,9 @@ export default function AccountTrackerPanel({
       notShown: lights.notShown,
       summary: summarizeAccountTracker(samples, { now: at, staleSeconds }),
       intervalMinutes: Math.round((shownTracker.sampleIntervalSeconds || 600) / 60),
-      everySampled: samples.length > 0,
+      // A collector is sampling (any row, a retired one included), which is
+      // what the header's sentence is about; the counts are the kept rows'.
+      everySampled: every.length > 0,
       enabled: Boolean(shownTracker.minAgentVersion),
     };
   }, [shownTracker, shownDevice, accountNames, accountRegistry, observation.settings, at]);
@@ -228,7 +240,7 @@ export default function AccountTrackerPanel({
         <div>
           <strong>
             Live accounts
-            {view.everySampled ? ` · ${headline(view.summary)}` : ''}
+            {view.everySampled && headline(view.summary) ? ` · ${headline(view.summary)}` : ''}
           </strong>
           {/* THREE SENTENCES, BECAUSE THERE ARE THREE STATES AND THE MIDDLE ONE
               USED TO BE MISSING. With no build named AND nothing sampled, the

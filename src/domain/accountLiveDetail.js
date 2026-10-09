@@ -169,8 +169,13 @@ function strategyRow(row, entry, cycleStart) {
  * @param {object|null} input.strategies the loader's answer for this client:
  *   {available, reason?, desk, rows, settings}; null when nothing has been read.
  * @param {Date|number} [input.now]
+ * @param {string|null} [input.disconnectedSince] "Disconnected since 09:40", from
+ *   the tracker's history (disconnectedSince.js), for a disconnected account;
+ *   null says nothing.
  */
-export function buildAccountLiveDetail({ client, accountName, sample = null, strategies = null, now = new Date() } = {}) {
+export function buildAccountLiveDetail({
+  client, accountName, sample = null, strategies = null, now = new Date(), disconnectedSince = null,
+} = {}) {
   const connectionName = typeof sample?.connectionName === 'string' && sample.connectionName.trim()
     ? sample.connectionName.trim() : null;
   const base = {
@@ -178,6 +183,8 @@ export function buildAccountLiveDetail({ client, accountName, sample = null, str
     clientName: client?.name || String(client?.id || ''),
     connectionName,
     connectionWord: connectionName || NO_CONNECTION_WORD,
+    // Only about a sample that is not connected; anything else says nothing.
+    disconnectedSince: disconnectedSince && sample && sample.connected !== true ? disconnectedSince : null,
     totals: totalsOf(sample, now),
     strategies: [],
     strategiesState: 'unread',

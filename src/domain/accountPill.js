@@ -25,6 +25,14 @@ import { ATTENTION_VERDICTS } from './trackerCloseComparison';
  * a count and a sentence by withDiffers; the tone, the state and the label are
  * untouched by it, and nothing here is ever red.
  *
+ * TWO MORE THINGS A TITLE CAN SAY, and every builder below keeps them, because
+ * withDiffers and withCloseDiffers rebuild the title and a field they did not
+ * pass on would be silently dropped. `marked`: the registry retired this
+ * account (or the close says it looks failed) and it is still running, an
+ * amber badge in words ("Marked Failed") with its sentence in the title.
+ * `sinceWords`: "Disconnected since 09:40", from the tracker's history, on a
+ * disconnected pill only; the pill's own word stays "Disconnected".
+ *
  * Pure: no React.
  * ──────────────────────────────────────────────────────────────────────────── */
 
@@ -80,10 +88,22 @@ export function differsWords(count) {
   return n === 1 ? '1 algorithm differs from the desk' : `${n} algorithms differ from the desk`;
 }
 
-function titleOf({ accountName, label, connectionName, detail, run, differs, close = null }) {
+/* The title is rebuilt from the pill's own fields every time, so whatever one
+ * builder adds (the desk marker, the close badge, the marker for a retired
+ * account still running, since when it is disconnected) survives the others. */
+function titleOf({
+  accountName, label, connectionName, detail, runLabel = null, differsWords: differs = null,
+  closeDiffersWords: close = null, markedWords = null, sinceWords = null, state = null,
+}) {
   const connection = connectionName ? `Connection ${connectionName}.` : `${NO_CONNECTION_WORD}.`;
-  const parts = [`${accountName}: ${label}.`, connection, detail];
-  if (run) parts.push(`Strategies: ${run.label}.`);
+  // A disconnected pill says since when in its head; any other keeps its label
+  // and carries the since sentence after it.
+  const since = sinceWords && state === 'disconnected' ? sinceWords : null;
+  const parts = [`${accountName}: ${since || label}.`];
+  if (sinceWords && !since) parts.push(`${sinceWords}.`);
+  if (markedWords) parts.push(`${markedWords}.`);
+  parts.push(connection, detail);
+  if (runLabel) parts.push(`Strategies: ${runLabel}.`);
   if (differs) parts.push(`${differs}.`);
   if (close) parts.push(`${close}.`);
   return parts.filter(Boolean).join(' ');
@@ -104,9 +124,13 @@ function titleOf({ accountName, label, connectionName, detail, run, differs, clo
  *   (added within new_account_days, never in a close). A never sampled pill then
  *   reads "New, not sampled yet" and its sentence opens with `newWords`.
  * @param {string|null} [input.newWords=null] "Added 3 days ago, not seen in a close yet."
+ * @param {{word: string, words: string}|null} [input.marked=null] the registry
+ *   retired this account (or the close says it looks failed) and it is still
+ *   running: the badge word and its sentence (accountBuckets.stillRunningWords).
  */
 export function buildAccountPill({
   accountName, sample = null, verdict, inRegistry = true, sampleOnly = true, isNew = false, newWords = null,
+  marked = null,
 } = {}) {
   const state = verdict?.state || 'never_sampled';
   const fresh = Boolean(isNew) && state === 'never_sampled';
@@ -116,7 +140,7 @@ export function buildAccountPill({
   const connectionName = connectionOf(sample);
   const base = sampleOnly && state === 'never_sampled' ? SAMPLE_ONLY_NEVER_SAMPLED : (verdict?.detail || '');
   const detail = fresh && newWords ? `${newWords} ${base}`.trim() : base;
-  return {
+  const pill = {
     accountName,
     connectionName,
     connectionWord: connectionName || NO_CONNECTION_WORD,
@@ -137,8 +161,12 @@ export function buildAccountPill({
     closeDiffers: false,
     closeVerdict: null,
     closeDiffersWords: null,
-    title: titleOf({ accountName, label, connectionName, detail, run, differs: null }),
+    marked: Boolean(marked?.word),
+    markedWord: marked?.word || null,
+    markedWords: marked?.words || null,
+    sinceWords: null,
   };
+  return { ...pill, title: titleOf(pill) };
 }
 
 /**
@@ -147,22 +175,8 @@ export function buildAccountPill({
  */
 export function withDiffers(pill, count) {
   const differsCount = Number.isInteger(Number(count)) && Number(count) > 0 ? Number(count) : 0;
-  const words = differsWords(differsCount);
-  const run = pill.runLabel ? { label: pill.runLabel } : null;
-  return {
-    ...pill,
-    differsCount,
-    differsWords: words,
-    title: titleOf({
-      accountName: pill.accountName,
-      label: pill.label,
-      connectionName: pill.connectionName,
-      detail: pill.detail,
-      run,
-      differs: words,
-      close: pill.closeDiffersWords || null,
-    }),
-  };
+  const next = { ...pill, differsCount, differsWords: differsWords(differsCount) };
+  return { ...next, title: titleOf(next) };
 }
 
 /** "Close differs: tracker only", or null for a verdict that asks for nothing. */
@@ -179,20 +193,18 @@ export function closeDiffersWords(verdict) {
 export function withCloseDiffers(pill, verdict) {
   const words = closeDiffersWords(verdict);
   if (!words) return pill;
-  const run = pill.runLabel ? { label: pill.runLabel } : null;
-  return {
-    ...pill,
-    closeDiffers: true,
-    closeVerdict: verdict,
-    closeDiffersWords: words,
-    title: titleOf({
-      accountName: pill.accountName,
-      label: pill.label,
-      connectionName: pill.connectionName,
-      detail: pill.detail,
-      run,
-      differs: pill.differsWords || null,
-      close: words,
-    }),
-  };
+  const next = { ...pill, closeDiffers: true, closeVerdict: verdict, closeDiffersWords: words };
+  return { ...next, title: titleOf(next) };
+}
+
+/**
+ * The same pill with since when it has been disconnected ("Disconnected since
+ * 09:40"), read from the tracker's history. Only a disconnected pill takes it;
+ * any other pill, or no words, returns the pill untouched. The visible word
+ * stays "Disconnected": the time is in the title and in the detail.
+ */
+export function withDisconnectedSince(pill, words) {
+  if (!words || pill?.state !== 'disconnected') return pill;
+  const next = { ...pill, sinceWords: words };
+  return { ...next, title: titleOf(next) };
 }

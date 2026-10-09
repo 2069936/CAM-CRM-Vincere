@@ -218,6 +218,8 @@ describe('a Live accounts bulb on the Operations Command Center', () => {
     expect([...container.querySelectorAll('.dcl-bulb')].map((node) => `${node.dataset.state}:${node.dataset.clientId}`))
       .toEqual(['partly:c-1', 'never_sampled:c-3', 'live:c-2']);
     expect(container.querySelectorAll('.fsl-tile').length).toBe(0);
+    // Nor the CAM overview's compact bulbs: the desk keeps its own.
+    expect(container.querySelectorAll('.fsl-bulb').length).toBe(0);
     expect(container.querySelectorAll('.account-pill').length).toBe(0);
     expect(container.querySelector('.dcl-hidden').textContent).toContain('1 client without a VPS paired');
   });

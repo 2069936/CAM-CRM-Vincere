@@ -1,4 +1,5 @@
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES } from './reconcile.js';
+import { classifyAccountSample } from './autoCollectionFleet.js';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * WHERE EACH REGISTRY ACCOUNT GOES, now that the database says what the closes
@@ -311,9 +312,35 @@ export function expectedAccountNameSet(buckets) {
  * it is never in the line; it says "new" on its own pill instead.
  *
  * AN ACCOUNT THE VPS IS SAMPLING KEEPS ITS LIGHT, whatever the close said of
- * it: NinjaTrader still naming an account that looks failed is a question
- * worth a pill, not a thing to hide. The caller hands in the sampled names and
- * the line counts only what has no light anywhere.
+ * it, with one exception: an account the database has retired (Failed,
+ * Inactive, Reserve, Inactive / Ignore) or that looks failed on the close.
+ *
+ * WHY THE EXCEPTION. Measured in production: three amber "Disconnected" pills
+ * were accounts the database had marked Failed the night before (the trailing
+ * went negative on the close). NinjaTrader keeps listing a dead account in its
+ * Accounts tab, disconnected and with nothing loaded, so the VPS keeps sampling
+ * it, and the old rule ("a sampled account keeps its pill") lit it amber every
+ * morning. So for those two buckets the sample decides:
+ *
+ *   connected AND running, sampled within the horizon   keeps its pill, with an
+ *       amber marker in words: "Marked Failed but still running" (or the
+ *       status it carries; "Looks failed on the close but still running" for
+ *       an account the close breached while it still reads Active). A real
+ *       question for the CAM, never hidden.
+ *   anything else: disconnected, connected with nothing loaded, every
+ *       strategy off or no strategy data, or a sample gone stale   no pill. It
+ *       stays in the folded line with its reason word and what NinjaTrader
+ *       still says of it ("Failed, still listed by NinjaTrader, disconnected").
+ *       A stale sample says nothing about now, so it keeps the plain reason
+ *       word and the hover says when it was last sampled.
+ *
+ * An account NOT on the registry at all keeps its pill, as before: that is the
+ * "new account needs classification" flow. The goneFromClose and never seen
+ * buckets keep the old rule too: a sampled one has a pill.
+ *
+ * The caller hands in the samples (and the tracker's horizon), and gets back
+ * which sampled names have no light (`hidden`) so its counts can leave them
+ * out, and which keep one with the marker (`stillRunning`).
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /** The word printed beside a hidden account's name in the folded list, by the
@@ -363,20 +390,122 @@ function newAccountWords(row) {
   return `Added ${when}, not seen in a close yet.`;
 }
 
+/* ── What NinjaTrader still says of an account the close retired ──────────── */
+
+/** The words after the reason word in the folded list, by what the sample says. */
+export const STILL_LISTED_WORDS = Object.freeze({
+  disconnected: 'still listed by NinjaTrader, disconnected',
+  no_strategies: 'still listed by NinjaTrader, connected, nothing loaded',
+  idle: 'still listed by NinjaTrader, connected, all off',
+  unmeasured: 'still listed by NinjaTrader, connected, no strategy data',
+});
+
+/* The same facts inside the sentence of the line, after the count. */
+const STILL_LISTED_PHRASES = Object.freeze({
+  disconnected: 'disconnected',
+  no_strategies: 'connected with nothing loaded',
+  idle: 'connected with every strategy off',
+  unmeasured: 'connected with no strategy data',
+});
+
+const STILL_LISTED_ORDER = Object.freeze(['disconnected', 'no_strategies', 'idle', 'unmeasured']);
+
+function agoWords(minutes) {
+  if (!Number.isInteger(minutes)) return 'at an unknown time';
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * What the live sample of a retired (or looks failed) account says, and so
+ * whether it keeps a pill.
+ *
+ * @returns {{keep: boolean, listed: string|null, ageMinutes: number|null}}
+ *   `keep` only for a fresh sample that is connected and running. `listed` is
+ *   the run state or 'disconnected' for a fresh sample with no light, 'silent'
+ *   for a stale one, null for a sample whose clock cannot be read.
+ */
+export function retiredSampleFate(sample, { now = Date.now(), staleSeconds = 1500 } = {}) {
+  const verdict = classifyAccountSample({ now, sample, staleSeconds });
+  const ageMinutes = verdict.ageMinutes ?? null;
+  switch (verdict.state) {
+    case 'live':
+      return verdict.runState === 'running'
+        ? { keep: true, listed: null, ageMinutes }
+        : { keep: false, listed: verdict.runState, ageMinutes };
+    case 'disconnected':
+      return { keep: false, listed: 'disconnected', ageMinutes };
+    case 'sample_stale':
+      return { keep: false, listed: 'silent', ageMinutes };
+    default:
+      return { keep: false, listed: null, ageMinutes: null };
+  }
+}
+
+/** The amber marker on the pill of a retired account that is still running:
+ * a short word for the badge and the sentence for its title. */
+export function stillRunningWords(row) {
+  if (row?.reason === 'breached') {
+    return { word: 'Looks failed', words: 'Looks failed on the close but still running' };
+  }
+  if (row?.reason === 'Ignored') {
+    return { word: 'Marked Ignore', words: `Marked ${ACCOUNT_TYPES.IGNORE} but still running` };
+  }
+  const status = row?.reason || row?.status || ACCOUNT_STATUSES.FAILED;
+  return { word: `Marked ${status}`, words: `Marked ${status} but still running` };
+}
+
+function listedDetail(fate) {
+  const when = agoWords(fate.ageMinutes);
+  switch (fate.listed) {
+    case 'disconnected':
+      return `NinjaTrader still lists it, not connected, sampled ${when}.`;
+    case 'no_strategies':
+      return `NinjaTrader still lists it, connected with no strategy loaded, sampled ${when}.`;
+    case 'idle':
+      return `NinjaTrader still lists it, connected with every strategy switched off, sampled ${when}.`;
+    case 'unmeasured':
+      return `NinjaTrader still lists it, connected with no strategy count in the sample, sampled ${when}.`;
+    case 'silent':
+      return `The VPS last sampled it ${when} and has not since.`;
+    default:
+      return '';
+  }
+}
+
+function stillListedSentence(rows) {
+  const listed = rows.filter((row) => STILL_LISTED_WORDS[row.listed]);
+  const n = listed.length;
+  if (!n) return null;
+  const counts = countBy(listed, (row) => row.listed);
+  const kinds = STILL_LISTED_ORDER.filter((kind) => counts.get(kind));
+  if (kinds.length === 1) return `${n} still listed by NinjaTrader, ${STILL_LISTED_PHRASES[kinds[0]]}`;
+  return `${n} still listed by NinjaTrader: ${kinds.map((kind) => `${counts.get(kind)} ${STILL_LISTED_PHRASES[kind]}`).join(', ')}`;
+}
+
 /**
  * The one folded line for the registry accounts without a light.
  *
  * @param {object} buckets from bucketRegistryAccounts.
- * @param {{except?: Iterable<string>}} [options] names to leave out because they
- *   have a light anyway: the accounts the VPS is sampling.
+ * @param {{except?: Iterable<string>, listed?: Map<string, object>}} [options]
+ *   `except` are names to leave out because they have a light anyway: the
+ *   accounts the VPS is sampling that keep a pill. `listed` maps a hidden name
+ *   the VPS still samples to its retiredSampleFate, so its row says what
+ *   NinjaTrader still says of it.
  * @returns {{count: number, sentence: string, accounts: object[]}|null} null when
  *   nothing is hidden. `accounts` are the hidden rows in the order of the
  *   questions (looks failed, gone, never seen, retired), each with `word` and
- *   `detail` added.
+ *   `detail` added, and `listed` when the VPS still samples it.
  */
-export function notShownAccounts(buckets, { except = [] } = {}) {
+export function notShownAccounts(buckets, { except = [], listed = new Map() } = {}) {
   const skip = new Set(except);
-  const keep = (bucket) => (bucket?.accounts || []).filter((row) => !skip.has(row.accountName));
+  const fates = listed instanceof Map ? listed : new Map();
+  const keep = (bucket) => (bucket?.accounts || [])
+    .filter((row) => !skip.has(row.accountName))
+    .map((row) => (fates.has(row.accountName) ? { ...row, listed: fates.get(row.accountName).listed } : row));
   const looksFailed = keep(buckets?.looksFailed);
   const gone = keep(buckets?.goneFromClose);
   const neverSeen = keep(buckets?.registeredNeverSeen);
@@ -390,36 +519,75 @@ export function notShownAccounts(buckets, { except = [] } = {}) {
     goneSentence(gone),
     neverSeenSentence(neverSeen, newAccountDays),
     retiredSentence(retired),
+    stillListedSentence(hidden),
   ].filter(Boolean);
   return {
     count: hidden.length,
     sentence: `Not shown: ${parts.map((part) => `${part}.`).join(' ')}`,
-    accounts: hidden.map((row) => ({
-      ...row,
-      word: NOT_SHOWN_WORDS[row.reason] || row.reason,
-      detail: notShownDetail(row),
-    })),
+    accounts: hidden.map((row) => {
+      const base = NOT_SHOWN_WORDS[row.reason] || row.reason;
+      const fate = fates.get(row.accountName) || null;
+      const suffix = fate ? STILL_LISTED_WORDS[fate.listed] : null;
+      const more = fate ? listedDetail(fate) : '';
+      return {
+        ...row,
+        word: suffix ? `${base}, ${suffix}` : base,
+        detail: more ? `${notShownDetail(row)} ${more}` : notShownDetail(row),
+      };
+    }),
   };
+}
+
+function samplesOf(samples) {
+  const list = samples instanceof Map ? [...samples.values()] : (Array.isArray(samples) ? samples : []);
+  return list.filter((sample) => sample && sample.accountName);
 }
 
 /**
  * Everything a light needs from one registry.
  *
  * @param {Record<string, object>|null} registry client.accountRegistry.
- * @param {{now?: Date|number|string, settings?: object|null, sampled?: Iterable<string>}} [options]
- *   `sampled` are the account names the VPS has a sample for; they keep a light
- *   whatever the close said, so the folded line leaves them out.
- * @returns {{buckets: object, names: string[], fresh: Map<string, string>, notShown: object|null}}
+ * @param {{now?: Date|number|string, settings?: object|null, samples?: object[]|Map<string, object>,
+ *   staleSeconds?: number}} [options]
+ *   `samples` are the client's live samples (mapped rows, or a Map of name to
+ *   row); `staleSeconds` is the tracker's horizon.
+ * @returns {{buckets: object, names: string[], fresh: Map<string, string>, notShown: object|null,
+ *   hidden: Set<string>, stillRunning: Map<string, {word: string, words: string}>}}
  *   `names` are the expected accounts, sorted, a pill each; `fresh` maps the
- *   new ones among them to their sentence; `notShown` is the folded line or null.
+ *   new ones among them to their sentence; `notShown` is the folded line or
+ *   null; `hidden` are sampled names that get no light (retired or looks failed,
+ *   not running), which the caller leaves out of its pills AND its counts;
+ *   `stillRunning` are sampled names that keep a pill with the amber marker.
  */
-export function registryLights(registry, { now = Date.now(), settings = null, sampled = [] } = {}) {
+export function registryLights(registry, { now = Date.now(), settings = null, samples = [], staleSeconds = 1500 } = {}) {
   const buckets = bucketRegistryAccounts(registry, { now, settings });
   const expected = buckets.expected.accounts;
+  const closed = new Map([...buckets.looksFailed.accounts, ...buckets.retired.accounts].map((row) => [row.accountName, row]));
+  const kept = [];
+  const listed = new Map();
+  const stillRunning = new Map();
+  for (const sample of samplesOf(samples)) {
+    const name = sample.accountName;
+    const row = closed.get(name);
+    if (!row) {
+      // Expected, gone, never seen, or not on the registry: the old rule.
+      kept.push(name);
+      continue;
+    }
+    const fate = retiredSampleFate(sample, { now, staleSeconds });
+    if (fate.keep) {
+      kept.push(name);
+      stillRunning.set(name, stillRunningWords(row));
+    } else {
+      listed.set(name, fate);
+    }
+  }
   return {
     buckets,
     names: expected.map((row) => row.accountName),
     fresh: new Map(expected.filter((row) => row.reason === 'new').map((row) => [row.accountName, newAccountWords(row)])),
-    notShown: notShownAccounts(buckets, { except: sampled }),
+    notShown: notShownAccounts(buckets, { except: kept, listed }),
+    hidden: new Set(listed.keys()),
+    stillRunning,
   };
 }
