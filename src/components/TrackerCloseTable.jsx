@@ -20,7 +20,9 @@ import { NO_CONNECTION_WORD } from '../domain/accountPill';
  * "ADD FLAG" ASKS INLINE, in the cell, and never through the browser's own
  * dialog: the title it will write is shown first, a second click writes it
  * through the queue's own path (onAddFlag(clientId, importId, flag)), and the
- * cell then says so. One row open at a time for the per algorithm list.
+ * cell then says so. When that write is refused (the promise rejects), the
+ * cell goes back to the button and says "Could not add the flag." beside it.
+ * One row open at a time for the per algorithm list.
  */
 export default function TrackerCloseTable({
   rows = [],
@@ -194,20 +196,33 @@ function Strategies({ row }) {
 
 function FlagAction({ row, clientId, importId, onAddFlag }) {
   const [phase, setPhase] = useState('idle');
+  const [failed, setFailed] = useState(false);
   if (!row.flagDraft) return null;
   if (phase === 'added') return <span className="tracker-close-flag-added">Flag added</span>;
+
+  // Said at once, like the queue's own optimistic row; taken back when the
+  // write is refused, so the cell never claims a flag that was not written.
+  function add() {
+    setPhase('added');
+    const takeBack = () => {
+      setPhase('idle');
+      setFailed(true);
+    };
+    let result;
+    try {
+      result = onAddFlag(clientId, importId, row.flagDraft);
+    } catch {
+      takeBack();
+      return;
+    }
+    if (result && typeof result.then === 'function') result.then(null, takeBack);
+  }
+
   if (phase === 'confirm') {
     return (
       <span className="tracker-close-flag-confirm" role="group" aria-label={`Add a flag for ${row.accountName}`}>
         <span>{`Add "${row.flagDraft.message}" to the flag queue?`}</span>
-        <button
-          type="button"
-          className="resolve-button tracker-close-flag-confirm-yes"
-          onClick={() => {
-            onAddFlag(clientId, importId, row.flagDraft);
-            setPhase('added');
-          }}
-        >
+        <button type="button" className="resolve-button tracker-close-flag-confirm-yes" onClick={add}>
           Add flag
         </button>
         <button type="button" className="ghost-button tracker-close-flag-cancel" onClick={() => setPhase('idle')}>Cancel</button>
@@ -215,8 +230,19 @@ function FlagAction({ row, clientId, importId, onAddFlag }) {
     );
   }
   return (
-    <button type="button" className="ghost-button tracker-close-flag" title={row.flagDraft.message} onClick={() => setPhase('confirm')}>
-      Add flag
-    </button>
+    <>
+      <button
+        type="button"
+        className="ghost-button tracker-close-flag"
+        title={row.flagDraft.message}
+        onClick={() => {
+          setFailed(false);
+          setPhase('confirm');
+        }}
+      >
+        Add flag
+      </button>
+      {failed ? <span className="tracker-close-flag-failed" role="status">Could not add the flag.</span> : null}
+    </>
   );
 }

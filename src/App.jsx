@@ -16082,9 +16082,10 @@ export default function App() {
   const addFlagByIds = createTrackerCloseFlagAdder({
     setState,
     audit: auditSilently,
+    // The cell that asked says "Could not add the flag." inline when the
+    // write is refused (the adder rejects after this), so no browser dialog.
     onError: (error) => {
       console.error("[CRM] Failed to add a flag from the tracker comparison:", error);
-      window.alert(`Could not add the flag in Supabase: ${error.message}`);
     },
   });
   // The overview's way of asking for a close's rows this session has not

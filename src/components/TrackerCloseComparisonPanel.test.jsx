@@ -211,6 +211,42 @@ describe('"Add flag", confirmed inline', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 
+  it('takes "Flag added" back when the write is refused, and says it could not, inline', async () => {
+    let refuse;
+    const onAddFlag = vi.fn(() => new Promise((resolve, reject) => { refuse = () => reject(new Error('insert refused')); }));
+    const { container } = show({}, { onAddFlag });
+    const [differs] = rowsOf(container);
+    act(() => { differs.querySelector('.tracker-close-flag').click(); });
+    act(() => { differs.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    expect(onAddFlag).toHaveBeenCalledTimes(1);
+    // Said at once, while the write is out.
+    expect(text(differs.querySelector('.tracker-close-flag-added'))).toBe('Flag added');
+    await act(async () => { refuse(); });
+    expect(differs.querySelector('.tracker-close-flag-added')).toBeNull();
+    expect(text(differs.querySelector('.tracker-close-flag'))).toBe('Add flag');
+    const status = differs.querySelector('.tracker-close-actions [role="status"]');
+    expect(text(status)).toBe('Could not add the flag.');
+    expect(status.className).toContain('tracker-close-flag-failed');
+    // Another try clears the sentence, and a write that lands says Flag added for good.
+    onAddFlag.mockImplementation(() => Promise.resolve({ id: 'f-1' }));
+    act(() => { differs.querySelector('.tracker-close-flag').click(); });
+    expect(differs.querySelector('.tracker-close-flag-failed')).toBeNull();
+    act(() => { differs.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    await act(async () => {});
+    expect(text(differs.querySelector('.tracker-close-flag-added'))).toBe('Flag added');
+    expect(differs.querySelector('.tracker-close-flag-failed')).toBeNull();
+  });
+
+  it('takes "Flag added" back when onAddFlag throws before it returns', () => {
+    const onAddFlag = vi.fn(() => { throw new Error('no import'); });
+    const { container } = show({}, { onAddFlag });
+    const [differs] = rowsOf(container);
+    act(() => { differs.querySelector('.tracker-close-flag').click(); });
+    act(() => { differs.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    expect(differs.querySelector('.tracker-close-flag-added')).toBeNull();
+    expect(text(differs.querySelector('.tracker-close-flag-failed'))).toBe('Could not add the flag.');
+  });
+
   it('cancel puts the button back and writes nothing, and the other rows carry their own titles', () => {
     const { container, onAddFlag } = show();
     const [, trackerOnly, closeOnly] = rowsOf(container);
@@ -360,13 +396,19 @@ describe('the words and the styles', () => {
       collect(container);
       unmount();
     }
+    // A refused write: the cell says so beside the button.
+    const refused = show({}, { onAddFlag: vi.fn(() => { throw new Error('refused'); }) });
+    act(() => { refused.container.querySelector('.tracker-close-flag').click(); });
+    act(() => { refused.container.querySelector('.tracker-close-flag-confirm-yes').click(); });
+    collect(refused.container);
+    refused.unmount();
     expect([...seen]).toEqual(expect.arrayContaining([
       'tracker-close', 'tracker-close-head', 'tracker-close-header-words', 'tracker-close-source', 'tracker-close-summary',
       'tracker-close-empty', 'tracker-close-failed', 'tracker-close-table-wrap', 'tracker-close-table', 'tracker-close-row',
       'tracker-close-toggle', 'tracker-close-account', 'tracker-close-connection', 'tracker-close-figure', 'tracker-close-figure-label',
       'tracker-close-sampled', 'tracker-close-absent', 'tracker-close-spark', 'tracker-close-spark-capture', 'tracker-close-delta',
       'tracker-close-verdict', 'tracker-close-sentence', 'tracker-close-flag', 'tracker-close-flag-confirm', 'tracker-close-flag-confirm-yes',
-      'tracker-close-flag-cancel', 'tracker-close-flag-added', 'tracker-close-detail', 'tracker-close-strategies', 'tracker-close-strategy',
+      'tracker-close-flag-cancel', 'tracker-close-flag-added', 'tracker-close-flag-failed', 'tracker-close-detail', 'tracker-close-strategies', 'tracker-close-strategy',
       'tracker-close-strategy-instrument', 'tracker-close-strategy-moved', 'tracker-close-strategy-words', 'tracker-close-strategies-empty',
     ]));
     for (const name of seen) {
