@@ -60,21 +60,48 @@ export async function copyEnrollmentCode(code, clipboard = globalThis.navigator?
   await clipboard.writeText(String(code || ''));
 }
 
-// One line the CAM pastes into an elevated PowerShell on the client's VPS. It
-// downloads the agent package and runs the installer inside it, so nothing has
-// to be signed or clicked through — the release only needs to be a reachable
-// .zip. Returns '' when no release is published yet.
+const RELEASE_SHA256 = /^[0-9a-f]{64}$/i;
+
+// True when the release carries a digest the install line can check against.
+export function hasVerifiableSha256(release) {
+  return typeof release?.sha256 === 'string' && RELEASE_SHA256.test(release.sha256);
+}
+
+/* One line the CAM pastes into an elevated PowerShell on the client's VPS, the
+ * same line for a first install and for an update. It downloads the agent
+ * package and runs the installer inside it, so nothing has to be signed or
+ * clicked through: the release only needs to be a reachable .zip.
+ *
+ * IT CHECKS THE BYTES BEFORE ANYTHING OUT OF THEM RUNS. The line runs as
+ * administrator on a machine holding live client accounts, and the release
+ * already carries the package's SHA-256, read out of a manifest the server
+ * pins by its own digest (server/apiLib/collectorRelease.js). So the zip is
+ * hashed right after the download and compared with that value; on a mismatch
+ * the zip is deleted and the line throws, which stops the rest of the pasted
+ * line, before Expand-Archive and before install-agent.ps1. -ne compares
+ * strings case insensitively, so Get-FileHash's upper case answer matches the
+ * manifest's lower case digest.
+ *
+ * Returns '' when there is nothing verifiable to hand over: no release, a
+ * signed setup executable (run directly, so it gets the download link), or a
+ * package without a well formed sha256. Handing over an unverified line is
+ * exactly what this exists to prevent. */
 export function buildInstallCommand(release) {
   const url = String(release?.url || '').trim();
   // Only the package release is expandable. A signed setup executable is run
   // directly, so it gets the download link instead of a command.
   if (!url || (release?.kind && release.kind !== 'zip')) return '';
-  // Single-quoted in PowerShell so nothing in the URL is interpolated.
+  if (!hasVerifiableSha256(release)) return '';
+  // Single quoted in PowerShell so nothing in the URL is interpolated. The
+  // digest is hex by the check above, so it cannot carry a quote at all.
   const safeUrl = url.replace(/'/g, "''");
+  const sha256 = release.sha256.toLowerCase();
   return [
     "$d=\"$env:TEMP\\vincere-agent\"",
     'Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue',
     `Invoke-WebRequest '${safeUrl}' -OutFile "$d.zip" -UseBasicParsing`,
+    '$hash=(Get-FileHash -LiteralPath "$d.zip" -Algorithm SHA256).Hash',
+    `if ($hash -ne '${sha256}') { Remove-Item -LiteralPath "$d.zip" -Force -ErrorAction SilentlyContinue; throw "SHA256 mismatch, nothing was installed: $hash" }`,
     'Expand-Archive "$d.zip" $d -Force',
     '& "$d\\install-agent.ps1" -PackagePath $d',
   ].join('; ');
