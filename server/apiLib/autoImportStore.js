@@ -209,6 +209,12 @@ function registryFromRows(rows = []) {
     dateFailed: row.date_failed,
     dateLastPayout: row.date_last_payout,
     payoutCount: row.payout_count,
+    // What the closes say about the account (step 65), the same field
+    // supabaseStore.accountMetaFromRow gives the browser. reconcile reads it to
+    // stop raising the five live account flags on a breached or absent account
+    // (step 67). Null on a database before 65: no observation, not a word.
+    // Read only: nothing on this path writes it back.
+    observedState: row.observed_state || null,
   }]));
 }
 

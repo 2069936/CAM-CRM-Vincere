@@ -2435,6 +2435,66 @@ function groupStrategiesByAccount(strategies = []) {
 		return map;
 	}, {});
 }
+Object.freeze([
+	"Missing account",
+	"Strategy disabled",
+	"Expected strategy missing",
+	"Drawdown approaching limit",
+	"Drawdown near limit"
+]);
+var PAST_LIVE_FLAG_STATUSES = [
+	ACCOUNT_STATUSES.FAILED,
+	ACCOUNT_STATUSES.INACTIVE,
+	ACCOUNT_STATUSES.RESERVE
+];
+var PAST_LIVE_FLAG_OBSERVATIONS = ["breached", "absent"];
+/**
+* Whether an account is past the five flags above: the registry says Failed,
+* Inactive or Reserve, or the type is Inactive / Ignore, or the closes say it
+* breached or has been absent for stale_closes closes. Payout Hold is alive:
+* the account is held, not gone.
+*/
+function accountIsPastLiveFlags(meta) {
+	if (!meta) return false;
+	if (PAST_LIVE_FLAG_STATUSES.includes(meta.status)) return true;
+	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return true;
+	return PAST_LIVE_FLAG_OBSERVATIONS.includes(meta.observedState);
+}
+/**
+* Whether the one trailing reading a close carries for an account is a breach:
+* true, false, or null when it measures nothing (null, exactly 0, not finite)
+* or the account cannot breach (cash, simulation). Step 65's
+* account_observation_reading and account_observation_breach, line for line,
+* because the refresh will judge the same stored value with them.
+*/
+function closeReadingBreach(trailing, accountType, maxDrawdownLimit) {
+	const reading = Number(trailing);
+	if (trailing === null || trailing === void 0 || !Number.isFinite(reading) || reading === 0) return null;
+	if (isCashType(accountType)) return null;
+	if (String(accountType || "").trim() === ACCOUNT_TYPES.SIMULATION) return null;
+	const limit = maxDrawdownLimit === null || maxDrawdownLimit === void 0 ? NaN : Number(maxDrawdownLimit);
+	return Number.isFinite(limit) && limit > 0 ? Math.abs(reading) >= limit : reading < 0;
+}
+/**
+* The observation as of the close being written, for an account that IS in it.
+*
+* observed_state is rewritten by step 65's refresh at the commit of a close,
+* so while a close is being reconciled (and, on the automatic route, while its
+* flags are inserted) the stored word is what the closes BEFORE it said. For an
+* account in this close 'absent' is already false: the refresh will write
+* 'seen'. And 'breached' is the word of the latest measured reading, so a
+* measured reading in this close replaces it, either way. Only an unmeasured
+* reading leaves a stored 'breached' standing, as it does in the refresh.
+* An account NOT in the close keeps the stored word: nothing in this close
+* speaks for it. step_67_flag_hygiene.sql holds the same rule in
+* account_observation_in_close() for the insert guard.
+*/
+function observedStateInClose(storedState, { inClose = false, closeBreach = null } = {}) {
+	if (!inClose) return storedState ?? null;
+	if (closeBreach === true) return "breached";
+	if (closeBreach === false) return "seen";
+	return storedState === "breached" ? "breached" : "seen";
+}
 function shouldExpectStrategy(meta) {
 	if (!meta) return false;
 	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
@@ -2676,6 +2736,14 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 		};
 		snapshots.push(createSnapshot(account, strategies, derived, joinedDerivationByAccount.get(String(account.accountName || "").trim())));
 		seen.add(account.accountName.toLowerCase());
+		const snapshot = snapshots[snapshots.length - 1];
+		const pastLiveFlags = accountIsPastLiveFlags({
+			...meta,
+			observedState: observedStateInClose(existing?.observedState, {
+				inClose: true,
+				closeBreach: closeReadingBreach(snapshot.trailingMaxDrawdown, meta.accountType, meta.maxDrawdownLimit)
+			})
+		});
 		if (nature.nature === ACCOUNT_NATURES.UNDETERMINED) flags.push(makeFlag({
 			type: "Account nature undetermined",
 			severity: "Warning",
@@ -2700,14 +2768,13 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			accountName: account.accountName,
 			message: `${meta.alias} needs an account type before close.`
 		}));
-		if (isRealMoney && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies) && nothingRanIsKnown(strategies)) flags.push(makeFlag({
+		if (isRealMoney && !pastLiveFlags && shouldExpectStrategy(meta) && !hasStrategyThatRan(strategies) && nothingRanIsKnown(strategies)) flags.push(makeFlag({
 			type: "Expected strategy missing",
 			severity: "Critical",
 			accountName: account.accountName,
 			message: `${meta.alias} is active but no strategy ran in this close.`
 		}));
 		const ddLimit = !isRealMoney || isCashType(meta.accountType) ? NaN : Number(meta.maxDrawdownLimit);
-		const snapshot = snapshots[snapshots.length - 1];
 		const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
 		const limits = drawdownThresholds(snapshot.trailingSource);
 		const derivedNote = snapshot.trailingSource === "derived" ? " (estimated from stored closes - confirm with the prop firm)" : "";
@@ -2721,13 +2788,13 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 					accountName: account.accountName,
 					message: `${meta.alias} has exceeded its $${ddLimit.toLocaleString()} max drawdown limit. Account may be terminated.${derivedNote}`
 				}));
-				else if (remaining <= limits.critical) flags.push(makeFlag({
+				else if (!pastLiveFlags && remaining <= limits.critical) flags.push(makeFlag({
 					type: "Drawdown near limit",
 					severity: "Critical",
 					accountName: account.accountName,
 					message: `${meta.alias} is $${Math.round(remaining)} from its $${ddLimit.toLocaleString()} max drawdown limit. Immediate action required.${derivedNote}`
 				}));
-				else if (remaining <= limits.warning) flags.push(makeFlag({
+				else if (!pastLiveFlags && remaining <= limits.warning) flags.push(makeFlag({
 					type: "Drawdown approaching limit",
 					severity: "Warning",
 					accountName: account.accountName,
@@ -2741,13 +2808,13 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 				accountName: account.accountName,
 				message: `${meta.alias} trailing drawdown buffer is $${rawDD.toLocaleString()} - account limit reached or exceeded. Verify with prop firm immediately.`
 			}));
-			else if (rawDD <= limits.critical) flags.push(makeFlag({
+			else if (!pastLiveFlags && rawDD <= limits.critical) flags.push(makeFlag({
 				type: "Drawdown near limit",
 				severity: "Critical",
 				accountName: account.accountName,
 				message: `${meta.alias} has only $${Math.round(rawDD)} of trailing drawdown buffer remaining. Immediate action required.`
 			}));
-			else if (rawDD <= limits.warning) flags.push(makeFlag({
+			else if (!pastLiveFlags && rawDD <= limits.warning) flags.push(makeFlag({
 				type: "Drawdown approaching limit",
 				severity: "Warning",
 				accountName: account.accountName,
@@ -2783,7 +2850,7 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			accountName: account.accountName,
 			message: `${meta.alias} is ${meta.status} but ran a strategy.`
 		}));
-		for (const strategy of strategies) if (!strategyRan(strategy) && ranIsKnown(strategy)) flags.push(makeFlag({
+		for (const strategy of strategies) if (!pastLiveFlags && !strategyRan(strategy) && ranIsKnown(strategy)) flags.push(makeFlag({
 			type: "Strategy disabled",
 			severity: "Warning",
 			accountName: account.accountName,
@@ -2793,7 +2860,7 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 	for (const [accountName, meta] of Object.entries(registry || {})) {
 		if (seen.has(accountName.toLowerCase())) continue;
 		accountsByName[accountName] = meta;
-		if (!(classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION) && meta.accountType !== ACCOUNT_TYPES.IGNORE && meta.status !== ACCOUNT_STATUSES.INACTIVE) flags.push(makeFlag({
+		if (!(classifyAccountNature(meta, { accountName }).nature === ACCOUNT_NATURES.SIMULATION) && !accountIsPastLiveFlags(meta)) flags.push(makeFlag({
 			type: "Missing account",
 			severity: "Warning",
 			accountName,
