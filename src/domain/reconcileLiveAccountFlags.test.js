@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   LIVE_ACCOUNT_FLAG_TYPES,
   accountIsPastLiveFlags,
+  closeReadingBreach,
+  observedStateInClose,
   recalculateDailyImport,
   reconcileDailyImport,
 } from './reconcile';
@@ -29,6 +31,15 @@ const DEAD = [
   ['observed breached', { observedState: 'breached' }],
   ['observed absent', { observedState: 'absent' }],
 ];
+
+// For an account IN the close the stored observation is read as of that close
+// (observedStateInClose): 'absent' is already wrong there, and a measured
+// reading decides 'breached'. These are dead in the close whatever it reports;
+// 'observed breached' only while the close measures nothing, which is the shape
+// account() below has (no trailing column).
+const DEAD_IN_CLOSE = DEAD.filter(([label]) => label !== 'observed absent');
+// Dead whatever the close reads: the registry says so.
+const DEAD_BY_REGISTRY = DEAD.filter(([label]) => !label.startsWith('observed'));
 
 const LIVE = [
   ['Active and seen', { observedState: 'seen' }],
@@ -114,7 +125,7 @@ describe('Missing account is not raised for a dead account', () => {
 describe('Strategy disabled is not raised for a dead account', () => {
   const switchedOff = [{ accountName: 'ACC 01', strategyName: '1 - IFSP-2.0', strategyFamily: 'IFSP', enabled: false }];
 
-  it.each(DEAD)('%s, in the close with a strategy that did not run: no Strategy disabled', (_, over) => {
+  it.each(DEAD_IN_CLOSE)('%s, in the close with a strategy that did not run: no Strategy disabled', (_, over) => {
     const result = run(registryOf(over), close([account()], switchedOff));
     expect(typesOf(result)).not.toContain('Strategy disabled');
   });
@@ -128,7 +139,7 @@ describe('Strategy disabled is not raised for a dead account', () => {
 describe('Expected strategy missing is not raised for a dead account', () => {
   const idle = [{ accountName: 'ACC 01', strategyName: '0 - RBO-1.8', strategyFamily: 'RBO', enabled: false }];
 
-  it.each(DEAD)('%s, nothing ran: no Expected strategy missing', (_, over) => {
+  it.each(DEAD_IN_CLOSE)('%s, nothing ran: no Expected strategy missing', (_, over) => {
     const result = run(registryOf(over), close([account()], idle));
     expect(typesOf(result)).not.toContain('Expected strategy missing');
   });
@@ -149,7 +160,7 @@ describe('the drawdown ladder: breached stays, near and approaching go', () => {
   // -50 breached.
   const model2 = (buffer) => close([account({ trailingMaxDrawdown: buffer })], running);
 
-  it.each(DEAD.filter(([label]) => label !== 'type Inactive / Ignore'))(
+  it.each(DEAD_BY_REGISTRY.filter(([label]) => label !== 'type Inactive / Ignore'))(
     '%s, model 1: no near or approaching, and Drawdown breached is still raised',
     (_, over) => {
       const registry = registryOf({ maxDrawdownLimit: 2000, ...over });
@@ -159,7 +170,7 @@ describe('the drawdown ladder: breached stays, near and approaching go', () => {
     },
   );
 
-  it.each(DEAD.filter(([label]) => label !== 'type Inactive / Ignore'))(
+  it.each(DEAD_BY_REGISTRY.filter(([label]) => label !== 'type Inactive / Ignore'))(
     '%s, model 2: no near or approaching, and Drawdown breached is still raised',
     (_, over) => {
       const registry = registryOf(over);
@@ -205,6 +216,106 @@ describe('the registry is matched as reconcile always matched it', () => {
     const result = run(registry, close([account()], [{ accountName: 'ACC 01', strategyName: 'X', enabled: false }]));
     expect(typesOf(result)).not.toContain('Strategy disabled');
     expect(typesOf(result)).not.toContain('Expected strategy missing');
+  });
+});
+
+/* READ AS OF THE CLOSE.
+ *
+ * observed_state is rewritten by step 65's refresh at the commit of a close, so
+ * the registry reconcile reads holds what the closes BEFORE this one said. An
+ * Active account absent for five closes that reports today is alive today (the
+ * refresh writes 'seen' at this very commit), and before step 67 it got these
+ * flags on the close it came back in. The same for an Active account still
+ * reading 'breached' (auto fail off, or revived by a CAM) whose new reading is
+ * clear: the latest measured reading is the refresh's word, and it is this one.
+ */
+describe('an account in the close is read as of that close', () => {
+  const idleIfsp = [{ accountName: 'ACC 01', strategyName: '1 - IFSP', strategyFamily: 'IFSP', enabled: false }];
+  const nearBuffer = close([account({ trailingMaxDrawdown: 300 })], idleIfsp);
+  const inClose = (result) => result.flags
+    .filter((flag) => flag.accountName === 'ACC 01' && LIVE_ACCOUNT_FLAG_TYPES.includes(flag.type))
+    .map((flag) => `${flag.type}|${flag.severity}`)
+    .sort();
+  const THREE = ['Drawdown near limit|Critical', 'Expected strategy missing|Critical', 'Strategy disabled|Warning'];
+
+  it('an Active account absent for five closes that comes back near its limit keeps the three, like one never absent', () => {
+    const returning = run(registryOf({ observedState: 'absent', closesMissed: 5 }), nearBuffer);
+    const steady = run(registryOf({ observedState: 'seen', closesMissed: 0 }), nearBuffer);
+    expect(inClose(steady)).toEqual(THREE);
+    expect(inClose(returning)).toEqual(THREE);
+  });
+
+  it('the same account, still absent from the close, still gets no Missing account', () => {
+    const result = run(registryOf({ observedState: 'absent', closesMissed: 5 }), close());
+    expect(typesOf(result)).not.toContain('Missing account');
+  });
+
+  it('an Active account still reading breached whose new reading is clear but near: the ladder and the strategy flags, both models', () => {
+    const stale = { observedState: 'breached' };
+    expect(inClose(run(registryOf(stale), nearBuffer))).toEqual(THREE);
+    const one = registryOf({ ...stale, maxDrawdownLimit: 2000 });
+    const nearOne = close([account({ trailingMaxDrawdown: -1600 })], idleIfsp);
+    const approachingOne = close([account({ trailingMaxDrawdown: -1100 })], idleIfsp);
+    expect(typesOf(run(one, nearOne))).toContain('Drawdown near limit');
+    expect(typesOf(run(one, approachingOne))).toContain('Drawdown approaching limit');
+    expect(typesOf(run(registryOf(stale), close([account({ trailingMaxDrawdown: 900 })], idleIfsp))))
+      .toContain('Drawdown approaching limit');
+  });
+
+  it('a stored breach with nothing measured in this close stands: an unmeasured reading changes nothing, as in the refresh', () => {
+    for (const trailing of [undefined, 0]) {
+      const result = run(registryOf({ observedState: 'breached' }), close([account({ trailingMaxDrawdown: trailing })], idleIfsp));
+      expect(inClose(result), String(trailing)).toEqual([]);
+    }
+  });
+
+  it('a seen account whose reading in this close is a breach: Drawdown breached, and none of the five', () => {
+    const result = run(registryOf({ observedState: 'seen' }), close([account({ trailingMaxDrawdown: -50 })], idleIfsp));
+    expect(typesOf(result)).toContain('Drawdown breached');
+    expect(inClose(result)).toEqual([]);
+    const one = run(
+      registryOf({ observedState: 'seen', maxDrawdownLimit: 2000 }),
+      close([account({ trailingMaxDrawdown: -2100 })], idleIfsp),
+    );
+    expect(typesOf(one)).toContain('Drawdown breached');
+    expect(inClose(one)).toEqual([]);
+  });
+
+  it('a registry death is not overruled by a clear reading: Failed, Inactive, Reserve, Inactive / Ignore', () => {
+    for (const [label, over] of DEAD_BY_REGISTRY) {
+      expect(inClose(run(registryOf({ ...over, observedState: 'seen' }), nearBuffer)), label).toEqual([]);
+    }
+  });
+});
+
+describe('the reading and the observation as of a close, at their edges', () => {
+  it('closeReadingBreach is step 65\'s account_observation_breach: unmeasured, cash and simulation are null', () => {
+    expect(closeReadingBreach(null, 'Funded', null)).toBe(null);
+    expect(closeReadingBreach(undefined, 'Funded', null)).toBe(null);
+    expect(closeReadingBreach(0, 'Funded', null)).toBe(null);
+    expect(closeReadingBreach(Number.NaN, 'Funded', null)).toBe(null);
+    expect(closeReadingBreach(Number.POSITIVE_INFINITY, 'Funded', null)).toBe(null);
+    expect(closeReadingBreach(-5, 'Cash - IRA', null)).toBe(null);
+    expect(closeReadingBreach(-5, 'Cash', null)).toBe(null);
+    expect(closeReadingBreach(-5, ' Simulation ', null)).toBe(null);
+    // Model 2: the reading is the buffer.
+    expect(closeReadingBreach(-0.01, 'Funded', null)).toBe(true);
+    expect(closeReadingBreach(300, 'Funded', 0)).toBe(false);
+    // Model 1: the reading is cumulative loss against the limit.
+    expect(closeReadingBreach(-2000, 'Funded', 2000)).toBe(true);
+    expect(closeReadingBreach(-1999, 'Funded', '2000')).toBe(false);
+  });
+
+  it('observedStateInClose: out of the close the stored word stands; in it, a measured reading decides', () => {
+    for (const stored of ['seen', 'breached', 'absent', 'never_seen', null]) {
+      expect(observedStateInClose(stored, { inClose: false, closeBreach: true }), String(stored)).toBe(stored);
+      expect(observedStateInClose(stored, { inClose: true, closeBreach: true }), String(stored)).toBe('breached');
+      expect(observedStateInClose(stored, { inClose: true, closeBreach: false }), String(stored)).toBe('seen');
+    }
+    expect(observedStateInClose('breached', { inClose: true, closeBreach: null })).toBe('breached');
+    expect(observedStateInClose('absent', { inClose: true, closeBreach: null })).toBe('seen');
+    expect(observedStateInClose('never_seen', { inClose: true })).toBe('seen');
+    expect(observedStateInClose(undefined)).toBe(null);
   });
 });
 

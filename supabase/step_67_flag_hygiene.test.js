@@ -27,9 +27,15 @@ import {
   rowsAsRole,
   startMigrationCluster,
 } from './migrationCluster.js';
-import { LIVE_ACCOUNT_FLAG_TYPES, accountIsPastLiveFlags, reconcileDailyImport } from '../src/domain/reconcile.js';
+import {
+  LIVE_ACCOUNT_FLAG_TYPES,
+  accountIsPastLiveFlags,
+  closeReadingBreach,
+  observedStateInClose,
+  reconcileDailyImport,
+} from '../src/domain/reconcile.js';
 import { createAutoImportStore } from '../server/apiLib/autoImportStore.js';
-import { LOGIN_COLUMNS, closeFlagsFromRows } from '../src/domain/supabaseStore.js';
+import { LOGIN_COLUMNS, accountMetaFromRow, closeFlagsFromRows } from '../src/domain/supabaseStore.js';
 import { buildCamFlagQueue } from '../src/domain/camFlagQueue.js';
 
 const STEP = 'step_67_flag_hygiene.sql';
@@ -54,8 +60,15 @@ const REFRESH = 'public.refresh_account_observations(uuid)';
 const HELPERS = [
   'public.live_account_flag_types()',
   'public.account_is_past_live_flags(text, text, text)',
+  'public.account_observation_in_close(text, boolean, boolean)',
   'public.operational_flags_live_account_guard()',
 ];
+// Security INVOKER on purpose, like step 65's observed columns guard: it reads
+// current_user to tell the browser from the database.
+const NOTE_GUARD = 'public.operational_flags_resolution_note_guard()';
+// What a signed in CAM could write before 67 ran, to fool a guard that read the
+// audit log: the backlog's own action, by hand.
+const FORGED = { forgedByHand: true };
 
 let db;
 const world = { a: {}, b: {}, g: {}, gCloses: [], t: {}, tCloses: {} };
@@ -232,6 +245,13 @@ beforeAll(async () => {
   }
   await seedFlag({ close: B.close, client: B.client, account: B.failed, type: 'Drawdown near limit', message: 'B 01 near.' });
 
+  // A CAM writes the backlog's audit row by hand before 67 exists. RLS lets
+  // her; the backlog must not take it for its own.
+  world.forged = await committed(world.gray.auth,
+    `insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+     values (null, 'operational_flags', null, 'flags.backlog_resolved_on_failed_accounts', $1::jsonb)
+     returning id`, [JSON.stringify(FORGED)]);
+
   world.before = {
     column: await column(db, `select column_name from information_schema.columns
       where table_schema = 'public' and table_name = 'operational_flags' and column_name = 'resolution_note'`),
@@ -242,6 +262,8 @@ beforeAll(async () => {
   world.notices = await applyFileCollectingNotices(db, STEP);
   world.backlogAt = await one(db, `select to_char(resolved_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     from public.operational_flags where resolution_note = $1 limit 1`, [BACKLOG_NOTE]);
+  world.markerAt = await one(db, `select to_char(flag_backlog_resolved_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    from public.account_observation_settings where id`);
   world.definition = await functionDefinition(REFRESH);
 }, 180_000);
 
@@ -308,8 +330,22 @@ describe('the backlog: Open flags of the five on Failed accounts, resolved once'
     expect(await one(db, 'select status from public.operational_flags where id = $1', [world.a.orphan])).toBe('Open');
   });
 
+  it('a backlog audit row a CAM wrote by hand before 67 ran does not stop it: the guard is the settings marker', async () => {
+    expect(world.forged).toHaveLength(1);
+    expect((await auditRows('flags.backlog_resolved_on_failed_accounts')).filter((row) => row.after_data.forgedByHand))
+      .toEqual([{ user_id: null, entity_type: 'operational_flags', entity_id: null, after_data: FORGED }]);
+    expect(world.markerAt).toBe(world.backlogAt);
+  });
+
+  it('a CAM reads the marker and cannot write it', async () => {
+    expect(await refusalAsRole(db, 'authenticated',
+      'update public.account_observation_settings set flag_backlog_resolved_at = null where id', { subject: world.gray.auth }))
+      .toMatch(DENIED);
+    expect(await one(db, 'select flag_backlog_resolved_at is not null from public.account_observation_settings')).toBe(true);
+  });
+
   it('writes ONE summary audit row with the counts per type and no person', async () => {
-    expect(await auditRows('flags.backlog_resolved_on_failed_accounts')).toEqual([{
+    expect((await auditRows('flags.backlog_resolved_on_failed_accounts')).filter((row) => !row.after_data.forgedByHand)).toEqual([{
       user_id: null,
       entity_type: 'operational_flags',
       entity_id: null,
@@ -347,7 +383,9 @@ describe('the backlog: Open flags of the five on Failed accounts, resolved once'
     ]);
     expect(await one(db, "select count(*)::int from public.operational_flags where status = 'Resolved'")).toBe(resolvedBefore);
     expect(await one(db, 'select status from public.operational_flags where id = $1', [lateFlag])).toBe('Open');
-    expect(await auditRows('flags.backlog_resolved_on_failed_accounts')).toHaveLength(1);
+    expect((await auditRows('flags.backlog_resolved_on_failed_accounts')).filter((row) => !row.after_data.forgedByHand)).toHaveLength(1);
+    expect(await one(db, `select to_char(flag_backlog_resolved_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+      from public.account_observation_settings where id`)).toBe(world.markerAt);
   });
 
 });
@@ -474,7 +512,10 @@ describe('a dead account does not get the five, whoever inserts them', () => {
   it('end to end: the registry the ingest reads, reconcile, the persist RPC; the five only where the account is alive', async () => {
     // The close the agent would send: three accounts reported, six missing.
     // G 01 is live with a near limit buffer and a strategy that did not run;
-    // G 04 (Failed) and G 08 (breached) report exactly the same.
+    // G 04 (Failed) and G 08 (Active, still reading breached) report exactly
+    // the same. G 08's reading here is clear: the refresh will call it seen at
+    // this commit, so on this close it is alive and keeps the three. G 04 is
+    // dead by its status, whatever it reads.
     const { registry } = await storeOverCluster().loadRegistryForIngest(world.g.client);
     const reported = ['G 01', 'G 04', 'G 08'];
     const importResult = reconcileDailyImport({
@@ -491,24 +532,205 @@ describe('a dead account does not get the five, whoever inserts them', () => {
       },
     });
     const generated = importResult.flags.map((flag) => `${flag.accountName}|${flag.type}`).sort();
-    expect(generated.filter((key) => FIVE.some((type) => key.endsWith(`|${type}`)))).toEqual([
+    const alive = [
       'G 01|Drawdown near limit',
       'G 01|Expected strategy missing',
       'G 01|Strategy disabled',
       'G 02|Missing account',
       'G 03|Missing account',
-    ]);
+      'G 08|Drawdown near limit',
+      'G 08|Expected strategy missing',
+      'G 08|Strategy disabled',
+    ];
+    expect(generated.filter((key) => FIVE.some((type) => key.endsWith(`|${type}`)))).toEqual(alive);
     const closeId = await persist(world.g.client, world.g.device, importResult);
     const stored = (await db.query(`select t.account_name || '|' || f.type as key from public.operational_flags as f
       join public.trading_accounts as t on t.id = f.trading_account_id
       where f.daily_import_id = $1 and f.type = any ($2::text[]) order by 1`, [closeId, FIVE])).rows.map((row) => row.key);
-    expect(stored).toEqual([
-      'G 01|Drawdown near limit',
-      'G 01|Expected strategy missing',
-      'G 01|Strategy disabled',
-      'G 02|Missing account',
-      'G 03|Missing account',
+    expect(stored).toEqual(alive);
+    expect((await db.query('select status, observed_state from public.trading_accounts where id = $1', [world.g.breached])).rows)
+      .toEqual([{ status: 'Active', observed_state: 'seen' }]);
+  });
+});
+
+/* ── Read as of the close ─────────────────────────────────────────────────── */
+
+describe('an account that comes back is alive on the close it comes back in', () => {
+  const REPORTED = { connection: 'Lucid', grossRealizedPnl: 0, accountBalance: 50000, weeklyPnl: 0 };
+  const near = (accountName) => ({ accountName, ...REPORTED, trailingMaxDrawdown: 300 });
+  const idle = (accountName) => ({ accountName, strategyName: '1 - IFSP', enabled: false });
+  const fiveOf = (flags) => flags
+    .filter((flag) => FIVE.includes(flag.type))
+    .map((flag) => `${flag.accountName}|${flag.type}`)
+    .sort();
+  const THREE = (name) => [`${name}|Drawdown near limit`, `${name}|Expected strategy missing`, `${name}|Strategy disabled`];
+
+  async function storedFive(closeId) {
+    return column(db, `select t.account_name || '|' || f.type from public.operational_flags as f
+      join public.trading_accounts as t on t.id = f.trading_account_id
+      where f.daily_import_id = $1 and f.type = any ($2::text[]) order by 1`, [closeId, FIVE]);
+  }
+
+  async function observed(clientId) {
+    return (await db.query(`select account_name, status, observed_state, closes_missed
+      from public.trading_accounts where client_id = $1 order by account_name`, [clientId])).rows
+      .map((row) => [row.account_name, row.status, row.observed_state, row.closes_missed]);
+  }
+
+  /** Six closes: the first one seen, every one seen, and a breach on the last with the auto fail off. */
+  async function sixCloses(clientId, ids, { firstOnly, every, breachLast = [] }) {
+    await setting('auto_fail_on_breach', false);
+    try {
+      for (let n = 0; n < 6; n += 1) {
+        const id = await world.close(clientId, shiftDays(world.today, n - 20));
+        for (const name of firstOnly) if (n === 0) await snapshot(id, ids[name], name, 2000);
+        for (const name of every) await snapshot(id, ids[name], name, 2000);
+        for (const name of breachLast) await snapshot(id, ids[name], name, n === 5 ? -10 : 500);
+      }
+    } finally {
+      await setting('auto_fail_on_breach', true);
+    }
+  }
+
+  beforeAll(async () => {
+    const RET = {};
+    world.ret = RET;
+    RET.client = await world.clientOf(world.gray, 'Client RET');
+    RET.ids = {};
+    for (const name of ['RET 01', 'RET 02', 'RET 03', 'RET 04']) RET.ids[name] = await world.account(RET.client, name);
+    // RET 01 and RET 03 seen once then missing five closes (absent); RET 02
+    // seen on every close; RET 04 on every close, breached on the last one
+    // while the auto fail was off (Active, reading breached).
+    await sixCloses(RET.client, RET.ids, { firstOnly: ['RET 01', 'RET 03'], every: ['RET 02'], breachLast: ['RET 04'] });
+    RET.device = await one(db, 'insert into public.ingest_devices (client_id) values ($1) returning id', [RET.client]);
+
+    const MAN = {};
+    world.man = MAN;
+    MAN.client = await world.clientOf(world.gray, 'Client MAN');
+    MAN.ids = {};
+    for (const name of ['MAN 01', 'MAN 02']) MAN.ids[name] = await world.account(MAN.client, name);
+    await sixCloses(MAN.client, MAN.ids, { firstOnly: ['MAN 01'], every: ['MAN 02'] });
+  });
+
+  it('the fixture, read from the database: two absent, one seen, one Active and still breached', async () => {
+    expect(await observed(world.ret.client)).toEqual([
+      ['RET 01', 'Active', 'absent', 5],
+      ['RET 02', 'Active', 'seen', 0],
+      ['RET 03', 'Active', 'absent', 5],
+      ['RET 04', 'Active', 'breached', 0],
     ]);
+    expect(await observed(world.man.client)).toEqual([
+      ['MAN 01', 'Active', 'absent', 5],
+      ['MAN 02', 'Active', 'seen', 0],
+    ]);
+  });
+
+  it('the automatic route: the registry the ingest reads, reconcile and the persist RPC give the returning account what the steady one gets', async () => {
+    // RET 01 comes back, RET 02 never left, both 300 from the edge with IFSP
+    // switched off and nothing run. RET 03 is still missing. RET 04 reports
+    // no drawdown at all (0 is not a measurement), so its stored breach stands.
+    const RET = world.ret;
+    const { registry } = await storeOverCluster().loadRegistryForIngest(RET.client);
+    expect(['RET 01', 'RET 03'].map((name) => registry[name].observedState)).toEqual(['absent', 'absent']);
+    const importResult = reconcileDailyImport({
+      clientId: RET.client,
+      date: shiftDays(world.today, -14),
+      registry,
+      parsed: {
+        accounts: [near('RET 01'), near('RET 02'), { accountName: 'RET 04', ...REPORTED, trailingMaxDrawdown: 0 }],
+        strategies: [idle('RET 01'), idle('RET 02'), idle('RET 04')],
+        orders: [],
+        executions: [],
+      },
+    });
+    const severities = Object.fromEntries(importResult.flags
+      .filter((flag) => flag.accountName === 'RET 01' && FIVE.includes(flag.type))
+      .map((flag) => [flag.type, flag.severity]));
+    expect(severities).toEqual({ 'Drawdown near limit': 'Critical', 'Expected strategy missing': 'Critical', 'Strategy disabled': 'Warning' });
+    expect(fiveOf(importResult.flags)).toEqual([...THREE('RET 01'), ...THREE('RET 02')]);
+
+    // The payload also carries the five for RET 04, as a build before this
+    // fix would: the guard reads the close's snapshot and keeps them out.
+    const payload = {
+      ...importResult,
+      flags: [
+        ...importResult.flags,
+        ...FIVE.map((type) => ({ type, severity: 'Warning', accountName: 'RET 04', message: `old build RET 04 ${type}` })),
+      ],
+    };
+    const closeId = await persist(RET.client, RET.device, payload);
+    expect(await storedFive(closeId)).toEqual([...THREE('RET 01'), ...THREE('RET 02')]);
+    expect(await observed(RET.client)).toEqual([
+      ['RET 01', 'Active', 'seen', 0],
+      ['RET 02', 'Active', 'seen', 0],
+      ['RET 03', 'Active', 'absent', 6],
+      ['RET 04', 'Active', 'breached', 0],
+    ]);
+  });
+
+  it('an absent account still missing from the close gets no Missing account, generated or stored', async () => {
+    const stored = await column(db, `select f.type from public.operational_flags as f
+      where f.trading_account_id = $1`, [world.ret.ids['RET 03']]);
+    expect(stored).toEqual([]);
+  });
+
+  it('the manual upload: the tab\'s registry says absent, the CAM\'s requests store the returning account\'s three', async () => {
+    const MAN = world.man;
+    const rows = await rowsAsRole(db, 'authenticated',
+      'select * from public.trading_accounts where client_id = $1 order by account_name', { subject: world.gray.auth, params: [MAN.client] });
+    const registry = Object.fromEntries(rows.map((row) => [row.account_name, accountMetaFromRow(row)]));
+    expect(registry['MAN 01'].observedState).toBe('absent');
+    const day = shiftDays(world.today, -14);
+    const result = reconcileDailyImport({
+      clientId: MAN.client,
+      date: day,
+      registry,
+      parsed: { accounts: [near('MAN 01'), near('MAN 02')], strategies: [idle('MAN 01'), idle('MAN 02')], orders: [], executions: [] },
+    });
+    expect(fiveOf(result.flags)).toEqual([...THREE('MAN 01'), ...THREE('MAN 02')]);
+
+    // The close row, the snapshots (the deferred refresh commits with them),
+    // then the flags: three requests, each committed as the CAM.
+    const [{ id: closeId }] = await committed(world.gray.auth,
+      'insert into public.daily_imports (client_id, trading_date) values ($1, $2) returning id', [MAN.client, day]);
+    await committed(world.gray.auth,
+      `insert into public.account_snapshots (daily_import_id, trading_account_id, account_name, trailing_max_drawdown, account_balance)
+       values ($1, $2, 'MAN 01', 300, 50000), ($1, $3, 'MAN 02', 300, 50000)`, [closeId, MAN.ids['MAN 01'], MAN.ids['MAN 02']]);
+    for (const flag of result.flags) {
+      await committed(world.gray.auth,
+        `insert into public.operational_flags (daily_import_id, client_id, trading_account_id, type, severity, message, status)
+         values ($1, $2, $3, $4, $5, $6, 'Open')`,
+        [closeId, MAN.client, MAN.ids[flag.accountName] || null, flag.type, flag.severity, flag.message]);
+    }
+    expect(await storedFive(closeId)).toEqual([...THREE('MAN 01'), ...THREE('MAN 02')]);
+    expect(await observed(MAN.client)).toEqual([
+      ['MAN 01', 'Active', 'seen', 0],
+      ['MAN 02', 'Active', 'seen', 0],
+    ]);
+  });
+
+  it('the rule as of a close is the same in SQL and in reconcile.js, case by case', async () => {
+    const cases = [];
+    for (const stored of ['seen', 'breached', 'absent', 'never_seen', null]) {
+      for (const inClose of [false, true]) {
+        for (const closeBreach of [true, false, null]) cases.push([stored, inClose, closeBreach]);
+      }
+    }
+    const sql = await column(db, `select public.account_observation_in_close(c.stored, c.in_close, c.breach)
+      from jsonb_to_recordset($1::jsonb) as c(n integer, stored text, in_close boolean, breach boolean)
+      order by c.n`, [JSON.stringify(cases.map(([stored, in_close, breach], n) => ({ n, stored, in_close, breach })))]);
+    expect(sql).toEqual(cases.map(([stored, inClose, closeBreach]) => observedStateInClose(stored, { inClose, closeBreach })));
+
+    const readings = [];
+    for (const trailing of [null, 0, 300, -0.5, -10, -1999, -2000, -2100]) {
+      for (const type of ['Funded', 'Cash - IRA', 'Cash', 'Simulation']) {
+        for (const limit of [null, 0, 2000]) readings.push([trailing, type, limit]);
+      }
+    }
+    const breaches = await column(db, `select public.account_observation_breach(c.reading, c.type, c.lim)
+      from jsonb_to_recordset($1::jsonb) as c(n integer, reading numeric, type text, lim numeric)
+      order by c.n`, [JSON.stringify(readings.map(([reading, type, lim], n) => ({ n, reading, type, lim })))]);
+    expect(breaches).toEqual(readings.map(([trailing, type, limit]) => closeReadingBreach(trailing, type, limit)));
   });
 });
 
@@ -521,8 +743,11 @@ describe('the close that marks an account Failed resolves its five, and nothing 
     T.flipping = await world.account(T.client, 'T 01');
     T.bystander = await world.account(T.client, 'T 02');
     T.switchedOff = await world.account(T.client, 'T 03');
+    // Flips in the same close as T 01 with none of the five open: one kept
+    // type and one of the five a CAM already closed.
+    T.bare = await world.account(T.client, 'T 04');
     world.tCloses.first = await world.close(T.client, shiftDays(world.today, -2));
-    for (const [id, name] of [[T.flipping, 'T 01'], [T.bystander, 'T 02'], [T.switchedOff, 'T 03']]) {
+    for (const [id, name] of [[T.flipping, 'T 01'], [T.bystander, 'T 02'], [T.switchedOff, 'T 03'], [T.bare, 'T 04']]) {
       await snapshot(world.tCloses.first, id, name, 500);
     }
     const seed = (accountId, type, message, extra = {}) => seedFlag({ close: world.tCloses.first, client: T.client, account: accountId, type, message, ...extra });
@@ -531,6 +756,8 @@ describe('the close that marks an account Failed resolves its five, and nothing 
     T.oldResolved = await seed(T.flipping, 'Strategy disabled', 'T 01 closed by a CAM.', { status: 'Resolved', resolvedAt: '2026-09-02T09:00:00Z' });
     for (const type of FIVE) await seed(T.bystander, type, `T 02 ${type}.`);
     for (const type of FIVE) await seed(T.switchedOff, type, `T 03 ${type}.`);
+    await seed(T.bare, 'Unassigned account', 'T 04 Unassigned account.');
+    await seed(T.bare, 'Strategy disabled', 'T 04 closed by a CAM.', { status: 'Resolved', resolvedAt: '2026-09-03T09:00:00Z' });
     T.fiveIds = await column(db, `select id from public.operational_flags
       where trading_account_id = $1 and status = 'Open' and type = any ($2::text[]) order by id`, [T.flipping, FIVE]);
 
@@ -540,8 +767,8 @@ describe('the close that marks an account Failed resolves its five, and nothing 
     T.notices = [];
     await db.query(
       `insert into public.account_snapshots (daily_import_id, trading_account_id, account_name, trailing_max_drawdown, account_balance)
-       values ($1, $2, 'T 01', -10, 49000), ($1, $3, 'T 02', 500, 50000)`,
-      [world.tCloses.second, T.flipping, T.bystander],
+       values ($1, $2, 'T 01', -10, 49000), ($1, $3, 'T 02', 500, 50000), ($1, $4, 'T 04', -10, 49000)`,
+      [world.tCloses.second, T.flipping, T.bystander, T.bare],
       { onNotice: (notice) => T.notices.push(notice.message) });
   });
 
@@ -589,6 +816,17 @@ describe('the close that marks an account Failed resolves its five, and nothing 
     }]);
   });
 
+  it('an account that flips with none of the five open gets its auto fail row and no resolve row, and its flags are untouched', async () => {
+    expect(await one(db, 'select status from public.trading_accounts where id = $1', [world.t.bare])).toBe('Failed');
+    expect((await auditRows('trading_account.auto_failed')).filter((row) => row.entity_id === world.t.bare)).toHaveLength(1);
+    expect((await auditRows('trading_account.flags_resolved_on_fail')).filter((row) => row.entity_id === world.t.bare)).toEqual([]);
+    expect((await flagsOfAccount(world.t.bare)).map((flag) => [flag.type, flag.status, flag.resolution_note])).toEqual([
+      ['Marked Failed by the close', 'Open', null],
+      ['Strategy disabled', 'Resolved', null],
+      ['Unassigned account', 'Open', null],
+    ]);
+  });
+
   it('raises no NOTICE: the refresh runs at the commit of every close', () => {
     expect(world.t.notices).toEqual([]);
   });
@@ -614,7 +852,7 @@ describe('the close that marks an account Failed resolves its five, and nothing 
     }
   });
 
-  it('through the real persist RPC: the five the breaching close itself raised are resolved in the same transaction', async () => {
+  it('through the real persist RPC: the breaching close\'s own five are not created, so nothing is resolved and no resolve row is written', async () => {
     const R = {};
     R.client = await world.clientOf(world.gray, 'Client R');
     R.device = await one(db, 'insert into public.ingest_devices (client_id) values ($1) returning id', [R.client]);
@@ -633,12 +871,14 @@ describe('the close that marks an account Failed resolves its five, and nothing 
     expect(await one(db, 'select status from public.trading_accounts where id = $1', [R.account])).toBe('Failed');
     const rows = (await db.query(`select type, status, resolution_note from public.operational_flags
       where daily_import_id = $1 order by type`, [closeId])).rows;
+    // The payload carried them (an old build, or a tab that loaded the
+    // registry first); the guard read this close's breach at insert.
     expect(rows).toEqual([
       { type: 'Drawdown breached', status: 'Open', resolution_note: null },
-      { type: 'Expected strategy missing', status: 'Resolved', resolution_note: CLOSE_NOTE },
       { type: 'Marked Failed by the close', status: 'Open', resolution_note: null },
-      { type: 'Strategy disabled', status: 'Resolved', resolution_note: CLOSE_NOTE },
     ]);
+    expect((await auditRows('trading_account.auto_failed')).filter((row) => row.entity_id === R.account)).toHaveLength(1);
+    expect((await auditRows('trading_account.flags_resolved_on_fail')).filter((row) => row.entity_id === R.account)).toEqual([]);
   });
 });
 
@@ -715,6 +955,33 @@ describe('a CAM still reads her own flags, and a resolved one reads Resolved in 
     expect(await one(db, 'select status from public.operational_flags where id = $1', [id])).toBe('Open');
   });
 
+  it('on a dead account too: reopening one of the five the close resolved is a decision, and it lands, without the close\'s note', async () => {
+    const id = await one(db, `select id from public.operational_flags
+      where trading_account_id = $1 and type = 'Strategy disabled' and resolution_note = $2`, [world.t.flipping, CLOSE_NOTE]);
+    expect(await one(db, 'select status from public.trading_accounts where id = $1', [world.t.flipping])).toBe('Failed');
+    await committed(world.gray.auth, "update public.operational_flags set status = 'Open', resolved_at = null where id = $1", [id]);
+    expect((await db.query('select status, resolution_note from public.operational_flags where id = $1', [id])).rows)
+      .toEqual([{ status: 'Open', resolution_note: null }]);
+    // Closed again by her: a person's resolve, so no note comes back.
+    await committed(world.gray.auth, "update public.operational_flags set status = 'Resolved', resolved_at = now() where id = $1", [id]);
+    expect((await db.query('select status, resolution_note from public.operational_flags where id = $1', [id])).rows)
+      .toEqual([{ status: 'Resolved', resolution_note: null }]);
+  });
+
+  it('the note is the database\'s: a CAM can neither stamp it on her flag nor insert a flag carrying it', async () => {
+    const id = await one(db, "select id from public.operational_flags where trading_account_id = $1 and type = 'Missing account'", [world.a.live]);
+    expect(await refusalAsRole(db, 'authenticated',
+      "update public.operational_flags set status = 'Resolved', resolved_at = now(), resolution_note = $2 where id = $1",
+      { subject: world.gray.auth, params: [id, CLOSE_NOTE] })).toMatch(/resolution_note is written by the database/);
+    expect(await refusalAsRole(db, 'authenticated',
+      `insert into public.operational_flags (daily_import_id, client_id, trading_account_id, type, severity, message, status, resolved_at, resolution_note)
+       values ($1, $2, $3, 'New account', 'Warning', 'stamped', 'Resolved', now(), $4)`,
+      { subject: world.gray.auth, params: [world.a.close, world.a.client, world.a.live, BACKLOG_NOTE] }))
+      .toMatch(/resolution_note is written by the database/);
+    expect((await db.query('select status, resolution_note from public.operational_flags where id = $1', [id])).rows)
+      .toEqual([{ status: 'Open', resolution_note: null }]);
+  });
+
   it('a CAM reads the switch on the settings row, and cannot write it', async () => {
     const rows = await rowsAsRole(db, 'authenticated',
       'select resolve_flags_on_fail from public.account_observation_settings', { subject: world.gray.auth });
@@ -732,15 +999,17 @@ describe('grants: exact, and this file\'s own', () => {
     expect(await executeGrantees(REFRESH)).toEqual(['service_role']);
   });
 
-  it('the three new functions: nobody but the owner', async () => {
-    for (const signature of HELPERS) expect(await executeGrantees(signature), signature).toEqual([]);
+  it('the five new functions: nobody but the owner', async () => {
+    for (const signature of [...HELPERS, NOTE_GUARD]) expect(await executeGrantees(signature), signature).toEqual([]);
   });
 
-  it('every function this file defines is security definer with search_path pinned', async () => {
+  it('every function this file defines has search_path pinned; all but the note guard are security definer', async () => {
     for (const signature of [REFRESH, ...HELPERS]) {
       const row = (await db.query(`select prosecdef, proconfig from pg_proc where oid = '${signature}'::regprocedure`)).rows[0];
       expect(row, signature).toEqual({ prosecdef: true, proconfig: ['search_path=pg_catalog, public'] });
     }
+    expect((await db.query(`select prosecdef, proconfig from pg_proc where oid = '${NOTE_GUARD}'::regprocedure`)).rows[0])
+      .toEqual({ prosecdef: false, proconfig: ['search_path=pg_catalog, public'] });
   });
 
   it('anon and authenticated are refused the refresh at the door; the service role may call it', async () => {
@@ -797,7 +1066,7 @@ describe('running it again', () => {
     expect(await executeGrantees(REFRESH)).toEqual(['service_role']);
     await applyFileCollectingNotices(db, STEP);
     expect(await functionDefinition(REFRESH)).toBe(world.definition);
-    expect(await auditRows('flags.backlog_resolved_on_failed_accounts')).toHaveLength(1);
+    expect((await auditRows('flags.backlog_resolved_on_failed_accounts')).filter((row) => !row.after_data.forgedByHand)).toHaveLength(1);
   });
 });
 

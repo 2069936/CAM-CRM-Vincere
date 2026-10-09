@@ -2460,6 +2460,41 @@ function accountIsPastLiveFlags(meta) {
 	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return true;
 	return PAST_LIVE_FLAG_OBSERVATIONS.includes(meta.observedState);
 }
+/**
+* Whether the one trailing reading a close carries for an account is a breach:
+* true, false, or null when it measures nothing (null, exactly 0, not finite)
+* or the account cannot breach (cash, simulation). Step 65's
+* account_observation_reading and account_observation_breach, line for line,
+* because the refresh will judge the same stored value with them.
+*/
+function closeReadingBreach(trailing, accountType, maxDrawdownLimit) {
+	const reading = Number(trailing);
+	if (trailing === null || trailing === void 0 || !Number.isFinite(reading) || reading === 0) return null;
+	if (isCashType(accountType)) return null;
+	if (String(accountType || "").trim() === ACCOUNT_TYPES.SIMULATION) return null;
+	const limit = maxDrawdownLimit === null || maxDrawdownLimit === void 0 ? NaN : Number(maxDrawdownLimit);
+	return Number.isFinite(limit) && limit > 0 ? Math.abs(reading) >= limit : reading < 0;
+}
+/**
+* The observation as of the close being written, for an account that IS in it.
+*
+* observed_state is rewritten by step 65's refresh at the commit of a close,
+* so while a close is being reconciled (and, on the automatic route, while its
+* flags are inserted) the stored word is what the closes BEFORE it said. For an
+* account in this close 'absent' is already false: the refresh will write
+* 'seen'. And 'breached' is the word of the latest measured reading, so a
+* measured reading in this close replaces it, either way. Only an unmeasured
+* reading leaves a stored 'breached' standing, as it does in the refresh.
+* An account NOT in the close keeps the stored word: nothing in this close
+* speaks for it. step_67_flag_hygiene.sql holds the same rule in
+* account_observation_in_close() for the insert guard.
+*/
+function observedStateInClose(storedState, { inClose = false, closeBreach = null } = {}) {
+	if (!inClose) return storedState ?? null;
+	if (closeBreach === true) return "breached";
+	if (closeBreach === false) return "seen";
+	return storedState === "breached" ? "breached" : "seen";
+}
 function shouldExpectStrategy(meta) {
 	if (!meta) return false;
 	if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
@@ -2685,10 +2720,6 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			isSimulated: account.isSimulated
 		});
 		const isRealMoney = nature.nature === ACCOUNT_NATURES.LIVE;
-		const pastLiveFlags = accountIsPastLiveFlags({
-			...meta,
-			observedState: existing?.observedState
-		});
 		accountsByName[account.accountName] = meta;
 		const todayClose = {
 			date,
@@ -2705,6 +2736,14 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 		};
 		snapshots.push(createSnapshot(account, strategies, derived, joinedDerivationByAccount.get(String(account.accountName || "").trim())));
 		seen.add(account.accountName.toLowerCase());
+		const snapshot = snapshots[snapshots.length - 1];
+		const pastLiveFlags = accountIsPastLiveFlags({
+			...meta,
+			observedState: observedStateInClose(existing?.observedState, {
+				inClose: true,
+				closeBreach: closeReadingBreach(snapshot.trailingMaxDrawdown, meta.accountType, meta.maxDrawdownLimit)
+			})
+		});
 		if (nature.nature === ACCOUNT_NATURES.UNDETERMINED) flags.push(makeFlag({
 			type: "Account nature undetermined",
 			severity: "Warning",
@@ -2736,7 +2775,6 @@ function reconcileDailyImport({ clientId, date, registry = {}, parsed, history =
 			message: `${meta.alias} is active but no strategy ran in this close.`
 		}));
 		const ddLimit = !isRealMoney || isCashType(meta.accountType) ? NaN : Number(meta.maxDrawdownLimit);
-		const snapshot = snapshots[snapshots.length - 1];
 		const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
 		const limits = drawdownThresholds(snapshot.trailingSource);
 		const derivedNote = snapshot.trailingSource === "derived" ? " (estimated from stored closes - confirm with the prop firm)" : "";

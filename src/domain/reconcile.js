@@ -282,6 +282,43 @@ export function accountIsPastLiveFlags(meta) {
   return PAST_LIVE_FLAG_OBSERVATIONS.includes(meta.observedState);
 }
 
+/**
+ * Whether the one trailing reading a close carries for an account is a breach:
+ * true, false, or null when it measures nothing (null, exactly 0, not finite)
+ * or the account cannot breach (cash, simulation). Step 65's
+ * account_observation_reading and account_observation_breach, line for line,
+ * because the refresh will judge the same stored value with them.
+ */
+export function closeReadingBreach(trailing, accountType, maxDrawdownLimit) {
+  const reading = Number(trailing);
+  if (trailing === null || trailing === undefined || !Number.isFinite(reading) || reading === 0) return null;
+  if (isCashType(accountType)) return null;
+  if (String(accountType || '').trim() === ACCOUNT_TYPES.SIMULATION) return null;
+  const limit = maxDrawdownLimit === null || maxDrawdownLimit === undefined ? Number.NaN : Number(maxDrawdownLimit);
+  return Number.isFinite(limit) && limit > 0 ? Math.abs(reading) >= limit : reading < 0;
+}
+
+/**
+ * The observation as of the close being written, for an account that IS in it.
+ *
+ * observed_state is rewritten by step 65's refresh at the commit of a close,
+ * so while a close is being reconciled (and, on the automatic route, while its
+ * flags are inserted) the stored word is what the closes BEFORE it said. For an
+ * account in this close 'absent' is already false: the refresh will write
+ * 'seen'. And 'breached' is the word of the latest measured reading, so a
+ * measured reading in this close replaces it, either way. Only an unmeasured
+ * reading leaves a stored 'breached' standing, as it does in the refresh.
+ * An account NOT in the close keeps the stored word: nothing in this close
+ * speaks for it. step_67_flag_hygiene.sql holds the same rule in
+ * account_observation_in_close() for the insert guard.
+ */
+export function observedStateInClose(storedState, { inClose = false, closeBreach = null } = {}) {
+  if (!inClose) return storedState ?? null;
+  if (closeBreach === true) return 'breached';
+  if (closeBreach === false) return 'seen';
+  return storedState === 'breached' ? 'breached' : 'seen';
+}
+
 function shouldExpectStrategy(meta) {
   if (!meta) return false;
   if (meta.accountType === ACCOUNT_TYPES.IGNORE) return false;
@@ -661,10 +698,6 @@ export function reconcileDailyImport({
     // an account whose nature is undetermined must not be told it breached a
     // limit we are not sure applies to it.
     const isRealMoney = nature.nature === ACCOUNT_NATURES.LIVE;
-    // Read off the stored record: `meta` is what this import writes back to
-    // trading_accounts and the observation is the database's to write, so it is
-    // deliberately not copied onto it.
-    const pastLiveFlags = accountIsPastLiveFlags({ ...meta, observedState: existing?.observedState });
 
     accountsByName[account.accountName] = meta;
 
@@ -695,6 +728,21 @@ export function reconcileDailyImport({
       joinedDerivationByAccount.get(String(account.accountName || '').trim()),
     ));
     seen.add(account.accountName.toLowerCase());
+    // Use the snapshot's value, which may have been reconstructed above.
+    const snapshot = snapshots[snapshots.length - 1];
+    // Read off the stored record: `meta` is what this import writes back to
+    // trading_accounts and the observation is the database's to write, so it is
+    // deliberately not copied onto it. And read AS OF THIS CLOSE: the stored
+    // word is what the closes before this one said, and the account is in this
+    // one. An account that was absent and comes back is alive today, and a
+    // stored breach is overruled by a measured reading here (observedStateInClose).
+    const pastLiveFlags = accountIsPastLiveFlags({
+      ...meta,
+      observedState: observedStateInClose(existing?.observedState, {
+        inClose: true,
+        closeBreach: closeReadingBreach(snapshot.trailingMaxDrawdown, meta.accountType, meta.maxDrawdownLimit),
+      }),
+    });
 
     if (nature.nature === ACCOUNT_NATURES.UNDETERMINED) {
       // Reported, never bucketed. This account's balance is in neither the desk
@@ -762,8 +810,6 @@ export function reconcileDailyImport({
     const ddLimit = !isRealMoney || isCashType(meta.accountType)
       ? Number.NaN
       : Number(meta.maxDrawdownLimit);
-    // Use the snapshot's value, which may have been reconstructed above.
-    const snapshot = snapshots[snapshots.length - 1];
     const rawDD = Number(snapshot.trailingMaxDrawdown || 0);
     // A reconstructed drawdown is a lower bound, so warn sooner on it: the real
     // figure can be worse than this and never better.

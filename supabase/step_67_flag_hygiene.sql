@@ -25,9 +25,15 @@
 --
 -- DEAD, for the five: status Failed, Inactive or Reserve, or type Inactive /
 -- Ignore, or observed_state breached or absent (step 65). Payout Hold is alive.
+-- The observation is read AS OF THE CLOSE the flag belongs to: for an account
+-- in that close, 'absent' is already wrong (the refresh writes 'seen' at its
+-- commit) and a measured reading there decides 'breached' either way. An
+-- account absent for five closes that comes back is alive on the close it
+-- comes back in, as it was before this file.
 -- src/domain/reconcile.js holds the same list (LIVE_ACCOUNT_FLAG_TYPES) and
--- the same rule (accountIsPastLiveFlags); the test beside this file compares
--- them, so the two languages cannot drift.
+-- the same rules (accountIsPastLiveFlags, observedStateInClose,
+-- closeReadingBreach); the test beside this file compares them, so the two
+-- languages cannot drift.
 --
 -- ===========================================================================
 -- WHAT THIS FILE ADDS.
@@ -36,17 +42,24 @@
 --      true: the switch for item 4. To turn it off:
 --        update public.account_observation_settings
 --           set resolve_flags_on_fail = false, updated_at = now() where id;
+--      And account_observation_settings.flag_backlog_resolved_at, timestamptz,
+--      NULL until item 5 has run: its once only marker.
 --   2. operational_flags.resolution_note, text, nullable: why a flag was
 --      closed when no person closed it. NULL on every row a CAM resolves.
 --      Appending to message instead would change the flag's identity
 --      (type|account|message is how Recalculate carries triage and how the CAM
 --      queue groups a flag across days), so the note has its own column, in the
---      shape of step 38's provenance column.
+--      shape of step 38's provenance column. A guard trigger
+--      (operational_flags_resolution_note_guard) keeps it the database's: the
+--      browser cannot write it, and a status change from the browser (a CAM
+--      reopening or closing the flag herself) clears it.
 --   3. THE GENERATOR, AT THE DATABASE: a BEFORE INSERT trigger on
 --      operational_flags that drops an Open row of the five for a dead
---      account. The generator itself is JavaScript (reconcileDailyImport) and
---      is gated in the same PR; this is what makes the rule hold whatever the
---      caller had in memory. Two cases need it:
+--      account, reading the account as of the flag's own close
+--      (account_observation_in_close, from the close's snapshot of it). The
+--      generator itself is JavaScript (reconcileDailyImport) and is gated in
+--      the same PR; this is what makes the rule hold whatever the caller had in
+--      memory. Two cases need it:
 --        * the manual upload is separate PostgREST requests, and step 65's
 --          refresh commits with the snapshot request BEFORE the flag insert
 --          request, so the close that breaches an account has already marked
@@ -65,11 +78,12 @@
 --      resolved_by_user_id NULL, resolution_note 'Account marked Failed by the
 --      close.', and ONE audit row per account that had any
 --      (trading_account.flags_resolved_on_fail, after_data with the count,
---      the types and the flag ids). On the automatic route the payload's
---      flags are inserted before the deferred refresh runs at commit, so the
---      five the breaching close itself raised are resolved in the same
---      transaction. No NOTICE is raised in the refresh: it runs at the commit
---      of every close (the step 66 test asserts finalize says nothing).
+--      the types and the flag ids). An account that had none of the five open
+--      gets no such row: its auto fail row already records the transition.
+--      The breaching close's own five are not created at all (item 3 reads
+--      that close's breach), so what this resolves is what earlier closes left
+--      open. No NOTICE is raised in the refresh: it runs at the commit of
+--      every close (the step 66 test asserts finalize says nothing).
 --   5. THE BACKLOG, ONCE: every Open flag of the five whose trading_account_id
 --      points at an account whose status is Failed when this file runs is set
 --      Resolved the same way, with resolution_note 'Account already Failed
@@ -78,9 +92,11 @@
 --      NOTICE says how many per type and one audit row summarises it
 --      (entity_type operational_flags, action
 --      flags.backlog_resolved_on_failed_accounts). It runs regardless of the
---      switch, and only once: a second run finds the audit row and resolves
---      nothing. Flags with trading_account_id NULL name no account and are
---      left alone.
+--      switch, and only once: a second run finds the marker
+--      (flag_backlog_resolved_at) set and resolves nothing. The marker, not
+--      the audit row, because a signed in CAM can insert an audit row and
+--      cannot write the settings row. Flags with trading_account_id NULL name
+--      no account and are left alone.
 --
 -- ===========================================================================
 -- HAZARDS KNOWN AND HOW THEY ARE HANDLED.
@@ -98,7 +114,11 @@
 --   already open stay open until a CAM resolves them. Only the close's own
 --   transition resolves automatically.
 -- * A Failed account a person revives (status Active again) gets the five
---   again from its next close, unless its closes still say breached or absent.
+--   again from its next close, unless that close's reading is still a breach,
+--   or, when the close measures nothing, the stored word is still breached.
+-- * Open flags of the five on accounts dead but not Failed (Inactive, Reserve,
+--   Inactive / Ignore, observed absent or breached) are neither backlog nor
+--   transition resolved. No new ones are created, so they wait for a CAM.
 --
 -- UNDO, in the SQL editor, if the backlog has to be put back:
 --   update public.operational_flags
@@ -108,13 +128,14 @@
 --
 -- IDEMPOTENT. `add column if not exists`, `create or replace` for the
 -- functions, `drop trigger if exists` then `create`, and the backlog guarded by
--- its own audit row. A re-run restores the grants and the refresh body and
--- changes no row.
+-- its marker on the settings row. A re-run restores the grants and the refresh
+-- body and changes no row.
 --
 -- GRANTS (step 56's rule: restate them). refresh_account_observations:
 -- execute for service_role, nothing for public, anon or authenticated, as step
--- 65 had it. The three new functions: nothing for anybody but the owner (the
--- callers are security definer). operational_flags keeps select, insert,
+-- 65 had it. The five new functions: nothing for anybody but the owner (the
+-- callers are security definer, and a trigger function fires without
+-- EXECUTE). operational_flags keeps select, insert,
 -- update, delete for authenticated and nothing for anon, and the new column
 -- inherits that; account_observation_settings keeps select for authenticated
 -- and nothing else. No new table, so step 56's exception table is unchanged.
@@ -125,7 +146,8 @@
 --    where resolution_note is not null group by 1, 2 order by 1, 2;
 --   select after_data from public.audit_logs
 --    where action = 'flags.backlog_resolved_on_failed_accounts';
---   select resolve_flags_on_fail from public.account_observation_settings;
+--   select resolve_flags_on_fail, flag_backlog_resolved_at
+--     from public.account_observation_settings;
 
 do $step67_guard$
 begin
@@ -148,6 +170,15 @@ begin;
 alter table public.account_observation_settings
   add column if not exists resolve_flags_on_fail boolean not null default true;
 
+-- The one time backlog's marker. On this singleton because the browser can
+-- read it and cannot write it (SELECT only, step 65), which an audit_logs row
+-- is not: a signed in CAM can insert one.
+alter table public.account_observation_settings
+  add column if not exists flag_backlog_resolved_at timestamptz;
+
+comment on column public.account_observation_settings.flag_backlog_resolved_at is
+  'When step 67 resolved, once, the Open flags of the five live account types on accounts already Failed. NULL until it ran; set in the same transaction as the resolve, and a run that finds it set resolves nothing. Written only by the migration. Step 67.';
+
 comment on column public.account_observation_settings.resolve_flags_on_fail is
   'Whether the close resolves an account''s Open Missing account, Strategy disabled, Expected strategy missing, Drawdown approaching limit and Drawdown near limit flags when it marks the account Failed (step 67). Off: the account is still marked Failed, the flags stay Open. To turn it off: update public.account_observation_settings set resolve_flags_on_fail = false, updated_at = now() where id;';
 
@@ -158,7 +189,51 @@ alter table public.operational_flags
   add column if not exists resolution_note text;
 
 comment on column public.operational_flags.resolution_note is
-  'Why the database resolved this flag, when it was not a person: ''Account marked Failed by the close.'' (the close failed the account, step 67) or ''Account already Failed when step 67 ran.'' (the one time backlog). NULL on every flag a CAM resolves and on every open flag. Provenance only; the message is left as it was so the flag keeps its identity.';
+  'Why the database resolved this flag, when it was not a person: ''Account marked Failed by the close.'' (the close failed the account, step 67) or ''Account already Failed when step 67 ran.'' (the one time backlog). NULL on every flag a CAM resolves and on every open flag: the browser cannot write it, and a status change from the browser clears it (operational_flags_resolution_note_guard). Provenance only; the message is left as it was so the flag keeps its identity.';
+
+-- The note is the database's. Security INVOKER on purpose, as step 65's
+-- observed columns guard: current_user is 'authenticated' or 'anon' for the
+-- browser, postgres inside the refresh and the migration, service_role for
+-- the API routes. The browser may not stamp a note, and when a person changes
+-- a flag's status the flag is hers from then on, so the database's note goes:
+-- that keeps the header's undo statement from reopening a flag a person
+-- closed.
+create or replace function public.operational_flags_resolution_note_guard()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $function$
+begin
+  if current_user not in ('anon', 'authenticated') then
+    return new;
+  end if;
+  if tg_op = 'INSERT' then
+    if new.resolution_note is not null then
+      raise exception using
+        errcode = '42501',
+        message = 'resolution_note is written by the database when it resolves a flag, not by the browser.';
+    end if;
+    return new;
+  end if;
+  if new.resolution_note is not null and new.resolution_note is distinct from old.resolution_note then
+    raise exception using
+      errcode = '42501',
+      message = 'resolution_note is written by the database when it resolves a flag, not by the browser.';
+  end if;
+  if new.status is distinct from old.status then
+    new.resolution_note := null;
+  end if;
+  return new;
+end;
+$function$;
+
+comment on function public.operational_flags_resolution_note_guard() is
+  'BEFORE INSERT OR UPDATE on operational_flags, security invoker: refuses a resolution_note written from the browser (anon, authenticated) and clears the note when the browser changes the flag''s status. The refresh, the migration and the service role pass. Step 67.';
+
+drop trigger if exists operational_flags_resolution_note_guard on public.operational_flags;
+create trigger operational_flags_resolution_note_guard
+  before insert or update on public.operational_flags
+  for each row execute function public.operational_flags_resolution_note_guard();
 
 -- ---------------------------------------------------------------------------
 -- 3. The five and the rule, once each, so the trigger, the refresh, the
@@ -202,6 +277,40 @@ $function$;
 comment on function public.account_is_past_live_flags(text, text, text) is
   'Whether an account is past the five live account flags: status Failed, Inactive or Reserve, type Inactive / Ignore, or observed_state breached or absent. Payout Hold is alive; NULLs are no evidence. Mirrors accountIsPastLiveFlags in src/domain/reconcile.js. Step 67.';
 
+-- AS OF THE CLOSE. observed_state is rewritten by the refresh at the commit
+-- of a close, so while a close is being written (and on the automatic route
+-- its flags are inserted in that same transaction) the stored word is what
+-- the closes BEFORE it said. For an account that is IN the close, 'absent' is
+-- already false: the refresh will write 'seen' at this commit. And 'breached'
+-- is the word of the latest measured reading, so a measured reading in this
+-- close replaces it, either way. Only an unmeasured reading leaves a stored
+-- 'breached' standing, as it does in the refresh. An account not in the close
+-- keeps the stored word. Without this, an Active account absent for five
+-- closes lost its flags on the close it came back in, and an Active account
+-- still reading breached lost them on a clear close near its limit.
+create or replace function public.account_observation_in_close(
+  p_observed_state text,
+  p_in_close boolean,
+  p_close_breach boolean
+)
+returns text
+language sql
+immutable
+security definer
+set search_path = pg_catalog, public
+as $function$
+  select case
+    when not coalesce(p_in_close, false) then p_observed_state
+    when p_close_breach then 'breached'
+    when not p_close_breach then 'seen'
+    when p_observed_state = 'breached' then 'breached'
+    else 'seen'
+  end;
+$function$;
+
+comment on function public.account_observation_in_close(text, boolean, boolean) is
+  'The observation as of one close: the stored observed_state for an account not in it; for an account in it, breached or seen from its measured reading there (account_observation_breach), or, unmeasured, the stored breached or else seen. Mirrors observedStateInClose in src/domain/reconcile.js. Step 67.';
+
 -- ---------------------------------------------------------------------------
 -- 4. The generator, at the database: an Open row of the five for a dead
 --    account is not created.
@@ -216,6 +325,10 @@ declare
   v_status text;
   v_type text;
   v_observed text;
+  v_limit numeric;
+  v_name_key text;
+  v_in_close boolean;
+  v_close_breach boolean;
 begin
   if new.trading_account_id is null
     or coalesce(new.status, 'Open') <> 'Open'
@@ -223,12 +336,41 @@ begin
     return new;
   end if;
 
-  select t.status, t.account_type, t.observed_state
-    into v_status, v_type, v_observed
+  select t.status, t.account_type, t.observed_state, t.max_drawdown_limit, lower(btrim(t.account_name))
+    into v_status, v_type, v_observed, v_limit, v_name_key
   from public.trading_accounts as t
   where t.id = new.trading_account_id;
 
-  if found and public.account_is_past_live_flags(v_status, v_type, v_observed) then
+  if not found then
+    return new;
+  end if;
+
+  -- Read the account as of the close this flag belongs to
+  -- (account_observation_in_close). Both ingest paths write a close's
+  -- snapshots before its flags, so the row is there when the account is in
+  -- the close. A snapshot is the account's when it points at it, or names it
+  -- and points at nothing, as the refresh attributes them.
+  if new.daily_import_id is not null then
+    select true,
+           (select public.account_observation_breach(m.trailing_max_drawdown, v_type, v_limit)
+              from public.account_snapshots as m
+             where m.daily_import_id = new.daily_import_id
+               and (m.trading_account_id = new.trading_account_id
+                    or (m.trading_account_id is null and lower(btrim(m.account_name)) = v_name_key))
+               and public.account_observation_reading(m.trailing_max_drawdown) is not null
+             order by m.id desc
+             limit 1)
+      into v_in_close, v_close_breach
+    from public.account_snapshots as s
+    where s.daily_import_id = new.daily_import_id
+      and (s.trading_account_id = new.trading_account_id
+           or (s.trading_account_id is null and lower(btrim(s.account_name)) = v_name_key))
+    limit 1;
+  end if;
+
+  if public.account_is_past_live_flags(
+       v_status, v_type,
+       public.account_observation_in_close(v_observed, coalesce(v_in_close, false), v_close_breach)) then
     -- Not created, and not an error: the rest of the close's flags land.
     return null;
   end if;
@@ -237,7 +379,7 @@ end;
 $function$;
 
 comment on function public.operational_flags_live_account_guard() is
-  'BEFORE INSERT on operational_flags: drops an Open flag of the five live account types (live_account_flag_types) whose trading account is past them (account_is_past_live_flags). Covers the manual upload, whose flag insert lands after the refresh that failed the account, and a browser holding a stale registry. Rows inserted already closed pass. Step 67.';
+  'BEFORE INSERT on operational_flags: drops an Open flag of the five live account types (live_account_flag_types) whose trading account is past them (account_is_past_live_flags), reading the observation as of the flag''s own close (account_observation_in_close). Covers the manual upload, whose flag insert lands after the refresh that failed the account, and a browser holding a stale registry. Rows inserted already closed pass. Step 67.';
 
 drop trigger if exists operational_flags_live_account_guard on public.operational_flags;
 create trigger operational_flags_live_account_guard
@@ -609,11 +751,13 @@ begin
   -- first one's audit row below and does nothing.
   perform pg_advisory_xact_lock(hashtext('step 67 flag backlog'));
 
-  if exists (
-    select 1 from public.audit_logs as a
-    where a.entity_type = 'operational_flags'
-      and a.action = 'flags.backlog_resolved_on_failed_accounts'
-  ) then
+  -- Guarded by the marker on step 65's singleton, which only the database
+  -- writes. Not by the audit row: a signed in CAM can insert one of those.
+  -- The seed row is put back if somebody deleted it, as step 65 seeds it.
+  insert into public.account_observation_settings (id) values (true)
+  on conflict (id) do nothing;
+
+  if (select s.flag_backlog_resolved_at from public.account_observation_settings as s where s.id) is not null then
     raise notice 'step 67: the flags on Failed accounts were already resolved by an earlier run, so nothing was resolved this time';
     return;
   end if;
@@ -665,6 +809,11 @@ begin
       'rule', 'Open flags of the five live account types on accounts whose status was Failed when step 67 ran.'
     )
   );
+
+  update public.account_observation_settings
+     set flag_backlog_resolved_at = v_now,
+         updated_at = v_now
+   where id;
 end
 $step67_backlog$;
 
@@ -675,14 +824,19 @@ revoke all on function public.refresh_account_observations(uuid)
   from public, anon, authenticated;
 grant execute on function public.refresh_account_observations(uuid) to service_role;
 
--- Nobody calls these but the trigger, the refresh and the backlog, all of
--- them security definer, so not even the service role needs them (step 65 did
--- the same for its two helpers).
+-- Nobody calls these but the triggers, the refresh and the backlog: the
+-- helpers are reached from security definer code and a trigger function fires
+-- without EXECUTE, so not even the service role needs them (step 65 did the
+-- same for its helpers and its guard).
 revoke all on function public.live_account_flag_types()
   from public, anon, authenticated, service_role;
 revoke all on function public.account_is_past_live_flags(text, text, text)
   from public, anon, authenticated, service_role;
 revoke all on function public.operational_flags_live_account_guard()
+  from public, anon, authenticated, service_role;
+revoke all on function public.account_observation_in_close(text, boolean, boolean)
+  from public, anon, authenticated, service_role;
+revoke all on function public.operational_flags_resolution_note_guard()
   from public, anon, authenticated, service_role;
 
 revoke all privileges on table public.operational_flags from anon;
