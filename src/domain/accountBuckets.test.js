@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { ACCOUNT_OBSERVATION_DEFAULTS as NARROW_DEFAULTS } from './accountObservationDefaults';
 import {
   ACCOUNT_OBSERVATION_DEFAULTS,
   BUCKET_KEYS,
   NOT_SHOWN_WORDS,
+  ONLY_RETIRED_WORD,
   STILL_LISTED_WORDS,
   bucketRegistryAccounts,
   expectedAccountNameSet,
   notShownAccounts,
+  onlyRetiredWords,
   registryLights,
   retiredSampleFate,
   stillRunningWords,
@@ -438,5 +441,54 @@ describe('registryLights: which accounts get a light, and the folded line for th
     expect(detail.U).toBe('Never seen in a close, no date added.');
     expect(detail.G).toBe('Account type Inactive / Ignore. NinjaTrader still lists it, not connected, sampled 4m ago.');
     for (const words of Object.values(stillRunningWords({ reason: 'Ignored' }))) expect(words).not.toMatch(/[—–]| - /);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * A VPS THAT SENDS ONLY RETIRED ACCOUNTS, SAID ONCE FOR THE THREE SCREENS.
+ *
+ * The review's fixture: ACC 41 marked Failed, sampled a few minutes ago, not
+ * connected, nothing loaded. Every sample is hidden, so no screen draws a pill
+ * for it; registryLights says so in one flag, and the word and the sentence
+ * the tile, the desk bulb and the client page strip print are here.
+ * ------------------------------------------------------------------------- */
+describe('registryLights: a VPS that sends only retired accounts', () => {
+  const dead = (accountName, over = {}) => ({
+    accountName, connected: false, status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0,
+    sampledAt: '2026-10-08T14:56:00Z', ...over,
+  });
+
+  it('flags it when every sample is hidden, and says when the newest of them arrived', () => {
+    const lights = registryLights({ 'ACC 41': { status: 'Failed' } }, { now: NOW, samples: [dead('ACC 41')] });
+    expect(lights.onlyRetiredSampled).toBe(true);
+    expect([...lights.hidden]).toEqual(['ACC 41']);
+    expect(lights.names).toEqual([]);
+    expect(lights.hiddenSampledAt.toISOString()).toBe('2026-10-08T14:56:00.000Z');
+    expect(lights.notShown.accounts.map((row) => row.word)).toEqual(['Failed, still listed by NinjaTrader, disconnected']);
+  });
+
+  it('does not flag it when anything sampled keeps a light, or when nothing is sampled at all', () => {
+    const registry = { 'ACC 41': { status: 'Failed' }, 'ACC 42': { status: 'Active' } };
+    expect(registryLights(registry, { now: NOW, samples: [dead('ACC 41'), dead('ACC 42', { connected: true, runState: 'running' })] }).onlyRetiredSampled).toBe(false);
+    // Still running: it keeps its pill, so it is not "only retired".
+    expect(registryLights(registry, { now: NOW, samples: [dead('ACC 41', { connected: true, runState: 'running' })] }).onlyRetiredSampled).toBe(false);
+    // An account the registry does not hold keeps its pill too.
+    expect(registryLights(registry, { now: NOW, samples: [dead('ACC 41'), dead('ACC 99')] }).onlyRetiredSampled).toBe(false);
+    const none = registryLights(registry, { now: NOW, samples: [] });
+    expect(none.onlyRetiredSampled).toBe(false);
+    expect(none.hiddenSampledAt).toBeNull();
+  });
+
+  it('has one word and one sentence for the three screens, with the expected accounts counted first', () => {
+    expect(ONLY_RETIRED_WORD).toBe('Only retired accounts sampled');
+    expect(onlyRetiredWords(0)).toBe('NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(onlyRetiredWords(1)).toBe('1 account on the registry, none sampled. NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(onlyRetiredWords(3)).toBe('3 accounts on the registry, none sampled. NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(onlyRetiredWords()).not.toMatch(/[—–]| - /);
+  });
+
+  it('re-exports the column defaults from their own module, so both names are one object', () => {
+    expect(ACCOUNT_OBSERVATION_DEFAULTS).toBe(NARROW_DEFAULTS);
+    expect(NARROW_DEFAULTS).toEqual({ staleCloses: 5, autoFailOnBreach: true, newAccountDays: 14 });
   });
 });

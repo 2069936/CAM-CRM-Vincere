@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ACCOUNT_OBSERVATION_DEFAULTS } from '../domain/accountBuckets';
+import { ACCOUNT_OBSERVATION_DEFAULTS } from '../domain/accountObservationDefaults';
 import { loadSupabaseAccountObservationSettings } from '../domain/supabaseStore';
 
 /**

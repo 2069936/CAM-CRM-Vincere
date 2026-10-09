@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   loadSupabaseAccountTracker: vi.fn(),
   loadSupabaseAlgorithmLive: vi.fn(),
+  loadSupabaseAccountLiveSampleHistory: vi.fn(),
   loadFleet: vi.fn(),
 }));
 
@@ -32,6 +33,7 @@ vi.mock('./domain/supabaseStore', async (importOriginal) => ({
   ...(await importOriginal()),
   loadSupabaseAccountTracker: mocks.loadSupabaseAccountTracker,
   loadSupabaseAlgorithmLive: mocks.loadSupabaseAlgorithmLive,
+  loadSupabaseAccountLiveSampleHistory: mocks.loadSupabaseAccountLiveSampleHistory,
 }));
 
 vi.mock('./domain/autoCollectionApi', async (importOriginal) => {
@@ -208,6 +210,8 @@ beforeEach(() => {
   mocks.loadSupabaseAlgorithmLive.mockImplementation(async () => algorithmLive());
   mocks.loadFleet.mockReset();
   mocks.loadFleet.mockResolvedValue(FLEET);
+  mocks.loadSupabaseAccountLiveSampleHistory.mockReset();
+  mocks.loadSupabaseAccountLiveSampleHistory.mockResolvedValue({ available: false, reason: 'not_deployed' });
 });
 afterEach(cleanup);
 
@@ -250,6 +254,27 @@ describe('a Live accounts bulb on the Operations Command Center', () => {
     expect(drawer.querySelector('.dcl-drawer-sentence').textContent).toBe('Partly live, 1 connected, 1 disconnected.');
     expect([...drawer.querySelectorAll('.dcl-connection-name')].map((node) => node.textContent)).toEqual(['Bluesky', 'Live']);
     expect([...drawer.querySelectorAll('.account-pill')].map((node) => node.dataset.account)).toEqual(['CR-2', 'CR-1']);
+  });
+
+  it('reads since when Cedar Row\'s account has been disconnected, for Cedar Row only, and says it on the drawer\'s pill', async () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const startedAt = new Date(Date.now() - 50 * 60_000);
+    mocks.loadSupabaseAccountLiveSampleHistory.mockResolvedValue({
+      available: true,
+      rows: [{
+        clientId: 'c-1', deviceId: 'd-1', accountName: 'CR-2', connected: false,
+        firstSampledAt: (startedAt < midnight ? midnight : startedAt).toISOString(), lastSampledAt: new Date().toISOString(),
+      }],
+    });
+    const { container } = mount();
+    await bulbsReady(container);
+    await waitFor(() => expect(mocks.loadSupabaseAccountLiveSampleHistory).toHaveBeenCalled());
+    expect(mocks.loadSupabaseAccountLiveSampleHistory).toHaveBeenCalledWith({ clientIds: ['c-1'], since: midnight.toISOString() });
+    act(() => { bulbFor(container, 'c-1').click(); });
+    await waitFor(() => expect(container.querySelector('.dcl-drawer .account-pill[data-account="CR-2"] .account-pill-button').getAttribute('title'))
+      .toMatch(/^CR-2: Disconnected since \d\d:\d\d\. /));
+    expect(container.querySelector('.dcl-drawer .account-pill[data-account="CR-2"] .account-pill-state').textContent).toBe('Disconnected');
   });
 
   it('does not route through a CAM whose user is deactivated, the way the Insight Feed does not', async () => {

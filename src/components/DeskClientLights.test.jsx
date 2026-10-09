@@ -6,6 +6,7 @@ import DeskClientLights from './DeskClientLights';
 import { resetClientLiveStrategiesCache } from './useClientLiveStrategies';
 import { resetAccountObservationSettingsCache } from './useAccountObservationSettings';
 import { AutoCollectionApiError } from '../domain/autoCollectionApi';
+import { historyWindowStart } from '../domain/disconnectedSince';
 
 /* ------------------------------------------------------------------------- *
  * ONE BULB PER CLIENT ON THE OPERATIONS COMMAND CENTER.
@@ -134,6 +135,8 @@ function mount(props = {}) {
   const onSelectClient = vi.fn();
   const loadDevices = props.loadDevices ?? vi.fn(async () => ({ available: true, byClientId: DEVICES }));
   const loadStrategies = props.loadStrategies ?? vi.fn(async ({ clientId }) => strategiesAnswer(clientId, []));
+  // Step 66 not run, unless a test hands the history in.
+  const loadHistory = props.loadHistory ?? vi.fn(async () => ({ available: false, reason: 'not_deployed' }));
   const utils = render(<DeskClientLights
     clients={CLIENTS}
     tracker={tracker()}
@@ -143,8 +146,9 @@ function mount(props = {}) {
     {...props}
     loadDevices={loadDevices}
     loadStrategies={loadStrategies}
+    loadHistory={loadHistory}
   />);
-  return { ...utils, onSelectClient, loadDevices, loadStrategies };
+  return { ...utils, onSelectClient, loadDevices, loadStrategies, loadHistory };
 }
 
 const bulbs = (container) => [...container.querySelectorAll('.dcl-bulb')];
@@ -592,5 +596,243 @@ describe('only the accounts expected to trade are in the drawer', () => {
     expect(pillsIn(container, 'Never sampled')).toEqual(['ACC 02: Never sampled']);
     expect(container.querySelector('.dcl-drawer .not-shown-words').textContent).toContain('1 registered and never seen in a close, added more than 2 days ago');
     expect(loadObservationSettings).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * A VPS THAT SAMPLES ONLY RETIRED ACCOUNTS, ON THE DESK.
+ *
+ * The review's fixture: ACC 41 is marked Failed, and the VPS still sends it,
+ * a few minutes old, not connected, nothing loaded. The desk folded the client
+ * into "without a VPS paired" (and, alone on the desk, said no collector sends
+ * samples at all). It is a bulb of its own with the tile's word, the legend
+ * names it, and the drawer's folded line lists the account.
+ * ------------------------------------------------------------------------- */
+describe('a client whose VPS samples only retired accounts', () => {
+  const QUIET = { id: 'c-quiet', name: 'Quiet Larch', profile: { stage: 'Active' }, accountRegistry: { 'ACC 41': { status: 'Failed' } } };
+  const dead = () => disconnected('ACC 41', { status: 'Disconnected', runState: 'no_strategies', strategyCount: 0, enabledStrategyCount: 0 });
+
+  it('is a bulb that says so, named in the legend, and never one of the clients without a VPS', async () => {
+    const { container } = mount({
+      clients: [QUIET],
+      tracker: tracker({ samplesByClientId: new Map([['c-quiet', [dead()]]]) }),
+      deviceAware: false,
+    });
+    await ready(container, 1);
+    const bulb = container.querySelector('.dcl-bulb');
+    expect(bulb.dataset.state).toBe('only_retired');
+    expect(bulb.className).toBe('dcl-bulb tone-retired');
+    expect(bulb.querySelector('.sr-only').textContent).toBe('Only retired accounts sampled');
+    expect(bulb.querySelector('.dcl-bulb-button').getAttribute('title'))
+      .toBe('Quiet Larch: Only retired accounts sampled. NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(container.querySelector('.dcl-hidden')).toBeNull();
+    expect(container.textContent).not.toContain('without a VPS paired');
+    expect(container.textContent).not.toContain('No collector sends live samples yet');
+    expect(container.querySelector('.dcl-summary').textContent).toContain('1 with only retired accounts sampled, 0 without a VPS. Latest sample 4m ago.');
+    const legend = [...container.querySelectorAll('.dcl-legend-item')].map((node) => node.textContent.trim());
+    expect(legend).toContain('Only retired accounts sampled');
+    expect(container.querySelector('.dcl-legend-item.tone-retired')).not.toBeNull();
+
+    act(() => { bulbFor(container, 'c-quiet').click(); });
+    const drawer = container.querySelector('.dcl-drawer');
+    expect(drawer.querySelector('.dcl-drawer-sentence').textContent)
+      .toBe('Only retired accounts sampled. NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(drawer.querySelector('.dcl-drawer-empty').textContent).toBe('Only retired accounts sampled and none expected on the registry.');
+    expect(drawer.querySelectorAll('.account-pill').length).toBe(0);
+    const line = drawer.querySelector('.not-shown');
+    expect(line.querySelector('.not-shown-words').textContent).toBe('Not shown: 1 retired: 1 Failed. 1 still listed by NinjaTrader, disconnected.');
+    act(() => { line.querySelector('.not-shown-toggle').click(); });
+    expect([...line.querySelectorAll('.not-shown-list li')].map((node) => node.textContent)).toEqual(['ACC 41 Failed, still listed by NinjaTrader, disconnected']);
+  });
+
+  it('with a paired VPS, says the same, not "Never sampled, VPS paired, 0 accounts on the registry"', async () => {
+    const { container } = mount({
+      clients: [QUIET],
+      tracker: tracker({ samplesByClientId: new Map([['c-quiet', [dead()]]]) }),
+      loadDevices: vi.fn(async () => ({ available: true, byClientId: new Map([['c-quiet', [device()]]]) })),
+    });
+    await ready(container, 1);
+    await waitFor(() => expect(container.querySelector('.dcl-source').textContent).toBe('VPS health from the collector fleet.'));
+    const title = container.querySelector('.dcl-bulb-button').getAttribute('title');
+    expect(title).toBe('Quiet Larch: Only retired accounts sampled. NinjaTrader lists only accounts not expected to trade, in the line below.');
+    expect(title).not.toMatch(/Never sampled|0 accounts/);
+  });
+
+  it('names nothing extra in the legend when no bulb is in that state', async () => {
+    const { container } = mount();
+    await ready(container);
+    expect(container.querySelector('.dcl-legend-item.tone-retired')).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE DRAWER AND THE KEYBOARD.
+ *
+ * Escape closes the drawer and no other key does; an Escape pressed while
+ * typing in a field or inside a dialog belongs to that field or dialog. And
+ * whichever way the drawer closes (Escape, Close, the bulb again), focus goes
+ * back to the bulb that opened it, never to the top of the page.
+ * ------------------------------------------------------------------------- */
+describe('the drawer and the keyboard', () => {
+  const extras = [];
+  afterEach(() => { for (const node of extras.splice(0)) node.remove(); });
+  function outside(html) {
+    const host = document.createElement('div');
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    extras.push(host);
+    return host;
+  }
+  async function opened() {
+    const utils = mount();
+    await ready(utils.container);
+    act(() => { bulbFor(utils.container, 'act-1700000000-client-a').click(); });
+    expect(utils.container.querySelector('.dcl-drawer')).not.toBeNull();
+    return utils;
+  }
+
+  it('closes on Escape and on no other key', async () => {
+    const { container } = await opened();
+    for (const key of ['Enter', ' ', 'a', 'Tab', 'ArrowDown', 'Esc']) {
+      act(() => { fireEvent.keyDown(document, { key }); });
+      expect(container.querySelector('.dcl-drawer'), key).not.toBeNull();
+    }
+    act(() => { fireEvent.keyDown(document, { key: 'Escape' }); });
+    expect(container.querySelector('.dcl-drawer')).toBeNull();
+  });
+
+  it('leaves an Escape pressed in an input, a textarea, a select or a dialog to them', async () => {
+    const { container } = await opened();
+    const host = outside(`
+      <input aria-label="Search" />
+      <textarea aria-label="Note"></textarea>
+      <select aria-label="Pick"><option>One</option></select>
+      <div role="dialog" aria-label="Confirm"><button type="button">Inside a dialog</button></div>
+      <dialog open><button type="button">Inside a dialog element</button></dialog>
+    `);
+    for (const node of host.querySelectorAll('input, textarea, select, button')) {
+      node.focus();
+      expect(document.activeElement).toBe(node);
+      act(() => { fireEvent.keyDown(node, { key: 'Escape' }); });
+      expect(container.querySelector('.dcl-drawer'), node.outerHTML).not.toBeNull();
+    }
+    // The same key from a pill inside the drawer closes it.
+    const pill = container.querySelector('.dcl-drawer .account-pill-button');
+    pill.focus();
+    act(() => { fireEvent.keyDown(pill, { key: 'Escape' }); });
+    expect(container.querySelector('.dcl-drawer')).toBeNull();
+  });
+
+  it('hands focus back to the bulb that opened it, after Escape, Close or the bulb again', async () => {
+    const { container } = await opened();
+    const bulb = bulbFor(container, 'act-1700000000-client-a');
+    // Escape, from a pill inside the drawer.
+    container.querySelector('.dcl-drawer .account-pill-button').focus();
+    act(() => { fireEvent.keyDown(document.activeElement, { key: 'Escape' }); });
+    expect(container.querySelector('.dcl-drawer')).toBeNull();
+    expect(document.activeElement).toBe(bulb);
+    // Close.
+    act(() => { bulb.click(); });
+    const close = container.querySelector('.dcl-drawer-close');
+    close.focus();
+    act(() => { close.click(); });
+    expect(container.querySelector('.dcl-drawer')).toBeNull();
+    expect(document.activeElement).toBe(bulb);
+    // The bulb again, with focus left inside the drawer.
+    act(() => { bulb.click(); });
+    container.querySelector('.dcl-drawer .account-pill-button').focus();
+    act(() => { bulb.click(); });
+    expect(container.querySelector('.dcl-drawer')).toBeNull();
+    expect(document.activeElement).toBe(bulb);
+    // Another bulb opens its own drawer, and Escape returns to that one.
+    const other = bulbFor(container, 'c-off');
+    act(() => { bulb.click(); });
+    act(() => { other.click(); });
+    container.querySelector('.dcl-drawer-close').focus();
+    act(() => { fireEvent.keyDown(document.activeElement, { key: 'Escape' }); });
+    expect(document.activeElement).toBe(other);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * "DISCONNECTED SINCE 09:40" ON THE DESK.
+ *
+ * The same history and the same rule as the CAM Overview: read for the clients
+ * with a disconnected pill only, once per tracker clock, from the viewer's
+ * midnight, and said in the disconnected pill's title and in its detail.
+ * ------------------------------------------------------------------------- */
+describe('since when an account has been disconnected, on the desk', () => {
+  const dayStart = historyWindowStart(NOW).getTime();
+  const clock = (hours, minutes) => new Date(dayStart + (hours * 60 + minutes) * 60_000).toISOString();
+  function run(clientId, accountName, connected, first, last) {
+    return { clientId, deviceId: 'dev', accountName, connected, runState: 'running', firstSampledAt: first, lastSampledAt: last, samples: 2 };
+  }
+  const HISTORY = {
+    available: true,
+    rows: [
+      run(UUID_A, 'ACC 01', true, clock(6, 30), clock(10, 58)),
+      run(UUID_A, 'ACC 02', true, clock(6, 30), clock(9, 30)),
+      run(UUID_A, 'ACC 02', false, clock(9, 40), clock(10, 58)),
+      run('c-off', 'R-1', false, clock(8, 5), clock(10, 58)),
+    ],
+  };
+
+  it('reads today\'s history once, for the clients with a disconnected pill only, by the key the rows carry', async () => {
+    const loadHistory = vi.fn(async () => HISTORY);
+    const { container } = mount({ loadHistory });
+    await ready(container);
+    await waitFor(() => expect(loadHistory).toHaveBeenCalledTimes(1));
+    expect(loadHistory).toHaveBeenCalledWith({ clientIds: [UUID_A, 'c-off'], since: new Date(dayStart).toISOString() });
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads nothing when nobody is disconnected, and again only when the tracker clock moves', async () => {
+    const loadHistory = vi.fn(async () => HISTORY);
+    const calm = new Map([['c-live', [sample('G-1', { connectionName: 'Bluesky' })]]]);
+    const quiet = mount({ loadHistory, tracker: tracker({ samplesByClientId: calm }) });
+    await ready(quiet.container);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(loadHistory).not.toHaveBeenCalled();
+    quiet.unmount();
+
+    const props = { clients: CLIENTS, tracker: tracker(), refreshMs: 120_000, loadDevices: vi.fn(async () => ({ available: true, byClientId: DEVICES })), loadStrategies: vi.fn(async () => strategiesAnswer('x', [])), loadHistory };
+    const { rerender } = render(<DeskClientLights {...props} now={NOW} />);
+    await waitFor(() => expect(loadHistory).toHaveBeenCalledTimes(1));
+    rerender(<DeskClientLights {...props} now={new Date(NOW.getTime())} />);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+    rerender(<DeskClientLights {...props} now={new Date(NOW.getTime() + 120_000)} />);
+    await waitFor(() => expect(loadHistory).toHaveBeenCalledTimes(2));
+  });
+
+  it('says it in the disconnected pill\'s title and detail in the drawer, and keeps the word short', async () => {
+    const loadHistory = vi.fn(async () => HISTORY);
+    const { container } = mount({ loadHistory });
+    await ready(container);
+    await waitFor(() => expect(loadHistory).toHaveBeenCalled());
+    act(() => { bulbFor(container, 'act-1700000000-client-a').click(); });
+    const pill = () => container.querySelector('.dcl-drawer .account-pill[data-account="ACC 02"]');
+    await waitFor(() => expect(pill().querySelector('.account-pill-button').getAttribute('title')).toMatch(/^ACC 02: Disconnected since 09:40\. /));
+    expect(pill().querySelector('.account-pill-state').textContent).toBe('Disconnected');
+    // A connected pill in the same drawer says nothing of the kind.
+    expect(container.querySelector('.dcl-drawer .account-pill[data-account="ACC 01"] .account-pill-button').getAttribute('title')).not.toContain('since');
+    act(() => { pill().querySelector('.account-pill-button').click(); });
+    expect(container.querySelector('.dcl-drawer .account-live-detail-since').textContent).toBe('Disconnected since 09:40');
+    // And Red Cedar's drawer has its own.
+    act(() => { bulbFor(container, 'c-off').click(); });
+    await waitFor(() => expect(container.querySelector('.dcl-drawer .account-pill[data-account="R-1"] .account-pill-button').getAttribute('title'))
+      .toMatch(/^R-1: Disconnected since 08:05\. /));
+  });
+
+  it('says nothing when the history read fails, and the pills stand', async () => {
+    const loadHistory = vi.fn(async () => { throw new Error('account_live_sample_history: timeout'); });
+    const { container } = mount({ loadHistory });
+    await ready(container);
+    await waitFor(() => expect(loadHistory).toHaveBeenCalled());
+    act(() => { bulbFor(container, 'act-1700000000-client-a').click(); });
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(container.querySelector('.dcl-drawer .account-pill[data-account="ACC 02"] .account-pill-button').getAttribute('title')).toMatch(/^ACC 02: Disconnected\. /);
+    expect(container.textContent).not.toMatch(/timeout|could not/i);
   });
 });

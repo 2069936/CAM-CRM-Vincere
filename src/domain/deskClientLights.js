@@ -1,4 +1,4 @@
-import { registryLights } from './accountBuckets';
+import { ONLY_RETIRED_WORD, onlyRetiredWords, registryLights } from './accountBuckets';
 import { NO_CONNECTION_WORD, buildAccountPill } from './accountPill';
 import { cycleClock } from './algorithmLiveComparison';
 import { classifyAccountSample } from './autoCollectionFleet';
@@ -14,7 +14,7 @@ import { agedWords, registryNameSet } from './fleetStatusLights';
  * breakdown: the connections, under each its accounts, under each account what
  * it has been doing, the same information the tracker already carries.
  *
- * SIX STATES, FIVE COLOURS, EACH WITH A SENTENCE.
+ * SEVEN STATES, FIVE COLOURS, EACH WITH A SENTENCE.
  *
  *   live           green   at least one fresh sample, every fresh account is
  *                          connected, and no device of the client reports an
@@ -33,6 +33,12 @@ import { agedWords, registryNameSet } from './fleetStatusLights';
  *                          disconnected and no fresh account is connected. The
  *                          only red on the screen. "Off, 2 accounts disconnected."
  *   never_sampled  brown   a VPS is paired and no account has ever been sampled.
+ *   only_retired   grey    the VPS is sampling and every account it sends is
+ *                  hollow  retired (or looks failed) and not running: nothing
+ *                          expected is sampled, and the folded line in the
+ *                          drawer names what is. The tile's own word, "Only
+ *                          retired accounts sampled". Never folded into the
+ *                          clients without a VPS: the samples prove one.
  *   no_vps         grey    no device and no sample. Not a bulb: these clients
  *                          are one folded line under the grid.
  *
@@ -69,17 +75,19 @@ import { agedWords, registryNameSet } from './fleetStatusLights';
  * Pure: no React, no Supabase.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-export const BULB_STATES = Object.freeze(['off', 'partly', 'silent', 'never_sampled', 'live', 'no_vps']);
+export const BULB_STATES = Object.freeze(['off', 'partly', 'silent', 'never_sampled', 'only_retired', 'live', 'no_vps']);
 
 /* The colour, as a word. Red belongs to `off` and to nothing else: "differs
  * from the desk" stays amber on the pills, and partly and silent are amber
- * here (silent is drawn hollow, so the two amber bulbs read apart). */
+ * here (silent is drawn hollow, so the two amber bulbs read apart). Only
+ * retired is grey and hollow, so it is never read as the grey of no VPS. */
 export const BULB_TONES = Object.freeze({
   live: 'live',
   partly: 'partly',
   silent: 'silent',
   off: 'off',
   never_sampled: 'faint',
+  only_retired: 'retired',
   no_vps: 'none',
 });
 
@@ -89,14 +97,21 @@ export const BULB_WORDS = Object.freeze({
   silent: 'Silent',
   off: 'Off',
   never_sampled: 'Never sampled',
+  only_retired: ONLY_RETIRED_WORD,
   no_vps: 'No VPS paired',
 });
 
-/* Worst first: off, partly, silent, never sampled, live. no_vps is listed, not lit. */
-const BULB_ORDER = Object.freeze({ off: 0, partly: 1, silent: 2, never_sampled: 3, live: 4, no_vps: 5 });
+/* Worst first: off, partly, silent, never sampled, only retired, live. no_vps is listed, not lit. */
+const BULB_ORDER = Object.freeze({ off: 0, partly: 1, silent: 2, never_sampled: 3, only_retired: 4, live: 5, no_vps: 6 });
 
+/* The six looks every desk can show. Only retired is named in the legend only
+ * when a bulb is in it (ONLY_RETIRED_LEGEND), like the tiles' Marked badge. */
 export const DESK_LEGEND = Object.freeze(['live', 'partly', 'silent', 'off', 'never_sampled', 'no_vps']
   .map((state) => ({ state, tone: BULB_TONES[state], word: BULB_WORDS[state] })));
+
+export const ONLY_RETIRED_LEGEND = Object.freeze({
+  state: 'only_retired', tone: BULB_TONES.only_retired, word: BULB_WORDS.only_retired,
+});
 
 /** The group under the connections for registry accounts nobody has sampled. */
 export const NEVER_SAMPLED_GROUP = 'Never sampled';
@@ -203,12 +218,15 @@ function neverSampledGroup(pills) {
   return { ...group, words: connectionWords(group) };
 }
 
-function stateOf({ sampled, live, disconnected, silent, registry, device, deviceAware }) {
+function stateOf({ sampled, retiredSampled, live, disconnected, silent, registry, device, deviceAware }) {
   if (!sampled) {
-    if (deviceAware) {
-      if (!device.paired) return 'no_vps';
-      return device.ninjaDown ? 'off' : 'never_sampled';
-    }
+    // The heartbeat saying NinjaTrader is down is evidence, and outranks what
+    // a dead account's leftover sample says.
+    if (deviceAware && device.paired && device.ninjaDown) return 'off';
+    // Samples arrive, all of retired accounts: a VPS IS sampling, so this is
+    // neither "no VPS" nor "never sampled", with or without the devices.
+    if (retiredSampled > 0) return 'only_retired';
+    if (deviceAware) return device.paired ? 'never_sampled' : 'no_vps';
     return registry > 0 ? 'never_sampled' : 'no_vps';
   }
   if (live === 0) {
@@ -249,6 +267,8 @@ function sentenceOf(state, { counts, device, deviceAware, newestSampledAt, ageMi
       return deviceAware
         ? `Never sampled, VPS paired, ${plural(counts.registry, 'account')} on the registry.`
         : `Never sampled, ${plural(counts.registry, 'account')} on the registry and no sample yet.`;
+    case 'only_retired':
+      return `${ONLY_RETIRED_WORD}. ${onlyRetiredWords(counts.registry)}`;
     default:
       return 'No VPS paired and no sample.';
   }
@@ -314,6 +334,9 @@ export function buildDeskClientLight(client, { samples = [], devices = null, dev
 
   const counts = {
     sampled: list.length,
+    // Sampled accounts with no light (retired or looks failed, not running):
+    // in no other count, but proof that the VPS is sampling.
+    retiredSampled: lights.hidden.size,
     live: sampledPills.filter((pill) => pill.state === 'live').length,
     disconnected: sampledPills.filter((pill) => pill.state === 'disconnected').length,
     silent: sampledPills.filter((pill) => pill.state === 'sample_stale').length,
@@ -350,6 +373,9 @@ export function buildDeskClientLight(client, { samples = [], devices = null, dev
     // registry account is expected.
     notShown: lights.notShown,
     newestSampledAt: newest,
+    // When the VPS last sampled anything for this client, a hidden account
+    // included: what the line over the grid ages when no pill was sampled.
+    lastSampledAt: newest || lights.hiddenSampledAt,
     ageMinutes,
   };
 }
@@ -361,10 +387,11 @@ export function compareBulbs(left, right) {
   return compareText(left.clientName, right.clientName);
 }
 
-/** The one line over the grid. */
+/** The one line over the grid. Only retired is said only when a bulb is in it. */
 export function deskWords(counts, ageMinutes) {
+  const retired = counts.only_retired ? `${counts.only_retired} with only retired accounts sampled, ` : '';
   return `${counts.live} live, ${counts.partly} partly live, ${counts.silent} silent, ${counts.off} off, `
-    + `${counts.never_sampled} never sampled, ${counts.no_vps} without a VPS. `
+    + `${counts.never_sampled} never sampled, ${retired}${counts.no_vps} without a VPS. `
     + `Latest sample ${agedWords(ageMinutes)}.`;
 }
 
@@ -399,17 +426,22 @@ export function buildDeskClientLights({ clients = [], tracker = null, devices = 
     staleSeconds,
     settings,
   }));
-  const sampledAny = all.some((bulb) => bulb.counts.sampled > 0);
+  // A retired account's sample is a sample: a VPS that lists only dead
+  // accounts is sampling, and "no collector sends live samples" is false of it.
+  const sampledAny = all.some((bulb) => bulb.counts.sampled > 0 || bulb.counts.retiredSampled > 0);
   const pairedAny = all.some((bulb) => bulb.device?.paired);
   if (!sampledAny && !pairedAny) {
     return { kind: 'no_samples', bulbs: [], hidden: [], at, deviceAware, clientsTotal: all.length, minAgentVersion: tracker.minAgentVersion || null };
   }
   const bulbs = all.filter((bulb) => bulb.state !== 'no_vps').sort(compareBulbs);
   const hidden = all.filter((bulb) => bulb.state === 'no_vps').sort((a, b) => compareText(a.clientName, b.clientName));
-  const counts = { live: 0, partly: 0, silent: 0, off: 0, never_sampled: 0, no_vps: 0 };
+  const counts = { live: 0, partly: 0, silent: 0, off: 0, never_sampled: 0, only_retired: 0, no_vps: 0 };
   for (const bulb of all) counts[bulb.state] += 1;
   let newest = null;
   for (const bulb of all) if (bulb.newestSampledAt && (!newest || bulb.newestSampledAt > newest)) newest = bulb.newestSampledAt;
+  if (!newest) {
+    for (const bulb of all) if (bulb.lastSampledAt && (!newest || bulb.lastSampledAt > newest)) newest = bulb.lastSampledAt;
+  }
   const ageMinutes = newest ? Math.max(0, Math.floor((at.getTime() - newest.getTime()) / 60_000)) : null;
   return {
     kind: 'ready',

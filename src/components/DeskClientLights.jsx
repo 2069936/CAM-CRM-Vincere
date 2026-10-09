@@ -1,18 +1,25 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Activity } from 'lucide-react';
-import { DESK_LEGEND, buildDeskClientLights } from '../domain/deskClientLights';
-import { LIVE_SAMPLING_BUILD } from '../domain/fleetStatusLights';
-import { withDiffers } from '../domain/accountPill';
+import { DESK_LEGEND, ONLY_RETIRED_LEGEND, buildDeskClientLights } from '../domain/deskClientLights';
+import { LIVE_SAMPLING_BUILD, disconnectedClientKeys } from '../domain/fleetStatusLights';
+import { withDiffers, withDisconnectedSince } from '../domain/accountPill';
 import { buildAccountLiveDetail } from '../domain/accountLiveDetail';
+import { disconnectedSinceByClient } from '../domain/disconnectedSince';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
-import { loadSupabaseAccountObservationSettings, loadSupabaseClientLiveStrategies } from '../domain/supabaseStore';
+import {
+  loadSupabaseAccountLiveSampleHistory,
+  loadSupabaseAccountObservationSettings,
+  loadSupabaseClientLiveStrategies,
+} from '../domain/supabaseStore';
 import AccountPill from './AccountPill';
 import AccountLiveDetail from './AccountLiveDetail';
 import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
 import useAccountObservationSettings from './useAccountObservationSettings';
+import useBulbDrawer, { useEscapeToClose } from './useBulbDrawer';
 import useClientLiveStrategies from './useClientLiveStrategies';
 import useDeskDevices, { loadDeskDevices } from './useDeskDevices';
+import useDisconnectedSince from './useDisconnectedSince';
 
 /**
  * ONE BULB PER CLIENT, THE MANAGER'S DESK VIEW.
@@ -24,18 +31,20 @@ import useDeskDevices, { loadDeskDevices } from './useDeskDevices';
  * it has been doing. The clients with no VPS are one folded line, not bulbs.
  *
  * THE GRID IS A ROW OF LIGHTS AND NAMES, nothing per account, worst first (off,
- * partly, silent, never sampled, live) and alphabetical inside each group. The
- * state
- * is decided in src/domain/deskClientLights.js from the client's samples, its
- * registry and, when the role can read the fleet, its devices.
+ * partly, silent, never sampled, only retired, live) and alphabetical inside
+ * each group. The state is decided in src/domain/deskClientLights.js from the
+ * client's samples, its registry and, when the role can read the fleet, its
+ * devices.
  *
  * ONE DRAWER, UNDER THE GRID. A bulb is a button with aria-expanded; the open
  * one points at the drawer with aria-controls. The drawer prints the client's
  * sentence, then one section per connection ("Bluesky, 3 of 4 connected") with
  * builder 1's account pills under it, and a pill opens builder 1's detail with
  * the strategy rows and the money. One drawer at a time, one account open in
- * it; the open bulb, Escape or Close shut it. The strategies for the open
- * client are read on demand and cached per client, so the amber markers stay.
+ * it; the open bulb, Escape or Close shut it, and focus goes back to the bulb
+ * (useBulbDrawer: Escape only, and not while typing in a field or a dialog).
+ * The strategies for the open client are read on demand and cached per client,
+ * so the amber markers stay.
  *
  * EVERY COLOUR HAS WORDS BESIDE IT: the legend, a visually hidden state word on
  * each bulb, the sentence in each bulb's title and in the drawer. Red is the
@@ -50,6 +59,13 @@ import useDeskDevices, { loadDeskDevices } from './useDeskDevices';
  * the expected ones nobody has sampled, a new one saying so, and the rest of
  * the registry is one folded line at the bottom of the drawer (NotShownLine).
  * new_account_days is read once per session by useAccountObservationSettings.
+ * A client whose VPS sends only retired accounts is a bulb of its own, "Only
+ * retired accounts sampled", named in the legend when one is on the grid.
+ *
+ * SINCE WHEN IT IS DISCONNECTED, as on the CAM Overview: for the clients with a
+ * disconnected pill, and only for them, today's tracker history is read once
+ * per tracker read (useDisconnectedSince) and a disconnected pill's title and
+ * its detail say "Disconnected since 09:40".
  */
 const SOURCE_WORDS = Object.freeze({
   readable: 'VPS health from the collector fleet.',
@@ -76,6 +92,7 @@ export default function DeskClientLights({
   loadDevices = loadDeskDevices,
   loadStrategies = loadSupabaseClientLiveStrategies,
   loadObservationSettings = loadSupabaseAccountObservationSettings,
+  loadHistory = loadSupabaseAccountLiveSampleHistory,
 }) {
   // The clock is the caller's (the tracker hook moves it on every successful
   // read); a caller without one gets the mount time, held.
@@ -94,22 +111,22 @@ export default function DeskClientLights({
     return map;
   }, [clients]);
 
-  const [open, setOpen] = useState(null);
+  const drawer = useBulbDrawer();
+  const open = drawer.open;
   const [expanded, setExpanded] = useState(null);
   const [showHidden, setShowHidden] = useState(false);
   const drawerId = useId();
   const detailId = useId();
   const hiddenId = useId();
   const openBulb = open ? view.bulbs.find((bulb) => bulb.clientId === open) || null : null;
+  useEscapeToClose(openBulb !== null, drawer.close);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    function onKey(event) {
-      if (event.key === 'Escape') setOpen(null);
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
+  /* "Disconnected since": today's history for the clients with a disconnected
+   * pill, read again on every tracker read; nobody disconnected reads nothing. */
+  const disconnectedKeys = useMemo(() => disconnectedClientKeys(view.bulbs), [view.bulbs]);
+  const history = useDisconnectedSince({ clientIds: disconnectedKeys, clock: view.at.getTime(), load: loadHistory });
+  const sinceByClient = useMemo(() => disconnectedSinceByClient(history, { now: view.at }), [history, view.at]);
+  const since = openBulb ? sinceByClient.get(openBulb.clientKey) || sinceByClient.get(openBulb.clientId) || null : null;
 
   /* READ ON DEMAND, PER CLIENT: the strategies of the open client only, cached
    * by the hook so a reopened drawer shows its markers at once. */
@@ -123,13 +140,20 @@ export default function DeskClientLights({
     const client = clientsById.get(openBulb.clientId) || { id: openBulb.clientId, uuid: openBulb.clientKey, name: openBulb.clientName };
     return new Map(openBulb.dots.map((dot) => [
       dot.accountName,
-      buildAccountLiveDetail({ client, accountName: dot.accountName, sample: dot.sample, strategies: strategies.data, now: at }),
+      buildAccountLiveDetail({
+        client,
+        accountName: dot.accountName,
+        sample: dot.sample,
+        strategies: strategies.data,
+        now: at,
+        disconnectedSince: dot.state === 'disconnected' ? since?.get(dot.accountName) || null : null,
+      }),
     ]));
-  }, [openBulb, clientsById, strategies.data, at]);
+  }, [openBulb, clientsById, strategies.data, at, since]);
 
-  function toggle(clientId) {
+  function toggle(clientId, event) {
     setExpanded(null);
-    setOpen((value) => (value === clientId ? null : clientId));
+    drawer.toggle(clientId, event);
   }
 
   if (view.kind === 'unavailable') {
@@ -200,7 +224,7 @@ export default function DeskClientLights({
         </p>
       </div>
       <ul className="dcl-legend" aria-label="What the colours mean">
-        {DESK_LEGEND.map((entry) => (
+        {[...DESK_LEGEND, ...(view.bulbs.some((bulb) => bulb.state === ONLY_RETIRED_LEGEND.state) ? [ONLY_RETIRED_LEGEND] : [])].map((entry) => (
           <li key={entry.state} className={`dcl-legend-item tone-${entry.tone}`}>
             <span className="dcl-light" aria-hidden="true" />
             <span>{entry.word}</span>
@@ -227,7 +251,7 @@ export default function DeskClientLights({
                 aria-expanded={isOpen}
                 aria-controls={isOpen ? drawerId : undefined}
                 title={bulb.title}
-                onClick={() => toggle(bulb.clientId)}
+                onClick={(event) => toggle(bulb.clientId, event)}
               >
                 <span className="dcl-light" aria-hidden="true" />
                 <span className="dcl-bulb-name">{bulb.clientName}</span>
@@ -242,11 +266,12 @@ export default function DeskClientLights({
           id={drawerId}
           bulb={openBulb}
           details={details}
+          since={since}
           strategies={strategies}
           expanded={expanded}
           detailId={detailId}
           onExpand={(accountName) => setExpanded((value) => (value === accountName ? null : accountName))}
-          onClose={() => setOpen(null)}
+          onClose={drawer.close}
           onSelectClient={onSelectClient}
         />
       ) : null}
@@ -273,7 +298,15 @@ export default function DeskClientLights({
   );
 }
 
-function Drawer({ id, bulb, details, strategies, expanded, detailId, onExpand, onClose, onSelectClient }) {
+/* The drawer's line when no pill is under it. A VPS that sends only retired
+ * accounts is sampling, so "no account sampled" would be false about it. */
+function emptyWords(bulb) {
+  return bulb.state === ONLY_RETIRED_LEGEND.state
+    ? 'Only retired accounts sampled and none expected on the registry.'
+    : 'No account sampled and none expected on the registry.';
+}
+
+function Drawer({ id, bulb, details, since = null, strategies, expanded, detailId, onExpand, onClose, onSelectClient }) {
   return (
     <div className={`dcl-drawer tone-${bulb.tone}`} id={id} role="region" aria-label={`${bulb.clientName}, connections and accounts`}>
       <div className="dcl-drawer-head">
@@ -301,7 +334,10 @@ function Drawer({ id, bulb, details, strategies, expanded, detailId, onExpand, o
                   {group.accounts.map((pill) => (
                     <AccountPill
                       key={pill.accountName}
-                      pill={withDiffers(pill, details.get(pill.accountName)?.differsCount || 0)}
+                      pill={withDiffers(
+                        withDisconnectedSince(pill, pill.state === 'disconnected' ? since?.get(pill.accountName) || null : null),
+                        details.get(pill.accountName)?.differsCount || 0,
+                      )}
                       expanded={expanded === pill.accountName}
                       controls={detailId}
                       onToggle={() => onExpand(pill.accountName)}
@@ -321,7 +357,7 @@ function Drawer({ id, bulb, details, strategies, expanded, detailId, onExpand, o
           })}
         </ul>
       ) : (
-        <p className="dcl-drawer-empty">No account sampled and none expected on the registry.</p>
+        <p className="dcl-drawer-empty">{emptyWords(bulb)}</p>
       )}
       <NotShownLine notShown={bulb.notShown} label={`${bulb.clientName}, accounts not shown`} />
     </div>

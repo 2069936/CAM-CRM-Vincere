@@ -1,4 +1,4 @@
-import { registryLights } from './accountBuckets';
+import { ONLY_RETIRED_WORD, onlyRetiredWords, registryLights } from './accountBuckets';
 import {
   accountTrackerHeadline,
   classifyAccountSample,
@@ -188,14 +188,16 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
   }));
   const summary = summarizeAccountTracker(list, { now, staleSeconds });
   const sampled = list.length > 0;
-  const onlyRetiredSampled = !sampled && lights.hidden.size > 0;
+  // The VPS samples, and everything it lists is retired or looks failed: said
+  // in the words the desk bulb and the client page strip use too.
+  const onlyRetiredSampled = lights.onlyRetiredSampled;
 
   let worst;
   if (!sampled) {
     worst = {
       state: 'none',
       tone: 'none',
-      word: onlyRetiredSampled ? 'Only retired accounts sampled' : 'No sample yet',
+      word: onlyRetiredSampled ? ONLY_RETIRED_WORD : 'No sample yet',
       rank: STATE_RANK.none,
     };
   } else {
@@ -219,9 +221,7 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
       + `${newUnsampled ? `, ${newUnsampled} new and not sampled yet` : ''}`
       + `${markedCount ? `, ${markedCount} retired but still running` : ''}.`;
   } else if (onlyRetiredSampled) {
-    // The VPS samples, and everything it lists is retired or looks failed.
-    words = `${registry.length ? `${registry.length} account${registry.length === 1 ? '' : 's'} on the registry, none sampled. ` : ''}`
-      + 'NinjaTrader lists only accounts not expected to trade, in the line below.';
+    words = onlyRetiredWords(registry.length);
   } else if (registry.length) {
     words = `${registry.length} account${registry.length === 1 ? '' : 's'} on the registry, none sampled. Either no VPS is paired with this client or it has not sampled yet.`;
   } else {
@@ -249,7 +249,11 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
     notShown: lights.notShown,
     newUnsampled,
     sampled,
+    onlyRetiredSampled,
     newestSampledAt: newest,
+    // When the VPS last sampled anything for this client, a hidden account
+    // included: what the line over the grid ages when no pill was sampled.
+    lastSampledAt: newest || lights.hiddenSampledAt,
     ageMinutes,
     summary,
   };
@@ -291,7 +295,10 @@ export function buildFleetStatusLights({ clients = [], tracker = null, now = Dat
     .map((client) => buildClientTile(client, byClient.get(client.uuid) || byClient.get(client.id) || [], { now: at, staleSeconds, settings }))
     .sort(compareTiles);
   const rows = tiles.flatMap((tile) => tile.summary.rows.map((row) => row.sample));
-  if (!rows.length) {
+  // A VPS that samples only retired accounts IS sampling: "no collector sends
+  // live samples yet" would be false about it, so it reaches the grid.
+  const onlyRetiredClients = tiles.filter((tile) => tile.onlyRetiredSampled).length;
+  if (!rows.length && !onlyRetiredClients) {
     return {
       kind: 'no_samples',
       tiles,
@@ -302,7 +309,10 @@ export function buildFleetStatusLights({ clients = [], tracker = null, now = Dat
   }
   const summary = summarizeAccountTracker(rows, { now: at, staleSeconds });
   const clientsSampled = tiles.filter((tile) => tile.sampled).length;
-  const newest = summary.newestSampledAt ? toDate(summary.newestSampledAt) : null;
+  let newest = summary.newestSampledAt ? toDate(summary.newestSampledAt) : null;
+  if (!newest) {
+    for (const tile of tiles) if (tile.lastSampledAt && (!newest || tile.lastSampledAt > newest)) newest = tile.lastSampledAt;
+  }
   const ageMinutes = newest ? Math.max(0, Math.floor((at.getTime() - newest.getTime()) / 60_000)) : null;
   return {
     kind: 'ready',
@@ -311,14 +321,20 @@ export function buildFleetStatusLights({ clients = [], tracker = null, now = Dat
     at,
     clientsSampled,
     clientsTotal: tiles.length,
+    onlyRetiredClients,
     ageMinutes,
-    words: fleetWords(summary, clientsSampled, tiles.length, ageMinutes),
+    words: fleetWords(summary, clientsSampled, tiles.length, ageMinutes, onlyRetiredClients),
   };
 }
 
-/** The one line over the grid. accountTrackerHeadline's words, then the reach. */
-export function fleetWords(summary, clientsSampled, clientsTotal, ageMinutes) {
+/** The one line over the grid. accountTrackerHeadline's words, then the reach.
+ * With no expected account sampled anywhere, the clients whose VPS lists only
+ * retired accounts are the reach instead. */
+export function fleetWords(summary, clientsSampled, clientsTotal, ageMinutes, onlyRetiredClients = 0) {
+  const clients = `${clientsTotal} client${clientsTotal === 1 ? '' : 's'}`;
+  if (!summary?.total && onlyRetiredClients > 0) {
+    return `${ONLY_RETIRED_WORD}, across ${onlyRetiredClients} of ${clients}. Latest sample ${agedWords(ageMinutes)}.`;
+  }
   const head = accountTrackerHeadline(summary).replace(/\.$/, '');
-  const reach = `across ${clientsSampled} of ${clientsTotal} client${clientsTotal === 1 ? '' : 's'}`;
-  return `${head}, ${reach}. Latest sample ${agedWords(ageMinutes)}.`;
+  return `${head}, across ${clientsSampled} of ${clients}. Latest sample ${agedWords(ageMinutes)}.`;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Activity } from 'lucide-react';
 import {
   LEGEND,
@@ -23,6 +23,7 @@ import AccountLiveDetail from './AccountLiveDetail';
 import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
 import useAccountObservationSettings from './useAccountObservationSettings';
+import useBulbDrawer, { useEscapeToClose } from './useBulbDrawer';
 import useClientLiveStrategies from './useClientLiveStrategies';
 import useDisconnectedSince from './useDisconnectedSince';
 
@@ -70,6 +71,13 @@ const VIEW_WORDS = Object.freeze({ compact: 'Compact', tiles: 'Tiles' });
  * account differs from the desk in this cycle, by algorithmLiveComparison's
  * own rule; it is a question, never red, and never the pill's colour.
  *
+ * ONE SYMBOL, ONE MEANING. The amber corner means "differs from the desk" in
+ * both views and its legend line says so in both. A bulb whose client has an
+ * account marked retired that is still running carries a different glyph, an
+ * amber ring around the light (fsl-bulb-still-running), with its own legend
+ * line in Compact; the "Marked" badge's legend line is there whenever a pill
+ * on screen carries it (any tile in Tiles, the open drawer in Compact).
+ *
  * IT READS WHAT THE OVERVIEW ALREADY LOADED. The tracker object comes from
  * useLiveAccountTracker (one PostgREST request every two minutes for the whole
  * set of clients); this component makes no request of its own for the tiles.
@@ -94,8 +102,10 @@ const VIEW_WORDS = Object.freeze({ compact: 'Compact', tiles: 'Tiles' });
  * the tiles' own order; a bulb is a button (aria-expanded, aria-controls) and
  * opens THAT client's tile, the same component with its pills, its sentence,
  * its folded line and its pill detail, in a drawer under the bulbs. One open at
- * a time; the open bulb, Escape or Close shut it. "Compact" and "Tiles" in the
- * header switch between the two and the choice is remembered per browser.
+ * a time; the open bulb, Escape or Close shut it, and focus goes back to the
+ * bulb (useBulbDrawer: Escape only, and not while typing in a field or a
+ * dialog). "Compact" and "Tiles" in the header switch between the two and the
+ * choice is remembered per browser.
  * The Manager's desk bulbs (DeskClientLights) are the same vocabulary: the
  * same light, the same size, the same drawer under the grid.
  *
@@ -140,21 +150,13 @@ export default function FleetStatusLights({
   }, [clients]);
 
   const [mode, setMode] = useState(readStoredView);
-  const [open, setOpen] = useState(null);
+  const drawer = useBulbDrawer();
+  const open = drawer.open;
   const drawerId = useId();
   const compact = mode === 'compact';
   const openTile = compact && open ? view.tiles.find((tile) => tile.clientId === open) || null : null;
-  const drawerOpen = openTile !== null;
-
-  // Escape shuts the drawer; listened for only while one is open.
-  useEffect(() => {
-    if (!drawerOpen) return undefined;
-    function onKey(event) {
-      if (event.key === 'Escape') setOpen(null);
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [drawerOpen]);
+  // Escape shuts the drawer, while one is on screen.
+  useEscapeToClose(openTile !== null, drawer.close);
 
   /* "Disconnected since": today's history for the clients with a disconnected
    * pill, read again on every tracker read; nobody disconnected reads nothing. */
@@ -163,7 +165,7 @@ export default function FleetStatusLights({
   const sinceByClient = useMemo(() => disconnectedSinceByClient(history, { now: view.at }), [history, view.at]);
 
   function chooseMode(next) {
-    setOpen(null);
+    drawer.reset();
     setMode(next);
     writeStoredView(next);
   }
@@ -224,7 +226,7 @@ export default function FleetStatusLights({
   }
 
   return (
-    <div className={`fsl view-${mode}`} role="region" aria-label="Live accounts across the book">
+    <div className="fsl" role="region" aria-label="Live accounts across the book">
       <div className="fsl-head">
         <Activity size={14} aria-hidden="true" />
         <p className="fsl-summary">
@@ -253,18 +255,17 @@ export default function FleetStatusLights({
             <span>{entry.word}</span>
           </li>
         ))}
-        {compact ? (
-          <li className="fsl-legend-item fsl-legend-mark">
-            <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
-            <span>Amber corner: an account marked retired is still running</span>
+        <li className="fsl-legend-item fsl-legend-mark">
+          <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
+          <span>Amber corner: an algorithm differs from the desk</span>
+        </li>
+        {compact && view.tiles.some((tile) => tile.marked.length) ? (
+          <li className="fsl-legend-item fsl-legend-still-running">
+            <span className="fsl-dot fsl-bulb-still-running" aria-hidden="true" />
+            <span>Amber ring: an account marked retired is still running</span>
           </li>
-        ) : (
-          <li className="fsl-legend-item fsl-legend-mark">
-            <span className="fsl-dot" aria-hidden="true"><span className="account-pill-mark" /></span>
-            <span>Amber corner: an algorithm differs from the desk</span>
-          </li>
-        )}
-        {!compact && view.tiles.some((tile) => tile.marked.length) ? (
+        ) : null}
+        {(compact ? openTile?.marked.length : view.tiles.some((tile) => tile.marked.length)) ? (
           <li className="fsl-legend-item fsl-legend-marked">
             <span className="account-pill-marked" aria-hidden="true">Marked</span>
             <span>The registry retired the account and it is still running</span>
@@ -295,11 +296,9 @@ export default function FleetStatusLights({
                     aria-expanded={isOpen}
                     aria-controls={isOpen ? drawerId : undefined}
                     title={bulbTitle(tile)}
-                    onClick={() => setOpen((value) => (value === tile.clientId ? null : tile.clientId))}
+                    onClick={(event) => drawer.toggle(tile.clientId, event)}
                   >
-                    <span className="dcl-light fsl-light" aria-hidden="true">
-                      {tile.marked.length ? <span className="account-pill-mark" /> : null}
-                    </span>
+                    <span className={`dcl-light fsl-light${tile.marked.length ? ' fsl-bulb-still-running' : ''}`} aria-hidden="true" />
                     <span className="dcl-bulb-name fsl-bulb-name">{tile.clientName}</span>
                     <span className="fsl-bulb-count">{tile.countWords}</span>
                     <span className="sr-only">
@@ -319,7 +318,7 @@ export default function FleetStatusLights({
               aria-label={`${openTile.clientName}, accounts`}
             >
               <ul className="fsl-drawer-tile">
-                <Tile key={openTile.clientId} {...tileProps(openTile)} onClose={() => setOpen(null)} />
+                <Tile key={openTile.clientId} {...tileProps(openTile)} onClose={drawer.close} />
               </ul>
             </div>
           ) : null}
