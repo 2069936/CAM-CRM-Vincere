@@ -479,11 +479,21 @@ export default function AutoCollectionCard({
   const enrollmentPhase = steps.enrollment.status;
   const refusal = describePairRefusal(status?.lastPairAttempt);
   // buildInstallCommand returns '' for a signed setup executable
-  // (autoCollectionViewModel.js:62), which is run rather than expanded. Step 1
+  // (autoCollectionViewModel.js), which is run rather than expanded. Step 1
   // used to gate its body on hasRelease alone, so an exe release rendered
   // "…then paste this:" above an empty <code> block. The CAM was told to paste
   // nothing.
   const hasInstallCommand = Boolean(installCommand);
+  /* AN EMPTY COMMAND HAS TWO CAUSES, AND THEY READ DIFFERENTLY.
+   *
+   * A signed setup executable has no line because it is run, not expanded.
+   * A package has no line when its release carries no well formed SHA-256:
+   * buildInstallCommand will not hand over a line that runs unverified bytes
+   * as administrator. Left to the setup program branch, that second case
+   * would call an unchecked zip a "signed setup program" and link it for
+   * download. It says plainly that nothing verified is available instead,
+   * and links nothing. */
+  const isSetupProgram = Boolean(status?.release?.kind && status.release.kind !== 'zip');
   // Step 1's instructions are for someone who has not installed yet. Gating them
   // on hasRelease alone kept the 100 MB PowerShell line, the ExecutionPolicy
   // note and the download link on screen for a VPS that is already paired and
@@ -591,7 +601,7 @@ export default function AutoCollectionCard({
               appears.
             </p>
           ) : null}
-          {showInstallInstructions && !hasInstallCommand ? (
+          {showInstallInstructions && !hasInstallCommand && isSetupProgram ? (
             // A signed setup executable has nothing to paste: it is downloaded
             // and double-clicked. Saying "paste this" over an empty code block
             // is how this branch used to render.
@@ -599,6 +609,14 @@ export default function AutoCollectionCard({
               This release is a signed setup program, not a package the CRM can
               hand over as one line. Download it on the client&apos;s VPS, close
               NinjaTrader, and run it there.
+            </p>
+          ) : null}
+          {showInstallInstructions && !hasInstallCommand && !isSetupProgram ? (
+            <p className="auto-collection-step-hint">
+              No verified package is available right now. The published release
+              does not carry a checksum the install line can check, so there is
+              nothing safe to paste. Nothing is wrong on this client: whoever
+              publishes the agent has to republish it with its SHA-256.
             </p>
           ) : null}
           {hasRelease && installDone && !installLineRevealed ? (
@@ -625,7 +643,7 @@ export default function AutoCollectionCard({
               <span>{commandCopyState === 'copied' ? 'Copied' : commandCopyState === 'failed' ? 'Copy unavailable' : ''}</span>
             </div>
           ) : null}
-          {showInstallInstructions ? (
+          {showInstallInstructions && (hasInstallCommand || isSetupProgram) ? (
             <a
               className="auto-collection-step-link"
               href={status.release.url}

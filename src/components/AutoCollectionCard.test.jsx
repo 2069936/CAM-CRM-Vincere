@@ -172,6 +172,29 @@ describe('AutoCollectionCard rendering and actions', () => {
     expect(html).not.toContain('then paste this');
     expect(html).toContain('signed setup program');
     expect(html).toContain('download the setup program');
+    expect(html).not.toContain('No verified package');
+  });
+
+  it('says no verified package is available when the zip has no checksum, instead of calling it a setup program', () => {
+    // buildInstallCommand also returns '' for a package without a usable
+    // sha256, because the line would otherwise run unverified bytes as
+    // administrator. That empty command used to fall into the setup program
+    // branch, which would have told the CAM to download and run a "signed
+    // setup program" that is neither signed nor a setup program, and checked
+    // by nobody.
+    const unverified = { ...base.release, url: 'https://downloads.example.test/agent.zip', kind: 'zip' };
+    delete unverified.sha256;
+    for (const release of [unverified, { ...unverified, sha256: 'not-a-digest' }]) {
+      const html = render({ ...base, release });
+      expect(html).toContain('No verified package is available right now.');
+      expect(html).not.toContain('<code class="auto-collection-command">');
+      expect(html).not.toContain('then paste this');
+      expect(html).not.toContain('signed setup program');
+      expect(html).not.toContain('download the setup program');
+      expect(html).not.toContain('download the package manually');
+      expect(html).not.toContain('href="https://downloads.example.test/agent.zip"');
+      expect(html).not.toContain('Set-ExecutionPolicy');
+    }
   });
 
   it('renders a generated code, expiry countdown, and copy control without leaking other secrets', () => {
@@ -250,10 +273,96 @@ describe('AutoCollectionCard rendering and actions', () => {
   });
 });
 
+/* THE LINE RUNS AS ADMINISTRATOR, SO IT CHECKS WHAT IT DOWNLOADED FIRST.
+ *
+ * resolveInstallerRelease (server/apiLib/collectorRelease.js) hands the card a
+ * release whose sha256 was read out of a manifest pinned by its own digest.
+ * The line used to throw that away: it downloaded, expanded and ran
+ * install-agent.ps1 elevated without ever looking at the bytes. A human
+ * initiated install is only acceptable when it verifies the SHA-256 before
+ * anything out of the package runs, so the check now sits between the
+ * download and the first thing that touches the zip. */
 describe('install command', () => {
+  const SHA = '32c76ddb1dcfc010c3b444504e73e79499fa925cddb765c51997395c026a1109';
+  const release121 = {
+    url: 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.1/Vincere-AutoExport-Agent.zip',
+    kind: 'zip',
+    version: '1.2.1',
+    sha256: SHA,
+    size: 110635990,
+  };
+
+  it('is exactly this line for the 1.2.1 release the desk is rolling out', () => {
+    expect(buildInstallCommand(release121)).toBe(
+      '$d="$env:TEMP\\vincere-agent"; '
+      + 'Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue; '
+      + "Invoke-WebRequest 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.1/Vincere-AutoExport-Agent.zip' -OutFile \"$d.zip\" -UseBasicParsing; "
+      + '$hash=(Get-FileHash -LiteralPath "$d.zip" -Algorithm SHA256).Hash; '
+      + `if ($hash -ne '${SHA}') { Remove-Item -LiteralPath "$d.zip" -Force -ErrorAction SilentlyContinue; throw "SHA256 mismatch, nothing was installed: $hash" }; `
+      + 'Expand-Archive "$d.zip" $d -Force; '
+      + '& "$d\\install-agent.ps1" -PackagePath $d',
+    );
+  });
+
+  it('stays one line, the same for a first install and an update', () => {
+    const command = buildInstallCommand(release121);
+    expect(command).not.toMatch(/[\r\n]/);
+    // -NoPairing would make the update line differ from the first install one.
+    expect(command).not.toContain('-NoPairing');
+  });
+
+  it('compares the hash after the download and before anything expands or runs', () => {
+    const command = buildInstallCommand(release121);
+    const download = command.indexOf('Invoke-WebRequest');
+    const hash = command.indexOf('Get-FileHash');
+    const compare = command.indexOf(`-ne '${SHA}'`);
+    const expand = command.indexOf('Expand-Archive');
+    const run = command.indexOf('install-agent.ps1');
+    expect(download).toBeGreaterThan(-1);
+    expect(hash).toBeGreaterThan(download);
+    expect(compare).toBeGreaterThan(hash);
+    expect(expand).toBeGreaterThan(compare);
+    expect(run).toBeGreaterThan(expand);
+    // Expand-Archive and the script appear exactly once, so nothing can run
+    // from the zip on a path that skipped the comparison.
+    expect(command.split('Expand-Archive')).toHaveLength(2);
+    expect(command.split('install-agent.ps1')).toHaveLength(2);
+  });
+
+  it('throws on a mismatch and removes the zip it refused', () => {
+    const parts = buildInstallCommand(release121).split('; ');
+    const guard = parts.findIndex((part) => part.startsWith('if ($hash -ne '));
+    expect(guard).toBeGreaterThan(-1);
+    // The guard is one statement: its own '; ' splits it, so stitch it back.
+    const statement = parts.slice(guard).join('; ').split(' }; ')[0];
+    expect(statement).toContain('Remove-Item -LiteralPath "$d.zip" -Force');
+    expect(statement).toContain('throw "SHA256 mismatch, nothing was installed: $hash"');
+    expect(statement.indexOf('Remove-Item')).toBeLessThan(statement.indexOf('throw'));
+  });
+
+  it('accepts an upper case digest and writes it lower case', () => {
+    const command = buildInstallCommand({ ...release121, sha256: SHA.toUpperCase() });
+    expect(command).toContain(`-ne '${SHA}'`);
+  });
+
+  it('is empty when the release carries no usable sha256, so nothing unverified is handed over', () => {
+    const withoutSha = { ...release121 };
+    delete withoutSha.sha256;
+    expect(buildInstallCommand(withoutSha)).toBe('');
+    expect(buildInstallCommand({ ...release121, sha256: '' })).toBe('');
+    expect(buildInstallCommand({ ...release121, sha256: null })).toBe('');
+    expect(buildInstallCommand({ ...release121, sha256: SHA.slice(1) })).toBe('');
+    expect(buildInstallCommand({ ...release121, sha256: `${SHA}0` })).toBe('');
+    expect(buildInstallCommand({ ...release121, sha256: `${SHA.slice(1)}g` })).toBe('');
+    // A quote would break out of the single quoted literal the hash sits in.
+    expect(buildInstallCommand({ ...release121, sha256: `${SHA.slice(2)}'x` })).toBe('');
+    expect(buildInstallCommand({ ...release121, sha256: ` ${SHA}` })).toBe('');
+  });
+
   it('builds a one-line PowerShell install from the release url', () => {
-    const command = buildInstallCommand({ url: 'https://downloads.example.test/agent.zip' });
+    const command = buildInstallCommand({ url: 'https://downloads.example.test/agent.zip', sha256: SHA });
     expect(command).toContain("Invoke-WebRequest 'https://downloads.example.test/agent.zip'");
+    expect(command).toContain('Get-FileHash');
     expect(command).toContain('Expand-Archive');
     expect(command).toContain('install-agent.ps1');
   });
@@ -261,15 +370,18 @@ describe('install command', () => {
   it('is empty when no release is published', () => {
     expect(buildInstallCommand(null)).toBe('');
     expect(buildInstallCommand({ url: '' })).toBe('');
+    expect(buildInstallCommand({ url: '', sha256: SHA })).toBe('');
   });
 
   it('is empty for a signed setup executable, which is run rather than expanded', () => {
-    expect(buildInstallCommand({ url: 'https://x.test/Setup.exe', kind: 'exe' })).toBe('');
-    expect(buildInstallCommand({ url: 'https://x.test/agent.zip', kind: 'zip' })).toContain('Expand-Archive');
+    expect(buildInstallCommand({ url: 'https://x.test/Setup.exe', kind: 'exe', sha256: SHA })).toBe('');
+    expect(buildInstallCommand({ url: 'https://x.test/agent.zip', kind: 'zip', sha256: SHA })).toContain('Expand-Archive');
   });
 
   it('escapes a single quote in the url so the command cannot break out', () => {
-    expect(buildInstallCommand({ url: "https://x.test/a'b.zip" })).toContain("'https://x.test/a''b.zip'");
+    const command = buildInstallCommand({ url: "https://x.test/a'b.zip", sha256: SHA });
+    expect(command).toContain("Invoke-WebRequest 'https://x.test/a''b.zip' -OutFile");
+    expect(command).not.toContain("'https://x.test/a'b.zip'");
   });
 });
 
@@ -372,6 +484,10 @@ describe('install step rendering', () => {
     const html = render(base);
     expect(html).toContain('Install the agent');
     expect(html).toContain('install-agent.ps1');
+    // The line on the card is the verified one, checked against the release.
+    expect(html).toContain('Get-FileHash');
+    expect(html).toContain(`-ne &#x27;${'a'.repeat(64)}&#x27;`);
+    expect(html).not.toContain('No verified package');
   });
 
   it('names the two variables that are missing instead of an approval nobody grants', () => {
