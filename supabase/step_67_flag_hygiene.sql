@@ -94,7 +94,7 @@
 --   stops. The CAM flag queue's closing line ("N flags closed between ...")
 --   counts them for 7 days. Nothing is deleted.
 -- * Accounts a person marks Failed AFTER this file runs: no new flag of the
---   five is created for them (items 3 and the JavaScript gate), but the ones
+--   five is created for them (item 3 and the JavaScript gate), but the ones
 --   already open stay open until a CAM resolves them. Only the close's own
 --   transition resolves automatically.
 -- * A Failed account a person revives (status Active again) gets the five
