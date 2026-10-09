@@ -202,6 +202,22 @@ function compareRows(a, b) {
   return compareText(a.algorithm, b.algorithm) || compareText(a.instrumentRoot, b.instrumentRoot);
 }
 
+/* WHOSE CLIENTS THE ROLL CALL IS ABOUT, as the intro and the empty state say
+ * it. A CAM reads its own book ("your clients"), a Manager inside a CAM's
+ * workspace reads that book ("this book's clients"), and the Operations
+ * Command Center reads every working client ("the desk's clients"). A scope
+ * word, not free text, so a caller cannot hand the desk view a book's words. */
+export const ROLL_CALL_SCOPE_WORDS = Object.freeze({
+  mine: 'your clients',
+  book: "this book's clients",
+  desk: "the desk's clients",
+});
+
+/** The words for a scope; an unknown scope reads as the viewer's own book. */
+export function rollCallScopeWords(scope) {
+  return Object.hasOwn(ROLL_CALL_SCOPE_WORDS, scope) ? ROLL_CALL_SCOPE_WORDS[scope] : ROLL_CALL_SCOPE_WORDS.mine;
+}
+
 /**
  * The roll call the panel renders.
  *

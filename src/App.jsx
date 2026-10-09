@@ -6046,7 +6046,7 @@ export function ManagerOverview({
           <AlgorithmRollCall
             clients={deskWorkingClients}
             tracker={deskTracker}
-            bookWords="the desk's clients"
+            scope="desk"
           />
         </CollapsiblePanel>
 
@@ -11346,7 +11346,7 @@ export function CamOverview({
         <AlgorithmRollCall
           clients={workingClients}
           tracker={liveTracker}
-          bookWords={isManager ? "this book's clients" : 'your clients'}
+          scope={isManager ? "book" : "mine"}
         />
       </CollapsiblePanel>
 

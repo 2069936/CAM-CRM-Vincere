@@ -24,12 +24,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   loadSupabaseAccountTracker: vi.fn(),
+  loadSupabaseAlgorithmLive: vi.fn(),
   loadFleet: vi.fn(),
 }));
 
 vi.mock('./domain/supabaseStore', async (importOriginal) => ({
   ...(await importOriginal()),
   loadSupabaseAccountTracker: mocks.loadSupabaseAccountTracker,
+  loadSupabaseAlgorithmLive: mocks.loadSupabaseAlgorithmLive,
 }));
 
 vi.mock('./domain/autoCollectionApi', async (importOriginal) => {
@@ -38,6 +40,7 @@ vi.mock('./domain/autoCollectionApi', async (importOriginal) => {
 });
 
 import { ManagerOverview } from './App';
+import { resetAlgorithmLiveReadCache } from './components/useAlgorithmLiveRead';
 
 // The loader's client shape: no camProfileId on the client, ever.
 function client(id, name, accounts) {
@@ -175,9 +178,34 @@ async function bulbsReady(container) {
   await waitFor(() => expect(container.querySelector('.dcl-source').textContent).toBe('VPS health from the collector fleet.'));
 }
 
+/* One complete cycle a few minutes old, one OGX instance on Cedar Row, so the
+ * roll call has a row and prints its intro. */
+function algorithmLive() {
+  const cycleStart = new Date(Math.floor((Date.now() - 4 * 60_000) / 600_000) * 600_000).toISOString();
+  return {
+    available: true,
+    desk: {
+      available: true,
+      cycleStart,
+      filling: false,
+      scope: 'desk',
+      cohorts: [{ algorithm: 'OGX_PF', instrumentRoot: 'MNQ', status: 'compared', nAccounts: 9, nClients: 6, median: 40, spread: 20, nFlat: 0 }],
+    },
+    rows: [{
+      clientId: 'c-1', accountName: 'CR-1', strategyId: '1', strategyName: 'OGX PF 2.4', algorithm: 'OGX_PF', instrumentRoot: 'MNQ',
+      instrument: 'MNQ 12-26', realizedPnl: 30, unrealizedPnl: 5, restartedAt: null, sampledAt: cycleStart, cycleStart,
+      marketPosition: null, positionQuantity: null, tradesThisRun: null,
+    }],
+    settings: { minCohortAccounts: 5, minCohortClients: 3, differsAtSpread: 3, minSpreadDollars: 50, cycleSeconds: 600, fallback: false },
+  };
+}
+
 beforeEach(() => {
+  resetAlgorithmLiveReadCache();
   mocks.loadSupabaseAccountTracker.mockReset();
   mocks.loadSupabaseAccountTracker.mockResolvedValue(TRACKER);
+  mocks.loadSupabaseAlgorithmLive.mockReset();
+  mocks.loadSupabaseAlgorithmLive.mockImplementation(async () => algorithmLive());
   mocks.loadFleet.mockReset();
   mocks.loadFleet.mockResolvedValue(FLEET);
 });
@@ -278,5 +306,27 @@ describe('the order of the Operations Command Center', () => {
     expect(mocks.loadSupabaseAccountTracker).toHaveBeenCalledWith({ clientIds: ['c-1', 'c-2', 'c-3', 'c-4'] });
     expect(mocks.loadFleet).toHaveBeenCalledTimes(1);
     expect(mocks.loadFleet).toHaveBeenCalledWith(expect.objectContaining({ page: 1, pageSize: 100 }));
+  });
+});
+
+describe('the roll call on the Operations Command Center', () => {
+  /* The production check read "One row per algorithm this book's clients run"
+   * on the Manager's desk view, the words of a CAM's book. The desk view reads
+   * every working client of the desk, and says so. */
+  it('says the desk\'s clients in its intro, never a book\'s or the viewer\'s own', async () => {
+    const { container } = mount();
+    await waitFor(() => expect(container.querySelector('.algorithm-rollcall-head')).not.toBeNull());
+    const intro = container.querySelector('.algorithm-rollcall-head').textContent;
+    expect(intro).toMatch(/^One row per algorithm the desk's clients run, cycle \d\d:\d\d:/);
+    expect(intro).not.toContain("this book's clients");
+    expect(intro).not.toContain('your clients');
+    expect(container.querySelector('.algorithm-rollcall-row[data-algorithm="OGX_PF"]')).not.toBeNull();
+  });
+
+  it('reads the roll call once for every working client of the desk', async () => {
+    const { container } = mount();
+    await waitFor(() => expect(container.querySelector('.algorithm-rollcall-head')).not.toBeNull());
+    expect(mocks.loadSupabaseAlgorithmLive).toHaveBeenCalledTimes(1);
+    expect(mocks.loadSupabaseAlgorithmLive).toHaveBeenCalledWith({ clientIds: ['c-1', 'c-2', 'c-3', 'c-4'] });
   });
 });

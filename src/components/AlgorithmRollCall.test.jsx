@@ -135,6 +135,23 @@ describe('one row per algorithm', () => {
     expect(head).toContain('Position and trades arrive from machines on agent 1.2.1 or newer.');
     expect(container.querySelector('.live-refresh')).not.toBeNull();
   });
+
+  it('names whose clients it reads by scope: the CAM\'s own, a book a Manager opened, the whole desk', async () => {
+    const intro = (container) => text(container.querySelector('.algorithm-rollcall-head'));
+    const mine = await show();
+    expect(intro(mine.container)).toMatch(/^One row per algorithm your clients run, cycle \d\d:\d\d:/);
+    mine.unmount();
+    const book = await show({ scope: 'book' });
+    expect(intro(book.container)).toMatch(/^One row per algorithm this book's clients run, cycle \d\d:\d\d:/);
+    book.unmount();
+    const desk = await show({ scope: 'desk' });
+    expect(intro(desk.container)).toMatch(/^One row per algorithm the desk's clients run, cycle \d\d:\d\d:/);
+    expect(intro(desk.container)).not.toContain('book');
+    desk.unmount();
+    // The empty cycle says the same words.
+    const empty = await show({ scope: 'desk', load: async () => live({ rows: [] }) });
+    expect(text(empty.container)).toMatch(/None of the desk's clients ran an algorithm in the \d\d:\d\d cycle\./);
+  });
 });
 
 describe('the instances behind a click, one row open at a time', () => {
