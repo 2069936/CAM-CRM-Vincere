@@ -69,8 +69,11 @@ export const LIVE_SAMPLING_BUILD = '1.2.0';
 /* THE PALETTE, as words: the pill's own (src/domain/accountPill.js), the same
  * three colours AccountTrackerPanel uses on the client page: green for live,
  * amber for disconnected or silent, faded amber for never sampled. A tile
- * nothing has sampled is grey. Every tone has a word beside it on screen; the
- * tone is never the only encoding. */
+ * nothing has sampled is solid grey. A tile whose VPS samples only retired
+ * accounts is grey drawn hollow (`retired`), the Manager desk's own look for
+ * the same state (deskClientLights.js BULB_TONES.only_retired): the VPS IS
+ * sampling, so it is never the solid grey of no sample. Every tone has a word
+ * beside it on screen; the tone is never the only encoding. */
 export const DOT_TONES = PILL_TONES;
 
 export const TONE_WORDS = Object.freeze({
@@ -78,24 +81,39 @@ export const TONE_WORDS = Object.freeze({
   attention: 'Disconnected or silent',
   faint: 'Never sampled',
   none: 'No sample for this client',
+  retired: ONLY_RETIRED_WORD,
 });
 
-/* The rank, worst first. `none` is a client-level state (no sample for any of
- * its accounts), the others are account states. */
+/* The rank, worst first. `none` and `only_retired` are client-level states (no
+ * expected account sampled), the others are account states. Only retired
+ * ranks with `none`: neither has a pill that needs a look. */
 const STATE_RANK = Object.freeze({
   disconnected: 5,
   sample_stale: 4,
   never_sampled: 3,
   none: 2,
+  only_retired: 2,
   live: 1,
 });
 
+/* The four tones every book can show. */
 export const LEGEND = Object.freeze([
   { tone: 'live', word: TONE_WORDS.live },
   { tone: 'attention', word: TONE_WORDS.attention },
   { tone: 'faint', word: TONE_WORDS.faint },
   { tone: 'none', word: TONE_WORDS.none },
 ]);
+
+/* The hollow grey, named in the legend only while a tile in it is on screen,
+ * as the desk names its own (deskClientLights.js ONLY_RETIRED_LEGEND). */
+export const ONLY_RETIRED_LEGEND = Object.freeze({ tone: 'retired', word: TONE_WORDS.retired });
+
+/** The legend for these tiles: the four tones, then the hollow grey when a
+ * tile is in it. */
+export function legendFor(tiles) {
+  const list = Array.isArray(tiles) ? tiles : [];
+  return list.some((tile) => tile?.worst?.tone === ONLY_RETIRED_LEGEND.tone) ? [...LEGEND, ONLY_RETIRED_LEGEND] : [...LEGEND];
+}
 
 /** Where the browser remembers Compact or Tiles for the Live accounts panel.
  * A per viewer convenience only: nothing else reads it. */
@@ -109,10 +127,12 @@ export function parseLiveAccountsView(value) {
   return value === 'tiles' ? 'tiles' : 'compact';
 }
 
-/** "5 of 6 live" beside a bulb, over the tile's own pills. */
+/** "5 of 6 live" beside a bulb, over the tile's own pills. A client with no
+ * pill whose VPS samples only retired accounts says that, never "No account":
+ * the accounts are there, in the folded line. */
 export function bulbCountWords(tile) {
   const total = Array.isArray(tile?.dots) ? tile.dots.length : 0;
-  if (!total) return 'No account';
+  if (!total) return tile?.onlyRetiredSampled ? 'Only retired' : 'No account';
   const live = tile.dots.filter((dot) => dot.state === 'live').length;
   return `${live} of ${total} live`;
 }
@@ -193,13 +213,11 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
   const onlyRetiredSampled = lights.onlyRetiredSampled;
 
   let worst;
-  if (!sampled) {
-    worst = {
-      state: 'none',
-      tone: 'none',
-      word: onlyRetiredSampled ? ONLY_RETIRED_WORD : 'No sample yet',
-      rank: STATE_RANK.none,
-    };
+  if (onlyRetiredSampled) {
+    // The VPS samples, so not the solid grey of no sample: the hollow grey.
+    worst = { state: 'only_retired', tone: 'retired', word: ONLY_RETIRED_WORD, rank: STATE_RANK.only_retired };
+  } else if (!sampled) {
+    worst = { state: 'none', tone: 'none', word: 'No sample yet', rank: STATE_RANK.none };
   } else {
     const top = dots.reduce((best, dot) => (dot.rank > best.rank ? dot : best), dots[0]);
     worst = top.state === 'live'
@@ -241,7 +259,7 @@ export function buildClientTile(client, samples, { now, staleSeconds, settings =
     words,
     // The bulb's count, over the same pills: "5 of 6 live".
     liveCount: dots.filter((dot) => dot.state === 'live').length,
-    countWords: bulbCountWords({ dots }),
+    countWords: bulbCountWords({ dots, onlyRetiredSampled }),
     // Pills that keep a light with the amber marker: retired, still running.
     marked: dots.filter((dot) => dot.marked).map((dot) => ({ accountName: dot.accountName, words: dot.markedWords })),
     // The folded line under the tile: why the rest of the registry has no

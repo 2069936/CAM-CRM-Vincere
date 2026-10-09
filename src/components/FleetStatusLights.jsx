@@ -1,12 +1,12 @@
 import { useId, useMemo, useState } from 'react';
 import { Activity } from 'lucide-react';
 import {
-  LEGEND,
   LIVE_ACCOUNTS_VIEW_KEY,
   LIVE_SAMPLING_BUILD,
   agedWords,
   buildFleetStatusLights,
   disconnectedClientKeys,
+  legendFor,
   parseLiveAccountsView,
 } from '../domain/fleetStatusLights';
 import { CLOSE_DIFFERS_WORD, withCloseDiffers, withDiffers, withDisconnectedSince } from '../domain/accountPill';
@@ -67,7 +67,9 @@ const VIEW_WORDS = Object.freeze({ compact: 'Compact', tiles: 'Tiles' });
  *
  * EVERY COLOUR HAS WORDS BESIDE IT. The legend names the four tones and the
  * amber marker, every tile says its worst state in a word, every pill carries
- * its state and sentence. The amber corner on a pill means an algorithm on that
+ * its state and sentence. A client whose VPS samples only retired accounts is
+ * the desk's hollow grey (tone-retired), never the solid grey of a client
+ * nothing has sampled, and the legend names it while one is on screen. The amber corner on a pill means an algorithm on that
  * account differs from the desk in this cycle, by algorithmLiveComparison's
  * own rule; it is a question, never red, and never the pill's colour.
  *
@@ -249,7 +251,7 @@ export default function FleetStatusLights({
         </div>
       </div>
       <ul className="fsl-legend" aria-label="What the colours mean">
-        {LEGEND.map((entry) => (
+        {legendFor(view.tiles).map((entry) => (
           <li key={entry.tone} className={`fsl-legend-item tone-${entry.tone}`}>
             <span className="fsl-dot" aria-hidden="true" />
             <span>{entry.word}</span>
