@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -35,12 +34,16 @@ public sealed record ReleaseCheckResult(
     bool UpdateAvailable,
     string LatestVersion,
     string Message,
+    /* Like the two below, only set when the published checksum is
+     * trustworthy. A person pasting a line into an elevated PowerShell is no
+     * more able to tell what arrived than the Install button is, so a command
+     * that does not check the download before running it is not handed over
+     * at all. */
     string InstallCommand = null,
     /* Only set when the published checksum is trustworthy, and that is what
      * gates the Install button. Nothing downloads and runs a package as
      * administrator on a machine holding live client accounts without knowing
-     * what it got. Without a checksum the window still hands over the command
-     * to copy, which puts a person in front of it. */
+     * what it got. */
     string DownloadUrl = null,
     string Sha256 = null)
 {
@@ -51,9 +54,9 @@ public sealed record ReleaseCheckResult(
 
 public sealed class ReleaseCheck
 {
-    // The manifest the CRM's install line points at. Kept here as a default
-    // rather than fetched from the CRM on purpose: the whole point is to work
-    // when the CRM does not.
+    // The manifest the CRM's install line pointed at before the CRM moved to
+    // one manifest per release. Kept here as a default rather than fetched from
+    // the CRM on purpose: the whole point is to work when the CRM does not.
     public const string DefaultManifestUrl =
         "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/release-manifest.json";
 
@@ -75,13 +78,17 @@ public sealed class ReleaseCheck
      * Neither is acceptable, so the update flow reads a descriptor nobody pins
      * and that ships next to the package it describes.
      *
-     * Absent, this falls back to the manifest for the version check alone and
-     * the Install button stays off: the window can still say a version exists
-     * and hand over the command, which puts a person in front of the install. */
+     * Absent, this falls back to the manifest for the version check alone:
+     * the window can still say a version exists, and it points at the CRM's
+     * install line, which is verified against a manifest the CRM does pin. It
+     * offers no Install button and no command of its own, because the only
+     * checksum it would have is the stale one above. */
     public const string DefaultUpdateDescriptorUrl =
         "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/agent-update.json";
 
-    private static readonly Regex Sha256Pattern = new("^[0-9a-fA-F]{64}$", RegexOptions.Compiled);
+    // \z rather than $: in .NET, $ also matches before a trailing newline, and
+    // a digest carrying one would split the one line command in two.
+    private static readonly Regex Sha256Pattern = new(@"^[0-9a-fA-F]{64}\z", RegexOptions.Compiled);
 
     private static readonly Regex VersionPattern = new(@"^\d{1,5}(\.\d{1,5}){1,3}$", RegexOptions.Compiled);
 
@@ -116,7 +123,7 @@ public sealed class ReleaseCheck
             true,
             latest,
             $"Version {latest} is available. You are on {installedVersion}.",
-            BuildInstallCommand(url),
+            BuildInstallCommand(url, sha),
             url,
             sha.ToLowerInvariant());
     }
@@ -135,40 +142,52 @@ public sealed class ReleaseCheck
         return 0;
     }
 
-    /* THE COMMAND, RATHER THAN DIRECTIONS TO IT.
+    /* THE COMMAND A PERSON COPIES, AND IT CHECKS THE BYTES FIRST.
      *
-     * This used to end with "Re-run the install line from the CRM to update",
-     * which is only useful to someone who can get back to the screen that shows
-     * that line. The CRM does not offer a way back to it once a client is past
-     * setup, so the notice named a step the reader could not take.
+     * Byte for byte the line the CRM builds (src/domain/autoCollectionViewModel.js
+     * buildInstallCommand), so there is one install line to keep working, not
+     * two spellings of it.
      *
-     * It is the same command the CRM builds (src/domain/autoCollectionViewModel.js
-     * buildInstallCommand), assembled from the same manifest this already
-     * downloaded, so there is nothing to keep in step by hand.
+     * The zip is hashed right after the download and compared with the
+     * published SHA-256. On a mismatch the zip is deleted and the line throws,
+     * which stops the rest of the pasted line before Expand-Archive and before
+     * install-agent.ps1. -ne compares strings case insensitively, so
+     * Get-FileHash's upper case answer matches the lower case digest.
+     *
+     * A person pasting this into an elevated PowerShell cannot tell what
+     * arrived any better than the Install button can, so without a well formed
+     * digest there is no command at all: null, never a line that runs
+     * unverified bytes as administrator on a machine holding live client
+     * accounts. The digest is not trimmed, as in the CRM: one with anything
+     * around it is not a digest.
      *
      * IT STILL DOES NOT RUN IT. A person copies it into an elevated PowerShell
-     * and watches it. These machines carry live client accounts, and an agent
-     * that replaces itself unattended on one of them is a decision for whoever
-     * owns those accounts, not for this window. Handing over the exact command
-     * removes the dead end without taking that decision.
+     * and watches it. An agent that replaces itself unattended on one of these
+     * machines is a decision for whoever owns the accounts, not for this window.
      */
-    public static string BuildInstallCommand(string artifactUrl)
+    public static string BuildInstallCommand(string artifactUrl, string sha256)
     {
         string url = (artifactUrl ?? string.Empty).Trim();
         if (url.Length == 0) return null;
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri parsed)
             || parsed.Scheme != Uri.UriSchemeHttps)
         {
-            // A manifest that names a non https artifact is not one to build a
+            // A release that names a non https artifact is not one to build a
             // copy and paste command from.
             return null;
         }
+        // Hex by this check, so the digest cannot carry a quote out of the
+        // single quoted literal it sits in.
+        if (!Sha256Pattern.IsMatch(sha256 ?? string.Empty)) return null;
         string quoted = url.Replace("'", "''");
+        string sha = sha256.ToLowerInvariant();
         return string.Join("; ", new[]
         {
             "$d=\"$env:TEMP\\vincere-agent\"",
             "Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue",
             "Invoke-WebRequest '" + quoted + "' -OutFile \"$d.zip\" -UseBasicParsing",
+            "$hash=(Get-FileHash -LiteralPath \"$d.zip\" -Algorithm SHA256).Hash",
+            "if ($hash -ne '" + sha + "') { Remove-Item -LiteralPath \"$d.zip\" -Force -ErrorAction SilentlyContinue; throw \"SHA256 mismatch, nothing was installed: $hash\" }",
             "Expand-Archive \"$d.zip\" $d -Force",
             "& \"$d\\install-agent.ps1\" -PackagePath $d",
         });
@@ -176,16 +195,15 @@ public sealed class ReleaseCheck
 
     /* THE SCRIPT THE INSTALL BUTTON RUNS.
      *
-     * The same steps as the command a person copies, with one addition that is
-     * the whole reason the button can exist: the download is checked against
-     * the published checksum BEFORE anything out of it is executed. This runs
-     * elevated on a machine holding live client accounts, and running a package
-     * off the internet there without knowing what arrived is not a thing to do
-     * because it is convenient.
+     * The same check as the command a person copies: the download is compared
+     * with the published checksum BEFORE anything out of it is executed. What
+     * differs is the form. This one runs from a file in a console the reader
+     * did not open, so it says what it is doing and, on a mismatch, holds the
+     * window open on a sentence instead of a red exception that vanishes.
      *
-     * A mismatch stops with a sentence and installs nothing. It is far more
-     * likely to mean a half-finished upload than an attack, and either way the
-     * correct move is the same one.
+     * A mismatch installs nothing. It is far more likely to mean a half
+     * finished upload than an attack, and either way the correct move is the
+     * same one.
      *
      * Written as a file rather than passed inline: a hundred-character URL and
      * a checksum threaded through nested quoting is how an install line becomes
@@ -220,17 +238,32 @@ public sealed class ReleaseCheck
         });
     }
 
-    public static ReleaseCheckResult Evaluate(string installedVersion, string latestVersion, string artifactUrl = null)
+    /* THE MANIFEST FALLBACK SAYS A VERSION AND HANDS OVER NO COMMAND.
+     *
+     * It is reached only when the descriptor cannot be read or trusted. The
+     * manifest does carry a sha256 per artifact, but the one this reads by
+     * default is the frozen file described above DefaultUpdateDescriptorUrl:
+     * its digest names a package that was replaced long ago. A command checked
+     * against it would refuse the real package every time, which is a dead end
+     * that reads like an attack. A command not checked against anything is
+     * what this must never hand over.
+     *
+     * So it says the version and points at the CRM, whose card has a "Show
+     * install line" for a client that is already paired. That line is checked
+     * against a manifest the CRM pins by its own digest, which this window
+     * cannot do for the file it reads here.
+     */
+    public static ReleaseCheckResult Evaluate(string installedVersion, string latestVersion)
     {
         if (!VersionPattern.IsMatch(latestVersion ?? string.Empty))
             return new ReleaseCheckResult(false, false, null, "Could not read the published version.");
         if (Compare(installedVersion, latestVersion) < 0)
         {
-            string command = BuildInstallCommand(artifactUrl);
-            string message = command == null
-                ? $"Version {latestVersion} is available. You are on {installedVersion}. Re-run the install line from the CRM to update."
-                : $"Version {latestVersion} is available. You are on {installedVersion}. Copy the command below, paste it into PowerShell as administrator, and run it.";
-            return new ReleaseCheckResult(true, true, latestVersion, message, command);
+            return new ReleaseCheckResult(
+                true,
+                true,
+                latestVersion,
+                $"Version {latestVersion} is available. You are on {installedVersion}. To update, open this client in the CRM, press Show install line, and run that line in PowerShell as administrator.");
         }
         return new ReleaseCheckResult(true, false, latestVersion, $"You are up to date on {installedVersion}.");
     }
@@ -243,7 +276,7 @@ public sealed class ReleaseCheck
         {
             // The descriptor first, because it is the only one that can be
             // corrected. A machine that cannot reach it still gets a version
-            // answer from the manifest, without an Install button.
+            // answer from the manifest, without an Install button or a command.
             try
             {
                 string descriptorBody = await http.GetStringAsync(descriptorUrl, cancellationToken).ConfigureAwait(false);
@@ -257,17 +290,7 @@ public sealed class ReleaseCheck
 
             string body = await http.GetStringAsync(manifestUrl, cancellationToken).ConfigureAwait(false);
             JObject manifest = JObject.Parse(body);
-            string latest = manifest.Value<string>("version");
-            // The zip is the only artifact this command can expand. A signed
-            // setup executable is run directly and gets no command.
-            string artifactUrl = manifest["artifacts"] is JArray artifacts
-                ? artifacts.OfType<JObject>()
-                    .Where(artifact => (artifact.Value<string>("name") ?? string.Empty)
-                        .EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-                    .Select(artifact => artifact.Value<string>("url"))
-                    .FirstOrDefault()
-                : null;
-            return Evaluate(installedVersion, latest, artifactUrl);
+            return Evaluate(installedVersion, manifest.Value<string>("version"));
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or Newtonsoft.Json.JsonException)
         {
