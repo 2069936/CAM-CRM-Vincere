@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Scale } from 'lucide-react';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
+import NotShownLine from './NotShownLine';
 import RefreshNote from './RefreshNote';
 import TrackerCloseTable from './TrackerCloseTable';
 
@@ -17,6 +18,13 @@ import TrackerCloseTable from './TrackerCloseTable';
  * reading pinned, and no close yet today. A close whose rows this session has
  * not loaded is asked for once through `onNeedClose`, the way every other
  * panel asks App.jsx for a close's rows.
+ *
+ * THE CLIENTS WITH NO TRACKER READING ARE ONE FOLDED LINE UNDER THE LIST, not a
+ * line each: on a real close 70 of 80 clients had a VPS that does not sample
+ * yet, and a line per client ("15 close only") buried the 10 with a tracker.
+ * The names are behind a Show toggle (NotShownLine), and the header counts
+ * only the clients with a tracker: "3 of 10 clients with a tracker ask for a
+ * look."
  */
 export default function TrackerCloseOverview({
   view,
@@ -77,75 +85,95 @@ function Lines({ view, read, baseId, openKey, setOpenKey, onSelectClient, onAddF
       return null;
   }
   const lines = view.lines;
-  const clients = lines.length === 1 ? 'client' : 'clients';
-  const verb = view.attentionClients === 1 ? 'asks' : 'ask';
+  const noTracker = view.noTracker || { count: 0, clients: [], sentence: null };
   // Before the first close of the day every line would say the same thing;
   // one sentence says it once, and the lines return with the first close.
-  if (lines.length && lines.every((line) => line.state === 'no_close')) {
+  if (!noTracker.count && lines.length && lines.every((line) => line.state === 'no_close')) {
+    const clients = lines.length === 1 ? 'client' : 'clients';
     return (
       <p className="tracker-close-empty">
         {`No close yet today for any of the ${lines.length} ${clients}. The comparison starts with the first close captured today.`}
       </p>
     );
   }
+  const tracked = view.trackedClients || 0;
+  const attention = view.attentionClients || 0;
   return (
     <>
-      <p className="tracker-close-overview-summary">{`${view.attentionClients} of ${lines.length} ${clients} ${verb} for a look.`}</p>
+      {tracked ? (
+        <p className="tracker-close-overview-summary">
+          {`${attention} of ${tracked} ${tracked === 1 ? 'client' : 'clients'} with a tracker ${attention === 1 ? 'asks' : 'ask'} for a look.`}
+        </p>
+      ) : null}
       {read?.error ? <p className="tracker-close-failed">Could not refresh the comparison. The lines are the last answer.</p> : null}
-      <ul className="tracker-close-lines">
-        {lines.map((line, index) => {
-          const ready = line.state === 'ready';
-          const open = ready && openKey === line.clientKey;
-          const tableId = `${baseId}line${index}`;
-          const words = (
-            <>
-              <strong className="tracker-close-line-name">{line.clientName}</strong>
-              {': '}
-              <span className="tracker-close-line-words">{line.words}</span>
-            </>
-          );
-          return (
-            <li
-              key={line.clientKey}
-              className={`tracker-close-line state-${line.state}${line.summary?.attention ? ' attention' : ''}`}
-              data-client-id={line.clientId}
-            >
-              <div className="tracker-close-line-head">
-                {ready ? (
-                  <button
-                    type="button"
-                    className="tracker-close-line-toggle"
-                    aria-expanded={open}
-                    aria-controls={open ? tableId : undefined}
-                    title={open ? 'Hide the accounts' : 'Show the accounts'}
-                    onClick={() => setOpenKey(open ? null : line.clientKey)}
-                  >
-                    {words}
-                  </button>
-                ) : (
-                  <span className="tracker-close-line-still">{words}</span>
-                )}
-                {typeof onSelectClient === 'function' ? (
-                  <button type="button" className="link-button tracker-close-line-open" title={`Open ${line.clientName}`} onClick={() => onSelectClient(line.clientId)}>
-                    Open
-                  </button>
-                ) : null}
-              </div>
-              {open ? (
-                <div id={tableId} className="tracker-close-line-table">
-                  <TrackerCloseTable
-                    rows={line.panel.rows}
-                    pnlSourceSentence={line.panel.pnlSourceSentence}
-                    clientId={line.clientId}
-                    importId={line.importId}
-                    onAddFlag={onAddFlag}
-                  />
+      {lines.length ? (
+        <ul className="tracker-close-lines">
+          {lines.map((line, index) => {
+            const ready = line.state === 'ready';
+            const open = ready && openKey === line.clientKey;
+            const tableId = `${baseId}line${index}`;
+            const words = (
+              <>
+                <strong className="tracker-close-line-name">{line.clientName}</strong>
+                {': '}
+                <span className="tracker-close-line-words">{line.words}</span>
+              </>
+            );
+            return (
+              <li
+                key={line.clientKey}
+                className={`tracker-close-line state-${line.state}${line.summary?.attention ? ' attention' : ''}`}
+                data-client-id={line.clientId}
+              >
+                <div className="tracker-close-line-head">
+                  {ready ? (
+                    <button
+                      type="button"
+                      className="tracker-close-line-toggle"
+                      aria-expanded={open}
+                      aria-controls={open ? tableId : undefined}
+                      title={open ? 'Hide the accounts' : 'Show the accounts'}
+                      onClick={() => setOpenKey(open ? null : line.clientKey)}
+                    >
+                      {words}
+                    </button>
+                  ) : (
+                    <span className="tracker-close-line-still">{words}</span>
+                  )}
+                  {typeof onSelectClient === 'function' ? (
+                    <button type="button" className="link-button tracker-close-line-open" title={`Open ${line.clientName}`} onClick={() => onSelectClient(line.clientId)}>
+                      Open
+                    </button>
+                  ) : null}
                 </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+                {open ? (
+                  <div id={tableId} className="tracker-close-line-table">
+                    <TrackerCloseTable
+                      rows={line.panel.rows}
+                      pnlSourceSentence={line.panel.pnlSourceSentence}
+                      clientId={line.clientId}
+                      importId={line.importId}
+                      onAddFlag={onAddFlag}
+                    />
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {noTracker.count ? (
+        <div className="tracker-close-no-tracker">
+          <NotShownLine
+            notShown={{
+              count: noTracker.count,
+              sentence: noTracker.sentence,
+              accounts: noTracker.clients.map((entry) => ({ key: entry.clientKey, accountName: entry.clientName })),
+            }}
+            label="clients with no tracker reading"
+          />
+        </div>
+      ) : null}
     </>
   );
 }

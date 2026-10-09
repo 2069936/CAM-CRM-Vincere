@@ -10,6 +10,7 @@ import { mergeSimulationRows } from './simulationAccounts';
 import { cycleClock } from './algorithmLiveComparison';
 import { getClientImportByDate } from './crmStateStore';
 import { money } from './accountLiveDetail';
+import { LIVE_SAMPLING_BUILD } from './fleetStatusLights';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * WHAT THE SCREEN PRINTS ABOUT THE TRACKER AND THE CLOSE.
@@ -35,6 +36,14 @@ import { money } from './accountLiveDetail';
  * viewer's own clock, by default), handed to compareTrackerToClose too: the
  * header and the sentence under it never print one instant in two zones.
  *
+ * A CLIENT WHOSE VPS DOES NOT SAMPLE IS NOT A QUESTION PER ACCOUNT. When every
+ * row pinned for a close is source 'none' with no later reading, the tracker
+ * never read that client at all: its machine runs an agent before
+ * LIVE_SAMPLING_BUILD. That is one fact about the client ("no_tracker"), not
+ * a close only verdict on each of its accounts; the overview folds those
+ * clients into one line and counts only the clients with a tracker. A close
+ * only account BESIDE tracked ones stays a row: there it is a real question.
+ *
  * THE IDENTITY RULE: a client's `id` is its legacy key or its uuid, `uuid` is
  * the row id, the pinned rows carry the uuid; every lookup tries both.
  *
@@ -43,11 +52,30 @@ import { money } from './accountLiveDetail';
 
 /** The panel's states, in the order they are decided. */
 export const PANEL_STATES = Object.freeze([
-  'no_close', 'not_configured', 'not_deployed', 'reading', 'failed', 'reading_close', 'not_pinned', 'ready',
+  'no_close', 'not_configured', 'not_deployed', 'reading', 'failed', 'reading_close', 'not_pinned', 'no_tracker', 'ready',
 ]);
 
-/** One line per client on the overview: its states. */
-export const OVERVIEW_LINE_STATES = Object.freeze(['ready', 'close_after_login', 'not_pinned', 'reading_close', 'no_close']);
+/** One line per client on the overview: its states. A no_tracker client is
+ * folded out of the lines into the overview's one `noTracker` line. */
+export const OVERVIEW_LINE_STATES = Object.freeze(['ready', 'close_after_login', 'not_pinned', 'reading_close', 'no_close', 'no_tracker']);
+
+/** What the client page panel says for a client whose VPS does not sample. */
+export const NO_TRACKER_PANEL_SENTENCE = `This client's VPS does not sample yet, so there is no tracker reading to compare. It needs agent ${LIVE_SAMPLING_BUILD} or newer.`;
+
+/** The overview's one folded line for those clients, or null for none. */
+export function noTrackerSentence(count) {
+  const n = Math.max(0, Math.trunc(Number(count) || 0));
+  if (!n) return null;
+  return n === 1
+    ? `1 client has no tracker reading for this close. Its VPS does not sample yet, which needs agent ${LIVE_SAMPLING_BUILD} or newer.`
+    : `${n} clients have no tracker reading for this close. Their VPS does not sample yet, which needs agent ${LIVE_SAMPLING_BUILD} or newer.`;
+}
+
+/* A pinned row that says the tracker never read the account, not before the
+ * capture and not after it either. */
+function unsampled(row) {
+  return row?.source === 'none' && !row.nextSampledAt;
+}
 
 /** The verdict words, sentence case, as the chip prints them. */
 export const CLOSE_VERDICT_WORDS = Object.freeze({
@@ -356,6 +384,11 @@ export function buildTrackerClosePanel({
   if (!comparison.available) {
     return emptyPanel('not_pinned', { date, dailyImport, error, pnlSourceSentence: comparison.pnlSourceSentence });
   }
+  // Every pinned row says the tracker never read this client: one sentence
+  // about its VPS, never a close only verdict on each account.
+  if (readings.every(unsampled)) {
+    return emptyPanel('no_tracker', { date, dailyImport, error, pnlSourceSentence: comparison.pnlSourceSentence });
+  }
 
   const settings = resolveComparisonSettings(comparison.settings);
   const capturedClock = clock(comparison.closeCapturedAt);
@@ -461,19 +494,28 @@ function clientLine(client, { today, answer, readingsByClient, clock }) {
   const panel = buildTrackerClosePanel({ client, dailyImport: todayImport, date: today, answer, clock });
   const ids = { importId: todayImport.id, importKey: todayImport.uuid || todayImport.id };
   if (panel.state === 'reading_close') return { ...base, ...ids, state: 'reading_close', words: 'Reading the close.', pinnedToday: pinnedToday.length > 0 };
+  if (panel.state === 'no_tracker') return { ...base, ...ids, state: 'no_tracker', words: 'No tracker reading for this close.', pinnedToday: true };
   if (panel.state !== 'ready') return { ...base, ...ids, state: 'not_pinned', words: 'The tracker had no reading before this close.', pinnedToday: false };
   return { ...base, ...ids, state: 'ready', words: verdictCountWords(panel.summary), summary: panel.summary, panel, pinnedToday: true };
 }
+
+const NO_FOLD = Object.freeze({ count: 0, clients: [], sentence: null });
 
 /**
  * The overview panel for a book: one line per client, worst first, the keys of
  * the clients whose close is pinned today (for the briefing chip), the
  * attention verdicts by client key (for the tiles' pills) and the closes whose
  * rows this session has not loaded (for the caller to ask for).
+ *
+ * THE CLIENTS WITH NO TRACKER READING are not lines: they are `noTracker`, one
+ * folded line with their names, and they count neither as asking for a look
+ * nor in `trackedClients`, the clients whose close the tracker did read.
  */
 export function buildTrackerCloseOverview({ clients = [], today = '', answer = null, error = null, clock = cycleClock } = {}) {
   const list = (Array.isArray(clients) ? clients : []).filter((client) => client && client.id);
-  const empty = { lines: [], pinnedClientKeys: new Set(), verdictsByClient: new Map(), unloadedImportIds: [], attentionClients: 0, error };
+  const empty = {
+    lines: [], pinnedClientKeys: new Set(), verdictsByClient: new Map(), unloadedImportIds: [], attentionClients: 0, trackedClients: 0, noTracker: NO_FOLD, error,
+  };
   if (!answer) return { ...empty, state: error ? 'failed' : 'reading' };
   if (answer.available === false) return { ...empty, state: answer.reason === 'not_configured' ? 'not_configured' : 'not_deployed' };
   if (!list.length) return { ...empty, state: 'no_clients' };
@@ -485,9 +527,13 @@ export function buildTrackerCloseOverview({ clients = [], today = '', answer = n
     rows.push(row);
     readingsByClient.set(row.clientId, rows);
   }
-  const lines = list.map((client) => clientLine(client, { today, answer, readingsByClient, clock })).sort(compareLines);
+  const every = list.map((client) => clientLine(client, { today, answer, readingsByClient, clock }));
+  const lines = every.filter((line) => line.state !== 'no_tracker').sort(compareLines);
+  const folded = every.filter((line) => line.state === 'no_tracker')
+    .map(({ clientId, clientKey, clientName }) => ({ clientId, clientKey, clientName }))
+    .sort((left, right) => String(left.clientName).localeCompare(String(right.clientName)));
 
-  const pinnedClientKeys = new Set();
+  const pinnedClientKeys = new Set(folded.map((entry) => entry.clientKey));
   const verdictsByClient = new Map();
   const unloadedImportIds = [];
   for (const line of lines) {
@@ -509,5 +555,7 @@ export function buildTrackerCloseOverview({ clients = [], today = '', answer = n
     verdictsByClient,
     unloadedImportIds,
     attentionClients: lines.filter((line) => line.state === 'ready' && line.summary.attention > 0).length,
+    trackedClients: lines.filter((line) => line.state === 'ready').length,
+    noTracker: folded.length ? { count: folded.length, clients: folded, sentence: noTrackerSentence(folded.length) } : NO_FOLD,
   };
 }

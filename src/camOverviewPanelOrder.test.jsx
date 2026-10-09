@@ -264,6 +264,42 @@ describe('the tracker against the close (step 66)', () => {
     expect(container.querySelectorAll('.fsl-tile[data-client-id="c-1"] .account-pill[data-account="CR-2"] .account-pill-close-differs').length).toBe(0);
     expect(container.querySelectorAll('.fsl-tile[data-client-id="c-2"] .account-pill-close-differs').length).toBe(0);
   });
+
+  it('folds a client whose VPS does not sample into one line, and the badge and the header count only the clients with a tracker', async () => {
+    /* Cedar Row's tracker read its close and CR-1 differs. Birch Lane has
+     * today's close too, but every row pinned for it is source none: its VPS
+     * runs an agent before 1.2.0. Birch Lane is not a line, not a "1 close
+     * only", and not in either count; it is the folded line under the list. */
+    const close = (clientId, importUuid, accounts) => ({
+      id: `di-${clientId}`, uuid: importUuid, clientId, date: today, status: 'Needs review',
+      sourceSummary: { pnl_sources: { realized: accounts.length } },
+      snapshots: accounts.map(([accountName, realized]) => ({ id: `snap-${accountName}`, accountName, connection: 'Live', grossRealizedPnl: realized, unrealizedPnl: 0, strategies: [] })),
+      strategies: [], simulation: {}, flags: [], snapshotsLoaded: true, detailLoaded: true,
+    });
+    const book = [
+      { ...BOOK[0], dailyImports: [close('c-1', 'imp-today', [['CR-1', 200]])] },
+      { ...BOOK[1], dailyImports: [close('c-2', 'imp-birch', [['BL-1', 40]])] },
+    ];
+    const none = { source: 'none', connectionName: null, connected: null, realizedPnl: null, unrealizedPnl: null, totalPnl: null, strategyCount: null, enabledStrategyCount: null, runState: null, sampledAt: null, readingSince: null };
+    mocks.loadSupabaseTrackerCloseReadings.mockResolvedValue({
+      available: true,
+      readings: [
+        pinned('CR-1', { realizedPnl: 340, totalPnl: 340 }),
+        pinned('BL-1', { id: 2, clientId: 'c-2', dailyImportId: 'imp-birch', ...none }),
+      ],
+      settings: null,
+    });
+    const { container } = mount({ clients: book, allClients: book });
+    await waitFor(() => expect(text(container.querySelector('.tracker-close-line[data-client-id="c-1"]'))).toContain('Cedar Row: 1 differs'));
+    expect(container.querySelector('.tracker-close-line[data-client-id="c-2"]')).toBeNull();
+    expect(text(container.querySelector('.tracker-close-overview-summary'))).toBe('1 of 1 client with a tracker asks for a look.');
+    expect(text(container.querySelector('.tracker-close-no-tracker .not-shown-words'))).toBe(
+      '1 client has no tracker reading for this close. Its VPS does not sample yet, which needs agent 1.2.0 or newer.');
+    const panel = [...container.querySelectorAll('.panel')].find((node) => node.querySelector('h3')?.textContent === 'Tracker against the close');
+    expect(text(panel.querySelector('.panel-heading .badge'))).toBe('1 client asks for a look');
+    act(() => { container.querySelector('.tracker-close-no-tracker .not-shown-toggle').click(); });
+    expect([...container.querySelectorAll('.tracker-close-no-tracker .not-shown-name')].map((node) => node.textContent)).toEqual(['Birch Lane']);
+  });
 });
 
 describe('one read for the whole page', () => {

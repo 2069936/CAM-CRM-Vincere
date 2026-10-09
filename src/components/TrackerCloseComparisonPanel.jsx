@@ -1,5 +1,6 @@
 import { Scale } from 'lucide-react';
 import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
+import { NO_TRACKER_PANEL_SENTENCE } from '../domain/trackerClosePanel';
 import RefreshNote from './RefreshNote';
 import TrackerCloseTable from './TrackerCloseTable';
 
@@ -21,8 +22,10 @@ import TrackerCloseTable from './TrackerCloseTable';
  * date yet; the CRM has not run step 66; no database in this session; still
  * reading; could not read (with a retry, and the last rows kept when there are
  * any); the close's own rows still loading; a close with no reading pinned,
- * which names the three ways that happens. No verdict is ever invented for a
- * state that has no data.
+ * which names the three ways that happens; and a client whose VPS does not
+ * sample yet, every pinned row empty, which is one sentence about the machine
+ * and not a close only verdict on each account. No verdict is ever invented
+ * for a state that has no data.
  */
 export default function TrackerCloseComparisonPanel({
   view,
@@ -67,6 +70,7 @@ function headWords(view) {
     case 'failed': return 'Could not read.';
     case 'reading_close': return 'Reading the close.';
     case 'not_pinned': return 'The tracker had no reading before this close.';
+    case 'no_tracker': return 'No tracker reading for this close.';
     default: return '';
   }
 }
@@ -106,6 +110,8 @@ function Body({ view, read, clientId, importId, onAddFlag }) {
           made up for it.
         </p>
       );
+    case 'no_tracker':
+      return <p className="tracker-close-empty tracker-close-no-tracker">{NO_TRACKER_PANEL_SENTENCE}</p>;
     case 'ready':
       return (
         <>

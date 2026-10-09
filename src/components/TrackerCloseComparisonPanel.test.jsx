@@ -21,7 +21,7 @@ vi.mock('../domain/supabaseStore', async (importOriginal) => ({
 import TrackerCloseComparisonPanel from './TrackerCloseComparisonPanel';
 import AutoCollectionCard from './AutoCollectionCard';
 import { buildTrackerClosePanel } from '../domain/trackerClosePanel';
-import { ANSWER, CLIENT, DATE, SETTINGS, VERDICT_TONES, allVerdictsClose, dailyImport, history } from './trackerCloseFixtures.test-helpers';
+import { ANSWER, CLIENT, DATE, SETTINGS, VERDICT_TONES, allVerdictsClose, dailyImport, history, noTrackerClient } from './trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
  * THE TRACKER AGAINST THE CLOSE, ON THE CLIENT PAGE, AS A CAM READS IT.
@@ -119,6 +119,19 @@ describe('the rows', () => {
     expect(header.getAttribute('title')).toBe(
       'Tolerance per account is the larger of $5 and 2% of the close figure. The database settings could not be read, so these are the defaults.');
     expect(text(container.querySelector('.tracker-close-head'))).toMatch(/tolerance \$5 \(default\)\./);
+  });
+
+  it('says a client whose VPS does not sample yet has no tracker reading, and lists no account as close only', () => {
+    const pine = noTrackerClient({ id: 'c-pine', uuid: 'pine-uuid', name: 'Lone Pine', accounts: ['LP 01', 'LP 02', 'LP 03'] });
+    const view = buildTrackerClosePanel({ client: pine.client, dailyImport: pine.client.dailyImports[0], date: DATE, answer: { available: true, readings: pine.readings, settings: SETTINGS } });
+    const { container } = render(<TrackerCloseComparisonPanel view={view} read={{ clock: NOW, error: null, reading: false, retry: vi.fn() }} clientId="c-pine" importId="di-c-pine" refreshMs={0} onAddFlag={vi.fn()} />);
+    expect(text(container.querySelector('.tracker-close-no-tracker'))).toBe(
+      "This client's VPS does not sample yet, so there is no tracker reading to compare. It needs agent 1.2.0 or newer.");
+    expect(text(container.querySelector('.tracker-close-head'))).toContain('No tracker reading for this close.');
+    expect(container.querySelector('.tracker-close-table')).toBeNull();
+    expect(container.querySelectorAll('.tracker-close-verdict').length).toBe(0);
+    expect(text(container)).not.toContain('Close only');
+    expect(container.querySelector('.tracker-close-flag')).toBeNull();
   });
 
   it('names a scheduled capture time, since a manual close has no capture of its own', () => {
@@ -379,7 +392,12 @@ describe('the words and the styles', () => {
         for (const name of String(node.getAttribute('class')).split(/\s+/)) if (name.startsWith('tracker-close')) seen.add(name);
       }
     };
-    const states = [{}, { dailyImport: null }, { answer: { available: false, reason: 'not_deployed' } }, { answer: null, error: 'boom' }, { error: 'boom' }, { answer: { available: true, readings: [], settings: SETTINGS } }];
+    const unsampled = noTrackerClient({ id: 'c-pine', name: 'Lone Pine' });
+    const states = [
+      {}, { dailyImport: null }, { answer: { available: false, reason: 'not_deployed' } }, { answer: null, error: 'boom' }, { error: 'boom' },
+      { answer: { available: true, readings: [], settings: SETTINGS } },
+      { client: unsampled.client, dailyImport: unsampled.client.dailyImports[0], answer: { available: true, readings: unsampled.readings, settings: SETTINGS } },
+    ];
     for (const over of states) {
       const { container, unmount } = show(over);
       collect(container);
@@ -410,6 +428,7 @@ describe('the words and the styles', () => {
       'tracker-close-verdict', 'tracker-close-sentence', 'tracker-close-flag', 'tracker-close-flag-confirm', 'tracker-close-flag-confirm-yes',
       'tracker-close-flag-cancel', 'tracker-close-flag-added', 'tracker-close-flag-failed', 'tracker-close-detail', 'tracker-close-strategies', 'tracker-close-strategy',
       'tracker-close-strategy-instrument', 'tracker-close-strategy-moved', 'tracker-close-strategy-words', 'tracker-close-strategies-empty',
+      'tracker-close-no-tracker',
     ]));
     for (const name of seen) {
       expect(css, name).toMatch(new RegExp(`\\.${name}(?![\\w-])`));

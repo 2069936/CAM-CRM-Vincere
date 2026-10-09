@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   CLOSE_VERDICT_WORDS,
+  NO_TRACKER_PANEL_SENTENCE,
   OVERVIEW_LINE_STATES,
   PANEL_STATES,
   buildSparkline,
@@ -9,12 +10,13 @@ import {
   buildTrackerClosePanel,
   closeSidesOf,
   closeVerdictsOf,
+  noTrackerSentence,
   readingsForClose,
   verdictCountWords,
 } from './trackerClosePanel';
 import { VERDICTS } from './trackerCloseComparison';
 import { cycleClock } from './algorithmLiveComparison';
-import { VERDICT_TONES, allVerdictsClose } from '../components/trackerCloseFixtures.test-helpers';
+import { VERDICT_TONES, allVerdictsClose, noTrackerClient } from '../components/trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
  * WHAT THE CLIENT PAGE AND THE OVERVIEW PRINT ABOUT THE TRACKER AND THE CLOSE.
@@ -128,7 +130,7 @@ function panel(over = {}) {
 
 describe('the states, each named and never a verdict by accident', () => {
   it('lists its states', () => {
-    expect(PANEL_STATES).toEqual(['no_close', 'not_configured', 'not_deployed', 'reading', 'failed', 'reading_close', 'not_pinned', 'ready']);
+    expect(PANEL_STATES).toEqual(['no_close', 'not_configured', 'not_deployed', 'reading', 'failed', 'reading_close', 'not_pinned', 'no_tracker', 'ready']);
   });
 
   it('no close for the date comes before anything the database says', () => {
@@ -437,7 +439,7 @@ describe('the overview, one line per client, worst first', () => {
   const mapleReading = reading({ id: 9, clientId: 'c-maple', dailyImportId: 'imp-m', accountName: 'MR 01', realizedPnl: 10, totalPnl: 10 });
 
   it('lists its line states', () => {
-    expect(OVERVIEW_LINE_STATES).toEqual(['ready', 'close_after_login', 'not_pinned', 'reading_close', 'no_close']);
+    expect(OVERVIEW_LINE_STATES).toEqual(['ready', 'close_after_login', 'not_pinned', 'reading_close', 'no_close', 'no_tracker']);
   });
 
   it('says the counts in words, worst client first, and the quiet ones after', () => {
@@ -566,5 +568,94 @@ describe('the overview, one line per client, worst first', () => {
     expect(buildTrackerCloseOverview({ clients: [northwind], today: TODAY, answer: { available: false, reason: 'not_deployed' } }).state).toBe('not_deployed');
     expect(buildTrackerCloseOverview({ clients: [northwind], today: TODAY, answer: { available: false, reason: 'not_configured' } }).state).toBe('not_configured');
     expect(buildTrackerCloseOverview({ clients: [], today: TODAY, answer: ANSWER }).state).toBe('no_clients');
+  });
+});
+
+describe('a client whose VPS does not sample yet: folded, never a list of close only', () => {
+  /* Production, one close: 70 of the 80 clients with pinned rows had EVERY row
+   * source 'none' and no account_live_samples row at all, an agent before
+   * 1.2.0. Each was a line asking for a look ("15 close only") and the header
+   * said "70 of 110 clients ask for a look", burying the 10 with a tracker. */
+  const TODAY = DATE;
+  const northwind = { ...CLIENT, dailyImports: [dailyImport()] };
+  const maple = { id: 'c-maple', name: 'Maple Ridge', dailyImports: [dailyImport({ id: 'di-m', uuid: 'imp-m', clientId: 'c-maple', snapshots: [snapshot('snap-m', 'MR 01', 10)] })] };
+  const mapleReading = reading({ id: 9, clientId: 'c-maple', dailyImportId: 'imp-m', accountName: 'MR 01', realizedPnl: 10, totalPnl: 10 });
+  const quiet = { id: 'c-quiet', uuid: 'q-uuid', name: 'Quiet Pond', dailyImports: [] };
+  const pine = noTrackerClient({ id: 'c-pine', uuid: 'pine-uuid', name: 'Lone Pine', accounts: ['LP 01', 'LP 02', 'LP 03'] });
+  const creek = noTrackerClient({ id: 'act-1700000000-creek', name: 'Dry Creek', accounts: ['DC 01'] });
+
+  function overview(clients, readings) {
+    return buildTrackerCloseOverview({ clients, today: TODAY, answer: { available: true, readings, settings: SETTINGS } });
+  }
+
+  it('the client page panel says the VPS does not sample yet and names the build, instead of a row per account', () => {
+    const view = buildTrackerClosePanel({ client: pine.client, dailyImport: pine.client.dailyImports[0], date: DATE, answer: { available: true, readings: pine.readings, settings: SETTINGS } });
+    expect(view.state).toBe('no_tracker');
+    expect(view.rows).toEqual([]);
+    expect(view.summary).toBeNull();
+    expect(NO_TRACKER_PANEL_SENTENCE).toBe("This client's VPS does not sample yet, so there is no tracker reading to compare. It needs agent 1.2.0 or newer.");
+    // Nothing for the pills either: no amber Close differs on every account.
+    expect(closeVerdictsOf(view).size).toBe(0);
+  });
+
+  it('a client with a close only account BESIDE tracked ones keeps its rows: that is a real question', () => {
+    const view = panel();
+    expect(view.state).toBe('ready');
+    expect(view.rows.find((row) => row.accountName === 'ACC 04').verdict).toBe('close_only');
+  });
+
+  it('a client whose rows are all none but the tracker read after the capture is not folded: its VPS samples', () => {
+    const late = noTrackerClient({ id: 'c-late', name: 'Late Start', accounts: ['LS 01', 'LS 02'] });
+    const readings = late.readings.map((row, index) => (index ? row : { ...row, nextSampledAt: '2026-10-07T20:45:00.000Z' }));
+    const view = buildTrackerClosePanel({ client: late.client, dailyImport: late.client.dailyImports[0], date: DATE, answer: { available: true, readings, settings: SETTINGS } });
+    expect(view.state).toBe('ready');
+    expect(view.rows.map((row) => row.verdict).sort()).toEqual(['after_close', 'close_only']);
+    const book = overview([late.client], readings);
+    expect(book.lines.map((line) => line.clientName)).toEqual(['Late Start']);
+    expect(book.noTracker.count).toBe(0);
+    expect(book.trackedClients).toBe(1);
+  });
+
+  it('folds every no tracker client into one line under the list, out of the lines and out of the counts', () => {
+    const view = overview([quiet, creek.client, maple, pine.client, northwind], [...READINGS, mapleReading, ...pine.readings, ...creek.readings]);
+    expect(view.state).toBe('ready');
+    expect(view.lines.map((line) => [line.clientName, line.state])).toEqual([
+      ['Northwind', 'ready'], ['Maple Ridge', 'ready'], ['Quiet Pond', 'no_close'],
+    ]);
+    expect(view.noTracker.count).toBe(2);
+    expect(view.noTracker.clients.map((entry) => entry.clientName)).toEqual(['Dry Creek', 'Lone Pine']);
+    expect(view.noTracker.clients.map((entry) => entry.clientId)).toEqual(['act-1700000000-creek', 'c-pine']);
+    expect(view.noTracker.sentence).toBe('2 clients have no tracker reading for this close. Their VPS does not sample yet, which needs agent 1.2.0 or newer.');
+    // Only the clients with a tracker are counted: Northwind asks, Maple Ridge matches.
+    expect(view.attentionClients).toBe(1);
+    expect(view.trackedClients).toBe(2);
+    // Their close IS pinned today (the briefing's dot), and they carry no verdict for the pills.
+    expect([...view.pinnedClientKeys].sort()).toEqual([UUID, 'c-maple', 'pine-uuid', 'act-1700000000-creek'].sort());
+    expect(view.verdictsByClient.has('pine-uuid')).toBe(false);
+    expect(view.verdictsByClient.has('c-pine')).toBe(false);
+    expect(view.verdictsByClient.has('act-1700000000-creek')).toBe(false);
+  });
+
+  it('says one client in the singular', () => {
+    const view = overview([northwind, creek.client], [...READINGS, ...creek.readings]);
+    expect(view.noTracker.sentence).toBe('1 client has no tracker reading for this close. Its VPS does not sample yet, which needs agent 1.2.0 or newer.');
+    expect(noTrackerSentence(0)).toBeNull();
+    expect(noTrackerSentence(70)).toBe('70 clients have no tracker reading for this close. Their VPS does not sample yet, which needs agent 1.2.0 or newer.');
+  });
+
+  it('a book where no client has a tracker has no line asking for a look and counts no tracked client', () => {
+    const view = overview([pine.client, creek.client], [...pine.readings, ...creek.readings]);
+    expect(view.lines).toEqual([]);
+    expect(view.attentionClients).toBe(0);
+    expect(view.trackedClients).toBe(0);
+    expect(view.noTracker.count).toBe(2);
+  });
+
+  it('the empty states carry an empty fold and no count', () => {
+    for (const answer of [null, { available: false, reason: 'not_deployed' }]) {
+      const view = buildTrackerCloseOverview({ clients: [pine.client], today: TODAY, answer });
+      expect(view.noTracker).toEqual({ count: 0, clients: [], sentence: null });
+      expect(view.trackedClients).toBe(0);
+    }
   });
 });
