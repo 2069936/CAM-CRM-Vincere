@@ -90,6 +90,24 @@ describe('one read per scope and cadence', () => {
     expect(load).toHaveBeenCalledTimes(3);
   });
 
+  it('a panel closed and opened again within the cadence shows the held answer and does not read again', async () => {
+    const load = vi.fn(async () => answer());
+    const first = mountRead({ load, clientIds: ['a'] });
+    await settle(30_000);
+    first.unmount();
+    await settle(30_000);
+    const again = mountRead({ load, clientIds: ['a'] });
+    expect(again.result.current.data).not.toBeNull();
+    expect(again.result.current.reading).toBe(false);
+    await settle();
+    expect(load).toHaveBeenCalledTimes(1);
+    // The next read is due when the held answer turns a cadence old.
+    await settle(CADENCE - 60_000 - 1);
+    expect(load).toHaveBeenCalledTimes(1);
+    await settle(1);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it('joins a read already in flight instead of starting a second one', async () => {
     let release;
     const load = vi.fn(() => new Promise((resolve) => { release = () => resolve(answer()); }));
