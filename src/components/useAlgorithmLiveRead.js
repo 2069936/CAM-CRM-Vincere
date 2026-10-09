@@ -30,6 +30,14 @@ import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
  * with the next read due when that answer turns a cadence old, not a cadence
  * after the panel opened. A read already in flight is joined, never repeated.
  *
+ * AN ANSWER NOBODY WATCHED FOR A CADENCE IS FORGOTTEN, not shown and not kept.
+ * The keep rule above holds a previous answer only because, with a panel open,
+ * that answer is at most a cadence old and so is the cycle just before the
+ * filling one. An answer held while every panel was closed can be an hour old:
+ * reopened in the filling window it would be shown as "the last complete one"
+ * while the strategies are running. So a panel opened on an answer a cadence
+ * old or older starts from nothing, as a panel did before the read was shared.
+ *
  * @param {{clientIds?: string[], load?: Function, refreshMs?: number, now?: Function}} options
  * @returns {{data: object|null, error: string, reading: boolean, clock: Date, retry: Function}}
  */
@@ -37,6 +45,10 @@ import { LIVE_REFRESH_MS } from '../domain/liveRefresh';
 /* loader -> "cadence|sorted ids" -> entry. A WeakMap on the loader, so a test's
  * own loader never shares an entry with the app's. */
 let entries = new WeakMap();
+
+/* What a panel shows before its first answer. One frozen object, so React sees
+ * the same snapshot until something is actually read. */
+const BLANK = Object.freeze({ data: null, error: '', reading: true, clock: null });
 
 /** For tests only: forget every answer. Subscribed panels keep their entry. */
 export function resetAlgorithmLiveReadCache() {
@@ -65,7 +77,7 @@ function entryFor(load, refreshMs, scopeKey) {
       load,
       refreshMs,
       clientIds: scopeKey ? scopeKey.split(',') : [],
-      snapshot: { data: null, error: '', reading: true, clock: null },
+      snapshot: BLANK,
       at: null,
       inflight: null,
       timer: null,
@@ -108,6 +120,19 @@ function read(entry) {
   return entry.inflight;
 }
 
+/* The answer last read is still worth showing: younger than the cadence. With
+ * no cadence (refreshMs 0) nothing is held between one panel and the next. */
+function isHeld(entry) {
+  return entry.refreshMs > 0 && entry.at !== null && Date.now() - entry.at < entry.refreshMs;
+}
+
+/* What a panel renders. While nobody is subscribed, an answer that has turned a
+ * cadence old is not shown even for the one render before the subscription
+ * forgets it. */
+function snapshotOf(entry) {
+  return entry.listeners.size || isHeld(entry) ? entry.snapshot : BLANK;
+}
+
 function schedule(entry, delay) {
   clearTimeout(entry.timer);
   entry.timer = setTimeout(() => {
@@ -121,12 +146,16 @@ function schedule(entry, delay) {
 function subscribe(entry, listener, now) {
   // The latest subscriber's clock stamps the next answer.
   entry.now = now;
+  if (!entry.listeners.size && !isHeld(entry)) {
+    // Nobody watched this answer for a cadence: the next read keeps nothing of it.
+    entry.snapshot = BLANK;
+    entry.at = null;
+  }
   entry.listeners.add(listener);
   if (entry.listeners.size === 1) {
-    const age = entry.at === null ? Infinity : Date.now() - entry.at;
-    const fresh = entry.refreshMs > 0 && entry.snapshot.data !== null && age < entry.refreshMs;
+    const fresh = isHeld(entry) && entry.snapshot.data !== null;
     if (!fresh) read(entry);
-    if (entry.refreshMs > 0) schedule(entry, fresh ? entry.refreshMs - age : entry.refreshMs);
+    if (entry.refreshMs > 0) schedule(entry, fresh ? entry.refreshMs - (Date.now() - entry.at) : entry.refreshMs);
   }
   return () => {
     entry.listeners.delete(listener);
@@ -153,7 +182,8 @@ export default function useAlgorithmLiveRead({
   useEffect(() => { nowRef.current = now; });
 
   const onSubscribe = useCallback((listener) => subscribe(entry, listener, () => nowRef.current()), [entry]);
-  const snapshot = useSyncExternalStore(onSubscribe, () => entry.snapshot, () => entry.snapshot);
+  const getSnapshot = useCallback(() => snapshotOf(entry), [entry]);
+  const snapshot = useSyncExternalStore(onSubscribe, getSnapshot, getSnapshot);
 
   // Before the first answer the clock is the moment this panel mounted.
   const [mounted] = useState(() => now());

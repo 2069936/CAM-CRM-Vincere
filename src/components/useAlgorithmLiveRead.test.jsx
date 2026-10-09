@@ -158,6 +158,58 @@ describe('what a panel keeps', () => {
     expect(result.current.data.fillingCycleStart).toBe('2026-10-08T14:20:00.000Z');
   });
 
+  it('a panel reopened after its answer turned a cadence old, while the next cycle fills, starts from nothing and never calls the old cycle the last complete one', async () => {
+    let call = 0;
+    const load = vi.fn(async () => {
+      call += 1;
+      return call === 1 ? answer() : answer({ filling: true, cycleStart: '2026-10-08T15:20:00.000Z' });
+    });
+    const first = mountRead({ load, clientIds: ['a'] });
+    await settle();
+    expect(first.result.current.data.desk.cycleStart).toBe(CYCLE);
+    first.unmount();
+    // A CAM opens a client and comes back an hour later, 40 seconds into the
+    // 15:20 cycle. The last complete cycle is 15:10, not the 14:10 one held.
+    vi.setSystemTime(new Date('2026-10-08T15:20:40.000Z'));
+    // Every render is recorded, the first one before the panel subscribes too:
+    // not one of them may carry the hour old answer.
+    const rendered = [];
+    const again = renderHook((props) => {
+      const live = useAlgorithmLiveRead(props);
+      rendered.push(live.data);
+      return live;
+    }, { initialProps: { refreshMs: CADENCE, load, clientIds: ['a'] } });
+    expect(again.result.current.data).toBeNull();
+    expect(again.result.current.reading).toBe(true);
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(rendered.filter((data) => data?.desk?.cycleStart === CYCLE)).toEqual([]);
+    expect(again.result.current.data.desk.cycleStart).toBe('2026-10-08T15:20:00.000Z');
+    expect(again.result.current.data.desk.filling).toBe(true);
+    expect(again.result.current.data.fillingCycleStart).toBeUndefined();
+  });
+
+  it('an answer exactly a cadence old is forgotten too, and with no cadence nothing is held between panels', async () => {
+    const load = vi.fn(async () => answer());
+    mountRead({ load, clientIds: ['a'] }).unmount();
+    await settle();
+    await settle(CADENCE);
+    const later = mountRead({ load, clientIds: ['a'] });
+    expect(later.result.current.data).toBeNull();
+    later.unmount();
+
+    const once = vi.fn(async () => answer());
+    const first = mountRead({ load: once, clientIds: ['a'], refreshMs: 0 });
+    await settle();
+    expect(first.result.current.data).not.toBeNull();
+    first.unmount();
+    const second = mountRead({ load: once, clientIds: ['a'], refreshMs: 0 });
+    expect(second.result.current.data).toBeNull();
+    await settle();
+    expect(once).toHaveBeenCalledTimes(2);
+    expect(second.result.current.data).not.toBeNull();
+  });
+
   it('reads by uuid, never by the legacy key', () => {
     expect(algorithmLiveClientIds([
       { id: 'act-1700000000-ash', uuid: '4b0e5c8f-8c3f-4b2a-9d2e-1b2c3d4e5f60' },
