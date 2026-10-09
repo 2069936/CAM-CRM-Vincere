@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   QUIET_SHAPES,
+  QUIET_SHAPE_LABELS,
+  QUIET_SHAPE_TEXT,
   buildQuietAccounts,
   quietEvidenceForFlag,
   shapeOf,
@@ -120,10 +122,10 @@ describe('the evidence a row carries', () => {
 
   it('reads the two shapes differently in the first six words', () => {
     expect(rowFor('HEALTHY').evidenceLine).toBe(
-      'Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance — absent for the 2 closes since.',
+      'Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance, absent for the 2 closes since.',
     );
     expect(rowFor('BREACHED').evidenceLine).toBe(
-      'Last seen 2026-07-13 already $19 past its trailing drawdown on a $47,980 balance — absent for the 2 closes since.',
+      'Last seen 2026-07-13 already $19 past its trailing drawdown on a $47,980 balance, absent for the 2 closes since.',
     );
   });
 
@@ -378,6 +380,103 @@ describe('the evidence behind a Missing account flag', () => {
     expect(row.evidenceLine).toBe(
       'Last seen 2026-07-13, and every one of the 2 closes since carried no account rows at all. Nothing here is about this account.',
     );
+  });
+});
+
+describe('no dash of any kind in anything a CAM reads', () => {
+  // The house rule every rendered string is held to: no em dash, no en dash
+  // and no spaced hyphen as punctuation. A date and a negative amount keep
+  // their closed hyphens, which are not punctuation. CamFlagQueue.test.jsx and
+  // QuietAccountsPanel.test.jsx hold the two screens that render these
+  // sentences to the same rule, as rendered.
+  const DASH = /—|–| - /;
+
+  it('holds for every shape label and every shape description', () => {
+    const copy = [...Object.values(QUIET_SHAPE_LABELS), ...Object.values(QUIET_SHAPE_TEXT)];
+    expect(copy).toHaveLength(16);
+    for (const text of copy) expect(text).not.toMatch(DASH);
+  });
+
+  it('holds for the evidence line of every shape a listed row can be in', () => {
+    // One account per sentence evidenceLineOf can print: healthy, past its
+    // drawdown, buffer never measured, cash, a reading older than the last
+    // close it filed, and a client whose every missed close was an empty import.
+    const model = buildQuietAccounts([
+      client('c', {
+        HEALTHY: meta({ accountName: 'HEALTHY' }),
+        BREACHED: meta({ accountName: 'BREACHED' }),
+        UNMEASURED: meta({ accountName: 'UNMEASURED' }),
+        CASH: meta({ accountName: 'CASH', accountType: 'Cash' }),
+        STALE: meta({ accountName: 'STALE' }),
+        KEEP: meta({ accountName: 'KEEP' }),
+      }, [
+        close('2026-07-12', [{ name: 'STALE', balance: 50000, dd: 900 }, { name: 'KEEP', dd: 900 }]),
+        close('2026-07-13', [
+          { name: 'HEALTHY', balance: 148223, dd: 2171 },
+          { name: 'BREACHED', balance: 47980, dd: -19 },
+          { name: 'UNMEASURED', balance: 50000, dd: 0 },
+          { name: 'CASH', balance: 50000, dd: 0 },
+          { name: 'STALE', balance: 50000, dd: 0 },
+          { name: 'KEEP', dd: 900 },
+        ]),
+        close('2026-07-14', [{ name: 'KEEP', dd: 900 }]),
+        close('2026-07-15', [{ name: 'KEEP', dd: 900 }]),
+      ]),
+      client('dark', { A: meta({ accountName: 'A' }) }, [
+        close('2026-07-13', [{ name: 'A', balance: 50000, dd: 900 }]),
+        close('2026-07-14', []),
+        close('2026-07-15', []),
+      ]),
+    ]);
+    expect(model.accounts).toHaveLength(6);
+    const shapes = new Set(model.accounts.map((row) => row.shape));
+    for (const shape of [
+      QUIET_SHAPES.HEALTHY,
+      QUIET_SHAPES.PAST_DRAWDOWN,
+      QUIET_SHAPES.NEVER_MEASURED,
+      QUIET_SHAPES.NO_DRAWDOWN_RULE,
+    ]) {
+      expect(shapes.has(shape)).toBe(true);
+    }
+    expect(model.accounts.find((row) => row.accountName === 'STALE').evidenceLine)
+      .toContain('that reading is from 2026-07-12');
+    for (const row of model.accounts) expect(row.evidenceLine).not.toMatch(DASH);
+  });
+
+  it('holds for every sentence quietEvidenceForFlag can write', () => {
+    const flagRow = (clientId, accountName, lastSeen) => ({ clientId, accountName, lastSeen });
+    // Two registry rows added after the only close, that close carrying no rows,
+    // and a flag naming an account the book has no record of: between them the
+    // "did not exist yet" sentence, the "nothing collected and none existed yet"
+    // sentence, "never seen" and "reporting again".
+    const model = buildQuietAccounts([
+      client('c', {
+        NEW: meta({ accountName: 'NEW', dateAdded: '2026-07-16' }),
+        NEWER: meta({ accountName: 'NEWER', dateAdded: '2026-07-17' }),
+      }, [
+        close('2026-07-13', []),
+      ]),
+      client('d', {
+        NEVER: meta({ accountName: 'NEVER' }),
+        BACK: meta({ accountName: 'BACK' }),
+        KEEP: meta({ accountName: 'KEEP' }),
+      }, [
+        close('2026-07-13', [{ name: 'BACK', dd: 900 }, { name: 'KEEP', dd: 900 }]),
+        close('2026-07-14', [{ name: 'KEEP', dd: 900 }]),
+        close('2026-07-15', [{ name: 'BACK', dd: 900 }, { name: 'KEEP', dd: 900 }]),
+      ]),
+    ]);
+    const lines = [
+      quietEvidenceForFlag(model, flagRow('c', 'NEW', '2026-07-13')),
+      quietEvidenceForFlag(model, flagRow('c', 'GHOST', '2026-07-13')),
+      quietEvidenceForFlag(model, flagRow('d', 'NEVER', '2026-07-14')),
+      quietEvidenceForFlag(model, flagRow('d', 'BACK', '2026-07-14')),
+    ].map((evidence) => evidence.evidenceLine);
+    expect(lines[1]).toBe(
+      'Nothing was collected for c on 2026-07-13, and none of its 2 accounts existed yet on that date either. There is no account absence here to chase.',
+    );
+    expect(lines[2]).toContain('It has not stopped. It has not started.');
+    for (const line of lines) expect(line).not.toMatch(DASH);
   });
 });
 

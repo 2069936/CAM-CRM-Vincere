@@ -89,23 +89,23 @@ export const QUIET_SHAPE_LABELS = {
   'never-reported': 'Never seen in any close',
   'past-drawdown-when-last-seen': 'Past its drawdown when it went quiet',
   'never-measured-when-last-seen': 'Buffer never measured',
-  'no-drawdown-rule': 'Cash — no drawdown rule',
+  'no-drawdown-rule': 'Cash, no drawdown rule',
   'healthy-when-last-seen': 'Healthy when it went quiet',
 };
 
 export const QUIET_SHAPE_TEXT = {
   'not-yet-registered': 'The earliest date this account can be shown to have existed is AFTER the close the flag stands on, so it could not have appeared in it. reconcile.js sweeps the registry as it stands TODAY against a close from weeks ago and has no existence rule at all, which is how a flag gets raised against an account that did not yet exist. Nothing to chase: close it.',
-  'client-filed-nothing': 'The import for that day carried no account rows at all, so every account on the client is absent for the same single reason. Chase the collection, not the accounts — 8 of the 485 closes on this book are in this state, one of them holding 15 orders against 0 accounts.',
-  'reporting-again': 'The account is back in its client’s latest close. Whatever happened, it is over — 6 accounts on this book missed a close and returned, which is why absence is never treated as final.',
+  'client-filed-nothing': 'The import for that day carried no account rows at all, so every account on the client is absent for the same single reason. Chase the collection, not the accounts. Of the 485 closes on this book, 8 are in this state, one of them holding 15 orders against 0 accounts.',
+  'reporting-again': 'The account is back in its client’s latest close. Whatever happened, it is over. On this book 6 accounts missed a close and returned, which is why absence is never treated as final.',
   'never-reported': 'Registered, existed on the day, and has never appeared in any close we hold. Pre-registered is not the same claim as stopped, and the flag that says "existed before" is simply wrong about these.',
-  'past-drawdown-when-last-seen': 'The last trailing-drawdown reading before it went quiet was negative — under the model NinjaTrader exports for 750 of 764 accounts the number IS the buffer remaining. Strong evidence, not a confirmation: the desk carries 143 accounts past their limit that nobody has marked Failed, and the prop firm, not this CRM, closes an account.',
+  'past-drawdown-when-last-seen': 'The last trailing-drawdown reading before it went quiet was negative, and under the model NinjaTrader exports for 750 of 764 accounts the number IS the buffer remaining. Strong evidence, not a confirmation: the desk carries 143 accounts past their limit that nobody has marked Failed, and the prop firm, not this CRM, closes an account.',
   // 66, not 89: 585 of the 3,100 snapshot rows read 0, and grouping those rows
   // by (client, account) over the 96 clients this panel is built from gives 689
   // accounts that ever filed, 66 of which read 0 on EVERY close they filed and
   // 85 of which read 0 on their last one. accountLifecycle.js:210 quotes 89/108
   // for the same idea over a different scope; only the figures measured on the
   // book this panel renders are quoted here.
-  'never-measured-when-last-seen': 'Its trailing drawdown column read exactly 0 on every close it ever filed, so its buffer was never measured. 585 of the 3,100 snapshot rows on this book read 0 and 66 of the 689 accounts that ever filed have read 0 on every close — that is an import with no column, never a buffer of nothing left.',
+  'never-measured-when-last-seen': 'Its trailing drawdown column read exactly 0 on every close it ever filed, so its buffer was never measured. 585 of the 3,100 snapshot rows on this book read 0 and 66 of the 689 accounts that ever filed have read 0 on every close. That is an import with no column, never a buffer of nothing left.',
   'no-drawdown-rule': 'A cash account has no trailing drawdown rule to be inside or outside, so there is no buffer to report. 53 accounts on this book.',
   'healthy-when-last-seen': 'It was inside its trailing drawdown on the last close it filed. Nothing in the book explains why it stopped, which makes it the shape worth a phone call: one of these was holding $148,223 with $2,171 of buffer left and has been gone for 7 closes.',
 };
@@ -285,11 +285,11 @@ function rowFor(record, {
  * The two shapes the desk confuses have to read differently in the first six
  * words, because they are read at a glance and not in full:
  *
- *   Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance —
+ *   Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance,
  *   absent for the 7 closes since.
  *
  *   Last seen 2026-07-22 already $2 past its trailing drawdown on a $47,998
- *   balance — absent for the 5 closes since.
+ *   balance, absent for the 5 closes since.
  */
 function evidenceLineOf(row) {
   const absent = row.closesSinceSeen === null
@@ -297,7 +297,7 @@ function evidenceLineOf(row) {
     : `absent for the ${closesPhrase(row.closesSinceSeen)} since`;
 
   if (row.shape === QUIET_SHAPES.NEVER_REPORTED) {
-    return `Never seen in any of this client's ${closesPhrase(row.closes)}. It has not stopped — it has not started.`;
+    return `Never seen in any of this client's ${closesPhrase(row.closes)}. It has not stopped. It has not started.`;
   }
   if (row.shape === QUIET_SHAPES.REPORTING_AGAIN) {
     return `Reported again on ${row.lastSeenDate}, this client's latest close. Nothing is missing now.`;
@@ -319,15 +319,15 @@ function evidenceLineOf(row) {
     const past = row.buffer.model === 'limit'
       ? `already at ${money(Math.abs(row.buffer.value))} of its ${money(row.buffer.limit)} drawdown allowance`
       : `already ${money(Math.abs(row.buffer.value))} past its trailing drawdown`;
-    return `Last seen ${row.lastSeenDate} ${past}${on}${asOf} — ${absent}.`;
+    return `Last seen ${row.lastSeenDate} ${past}${on}${asOf}, ${absent}.`;
   }
   if (row.shape === QUIET_SHAPES.NEVER_MEASURED) {
-    return `Last seen ${row.lastSeenDate}${on}, buffer never measured — ${absent}.`;
+    return `Last seen ${row.lastSeenDate}${on}, buffer never measured, ${absent}.`;
   }
   if (row.shape === QUIET_SHAPES.NO_DRAWDOWN_RULE) {
-    return `Last seen ${row.lastSeenDate}${on}, a cash account with no drawdown rule — ${absent}.`;
+    return `Last seen ${row.lastSeenDate}${on}, a cash account with no drawdown rule, ${absent}.`;
   }
-  return `Last seen ${row.lastSeenDate} with ${money(row.buffer.value)} of buffer left${on}${asOf} — ${absent}.`;
+  return `Last seen ${row.lastSeenDate} with ${money(row.buffer.value)} of buffer left${on}${asOf}, ${absent}.`;
 }
 
 /**
@@ -910,7 +910,7 @@ export function quietEvidenceForFlag(model, flagRow) {
       collection: gap,
       evidenceLine: gap.accountsCovered
         ? `Nothing was collected for ${gap.clientName} on ${gap.date}: the import carried no account rows at all, and all ${gap.accountsCovered} accounts that existed that day are absent for that one reason.`
-        : `Nothing was collected for ${gap.clientName} on ${gap.date} — and none of its ${gap.registered} accounts existed yet on that date either. There is no account absence here to chase.`,
+        : `Nothing was collected for ${gap.clientName} on ${gap.date}, and none of its ${gap.registered} accounts existed yet on that date either. There is no account absence here to chase.`,
     };
   }
 

@@ -409,17 +409,17 @@ describe('the account column has a word for every row, never a dash', () => {
     expect(countOf(html, />Several accounts</g)).toBe(1);
   });
 
-  it('prints no dash of any kind in its own words, in any of its states', () => {
-    // The evidence line under a Missing account flag is quietAccounts.js's
-    // sentence, read back as stored; it is not this component's copy and is
-    // taken out before the check. Everything else on the screen is.
-    const ownWords = (html) => html.replace(/<span class="flag-evidence[^"]*"[^>]*>.*?<\/span>/g, '');
+  it('prints no dash of any kind, in any of its states', () => {
+    // Everything on the screen, the evidence line under a Missing account flag
+    // included: that sentence is quietAccounts.js's, read back as stored, and
+    // it is held to the same rule as this component's own copy.
     for (const clients of [closeBook(), strandedBook(), []]) {
-      const html = ownWords(queue(clients));
+      const html = queue(clients);
       expect(strip(html)).not.toMatch(/—|–| - /);
       expect(html).not.toMatch(/—|–/);
     }
-    // The positive control: the evidence line is where the one remaining dash lives.
+    // The positive control: the stranded book renders an evidence line, so the
+    // check above read one.
     expect(queue(strandedBook())).toMatch(/flag-evidence/);
   });
 });

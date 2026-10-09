@@ -212,7 +212,7 @@ describe('rendered against the real book', () => {
       <CamFlagQueue clients={oakley} today={TODAY} queue={model} onResolveFlag={() => {}} defaultOpenGroups={999} />,
     ));
     expect(text).toContain(
-      `writes ${widest.occurrences} flag records — these ${widest.total} problems are held on ${widest.occurrences} rows`,
+      `writes ${widest.occurrences} flag records: these ${widest.total} problems are held on ${widest.occurrences} rows`,
     );
 
     // And the count on the button is the count the click actually makes.
@@ -256,10 +256,10 @@ describe('Missing account evidence', () => {
 
   it('puts the last close, the reading then, the balance then and the gap on the row', () => {
     expect(strip(html)).toContain(
-      'Healthy when it went quiet. Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance — absent for the 7 closes since.',
+      'Healthy when it went quiet. Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance, absent for the 7 closes since.',
     );
     expect(strip(html)).toContain(
-      'Past its drawdown when it went quiet. Last seen 2026-07-22 already $20 past its trailing drawdown on a $47,980 balance — absent for the 6 closes since.',
+      'Past its drawdown when it went quiet. Last seen 2026-07-22 already $20 past its trailing drawdown on a $47,980 balance, absent for the 6 closes since.',
     );
   });
 

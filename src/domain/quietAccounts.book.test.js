@@ -142,7 +142,7 @@ describe('the real book', () => {
     const row = model.accounts.find((entry) => entry.balanceThen === 148223);
     expect(row.shape).toBe(QUIET_SHAPES.HEALTHY);
     expect(row.evidenceLine).toBe(
-      'Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance — absent for the 7 closes since.',
+      'Last seen 2026-07-13 with $2,171 of buffer left on a $148,223 balance, absent for the 7 closes since.',
     );
   });
 
