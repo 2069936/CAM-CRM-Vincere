@@ -112,6 +112,15 @@ describe('the rows', () => {
     expect(container.querySelector('.live-refresh')).not.toBeNull();
   });
 
+  it('says the tolerance is the default when the settings could not be read, and why, one hover away', () => {
+    const { container } = show({ answer: { ...ANSWER, settings: null } });
+    const header = container.querySelector('.tracker-close-header-words');
+    expect(text(header)).toMatch(/^Close captured \d\d:\d\d, compared \d\d:\d\d, tolerance \$5 \(default\)$/);
+    expect(header.getAttribute('title')).toBe(
+      'Tolerance per account is the larger of $5 and 2% of the close figure. The database settings could not be read, so these are the defaults.');
+    expect(text(container.querySelector('.tracker-close-head'))).toMatch(/tolerance \$5 \(default\)\./);
+  });
+
   it('names a scheduled capture time, since a manual close has no capture of its own', () => {
     const scheduled = { ...ANSWER, readings: ANSWER.readings.map((row) => ({ ...row, closeTimeBasis: 'scheduled' })) };
     const { container } = show({ answer: scheduled });

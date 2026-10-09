@@ -244,6 +244,21 @@ describe('the rows a CAM reads', () => {
     expect(view.summary).toMatchObject({ accounts: 4, attention: 3, worst: 'differs' });
   });
 
+  it('says the tolerance is the default, and why, when the settings could not be read', () => {
+    // account_tracker_settings refused or empty: the loader hands null.
+    const view = panel({ answer: { ...ANSWER, settings: null } });
+    expect(view.state).toBe('ready');
+    expect(view.header.fallback).toBe(true);
+    expect(view.header.words).toMatch(/^Close captured \d\d:\d\d, compared \d\d:\d\d, tolerance \$5 \(default\)$/);
+    expect(view.header.toleranceRule).toBe(
+      'Tolerance per account is the larger of $5 and 2% of the close figure. The database settings could not be read, so these are the defaults.');
+    // Read settings say nothing of the kind.
+    const read = panel();
+    expect(read.header.fallback).toBe(false);
+    expect(read.header.words).not.toContain('default');
+    expect(read.header.toleranceRule).not.toContain('could not be read');
+  });
+
   it('takes the tolerance from the settings, not from a constant', () => {
     const view = panel({ answer: { ...ANSWER, settings: { ...SETTINGS, toleranceDollars: 10, toleranceRatio: 0.05 } } });
     expect(view.header.toleranceWords).toBe('$10');

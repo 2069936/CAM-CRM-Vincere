@@ -355,6 +355,10 @@ export function buildTrackerClosePanel({
   const toleranceWords = money(settings.toleranceDollars);
   const historyByAccount = historyFor(history, client, dailyImport);
   const rows = comparison.rows.map((row) => decorateRow(row, { historyByAccount, capturedAt: comparison.closeCapturedAt }));
+  /* When account_tracker_settings could not be read, the figures are the
+   * migration's defaults: the header says "(default)" beside the tolerance and
+   * its title says why, so nobody takes $5 for what the desk set. */
+  const toleranceRule = `Tolerance per account is the larger of ${toleranceWords} and ${percentWords(settings.toleranceRatio)} of the close figure.`;
 
   return {
     state: 'ready',
@@ -366,8 +370,10 @@ export function buildTrackerClosePanel({
       comparedClock,
       basis: comparison.closeTimeBasis,
       toleranceWords,
-      toleranceRule: `Tolerance per account is the larger of ${toleranceWords} and ${percentWords(settings.toleranceRatio)} of the close figure.`,
-      words: `Close captured ${capturedClock}, compared ${comparedClock}, tolerance ${toleranceWords}`,
+      toleranceRule: settings.fallback
+        ? `${toleranceRule} The database settings could not be read, so these are the defaults.`
+        : toleranceRule,
+      words: `Close captured ${capturedClock}, compared ${comparedClock}, tolerance ${toleranceWords}${settings.fallback ? ' (default)' : ''}`,
       fallback: settings.fallback,
     },
     comparison,
