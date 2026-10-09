@@ -19,7 +19,7 @@ function answer(desk = {}) {
   return { available: true, desk: { available: true, cycleStart: CYCLE, filling: false, cohorts: [], ...desk }, rows: [], settings: {} };
 }
 
-function use(options) {
+function mountRead(options) {
   return renderHook((props) => useAlgorithmLiveRead(props), { initialProps: { refreshMs: CADENCE, ...options } });
 }
 
@@ -40,8 +40,8 @@ afterEach(() => {
 describe('one read per scope and cadence', () => {
   it('two panels asking for the same clients, in any order, share one read and one timer', async () => {
     const load = vi.fn(async () => answer());
-    const first = use({ load, clientIds: ['b', 'a'] });
-    const second = use({ load, clientIds: ['a', 'b', 'a'] });
+    const first = mountRead({ load, clientIds: ['b', 'a'] });
+    const second = mountRead({ load, clientIds: ['a', 'b', 'a'] });
     await settle();
     expect(load).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith({ clientIds: ['a', 'b'] });
@@ -54,18 +54,18 @@ describe('one read per scope and cadence', () => {
 
   it('a different set of clients, or another cadence, is its own read', async () => {
     const load = vi.fn(async () => answer());
-    use({ load, clientIds: ['a'] });
-    use({ load, clientIds: ['a', 'b'] });
-    use({ load, clientIds: ['a'], refreshMs: 60_000 });
+    mountRead({ load, clientIds: ['a'] });
+    mountRead({ load, clientIds: ['a', 'b'] });
+    mountRead({ load, clientIds: ['a'], refreshMs: 60_000 });
     await settle();
     expect(load).toHaveBeenCalledTimes(3);
   });
 
   it('a panel opened later shows the held answer at once and reads when that answer turns a cadence old', async () => {
     const load = vi.fn(async () => answer());
-    use({ load, clientIds: ['a'] });
+    mountRead({ load, clientIds: ['a'] });
     await settle(90_000);
-    const later = use({ load, clientIds: ['a'] });
+    const later = mountRead({ load, clientIds: ['a'] });
     expect(later.result.current.data).not.toBeNull();
     expect(later.result.current.reading).toBe(false);
     expect(load).toHaveBeenCalledTimes(1);
@@ -75,8 +75,8 @@ describe('one read per scope and cadence', () => {
 
   it('stops reading when the last panel closes, and reads again on the next open once the answer is old', async () => {
     const load = vi.fn(async () => answer());
-    const one = use({ load, clientIds: ['a'] });
-    const two = use({ load, clientIds: ['a'] });
+    const one = mountRead({ load, clientIds: ['a'] });
+    const two = mountRead({ load, clientIds: ['a'] });
     await settle();
     one.unmount();
     await settle(CADENCE);
@@ -85,7 +85,7 @@ describe('one read per scope and cadence', () => {
     two.unmount();
     await settle(3 * CADENCE);
     expect(load).toHaveBeenCalledTimes(2);
-    use({ load, clientIds: ['a'] });
+    mountRead({ load, clientIds: ['a'] });
     await settle();
     expect(load).toHaveBeenCalledTimes(3);
   });
@@ -93,9 +93,9 @@ describe('one read per scope and cadence', () => {
   it('joins a read already in flight instead of starting a second one', async () => {
     let release;
     const load = vi.fn(() => new Promise((resolve) => { release = () => resolve(answer()); }));
-    const first = use({ load, clientIds: ['a'] });
+    const first = mountRead({ load, clientIds: ['a'] });
     act(() => { first.result.current.retry(); });
-    use({ load, clientIds: ['a'] });
+    mountRead({ load, clientIds: ['a'] });
     expect(load).toHaveBeenCalledTimes(1);
     await act(async () => { release(); });
     expect(first.result.current.data).not.toBeNull();
@@ -110,7 +110,7 @@ describe('what a panel keeps', () => {
       return answer();
     });
     let clockNow = new Date('2026-10-08T14:13:00.000Z');
-    const { result } = use({ load, clientIds: ['a'], now: () => clockNow });
+    const { result } = mountRead({ load, clientIds: ['a'], now: () => clockNow });
     await settle();
     const kept = result.current.data;
     expect(result.current.clock.toISOString()).toBe('2026-10-08T14:13:00.000Z');
@@ -133,7 +133,7 @@ describe('what a panel keeps', () => {
       call += 1;
       return call === 1 ? answer() : answer({ filling: true, cycleStart: '2026-10-08T14:20:00.000Z' });
     });
-    const { result } = use({ load, clientIds: ['a'] });
+    const { result } = mountRead({ load, clientIds: ['a'] });
     await settle();
     await settle(CADENCE);
     expect(result.current.data.desk.cycleStart).toBe(CYCLE);
