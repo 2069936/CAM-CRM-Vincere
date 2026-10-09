@@ -589,9 +589,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
      * a different decision, and it is not this one.
      *
      * It appears only when the published checksum is known, because the script
-     * behind it downloads a package and runs it as administrator. Where the
-     * checksum cannot be trusted the window still hands over the command, which
-     * keeps a person in front of the install rather than pretending. */
+     * behind it downloads a package and runs it as administrator. The command
+     * to copy is held to the same rule: where the checksum cannot be trusted
+     * there is neither, and the notice points at the CRM's install line. */
     public bool CanInstallUpdate
     {
         get => canInstallUpdate;
@@ -638,18 +638,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
 
-    /* THE COMMAND ITSELF, BECAUSE THERE IS NO WAY BACK TO THE CRM SCREEN.
+    /* THE COMMAND ITSELF, SO THE READER DOES NOT HAVE TO GO FIND IT.
      *
-     * The notice used to end "re-run the install line from the CRM", which is
-     * only actionable for someone who can reach the screen that prints that
-     * line. Once a client is past setup the CRM offers no way back to it, so
-     * the one instruction this window gave was one the reader could not follow.
+     * This is the same line the CRM builds, checksum check included, assembled
+     * from the descriptor the check already downloaded. It is null whenever
+     * that descriptor's checksum is not available: a line that runs unverified
+     * bytes as administrator is not handed over, even to a person.
      *
-     * This is the same command the CRM builds, assembled from the manifest the
-     * check already downloaded. The window does NOT run it: a person pastes it
-     * into an elevated PowerShell and watches it. These machines carry live
-     * client accounts, and software that replaces itself unattended on one of
-     * them is not this window's call to make. */
+     * The window does NOT run it: a person pastes it into an elevated
+     * PowerShell and watches it. These machines carry live client accounts,
+     * and software that replaces itself unattended on one of them is not this
+     * window's call to make. */
     public string UpdateInstallCommand
     {
         get => updateInstallCommand;
