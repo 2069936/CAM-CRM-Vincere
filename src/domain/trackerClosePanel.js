@@ -30,6 +30,11 @@ import { money } from './accountLiveDetail';
  * side missing prints nothing, money that was not measured prints nothing, a
  * run in the history with no figure is not drawn.
  *
+ * ONE CLOCK. Every "HH:MM" this module prints, the header's and the verdict
+ * sentences' alike, goes through one formatter, `clock` (cycleClock, the
+ * viewer's own clock, by default), handed to compareTrackerToClose too: the
+ * header and the sentence under it never print one instant in two zones.
+ *
  * THE IDENTITY RULE: a client's `id` is its legacy key or its uuid, `uuid` is
  * the row id, the pinned rows carry the uuid; every lookup tries both.
  *
@@ -159,7 +164,7 @@ export function closeSidesOf(dailyImport) {
  * day is one run and a line through one value says nothing. A run with no
  * figure is skipped, never drawn as zero.
  */
-export function buildSparkline(runs, { capturedAt = null, width = 120, height = 24 } = {}) {
+export function buildSparkline(runs, { capturedAt = null, width = 120, height = 24, clock = cycleClock } = {}) {
   const list = (Array.isArray(runs) ? runs : [])
     .map((run) => ({
       value: Number.isFinite(Number(run?.realizedPnl)) && run.realizedPnl !== null && run.realizedPnl !== '' ? Number(run.realizedPnl) : null,
@@ -196,7 +201,7 @@ export function buildSparkline(runs, { capturedAt = null, width = 120, height = 
     runs: list.length,
     min: vMin,
     max: vMax,
-    words: `Tracker realized through the day, ${list.length} runs from ${cycleClock(new Date(tMin))} to ${cycleClock(new Date(list.at(-1).to))}, capture marked`,
+    words: `Tracker realized through the day, ${list.length} runs from ${clock(new Date(tMin))} to ${clock(new Date(list.at(-1).to))}, capture marked`,
   };
 }
 
@@ -208,10 +213,10 @@ function hasTrackerSide(row) {
   return Boolean(row.tracker) && row.tracker.source !== 'none';
 }
 
-function trackerWordsOf(row) {
+function trackerWordsOf(row, clock) {
   if (!hasTrackerSide(row)) return null;
-  const sampled = row.tracker.sampledAt ? cycleClock(row.tracker.sampledAt) : null;
-  const since = row.tracker.readingSince ? cycleClock(row.tracker.readingSince) : null;
+  const sampled = row.tracker.sampledAt ? clock(row.tracker.sampledAt) : null;
+  const since = row.tracker.readingSince ? clock(row.tracker.readingSince) : null;
   let sampledWords = null;
   if (sampled && since) sampledWords = `sampled ${sampled}, held since ${since}`;
   else if (sampled) sampledWords = `sampled ${sampled}`;
@@ -245,8 +250,8 @@ function gapWordsOf(row) {
   return parts.length ? parts.join(', ') : 'none';
 }
 
-function strategyLineWords(item) {
-  if (item.restartedAt) return `Restarted at ${cycleClock(item.restartedAt)}, not compared.`;
+function strategyLineWords(item, clock) {
+  if (item.restartedAt) return `Restarted at ${clock(item.restartedAt)}, not compared.`;
   if (item.readAfterCapture) return 'Read after the capture, not compared.';
   if (!item.inClose) return 'Not in the close.';
   if (item.closeRan === false) return 'Did not run at the close.';
@@ -255,30 +260,30 @@ function strategyLineWords(item) {
   return `Within ${money(item.tolerance)}.`;
 }
 
-function decorateStrategy(item) {
+function decorateStrategy(item, clock) {
   return {
     ...item,
     key: `${item.strategyId ?? ''}|${item.strategyName}|${item.instrument}`,
     trackerWords: money(item.trackerRealized),
     closeWords: item.inClose ? money(item.closeRealized) : null,
     gapWords: signedMoney(item.gap),
-    words: strategyLineWords(item),
+    words: strategyLineWords(item, clock),
   };
 }
 
-function decorateRow(row, { historyByAccount, capturedAt }) {
+function decorateRow(row, { historyByAccount, capturedAt, clock }) {
   const runs = historyByAccount.get(lower(row.accountName)) || [];
   return {
     ...row,
     verdictWord: CLOSE_VERDICT_WORDS[row.verdict] || row.verdict,
     tone: VERDICT_TONE[row.verdict] || 'muted',
     deltaWords: signedMoney(row.delta),
-    trackerWords: trackerWordsOf(row),
+    trackerWords: trackerWordsOf(row, clock),
     closeWords: row.close ? money(row.close.realized) : null,
     strategiesWords: strategyWordsOf(row),
     gapWords: gapWordsOf(row),
-    strategies: row.strategies.map(decorateStrategy),
-    spark: buildSparkline(runs, { capturedAt }),
+    strategies: row.strategies.map((item) => decorateStrategy(item, clock)),
+    spark: buildSparkline(runs, { capturedAt, clock }),
     flagDraft: buildTrackerCloseFlag(row),
   };
 }
@@ -325,9 +330,11 @@ function historyFor(history, client, dailyImport) {
  * @param {object|null} input.answer loadSupabaseTrackerCloseReadings' answer, or null before the first read.
  * @param {object|null} [input.history] loadSupabaseAccountLiveSampleHistory's answer.
  * @param {string|null} [input.error] the last read's failure, if any.
+ * @param {Function} [input.clock] value to "HH:MM", for the header and the
+ *   verdict sentences alike; cycleClock (the viewer's clock) by default.
  */
 export function buildTrackerClosePanel({
-  client = null, dailyImport = null, date = '', answer = null, history = null, error = null,
+  client = null, dailyImport = null, date = '', answer = null, history = null, error = null, clock = cycleClock,
 } = {}) {
   if (!dailyImport) return emptyPanel('no_close', { date, error });
   if (!answer) return emptyPanel(error ? 'failed' : 'reading', { date, dailyImport, error });
@@ -344,17 +351,18 @@ export function buildTrackerClosePanel({
     strategySnapshots: sides.strategySnapshots,
     pnlSources: dailyImport.sourceSummary?.pnl_sources || null,
     settings: answer.settings || null,
+    clock,
   });
   if (!comparison.available) {
     return emptyPanel('not_pinned', { date, dailyImport, error, pnlSourceSentence: comparison.pnlSourceSentence });
   }
 
   const settings = resolveComparisonSettings(comparison.settings);
-  const capturedClock = cycleClock(comparison.closeCapturedAt);
-  const comparedClock = cycleClock(comparison.comparedAt);
+  const capturedClock = clock(comparison.closeCapturedAt);
+  const comparedClock = clock(comparison.comparedAt);
   const toleranceWords = money(settings.toleranceDollars);
   const historyByAccount = historyFor(history, client, dailyImport);
-  const rows = comparison.rows.map((row) => decorateRow(row, { historyByAccount, capturedAt: comparison.closeCapturedAt }));
+  const rows = comparison.rows.map((row) => decorateRow(row, { historyByAccount, capturedAt: comparison.closeCapturedAt, clock }));
   /* When account_tracker_settings could not be read, the figures are the
    * migration's defaults: the header says "(default)" beside the tolerance and
    * its title says why, so nobody takes $5 for what the desk set. */
@@ -435,7 +443,7 @@ function compareLines(left, right) {
   return String(left.clientName).localeCompare(String(right.clientName));
 }
 
-function clientLine(client, { today, answer, readingsByClient }) {
+function clientLine(client, { today, answer, readingsByClient, clock }) {
   const clientKey = client.uuid || client.id;
   // importId is the close as the app names it (what a flag is added to);
   // importKey is its uuid (what a close's rows are loaded by).
@@ -446,11 +454,11 @@ function clientLine(client, { today, answer, readingsByClient }) {
   if (!todayImport) {
     if (pinnedToday.length) {
       const comparedAt = pinnedToday[0].comparedAt || pinnedToday[0].closeCapturedAt;
-      return { ...base, state: 'close_after_login', words: `Close compared at ${cycleClock(comparedAt)}, after this session loaded. Reload to see it.`, pinnedToday: true };
+      return { ...base, state: 'close_after_login', words: `Close compared at ${clock(comparedAt)}, after this session loaded. Reload to see it.`, pinnedToday: true };
     }
     return { ...base, state: 'no_close', words: 'No close yet today.', pinnedToday: false };
   }
-  const panel = buildTrackerClosePanel({ client, dailyImport: todayImport, date: today, answer });
+  const panel = buildTrackerClosePanel({ client, dailyImport: todayImport, date: today, answer, clock });
   const ids = { importId: todayImport.id, importKey: todayImport.uuid || todayImport.id };
   if (panel.state === 'reading_close') return { ...base, ...ids, state: 'reading_close', words: 'Reading the close.', pinnedToday: pinnedToday.length > 0 };
   if (panel.state !== 'ready') return { ...base, ...ids, state: 'not_pinned', words: 'The tracker had no reading before this close.', pinnedToday: false };
@@ -463,7 +471,7 @@ function clientLine(client, { today, answer, readingsByClient }) {
  * attention verdicts by client key (for the tiles' pills) and the closes whose
  * rows this session has not loaded (for the caller to ask for).
  */
-export function buildTrackerCloseOverview({ clients = [], today = '', answer = null, error = null } = {}) {
+export function buildTrackerCloseOverview({ clients = [], today = '', answer = null, error = null, clock = cycleClock } = {}) {
   const list = (Array.isArray(clients) ? clients : []).filter((client) => client && client.id);
   const empty = { lines: [], pinnedClientKeys: new Set(), verdictsByClient: new Map(), unloadedImportIds: [], attentionClients: 0, error };
   if (!answer) return { ...empty, state: error ? 'failed' : 'reading' };
@@ -477,7 +485,7 @@ export function buildTrackerCloseOverview({ clients = [], today = '', answer = n
     rows.push(row);
     readingsByClient.set(row.clientId, rows);
   }
-  const lines = list.map((client) => clientLine(client, { today, answer, readingsByClient })).sort(compareLines);
+  const lines = list.map((client) => clientLine(client, { today, answer, readingsByClient, clock })).sort(compareLines);
 
   const pinnedClientKeys = new Set();
   const verdictsByClient = new Map();

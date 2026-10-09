@@ -12,12 +12,18 @@ import {
   resolveComparisonSettings,
   verdictRank,
 } from './trackerCloseComparison';
+import { cycleClock } from './algorithmLiveComparison';
 
 /* Fixed clocks on a fictional trading day. The capture is 16:31 New York, which
  * is 20:31 UTC in October; the grace is two minutes. */
 const CAPTURED = '2026-10-07T20:31:00.000Z';
 const SETTINGS = { toleranceDollars: 5, toleranceRatio: 0.02, staleSeconds: 1500, graceSeconds: 120, fallback: false };
 const DASH = /[—–]/;
+
+/* A FIXED ZONE for the clocks in the sentences: the close copy's own, New
+ * York, as "HH:MM", whatever zone the machine running the suite is in. */
+const NEW_YORK = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const newYorkClock = (value) => NEW_YORK.format(new Date(value));
 
 function reading(over = {}) {
   return {
@@ -143,7 +149,20 @@ describe('each verdict, in order', () => {
     expect(row.close).toBeNull();
     expect(row.delta).toBeNull();
     expect(row.attention).toBe(true);
-    expect(row.sentence).toMatch(/tracker saw this account at 20:30 UTC but the close does not list it/);
+    expect(row.sentence).toMatch(/tracker saw this account at \d\d:\d\d but the close does not list it/);
+  });
+
+  it('tracker_only says the clock through the formatter it is handed, the one the header uses, never UTC', () => {
+    // 20:30 UTC is 16:30 in New York in October.
+    const fixed = only(compare({ readings: [reading()], accountSnapshots: [], clock: newYorkClock }));
+    expect(fixed.sentence).toBe('The tracker saw this account at 16:30 but the close does not list it.');
+    // By default it is the viewer's clock, cycleClock, the panel header's formatter.
+    const viewer = only(compare({ readings: [reading()], accountSnapshots: [] }));
+    expect(viewer.sentence).toBe(`The tracker saw this account at ${cycleClock('2026-10-07T20:30:00.000Z')} but the close does not list it.`);
+    expect(viewer.sentence).not.toContain('UTC');
+    // A reading with no time says so instead of inventing one.
+    const unknown = only(compare({ readings: [reading({ sampledAt: null })], accountSnapshots: [], clock: newYorkClock }));
+    expect(unknown.sentence).toBe('The tracker saw this account at an unknown time but the close does not list it.');
   });
 
   it('close_only: a none row with no later reading, and the sentence names the retention possibility', () => {

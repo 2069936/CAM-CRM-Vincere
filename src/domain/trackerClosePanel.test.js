@@ -13,6 +13,7 @@ import {
   verdictCountWords,
 } from './trackerClosePanel';
 import { VERDICTS } from './trackerCloseComparison';
+import { cycleClock } from './algorithmLiveComparison';
 import { VERDICT_TONES, allVerdictsClose } from '../components/trackerCloseFixtures.test-helpers';
 
 /* ------------------------------------------------------------------------- *
@@ -31,6 +32,10 @@ const DATE = '2026-10-07';
 /* An em dash or an en dash anywhere; a spaced hyphen is checked on the source,
  * because '0 - OGX-PF-2.4' is a real NinjaTrader instance name and data. */
 const DASH = /[\u2013\u2014]/;
+/* A FIXED ZONE for every clock the panel prints: New York, the close's own,
+ * as "HH:MM", whatever zone the machine running the suite is in. */
+const NEW_YORK = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const newYorkClock = (value) => (value ? NEW_YORK.format(new Date(value)) : '');
 
 function reading(over = {}) {
   return {
@@ -259,6 +264,26 @@ describe('the rows a CAM reads', () => {
     expect(read.header.toleranceRule).not.toContain('could not be read');
   });
 
+  it('prints the header and the verdict sentences in ONE clock, the formatter it is handed', () => {
+    // Capture 20:31 UTC, the reading 20:30 UTC: 16:31 and 16:30 in New York.
+    const view = panel({ clock: newYorkClock });
+    expect(view.header.words).toBe('Close captured 16:31, compared 16:31, tolerance $5');
+    const trackerOnly = view.rows.find((row) => row.verdict === 'tracker_only');
+    expect(trackerOnly.sentence).toBe('The tracker saw this account at 16:30 but the close does not list it.');
+    const differs = view.rows.find((row) => row.verdict === 'differs');
+    expect(differs.trackerWords.sampled).toBe('sampled 16:30, held since 16:20');
+    expect(differs.spark.words).toBe('Tracker realized through the day, 2 runs from 10:00 to 16:30, capture marked');
+    expect(JSON.stringify(view.rows.map((row) => row.sentence))).not.toContain('UTC');
+  });
+
+  it('by default the header and the sentences both use the viewer\'s clock, cycleClock', () => {
+    const view = panel();
+    expect(view.header.capturedClock).toBe(cycleClock(CAPTURED));
+    const trackerOnly = view.rows.find((row) => row.verdict === 'tracker_only');
+    expect(trackerOnly.sentence).toBe(`The tracker saw this account at ${cycleClock('2026-10-07T20:30:00.000Z')} but the close does not list it.`);
+    expect(trackerOnly.sentence).not.toContain('UTC');
+  });
+
   it('takes the tolerance from the settings, not from a constant', () => {
     const view = panel({ answer: { ...ANSWER, settings: { ...SETTINGS, toleranceDollars: 10, toleranceRatio: 0.05 } } });
     expect(view.header.toleranceWords).toBe('$10');
@@ -477,6 +502,12 @@ describe('the overview, one line per client, worst first', () => {
     const line = view.lines.find((entry) => entry.clientName === 'Late Close');
     expect(line.state).toBe('close_after_login');
     expect(line.words).toMatch(/^Close compared at \d\d:\d\d, after this session loaded\. Reload to see it\.$/);
+    // The overview hands its clock to every line and every panel under it.
+    const fixed = buildTrackerCloseOverview({ clients: [late, northwind], today: TODAY, answer: { available: true, readings: [...READINGS, lateReading], settings: SETTINGS }, clock: newYorkClock });
+    expect(fixed.lines.find((entry) => entry.clientName === 'Late Close').words).toBe('Close compared at 16:31, after this session loaded. Reload to see it.');
+    const northwindLine = fixed.lines.find((entry) => entry.clientName === 'Northwind');
+    expect(northwindLine.panel.header.words).toBe('Close captured 16:31, compared 16:31, tolerance $5');
+    expect(northwindLine.panel.rows.find((row) => row.verdict === 'tracker_only').sentence).toContain('at 16:30 but');
     expect([...view.pinnedClientKeys].sort()).toEqual([UUID, 'late-uuid'].sort());
     // A reading pinned for another day promotes nothing today.
     const stale = buildTrackerCloseOverview({ clients: [late], today: '2026-10-08', answer: { available: true, readings: [lateReading], settings: SETTINGS } });
