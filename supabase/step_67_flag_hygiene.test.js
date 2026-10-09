@@ -1072,14 +1072,16 @@ describe('running it again', () => {
 
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
-describe('step 67 is the one that runs last', () => {
-  it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
+describe('step 67 is numbered once, after 66', () => {
+  it('appears once, and 54 is still a deliberate gap', () => {
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 67)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(67);
+    // Step 68's test now holds "the highest number"; this one only says 67 is
+    // here once, after the steps it builds on.
+    expect(Math.max(...numbers)).toBeGreaterThanOrEqual(67);
     expect(numbers).not.toContain(54);
     for (const merged of [55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]) expect(numbers).toContain(merged);
   });

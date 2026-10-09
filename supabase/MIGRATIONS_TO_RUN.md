@@ -44,6 +44,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 65 | `step_65_account_observations.sql` | seven columns on `trading_accounts` written by the database only: `observed_state` (`seen`, `breached`, `absent`, `never_seen`), `last_close_seen_on`, `closes_missed`, `breached_on`, `breach_reading`, `observed_at`, `auto_fail_flag_id`; `account_observation_settings`, one row (`stale_closes` 5, `auto_fail_on_breach` true, `new_account_days` 14, edited in the SQL editor); `refresh_account_observations(client)`, which recomputes every account of a client from every close of that client with the browser's own breach rule (0 is not measured, model 1 `abs(reading) >= limit`, model 2 `reading < 0`, cash and simulation never breach, the latest measured reading decides) and marks an account Failed with `date_failed`, an audit row (`trading_account.auto_failed`) and a flag for the CAM when its state becomes breached while Active or Payout Hold; deferred triggers on `account_snapshots`, `daily_imports` and `trading_accounts` that run the refresh at commit; a guard trigger that refuses a browser write to the seven columns; and a one pass backfill over every client with a close | An account the prop firm already failed stops reading Active and stops lighting up as never sampled: the close that breached marks it Failed, says so in a flag, and files absent and never seen as observations a CAM can read on the row. Needs step 52 (the policy helpers) and nothing after it; 64 and 65 touch different tables. Run it ANY time, before or after the build that reads the columns (the login tolerates an absent column). To turn the auto fail off: `update public.account_observation_settings set auto_fail_on_breach = false, updated_at = now() where id;`. The backfill marks every Active or Payout Hold account whose latest measured reading is a breach; on production that is about 281 accounts, with one flag per client naming them when more than three flip at once. Re-running it changes nothing |
 | 66 | `step_66_tracker_close_readings.sql` | `account_live_sample_history`: the account tracker's samples kept as value runs (one row per account per machine while the reading does not change, with first and last sampled_at and the sample count), filled by a trigger on `account_live_samples`, swept at `history_retention_days`; `tracker_close_readings`: the tracker side of each close, one row per account, pinned by a trigger on `ingest_batches` when a batch becomes `processed` or `incomplete`, through `record_tracker_close_readings(daily_import_id)`, with the reading in force at the capture plus a grace, the day's strategy readings, `next_sampled_at`, `reset_seen` and the two clocks, replaced wholesale on a second close; five tunables on `account_tracker_settings` (`history_retention_days` 5, `pre_close_grace_seconds` 120, `close_match_tolerance_dollars` 5, `close_match_tolerance_ratio` 0.02, `max_strategies_per_account` 50); one `audit_logs` row per comparison (`daily_import`, `tracker_close_compared`); grants and RLS in step 55's shape, two rows in step 56's exception table | The tracker against the close: per account, what NinjaTrader said just before the capture beside what the close says, with the verdict in words computed in the browser at read time. Needs 55, 57, 52, 28 and 47 first and refuses to run without them. Run it ANY time, between closes; history starts with the next sample and the next close pins the first readings. The client page and the overview arrive in later PRs; until then the two tables fill quietly. Numbered 66 because 64 landed first and 65 is in flight on another branch |
 | 67 | `step_67_flag_hygiene.sql` | `resolve_flags_on_fail` boolean default true on `account_observation_settings`; `flag_backlog_resolved_at` timestamptz on the same row (the one time resolve's marker); `resolution_note` text on `operational_flags` (why the database closed a flag; NULL on every flag a CAM resolves, kept so by a guard trigger); `live_account_flag_types()` (Missing account, Strategy disabled, Expected strategy missing, Drawdown approaching limit, Drawdown near limit) and `account_is_past_live_flags(status, type, observed_state)` (Failed, Inactive, Reserve, Inactive / Ignore, breached, absent); `account_observation_in_close` (the observation as of the flag's own close); a BEFORE INSERT trigger on `operational_flags` that does not create an Open flag of those five for such an account; `refresh_account_observations` redefined with step 65's body plus: when the close marks an account Failed and the switch is on, its Open flags of the five are set Resolved (`resolved_at` now, no person, note `Account marked Failed by the close.`) with one audit row per account (`trading_account.flags_resolved_on_fail`); and a one time resolve of every Open flag of the five on an account whose status is Failed when the file runs (note `Account already Failed when step 67 ran.`), with a NOTICE per type and one summary audit row (`flags.backlog_resolved_on_failed_accounts`). Grants restated | A dead account stops filling the flag queue: no new Missing account, Strategy disabled, Expected strategy missing or drawdown warning for it, the close that fails an account closes them, and the backlog on Failed accounts is closed once. Drawdown breached and Marked Failed by the close stay. Needs step 65 and refuses to run without it. Run it ANY time, before or after the build; the two halves agree and each works alone. On production the one time resolve is expected to close up to about 2,758 flags (it NOTICEs the exact count per type). To stop the close resolving them (the one time resolve is not affected): `update public.account_observation_settings set resolve_flags_on_fail = false, updated_at = now() where id;`. If step 65 is ever run again, run 67 again after it |
+| 68 | `step_68_flag_hygiene_manual_retire.sql` | `retired_flag_backlog_resolved_at` timestamptz on `account_observation_settings` (the one time resolve's marker); an AFTER UPDATE OF `status`, `account_type` trigger on `trading_accounts` (`trading_accounts_retire_resolves_flags`, security definer) that, when a row goes from alive to past the five live account flags by its status or its type (step 67's `account_is_past_live_flags` on the old and the new row with one observation, the old row's, absent read as alive) and `resolve_flags_on_fail` is on, sets that account's Open flags of the five Resolved (`resolved_at` now, `resolved_by_user_id` the app user signed in or NULL, note `Account marked Failed in the CRM.`, `Account marked Inactive in the CRM.`, `Account marked Reserve in the CRM.` or `Account set to Inactive or Ignore in the CRM.`) with one audit row per account when it resolved any (`trading_account.flags_resolved_on_retire`); and a one time resolve of every Open flag of the five on an account whose status is Inactive or Reserve, or whose type is Inactive / Ignore, when the file runs (note `Account already Inactive or Reserve when step 68 ran.`), with a NOTICE per type and one summary audit row (`flags.backlog_resolved_on_retired_accounts`). Grants restated | A CAM who marks an account Failed, Inactive or Reserve, or types it Inactive / Ignore, no longer finds its Missing account, Strategy disabled, Expected strategy missing or drawdown warnings in her queue the next day: the save closes them in her name. The flags already open on accounts a person retired before 68 are closed once. Failed accounts stay step 67's; an account the closes only call absent is not touched until a person retires it. Drawdown breached and the other kept types stay. Needs step 67 and refuses to run without it. Run it ANY time; no build is needed. The same switch as 67 turns it off: `update public.account_observation_settings set resolve_flags_on_fail = false, updated_at = now() where id;` (the one time resolve is not affected). A re-run of 65 or 67 leaves it in place |
 
 ## These three groups behave differently
 
@@ -117,7 +118,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65 → 66 → 67. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65 → 66 → 67 → 68. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -595,7 +596,8 @@ cannot write it, and a CAM who reopens or closes such a flag herself clears it,
 so that statement never reopens a flag a person closed. Open flags of the five
 on accounts that are dead but not Failed (Inactive, Reserve, Inactive / Ignore,
 absent or breached) are not resolved by either path; no new ones are created,
-and the ones already open wait for a CAM.
+and the ones already open wait for a CAM. Step 68 closes the Inactive, Reserve
+and Inactive / Ignore part of that, and a person marking an account Failed.
 
 Turning the close's resolve off is one statement: `update
 public.account_observation_settings set resolve_flags_on_fail = false,
@@ -605,6 +607,63 @@ build gates the generator in `src/domain/reconcile.js` with the same rule, so
 the two halves agree and each works without the other. A re-run of 65 puts 65's
 refresh back without the resolve, so run 67 again after any re-run of 65; the
 one time resolve does not run twice and the switch keeps its value.
+
+**68 resolves flags when a person retires an account, and once for the accounts
+already retired.** It needs step 67 and refuses to run without it: "step 68
+needs step 67 (live_account_flag_types, account_is_past_live_flags,
+operational_flags.resolution_note, account_observation_settings
+.resolve_flags_on_fail): run it first". The five types and the rule are 67's,
+read from its two functions, so nothing here can drift from the close or the
+generator.
+
+What running it changes, in this order. First, a trigger on `trading_accounts`
+watches the status and the type. When a save moves an account from alive to
+past the five (Active or Payout Hold to Failed, Inactive or Reserve, or any type
+to Inactive / Ignore) and `resolve_flags_on_fail` is on, the account's Open
+flags of the five are set Resolved with `resolved_at` now, the CAM who saved it
+as `resolved_by_user_id` (nobody when nobody is signed in, as in the SQL
+editor), and the note `Account marked Failed in the CRM.` (Inactive, Reserve),
+or `Account set to Inactive or Ignore in the CRM.` when the type did it. One
+audit row per account says how many, which, and the status and type before and
+after (`trading_account.flags_resolved_on_retire`, as the same person); none
+when nothing of the five was open. The save itself is never refused: if the
+resolve fails, its half is rolled back, a WARNING naming the account goes to the
+Postgres log, and the status lands as before 68. Second, ONCE: every Open flag
+of the five whose account is Inactive or Reserve, or typed Inactive / Ignore,
+when the file runs is set Resolved with no person and the note `Account already
+Inactive or Reserve when step 68 ran.`. The NOTICE says how many per type
+("step 68: resolved N open flag(s) on M Inactive, Reserve or Inactive / Ignore
+account(s): Missing account a, Strategy disabled b, ..."), and one audit row
+(`flags.backlog_resolved_on_retired_accounts`) holds the counts. The run stamps
+`account_observation_settings.retired_flag_backlog_resolved_at` under an
+advisory lock; a second run finds it set, says "the flags on Inactive and
+Reserve accounts were already resolved by an earlier run, so nothing was
+resolved this time", and changes nothing. The marker and not the audit row,
+because a signed in CAM can insert an audit row (67's test proves it).
+
+What it leaves alone. Failed accounts are 67's backlog. An account the closes
+only call absent is alive until a person says otherwise: no backlog for it, and
+when a CAM marks it Inactive that IS the transition and its flags close. A
+change from one dead state to another (Failed to Inactive) is not a transition,
+so a flag a CAM reopened on a dead account stays her decision; a revive changes
+nothing. The close's own transition (step 65's auto fail, resolved by 67 with
+`Account marked Failed by the close.`) never meets this trigger: by the time the
+close sets the status, the account already reads breached, so the close's note
+and audit row are the only ones. Drawdown breached, Marked Failed by the close,
+Unassigned account, New account and Evaluation target reached are never
+touched, and the message of every flag stays as it was.
+
+What a CAM sees. In the tab she saved from, the five still show until the next
+load (the browser keeps the flags it loaded); after that they are receipts in
+the queue's closing line for seven days, under her name. Turning it off is the
+same switch as 67's, and it turns off both: `update
+public.account_observation_settings set resolve_flags_on_fail = false,
+updated_at = now() where id;`. The one time resolve is not affected. To put the
+one time resolve back: `update public.operational_flags set status = 'Open',
+resolved_at = null, resolved_by_user_id = null, resolution_note = null where
+resolution_note = 'Account already Inactive or Reserve when step 68 ran.';`. A
+re-run of 65 or 67 leaves the trigger in place; a re-run of 68 restores its
+grants and resolves nothing.
 
 **58 replaces one function and nothing else, and it is safe to run at any
 time.** Step 48's `replace_close_summaries` is SECURITY DEFINER, granted to
