@@ -181,74 +181,147 @@ public sealed class MainViewModelTests
     [Fact]
     public void TheAnswerSaysWhatToDoAboutIt()
     {
-        // Without an artifact URL there is no command to hand over, so it falls
-        // back to naming the CRM.
+        // The manifest fallback hands over no command, so it names the step
+        // that has one: the CRM's install line, checked against a pinned digest.
         ReleaseCheckResult result = ReleaseCheck.Evaluate("1.0.0", "1.0.1");
         Assert.Contains("1.0.1", result.Message);
-        Assert.Contains("install line", result.Message);
+        Assert.Contains("Show install line", result.Message);
         Assert.Null(result.InstallCommand);
+        Assert.False(result.CanInstall);
     }
 
-    /* THE DEAD END THIS REMOVES.
+    /* THE COMMAND A PERSON COPIES CHECKS THE BYTES FIRST.
      *
-     * "Re-run the install line from the CRM" is only actionable for someone who
-     * can reach the screen that prints that line, and the CRM offers no way back
-     * to it once a client is past setup. */
+     * It is pasted into an elevated PowerShell on a machine holding live client
+     * accounts. A person reading it can no more tell what arrived than the
+     * Install button can, so the line itself compares the download with the
+     * published SHA-256 before anything out of it expands or runs, and without
+     * a usable digest there is no line at all. */
 
-    [Fact]
-    public void HandsOverTheCommandRatherThanDirectionsToTheCrm()
-    {
-        ReleaseCheckResult result = ReleaseCheck.Evaluate(
-            "1.0.0", "1.0.3", "https://example.test/agent-v1.0.3/Vincere-AutoExport-Agent.zip");
-
-        Assert.Contains("1.0.3", result.Message);
-        Assert.Contains("PowerShell", result.Message);
-        Assert.DoesNotContain("install line", result.Message);
-        Assert.Contains("https://example.test/agent-v1.0.3/Vincere-AutoExport-Agent.zip", result.InstallCommand);
-        Assert.Contains("install-agent.ps1", result.InstallCommand);
-    }
+    private const string Sha121 = "32c76ddb1dcfc010c3b444504e73e79499fa925cddb765c51997395c026a1109";
+    private const string Url121 = "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.1/Vincere-AutoExport-Agent.zip";
 
     [Fact]
     public void TheCommandIsTheOneTheCrmBuilds()
     {
-        // Byte for byte the shape of buildInstallCommand in
-        // src/domain/autoCollectionViewModel.js. Two spellings of the same
-        // install would be two things to keep working.
+        // Byte for byte buildInstallCommand in src/domain/autoCollectionViewModel.js,
+        // for the same 1.2.1 release its own test pins. Two spellings of the
+        // same install would be two things to keep working.
         Assert.Equal(
             "$d=\"$env:TEMP\\vincere-agent\"; "
             + "Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue; "
-            + "Invoke-WebRequest 'https://example.test/a.zip' -OutFile \"$d.zip\" -UseBasicParsing; "
+            + "Invoke-WebRequest 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.1/Vincere-AutoExport-Agent.zip' -OutFile \"$d.zip\" -UseBasicParsing; "
+            + "$hash=(Get-FileHash -LiteralPath \"$d.zip\" -Algorithm SHA256).Hash; "
+            + "if ($hash -ne '32c76ddb1dcfc010c3b444504e73e79499fa925cddb765c51997395c026a1109') { Remove-Item -LiteralPath \"$d.zip\" -Force -ErrorAction SilentlyContinue; throw \"SHA256 mismatch, nothing was installed: $hash\" }; "
             + "Expand-Archive \"$d.zip\" $d -Force; "
             + "& \"$d\\install-agent.ps1\" -PackagePath $d",
-            ReleaseCheck.BuildInstallCommand("https://example.test/a.zip"));
+            ReleaseCheck.BuildInstallCommand(Url121, Sha121));
+    }
+
+    [Fact]
+    public void ComparesTheHashAfterTheDownloadAndBeforeAnythingExpandsOrRuns()
+    {
+        string command = ReleaseCheck.BuildInstallCommand(Url121, Sha121);
+        int download = command.IndexOf("Invoke-WebRequest", StringComparison.Ordinal);
+        int hash = command.IndexOf("Get-FileHash", StringComparison.Ordinal);
+        int compare = command.IndexOf("-ne '" + Sha121 + "'", StringComparison.Ordinal);
+        int thrown = command.IndexOf("throw ", StringComparison.Ordinal);
+        int expand = command.IndexOf("Expand-Archive", StringComparison.Ordinal);
+        int run = command.IndexOf("install-agent.ps1", StringComparison.Ordinal);
+        Assert.True(download > -1);
+        Assert.True(hash > download);
+        Assert.True(compare > hash);
+        Assert.True(thrown > compare);
+        Assert.True(expand > thrown);
+        Assert.True(run > expand);
+        // Each appears exactly once, so nothing can run from the zip on a path
+        // that skipped the comparison.
+        Assert.Equal(2, command.Split("Expand-Archive").Length);
+        Assert.Equal(2, command.Split("install-agent.ps1").Length);
+        Assert.DoesNotContain("\n", command);
+    }
+
+    [Fact]
+    public void AcceptsAnUpperCaseDigestAndWritesItLowerCase()
+    {
+        Assert.Contains("-ne '" + Sha121 + "'",
+            ReleaseCheck.BuildInstallCommand(Url121, Sha121.ToUpperInvariant()));
+    }
+
+    [Fact]
+    public void HandsOverNoCommandWithoutAUsableChecksum()
+    {
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, null));
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, string.Empty));
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, Sha121.Substring(1)));
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, Sha121 + "0"));
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, Sha121.Substring(1) + "g"));
+        // A quote would break out of the single quoted literal the hash sits in.
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, Sha121.Substring(2) + "'x"));
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, " " + Sha121));
+        // .NET's $ would let this through and split the one line in two.
+        Assert.Null(ReleaseCheck.BuildInstallCommand(Url121, Sha121 + "\n"));
     }
 
     [Fact]
     public void RefusesToBuildACommandFromAnUrlItShouldNotRun()
     {
         // This string is going to be pasted into an elevated PowerShell. A
-        // manifest naming anything but an https artifact does not get to
-        // compose that.
-        Assert.Null(ReleaseCheck.BuildInstallCommand(null));
-        Assert.Null(ReleaseCheck.BuildInstallCommand("   "));
-        Assert.Null(ReleaseCheck.BuildInstallCommand("http://example.test/a.zip"));
-        Assert.Null(ReleaseCheck.BuildInstallCommand("file://C:/a.zip"));
-        Assert.Null(ReleaseCheck.BuildInstallCommand("not a url"));
+        // release naming anything but an https artifact does not get to
+        // compose that, checksum or not.
+        Assert.Null(ReleaseCheck.BuildInstallCommand(null, Sha121));
+        Assert.Null(ReleaseCheck.BuildInstallCommand("   ", Sha121));
+        Assert.Null(ReleaseCheck.BuildInstallCommand("http://example.test/a.zip", Sha121));
+        Assert.Null(ReleaseCheck.BuildInstallCommand("file://C:/a.zip", Sha121));
+        Assert.Null(ReleaseCheck.BuildInstallCommand("not a url", Sha121));
     }
 
     [Fact]
     public void EscapesASingleQuoteRatherThanEndingTheQuotedString()
     {
         Assert.Contains("'https://example.test/a''b.zip'",
-            ReleaseCheck.BuildInstallCommand("https://example.test/a'b.zip"));
+            ReleaseCheck.BuildInstallCommand("https://example.test/a'b.zip", Sha121));
+    }
+
+    [Fact]
+    public void TheDescriptorHandsOverTheVerifiedCommand()
+    {
+        ReleaseCheckResult result = ReleaseCheck.EvaluateDescriptor("1.2.0", JObject.Parse(
+            "{\"version\":\"1.2.1\",\"sha256\":\"" + Sha121.ToUpperInvariant() + "\",\"url\":\"" + Url121 + "\"}"));
+
+        Assert.True(result.UpdateAvailable);
+        Assert.True(result.CanInstall);
+        Assert.Equal(ReleaseCheck.BuildInstallCommand(Url121, Sha121), result.InstallCommand);
+    }
+
+    [Fact]
+    public async Task TheManifestFallbackHandsOverNoCommandEvenWithAChecksum()
+    {
+        // The manifest this reads by default is frozen and its digest names a
+        // package replaced long ago. A line checked against it would refuse the
+        // real package every time, and a line checked against nothing is never
+        // handed over. So the fallback says the version and points at the CRM.
+        ReleaseCheckResult result = await new ReleaseCheck(
+            new StubManifest("1.0.3", "https://example.test/a.zip", Sha121)).CheckAsync("1.0.0");
+
+        Assert.True(result.Checked);
+        Assert.True(result.UpdateAvailable);
+        Assert.Null(result.InstallCommand);
+        Assert.False(result.CanInstall);
+        Assert.Contains("install line", result.Message);
     }
 
     [Fact]
     public void SaysNothingAboutACommandWhenAlreadyUpToDate()
     {
-        ReleaseCheckResult result = ReleaseCheck.Evaluate("1.0.3", "1.0.3", "https://example.test/a.zip");
-        Assert.False(result.UpdateAvailable);
-        Assert.Null(result.InstallCommand);
+        ReleaseCheckResult fromManifest = ReleaseCheck.Evaluate("1.0.3", "1.0.3");
+        Assert.False(fromManifest.UpdateAvailable);
+        Assert.Null(fromManifest.InstallCommand);
+
+        ReleaseCheckResult fromDescriptor = ReleaseCheck.EvaluateDescriptor("1.2.1", JObject.Parse(
+            "{\"version\":\"1.2.1\",\"sha256\":\"" + Sha121 + "\",\"url\":\"" + Url121 + "\"}"));
+        Assert.False(fromDescriptor.UpdateAvailable);
+        Assert.Null(fromDescriptor.InstallCommand);
     }
 
     [Fact]
@@ -257,7 +330,7 @@ public sealed class MainViewModelTests
         string copied = null;
         MainViewModel viewModel = new(
             PairedAt("1.0.0"),
-            new ReleaseCheck(new StubManifest("1.0.3", "https://example.test/a.zip")),
+            new ReleaseCheck(new StubDescriptor()),
             text => copied = text);
 
         await viewModel.InitializeAsync();
@@ -265,6 +338,7 @@ public sealed class MainViewModelTests
         await viewModel.CopyInstallCommandAsync();
 
         Assert.True(viewModel.HasUpdateInstallCommand);
+        Assert.Contains("Get-FileHash", copied);
         Assert.Contains("install-agent.ps1", copied);
         Assert.Contains("Copied", viewModel.CopyConfirmation);
     }
@@ -276,7 +350,7 @@ public sealed class MainViewModelTests
         // on screen either way. Claiming it was copied would be worse.
         MainViewModel viewModel = new(
             PairedAt("1.0.0"),
-            new ReleaseCheck(new StubManifest("1.0.3", "https://example.test/a.zip")),
+            new ReleaseCheck(new StubDescriptor()),
             text => throw new InvalidOperationException("clipboard busy"));
 
         await viewModel.InitializeAsync();
@@ -320,18 +394,21 @@ public sealed class MainViewModelTests
     {
         private readonly string version;
         private readonly string url;
+        private readonly string sha256;
 
-        public StubManifest(string version, string url)
+        public StubManifest(string version, string url, string sha256 = null)
         {
             this.version = version;
             this.url = url;
+            this.sha256 = sha256;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            string body = "{\"version\":\"" + version + "\",\"artifacts\":[{\"name\":\"Vincere-AutoExport-Agent.zip\",\"url\":\"" + url + "\"}]}";
+            string sha = sha256 == null ? string.Empty : ",\"sha256\":\"" + sha256 + "\"";
+            string body = "{\"version\":\"" + version + "\",\"artifacts\":[{\"name\":\"Vincere-AutoExport-Agent.zip\",\"url\":\"" + url + "\"" + sha + "}]}";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(body),
@@ -766,8 +843,9 @@ public sealed class MainViewModelTests
     public async Task RefusesToOfferAnInstallWithoutAChecksum()
     {
         // THE LINE. The script downloads a package and runs it as
-        // administrator. Without knowing what arrived, the window hands over
-        // the command instead, which keeps a person in front of the install.
+        // administrator. Without knowing what arrived there is no button and
+        // no command to copy either: a person pasting it cannot tell what
+        // arrived any better. The notice points at the CRM's install line.
         MainViewModel viewModel = new(
             PairedAt("1.0.0"),
             new ReleaseCheck(new StubManifest("1.0.3", "https://example.test/a.zip")));
@@ -775,7 +853,9 @@ public sealed class MainViewModelTests
         await viewModel.CheckForUpdateAsync();
         Assert.False(viewModel.CanInstallUpdate);
         Assert.False(viewModel.InstallUpdateCommand.CanExecute(null));
-        Assert.NotEmpty(viewModel.UpdateInstallCommand);
+        Assert.False(viewModel.HasUpdateInstallCommand);
+        Assert.False(viewModel.CopyInstallCommandCommand.CanExecute(null));
+        Assert.Contains("install line", viewModel.LatestVersionMessage);
     }
 
     [Fact]
