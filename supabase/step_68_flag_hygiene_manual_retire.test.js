@@ -597,6 +597,20 @@ describe('what is not a retirement', () => {
     expect(await auditRows(RETIRE, id)).toEqual([]);
   });
 
+  it('from one alive state to another is not a retirement: Active to Payout Hold, and Funded to Evaluation, keep the five Open', async () => {
+    const onHold = await withFive('N 06');
+    expect(await crmSave(world.gray.auth, onHold, "status = 'Payout Hold'"))
+      .toEqual([{ id: onHold, status: 'Payout Hold', account_type: 'Funded' }]);
+    expect(await openTypes(onHold)).toEqual([...FIVE].sort());
+    expect(await auditRows(RETIRE, onHold)).toEqual([]);
+
+    const toEvaluation = await withFive('N 07');
+    expect(await crmSave(world.gray.auth, toEvaluation, "account_type = 'Evaluation'"))
+      .toEqual([{ id: toEvaluation, status: 'Active', account_type: 'Evaluation' }]);
+    expect(await openTypes(toEvaluation)).toEqual([...FIVE].sort());
+    expect(await auditRows(RETIRE, toEvaluation)).toEqual([]);
+  });
+
   it('a close that makes an account absent resolves nothing: absence is not death', async () => {
     const client = await world.clientOf(world.gray, 'Client P');
     const id = await world.account(client, 'P 01');
