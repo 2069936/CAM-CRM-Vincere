@@ -79,10 +79,12 @@ public sealed class ReleaseCheck
      * and that ships next to the package it describes.
      *
      * Absent, this falls back to the manifest for the version check alone:
-     * the window can still say a version exists, and it points at the CRM's
-     * install line, which is verified against a manifest the CRM does pin. It
-     * offers no Install button and no command of its own, because the only
-     * checksum it would have is the stale one above. */
+     * the window can still say a newer version exists, and it points at the
+     * CRM's install line, which is verified against a manifest the CRM does
+     * pin. It offers no Install button and no command of its own, because the
+     * only checksum it would have is the stale one above, and it never says
+     * the machine is up to date, because the only version it would have is
+     * stale too (see Evaluate). */
     public const string DefaultUpdateDescriptorUrl =
         "https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.0.3/agent-update.json";
 
@@ -252,6 +254,19 @@ public sealed class ReleaseCheck
      * install line" for a client that is already paired. That line is checked
      * against a manifest the CRM pins by its own digest, which this window
      * cannot do for the file it reads here.
+     *
+     * AND IT NEVER SAYS "UP TO DATE".
+     *
+     * The version in that frozen file is a floor, not the latest: it still
+     * reads 1.0.3 while newer releases ship, and the CRM now pins one manifest
+     * per release, so no fixed URL here stays current. Below the floor, an
+     * update certainly exists, so it says so, as "or newer" because the
+     * release the CRM's line installs may be later still. At or above the
+     * floor it knows nothing, and "You are up to date" there is the
+     * confidently wrong answer AnUnreadableVersionIsNotTreatedAsUpToDate
+     * forbids. It says it could not confirm, and Checked is false, as for any
+     * other check that did not get an answer. Only the descriptor, which is
+     * replaced with every release, gets to say a machine is current.
      */
     public static ReleaseCheckResult Evaluate(string installedVersion, string latestVersion)
     {
@@ -263,9 +278,13 @@ public sealed class ReleaseCheck
                 true,
                 true,
                 latestVersion,
-                $"Version {latestVersion} is available. You are on {installedVersion}. To update, open this client in the CRM, press Show install line, and run that line in PowerShell as administrator.");
+                $"Version {latestVersion} or newer is available. You are on {installedVersion}. To update, open this client in the CRM, press Show install line, and run that line in PowerShell as administrator.");
         }
-        return new ReleaseCheckResult(true, false, latestVersion, $"You are up to date on {installedVersion}.");
+        return new ReleaseCheckResult(
+            false,
+            false,
+            null,
+            $"Could not confirm the latest version right now. You are on {installedVersion}.");
     }
 
     public async Task<ReleaseCheckResult> CheckAsync(string installedVersion, CancellationToken cancellationToken = default)
@@ -275,8 +294,9 @@ public sealed class ReleaseCheck
         try
         {
             // The descriptor first, because it is the only one that can be
-            // corrected. A machine that cannot reach it still gets a version
-            // answer from the manifest, without an Install button or a command.
+            // corrected. A machine that cannot reach it still learns from the
+            // manifest whether it is below that floor, without an Install
+            // button or a command, and is never told it is current.
             try
             {
                 string descriptorBody = await http.GetStringAsync(descriptorUrl, cancellationToken).ConfigureAwait(false);

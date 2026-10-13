@@ -178,13 +178,66 @@ public sealed class MainViewModelTests
         Assert.False(result.UpdateAvailable);
     }
 
+    /* THE FROZEN MANIFEST IS A FLOOR, NOT THE LATEST.
+     *
+     * The manifest fallback is reached only when the descriptor cannot be read
+     * or trusted, and the file it reads still says 1.0.3 while 1.2.1 ships.
+     * Read as the latest, it told every agent at 1.0.3 or above that it was
+     * current whenever the descriptor was out of reach: the same confidently
+     * wrong answer as above, only with a version that parses. */
+
+    [Theory]
+    [InlineData("1.0.3")]
+    [InlineData("1.2.1")]
+    public void TheManifestNeverSaysUpToDate(string installed)
+    {
+        ReleaseCheckResult result = ReleaseCheck.Evaluate(installed, "1.0.3");
+
+        Assert.False(result.Checked);
+        Assert.False(result.UpdateAvailable);
+        Assert.Null(result.LatestVersion);
+        Assert.Equal($"Could not confirm the latest version right now. You are on {installed}.", result.Message);
+        Assert.DoesNotContain("up to date", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AnUnreachableDescriptorDoesNotTurnIntoUpToDate()
+    {
+        // The case as it happens: agent-update.json does not answer, the frozen
+        // manifest does, and the agent is already past it.
+        ReleaseCheckResult result = await new ReleaseCheck(
+            new StubManifest("1.0.3", "https://example.test/a.zip", Sha121) { DescriptorMissing = true })
+            .CheckAsync("1.2.1");
+
+        Assert.False(result.Checked);
+        Assert.False(result.UpdateAvailable);
+        Assert.Contains("Could not confirm the latest version", result.Message);
+        Assert.DoesNotContain("up to date", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AnUnreachableDescriptorStillReportsAnUpdateBelowTheFloor()
+    {
+        // What the manifest does know: anything older than it is out of date.
+        ReleaseCheckResult result = await new ReleaseCheck(
+            new StubManifest("1.0.3", "https://example.test/a.zip") { DescriptorMissing = true })
+            .CheckAsync("1.0.2");
+
+        Assert.True(result.Checked);
+        Assert.True(result.UpdateAvailable);
+        Assert.Contains("1.0.3 or newer", result.Message);
+        Assert.False(result.CanInstall);
+    }
+
     [Fact]
     public void TheAnswerSaysWhatToDoAboutIt()
     {
         // The manifest fallback hands over no command, so it names the step
         // that has one: the CRM's install line, checked against a pinned digest.
         ReleaseCheckResult result = ReleaseCheck.Evaluate("1.0.0", "1.0.1");
-        Assert.Contains("1.0.1", result.Message);
+        // "or newer": the line the CRM hands over installs its own pinned
+        // release, which may well be later than this floor.
+        Assert.Contains("1.0.1 or newer", result.Message);
         Assert.Contains("Show install line", result.Message);
         Assert.Null(result.InstallCommand);
         Assert.False(result.CanInstall);
@@ -318,10 +371,14 @@ public sealed class MainViewModelTests
         Assert.False(fromManifest.UpdateAvailable);
         Assert.Null(fromManifest.InstallCommand);
 
+        // The descriptor ships with every release, so it is the one source
+        // that may say a machine is current.
         ReleaseCheckResult fromDescriptor = ReleaseCheck.EvaluateDescriptor("1.2.1", JObject.Parse(
             "{\"version\":\"1.2.1\",\"sha256\":\"" + Sha121 + "\",\"url\":\"" + Url121 + "\"}"));
+        Assert.True(fromDescriptor.Checked);
         Assert.False(fromDescriptor.UpdateAvailable);
         Assert.Null(fromDescriptor.InstallCommand);
+        Assert.Equal("You are up to date on 1.2.1.", fromDescriptor.Message);
     }
 
     [Fact]
@@ -374,6 +431,24 @@ public sealed class MainViewModelTests
         Assert.False(viewModel.CopyInstallCommandCommand.CanExecute(null));
     }
 
+    [Fact]
+    public async Task TheWindowSaysItCouldNotConfirmRatherThanUpToDate()
+    {
+        // The sentence the reader sees, in both places it lands, when only the
+        // frozen manifest answers and the agent is already past it.
+        MainViewModel viewModel = new(
+            PairedAt("1.2.1"),
+            new ReleaseCheck(new StubManifest("1.0.3", "https://example.test/a.zip") { DescriptorMissing = true }));
+
+        await viewModel.InitializeAsync();
+        await viewModel.CheckForUpdateAsync();
+
+        Assert.Equal("Could not confirm the latest version right now. You are on 1.2.1.", viewModel.LatestVersionMessage);
+        Assert.Equal(viewModel.LatestVersionMessage, viewModel.StatusMessage);
+        Assert.False(viewModel.CanInstallUpdate);
+        Assert.False(viewModel.HasUpdateInstallCommand);
+    }
+
     /// <summary>A service that answers status with the version it is running.</summary>
     private static FakeClient PairedAt(string agentVersion)
     {
@@ -403,10 +478,18 @@ public sealed class MainViewModelTests
             this.sha256 = sha256;
         }
 
+        // Without it the descriptor request gets the manifest body, which has
+        // no top level sha256 or url and so is not trusted. With it the
+        // descriptor is not there at all, as when a release ships without one
+        // or the request fails.
+        public bool DescriptorMissing { get; init; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (DescriptorMissing && request.RequestUri.AbsolutePath.EndsWith("/agent-update.json", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             string sha = sha256 == null ? string.Empty : ",\"sha256\":\"" + sha256 + "\"";
             string body = "{\"version\":\"" + version + "\",\"artifacts\":[{\"name\":\"Vincere-AutoExport-Agent.zip\",\"url\":\"" + url + "\"" + sha + "}]}";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
