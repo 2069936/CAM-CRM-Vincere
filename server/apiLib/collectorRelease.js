@@ -205,13 +205,13 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * Environment variables still win when set, so another deployment can point
  * elsewhere without touching code.
  *
- * Agent 1.2.1, built by run 37800585290 of the Collector Windows workflow
- * (artifact collector-agent-package-131, the head of PR 89) and published on
- * release agent-v1.2.1. The package is 110,635,990 bytes with sha256
- * 32c76ddb…1109, and the manifest naming it (sha256 7f0c60a5…b31e) was verified
- * against resolveInstallerRelease itself before it was committed. It was checked
- * on one VPS before this pin: heartbeat with the NinjaTrader version from the
- * first minute, account and strategy samples, and a live long position read.
+ * Agent 1.2.2, built by run 38390436240 of the Collector Windows workflow
+ * (artifact collector-agent-package-137, the head of PR 105) and published on
+ * release agent-v1.2.2. The package is 110,635,838 bytes with sha256
+ * 2d3355a8…ed32, and the manifest naming it (sha256 43dacd04…282c) was verified
+ * against resolveInstallerRelease itself before it was committed. It holds the
+ * same 747 files as 1.2.1; what changed is the line the agent window copies,
+ * which now checks the package's SHA-256 before it expands or installs anything.
  *
  * A NEW FILE RATHER THAN A REPLACED ONE, and that is the point of the digest.
  * The manifest this used to name still sits beside the new one, untouched and
@@ -221,7 +221,7 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * states are each individually valid and the switch is this one commit.
  *
  * It also means the way back is this constant, not a scramble: set it to the
- * previous pair (agent-v1.1.3, 702ab776…f915) and the desk installs 1.1.3 again.
+ * previous pair (agent-v1.2.1, 7f0c60a5…b31e) and the desk installs 1.2.1 again.
  *
  * THE FILE IT REPLACED WAS WRONG, which is worth recording. It declared version
  * 1.0.3 and a sha256 of 3f3444ee… for a 108,034,406 byte package, while the
@@ -231,8 +231,8 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * while handing them 1.0.8, and the "agent needs updating" flag could never
  * fire because every machine looked newer than the release.
  */
-const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.1/release-manifest.json';
-const DEFAULT_RELEASE_MANIFEST_SHA256 = '7f0c60a5d002b4b9c6922e2afb18cccf8a38195de7c937c8e74f5c350709b31e';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.2/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = '43dacd04763f3dd6cbfb1805fa826774acbe1aedb48b8110f89310373824282c';
 
 export async function resolveInstallerRelease(env = process.env, {
   production = env.NODE_ENV === 'production',
