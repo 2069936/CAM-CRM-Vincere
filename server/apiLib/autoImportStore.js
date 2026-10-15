@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { ApiError } from './http.js';
+import { validationReasonSummary } from '../../src/domain/autoImportValidationReason.js';
 import {
   DEFAULT_MAX_COMPRESSED_BYTES,
   DEFAULT_MAX_UNCOMPRESSED_BYTES,
@@ -298,6 +299,34 @@ async function rpcWithFallback(admin, current, legacy, args, legacyArgs = args) 
   return admin.rpc(legacy, legacyArgs);
 }
 
+function reportReasonNotRecorded(batchId, error) {
+  // Name, code and message only, the discipline handleApiError's reporter
+  // keeps: the reason itself is never logged.
+  const parts = [error?.name, error?.code, error?.message].filter(Boolean);
+  console.error(`[CRM] could not record why batch ${batchId} was rejected: ${parts.join(' ') || 'unknown'}`);
+}
+
+/* WHY A REFUSED CLOSE WAS REFUSED, KEPT ON ITS BATCH (step 69).
+ *
+ * Called by the ingest route and by the replay right after the finalize that
+ * marks a batch failed with a validation code, with the validator's own
+ * errors. Best effort by contract: a database without step 69, a timeout or a
+ * refusal is logged and swallowed, and the caller answers exactly what it
+ * would have answered without this. Never throws.
+ *
+ * @returns {Promise<boolean>} true only when the database stored the reason.
+ */
+export async function recordValidationReason(store, batchId, errors, { report = reportReasonNotRecorded } = {}) {
+  const detail = validationReasonSummary(errors);
+  if (!detail || typeof store?.recordBatchErrorDetail !== 'function') return false;
+  try {
+    return (await store.recordBatchErrorDetail({ batchId, detail })) === true;
+  } catch (error) {
+    try { report(batchId, error); } catch { /* a reporter must not fail the route */ }
+    return false;
+  }
+}
+
 export function createAutoImportStore(admin) {
   return {
     async claimBatch(payload) {
@@ -478,6 +507,17 @@ export function createAutoImportStore(admin) {
           throw error;
         },
       };
+    },
+
+    // Step 69. Writes only on a failed batch with a validation code; the
+    // database says whether it did.
+    async recordBatchErrorDetail({ batchId, detail }) {
+      const { data, error } = await admin.rpc('record_ingest_batch_error_detail', {
+        p_batch_id: batchId,
+        p_detail: detail,
+      });
+      if (error) throw error;
+      return rpcValue(data) === true;
     },
 
     async completeBatch(payload) {

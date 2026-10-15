@@ -5,6 +5,7 @@ import {
   canonicalSnapshotPayload,
   createAutoImportStore,
   decodeSnapshotRequest,
+  recordValidationReason,
 } from './autoImportStore.js';
 
 const fixture = {
@@ -295,5 +296,66 @@ describe('auto import Supabase store', () => {
     await expect(store.createPersistenceAdapter().persistDailyImportAtomic({
       clientUuid: 'client-1', sourceBatchId: 'batch-1', importResult: { date: '2026-07-23' },
     })).rejects.toMatchObject({ code: 'daily_import_closed', dailyImportId: 'daily-closed' });
+  });
+});
+
+/* STEP 69: WHY A REFUSED CLOSE WAS REFUSED, BEST EFFORT. */
+describe('recording why a close was rejected', () => {
+  const BATCH = '44444444-4444-4444-8444-444444444444';
+  const ERRORS = [
+    'orders[0, 1, 2] and 4 more.accountName does not reference an account (APEX 4521 07)',
+    'accounts[0].netLiquidation must be a number or null',
+    'accounts[3].netLiquidation must be a number or null',
+  ];
+  const SUMMARY = 'orders[*].accountName does not reference an account (APEX 4521 07); accounts[*].netLiquidation must be a number or null';
+
+  it('calls record_ingest_batch_error_detail with the batch and the text, and reports what the database said', async () => {
+    for (const [data, written] of [[true, true], [false, false], [[true], true], [null, false]]) {
+      const rpc = vi.fn(async () => ({ data, error: null }));
+      await expect(createAutoImportStore({ rpc }).recordBatchErrorDetail({ batchId: BATCH, detail: SUMMARY })).resolves.toBe(written);
+      expect(rpc).toHaveBeenCalledWith('record_ingest_batch_error_detail', { p_batch_id: BATCH, p_detail: SUMMARY });
+    }
+  });
+
+  it('throws the database error from the store method, for the wrapper to swallow', async () => {
+    const failure = { code: 'PGRST202', message: 'Could not find the function' };
+    const rpc = vi.fn(async () => ({ data: null, error: failure }));
+    await expect(createAutoImportStore({ rpc }).recordBatchErrorDetail({ batchId: BATCH, detail: SUMMARY })).rejects.toBe(failure);
+  });
+
+  it('hands the summary of the errors to the store, and returns what it stored', async () => {
+    const store = { recordBatchErrorDetail: vi.fn(async () => true) };
+    await expect(recordValidationReason(store, BATCH, ERRORS)).resolves.toBe(true);
+    expect(store.recordBatchErrorDetail).toHaveBeenCalledWith({ batchId: BATCH, detail: SUMMARY });
+    store.recordBatchErrorDetail.mockResolvedValueOnce(false);
+    await expect(recordValidationReason(store, BATCH, ERRORS)).resolves.toBe(false);
+  });
+
+  it('calls nothing when there is nothing to say, or nowhere to say it', async () => {
+    const store = { recordBatchErrorDetail: vi.fn(async () => true) };
+    for (const errors of [[], undefined, null, 'accounts must be an array', ['', null]]) {
+      await expect(recordValidationReason(store, BATCH, errors)).resolves.toBe(false);
+    }
+    expect(store.recordBatchErrorDetail).not.toHaveBeenCalled();
+    await expect(recordValidationReason({}, BATCH, ERRORS)).resolves.toBe(false);
+    await expect(recordValidationReason(undefined, BATCH, ERRORS)).resolves.toBe(false);
+  });
+
+  it('never throws: a failing store is reported by batch and cause, and a failing reporter is swallowed too', async () => {
+    const failure = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    const store = { recordBatchErrorDetail: vi.fn(async () => { throw failure; }) };
+    const report = vi.fn();
+    await expect(recordValidationReason(store, BATCH, ERRORS, { report })).resolves.toBe(false);
+    expect(report).toHaveBeenCalledWith(BATCH, failure);
+    await expect(recordValidationReason(store, BATCH, ERRORS, { report: () => { throw new Error('logger down'); } })).resolves.toBe(false);
+
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(recordValidationReason(store, BATCH, ERRORS)).resolves.toBe(false);
+      expect(logged).toHaveBeenCalledWith(`[CRM] could not record why batch ${BATCH} was rejected: Error 57014 canceling statement due to statement timeout`);
+      expect(logged.mock.calls.flat().join(' ')).not.toContain('APEX');
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

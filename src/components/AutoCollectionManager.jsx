@@ -73,6 +73,20 @@ function QuarantineList({ quarantine }) {
   </section>;
 }
 
+/* WHY IT WAS REJECTED, UNDER THE CODE.
+ *
+ * Since step 69 a close refused by the validator keeps the rules it broke
+ * (ingest_batches.error_detail, sent by the batches API beside the two
+ * validation codes only). A close refused before step 69 ran has none until
+ * it is reprocessed, and then shows nothing extra rather than an empty label. */
+function FailedReason({ detail }) {
+  if (typeof detail !== 'string' || !detail.trim()) return null;
+  return <div className="collector-failed-reason">
+    <span>Why it was rejected</span>
+    <small>{detail}</small>
+  </div>;
+}
+
 export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false }) {
   const [fleet, setFleet] = useState(initialFleet);
   const [page, setPage] = useState(initialFleet?.page || 1);
@@ -201,7 +215,7 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     {error ? <div className="notice error" role="alert"><AlertTriangle size={15} /> {error}</div> : null}
     {failedBatches?.length ? <section className="panel collector-failed" aria-label="Failed closes">
       <div className="collector-toolbar"><div><span className="eyebrow">Failed closes, last 30 days</span><h2>{failedBatches.length} close{failedBatches.length === 1 ? '' : 's'} the CRM refused{failedBatches.length >= 50 ? ' (first 50 shown)' : ''}</h2><p className="muted">Each one is a capture a VPS quarantined after this CRM answered 422. The raw snapshot is stored here. When the refusal was fixed on this side, replay them from here; the VPS needs nothing.</p></div></div>
-      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client</th><th>Trading date</th><th>Received</th><th>Rows</th><th>Refused as</th></tr></thead><tbody>{failedBatches.map((batch) => <tr key={batch.id}><td><strong>{clientNames.get(batch.clientUuid) || batch.clientUuid}</strong></td><td>{batch.tradingDate}</td><td>{fmt(batch.receivedAt)}</td><td><small>{counts(batch.rowCounts)}</small></td><td><span className="negative">{batch.errorCode || 'unknown'}</span></td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client</th><th>Trading date</th><th>Received</th><th>Rows</th><th>Refused as</th></tr></thead><tbody>{failedBatches.map((batch) => <tr key={batch.id}><td><strong>{clientNames.get(batch.clientUuid) || batch.clientUuid}</strong></td><td>{batch.tradingDate}</td><td>{fmt(batch.receivedAt)}</td><td><small>{counts(batch.rowCounts)}</small></td><td><span className="negative">{batch.errorCode || 'unknown'}</span><FailedReason detail={batch.errorDetail} /></td></tr>)}</tbody></table></div>
       <form className="collector-replay-confirm" onSubmit={runBulkReplay}><label>Operational reason (applies to all)<textarea value={bulkReason} maxLength={500} onChange={(event) => setBulkReason(event.target.value)} /></label><div><button type="submit" className="primary-button" disabled={bulkBusy || bulkReason.trim().length < 10}><RotateCcw size={13} /> {bulkBusy ? 'Replaying…' : `Reprocess all ${failedBatches.length}`}</button></div><p className="muted">Closed days are skipped here and keep their typed confirmation in the client drawer.</p></form>
     </section> : null}
     {bulkResults ? <div className={`notice ${bulkResults.replayed === bulkResults.requested ? 'success' : 'warning'}`} role="status">Replayed {bulkResults.replayed} of {bulkResults.requested}.{bulkResults.results.filter((r) => r.outcome !== 'replayed').map((r) => ` ${clientNames.get(r.clientUuid) || r.batchId} ${r.tradingDate || ''}: ${r.outcome}${r.reason ? ` (${r.reason})` : ''}${r.error ? ` (${r.error})` : ''}.`).join('')}</div> : null}

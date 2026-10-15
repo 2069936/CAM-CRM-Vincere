@@ -1,8 +1,10 @@
+import { Buffer } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
 import snapshotFixture from '../../../../test/fixtures/auto-export/snapshot-v1.json';
 import { canonicalSnapshotPayload } from '../../../apiLib/autoImportStore.js';
 import { createHandler, createReplayStore, parseReplayBody, processStoredReplay } from '../../../autoCollection/admin/ingest-reprocess.js';
 import { ApiError } from '../../../apiLib/http.js';
+import { createHandler as createBulkHandler } from '../../../autoCollection/admin/ingest-reprocess-failed.js';
 
 const BATCH_ID = '33333333-3333-4333-8333-333333333333';
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -140,6 +142,149 @@ describe('immutable stored replay processor', () => {
     await expect(processStoredReplay({ batch, store, processingToken: 'token', actorId: 'manager-1', reason: 'Approved replay reason', closedReplacement: false, normalize: () => ({ date: batch.tradingDate, parsed: {}, metadata: { isComplete: true } }), reconcile: () => ({ date: batch.tradingDate }), persist: async () => ({ id: 'daily-1' }) })).rejects.toThrow('finalizer unavailable');
     expect(store.completeBatch).toHaveBeenCalledTimes(1);
     expect(store.completeBatch).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+  });
+});
+
+/* A REPLAY THAT THE VALIDATOR REFUSES AGAIN SAYS WHY (step 69).
+ *
+ * The thirteen closes refused before step 69 carry only their code. Replaying
+ * one runs the same validator over the same stored bytes, so the replay is
+ * how they get their reason: it is recorded with the code the upload got (it
+ * used to become 'ingest_failed') and the rules, after the finalize. */
+describe('a replay refused by the validator records why', () => {
+  const REFUSED = 'orders[*].accountName does not reference an account (APEX 4521 07)';
+
+  function evidenceOf(snapshot) {
+    const canonical = canonicalSnapshotPayload(snapshot);
+    const batch = {
+      ...baseBatch, captureId: snapshot.captureId, capturedAt: snapshot.capturedAt,
+      tradingDate: snapshot.tradingDate, schemaVersion: snapshot.schemaVersion,
+      storagePath: `${CLIENT_ID}/${snapshot.tradingDate}/${snapshot.captureId}.json.gz`,
+      contentSha256: canonical.sha256, byteCount: canonical.utf8.length,
+      rowCounts: Object.fromEntries(['accounts', 'strategies', 'orders', 'executions'].map((name) => [name, snapshot[name].length])),
+    };
+    return { canonical, batch };
+  }
+
+  function unknownAccount() {
+    const value = structuredClone(snapshotFixture);
+    value.orders.push({ ...value.orders[0], orderId: 'order-02', accountName: 'APEX 4521 07' });
+    return value;
+  }
+
+  function storeFor(canonical, { recordDetail, complete } = {}) {
+    const order = [];
+    const store = {
+      order,
+      downloadObject: vi.fn(async () => canonical.gzip), loadRegistry: vi.fn(async () => ({})),
+      createPersistenceAdapter: vi.fn(() => ({})), createClosedReplacementAdapter: vi.fn(() => ({})),
+      completeBatch: vi.fn(async (value) => { order.push('finalize'); if (complete) return complete(value); return undefined; }),
+    };
+    if (recordDetail !== false) {
+      store.recordBatchErrorDetail = vi.fn(async (value) => { order.push('detail'); return recordDetail ? recordDetail(value) : true; });
+    }
+    return store;
+  }
+
+  const replay = (batch, store, extra = {}) => processStoredReplay({ batch, store, processingToken: 'token', actorId: 'manager-1', reason: 'Record why it was rejected', closedReplacement: false, ...extra });
+
+  it('normalize refuses it: failed with invalid_auto_import_snapshot, then the rules, and the original error rethrown', async () => {
+    const { canonical, batch } = evidenceOf(unknownAccount());
+    const store = storeFor(canonical);
+    await expect(replay(batch, store)).rejects.toMatchObject({ name: 'AutoImportValidationError', code: 'invalid_auto_import_snapshot' });
+    expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', success: false, errorCode: 'invalid_auto_import_snapshot' }));
+    expect(store.recordBatchErrorDetail).toHaveBeenCalledWith({ batchId: BATCH_ID, detail: REFUSED });
+    expect(store.order).toEqual(['finalize', 'detail']);
+    expect(store.loadRegistry).not.toHaveBeenCalled();
+  });
+
+  it('the stored snapshot breaks the contract: the same code and its rules, and the answer is still stored_snapshot_corrupt', async () => {
+    const broken = structuredClone(snapshotFixture);
+    broken.accounts[0].netLiquidation = 'fifty one thousand';
+    const { canonical, batch } = evidenceOf(broken);
+    const store = storeFor(canonical);
+    await expect(replay(batch, store)).rejects.toMatchObject({ status: 409, message: 'stored_snapshot_corrupt' });
+    expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorCode: 'invalid_auto_import_snapshot' }));
+    expect(store.recordBatchErrorDetail).toHaveBeenCalledWith({ batchId: BATCH_ID, detail: 'accounts[*].netLiquidation must be a number or null' });
+  });
+
+  it('an unsupported schema version keeps its code and says so', async () => {
+    const { canonical, batch } = evidenceOf(snapshotFixture);
+    const store = storeFor(canonical);
+    await expect(replay({ ...batch, schemaVersion: 2 }, store)).rejects.toMatchObject({ status: 409, message: 'unsupported_schema_version' });
+    expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorCode: 'unsupported_schema_version' }));
+    expect(store.recordBatchErrorDetail).toHaveBeenCalledWith({ batchId: BATCH_ID, detail: 'schemaVersion must be 1' });
+  });
+
+  it.each([
+    ['damaged bytes', (canonical) => ({ downloadObject: vi.fn(async () => Buffer.from('not-gzip')), canonical })],
+    ['a registry failure', () => ({ loadRegistry: vi.fn(async () => { throw new Error('registry down'); }) })],
+    ['a normalize that throws something else', () => ({ normalize: () => { throw Object.assign(new Error('boom'), { errors: ['accounts[0].x is required'] }); } })],
+  ])('%s: ingest_failed as before, and no reason', async (_name, patch) => {
+    const { canonical, batch } = evidenceOf(snapshotFixture);
+    const store = storeFor(canonical);
+    const { normalize, ...storePatch } = patch(canonical);
+    delete storePatch.canonical;
+    Object.assign(store, storePatch);
+    await expect(replay(batch, store, normalize ? { normalize } : {})).rejects.toThrow();
+    expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorCode: 'ingest_failed' }));
+    expect(store.recordBatchErrorDetail).not.toHaveBeenCalled();
+  });
+
+  it('no reason when the finalize itself failed, and the original error still wins', async () => {
+    const { canonical, batch } = evidenceOf(unknownAccount());
+    const store = storeFor(canonical, { complete: () => { throw new Error('finalizer unavailable'); } });
+    await expect(replay(batch, store)).rejects.toMatchObject({ code: 'invalid_auto_import_snapshot' });
+    expect(store.recordBatchErrorDetail).not.toHaveBeenCalled();
+  });
+
+  it('the controlled replay answers the same whether the RPC records, refuses, fails or is missing', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const answers = [];
+      for (const recordDetail of [undefined, () => false, () => { throw new Error('function missing'); }, false]) {
+        const { canonical, batch } = evidenceOf(unknownAccount());
+        const store = { ...storeFor(canonical, { recordDetail }), getBatch: vi.fn(async () => batch), claimReplay: vi.fn(async () => ({ outcome: 'owned' })) };
+        const handler = createHandler({ createClients: () => ({ admin: {}, auth: {} }), authorize: async () => ({ id: 'manager-1' }), createStore: () => store, createProcessingToken: () => '99999999-9999-4999-8999-999999999999' });
+        const res = response();
+        await handler({ method: 'POST', body: { batchId: BATCH_ID, reason: 'Record why it was rejected', confirmation: 'REPROCESS Acme Trading 2026-07-23' } }, res);
+        answers.push({ statusCode: res.statusCode, body: res.body, headers: res.headers });
+        expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ errorCode: 'invalid_auto_import_snapshot' }));
+      }
+      for (const answer of answers) expect(answer).toEqual(answers[0]);
+      expect(answers[0]).toMatchObject({ statusCode: 500, body: { error: 'batch_reprocess_failed' } });
+      expect(logged.mock.calls.map((args) => args.join(' ')).filter((line) => line.includes('could not record why')))
+        .toEqual([`[CRM] could not record why batch ${BATCH_ID} was rejected: Error function missing`]);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('the bulk replay from the failed closes panel records it too, and reports the batch exactly as before', async () => {
+    const outcomes = [];
+    for (const recordDetail of [undefined, () => { throw new Error('function missing'); }]) {
+      const { canonical, batch } = evidenceOf(unknownAccount());
+      const store = { ...storeFor(canonical, { recordDetail }), getBatch: vi.fn(async () => batch), claimReplay: vi.fn(async () => ({ outcome: 'owned' })) };
+      const handler = createBulkHandler({ createClients: () => ({ admin: {}, auth: {} }), authorize: async () => ({ id: 'manager-1' }), createStore: () => store, createProcessingToken: () => '99999999-9999-4999-8999-999999999999', report: () => {} });
+      const res = response();
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await handler({ method: 'POST', body: { batchIds: [BATCH_ID], reason: 'Record why it was rejected' } }, res);
+      } finally {
+        logged.mockRestore();
+      }
+      expect(store.recordBatchErrorDetail).toHaveBeenCalledWith({ batchId: BATCH_ID, detail: REFUSED });
+      outcomes.push({ statusCode: res.statusCode, body: res.body });
+    }
+    expect(outcomes[1]).toEqual(outcomes[0]);
+    expect(outcomes[0]).toMatchObject({ statusCode: 200, body: { replayed: 0, results: [{ batchId: BATCH_ID, outcome: 'failed', error: 'invalid_auto_import_snapshot' }] } });
+  });
+
+  it('the replay store carries the RPC, with its two arguments', async () => {
+    const rpc = vi.fn(async () => ({ data: true, error: null }));
+    const store = createReplayStore({ rpc });
+    await expect(store.recordBatchErrorDetail({ batchId: BATCH_ID, detail: REFUSED })).resolves.toBe(true);
+    expect(rpc).toHaveBeenCalledWith('record_ingest_batch_error_detail', { p_batch_id: BATCH_ID, p_detail: REFUSED });
   });
 });
 

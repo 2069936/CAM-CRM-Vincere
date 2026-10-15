@@ -88,6 +88,22 @@ describe('auto-export download evidence verification', () => {
       .toThrow(expect.objectContaining({ status: 409, message: 'unsupported_schema_version' }));
   });
 
+  it('a stored snapshot whose bytes match and that breaks the contract keeps its answer and carries the rules it broke', () => {
+    const refused = structuredClone(snapshot);
+    refused.accounts[0].netLiquidation = 'fifty one thousand';
+    const canonical = canonicalSnapshotPayload(refused);
+    const item = evidence({ contentSha256: canonical.sha256, byteCount: canonical.utf8.length });
+    let thrown;
+    try { verifyStoredSnapshot({ ...item, compressed: canonical.gzip }); } catch (error) { thrown = error; }
+    expect(thrown).toMatchObject({ status: 409, message: 'stored_snapshot_corrupt', validationErrors: ['accounts[0].netLiquidation must be a number or null'] });
+
+    // Damaged bytes are corruption and nothing else: no rules to record.
+    let damaged;
+    try { verifyStoredSnapshot({ ...evidence(), compressed: Buffer.from('not-gzip') }); } catch (error) { damaged = error; }
+    expect(damaged).toMatchObject({ status: 409, message: 'stored_snapshot_corrupt' });
+    expect(damaged).not.toHaveProperty('validationErrors');
+  });
+
   it('bounds compressed and decompressed evidence before materializing a download', () => {
     const item = evidence();
     expect(() => verifyStoredSnapshot({ ...item, maxCompressedBytes: item.compressed.length - 1 }))
