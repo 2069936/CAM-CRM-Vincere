@@ -25,7 +25,7 @@ function fullReport(over = {}) {
       funded: { count: 1 }, evalStandard: { count: 1 },
       cashIra: { count: 0 }, cashStraight: { count: 0 }, cashLegacy: { count: 0 },
     },
-    simulation: { label: 'Simulation (not real money)' },
+    simulation: { label: 'Simulation*' },
     evaluations: { label: 'Evaluations (1)' },
     openFlags: [{ id: 'f1' }],
     ...over,

@@ -20,7 +20,7 @@ export const REPORT_FIELDS = [
   // NinjaTrader's stock $100,000 — 10 of the 11 in the real exports — and
   // printing that for them would be noise; the one client mid-SIM-test is the
   // one whose CAM turns this on.
-  { key: 'showSimulation', label: 'Simulation section (not real money)', advanced: false },
+  { key: 'showSimulation', label: 'Simulation section', advanced: false },
   // Off by default like every other addition, and the default is what keeps an
   // existing report identical: while this is off, App.jsx still draws the
   // evaluations group inside the per-account table exactly as it did, and the

@@ -4931,8 +4931,8 @@ function buildSimulationSection(client, dailyImport, liveAccountCount = 0) {
 	const executions = (sim?.executions || []).length;
 	const enabledStrategies = (sim?.strategies || []).filter((strategy) => strategy.enabled).length;
 	return {
-		label: simRows.length ? "Simulation (not real money)" : "Accounts not included in the figures above",
-		note: simRows.length ? "These accounts trade simulated funds. Their balances and results are shown separately and are not included in any figure above." : "These accounts could not be identified as either real money or simulated funds, so they are left out of every figure above. They are not being reported as simulated either.",
+		label: simRows.length ? "Simulation*" : "Accounts not included in the figures above",
+		note: simRows.length ? "*Simulated funds, not real money. These balances and results are shown separately and are not included in any figure above." : "These accounts could not be identified as either real money or simulated funds, so they are left out of every figure above. They are not being reported as simulated either.",
 		hasSimulation: simRows.length > 0,
 		accounts: simRows,
 		totals: summarizeAccountRows(simRows).totals,

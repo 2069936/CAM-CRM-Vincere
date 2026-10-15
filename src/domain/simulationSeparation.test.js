@@ -239,7 +239,11 @@ describe('buildSimulationSection', () => {
     const { client, dailyImport } = craigImport();
     const section = buildSimulationSection(client, dailyImport, 2);
 
-    expect(section.label).toMatch(/not real money/i);
+    // The heading carries an asterisk and the note under it says what the
+    // asterisk means, in words: not real money, simulated funds.
+    expect(section.label).toMatch(/^Simulation\*$/);
+    expect(section.note).toMatch(/^\*/);
+    expect(section.note).toMatch(/not real money/i);
     expect(section.note).toMatch(/simulated funds/i);
     expect(section.note).toMatch(/not included in any figure above/i);
   });
