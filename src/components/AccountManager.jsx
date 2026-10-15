@@ -12,6 +12,7 @@ const ACCOUNT_TYPE_OPTIONS = [
   ACCOUNT_TYPES.FUNDED,
   ACCOUNT_TYPES.CASH_IRA,
   ACCOUNT_TYPES.CASH_STRAIGHT,
+  ACCOUNT_TYPES.SIMULATION,
   ACCOUNT_TYPES.IGNORE,
 ];
 
@@ -19,19 +20,18 @@ const ACCOUNT_TYPE_OPTIONS = [
  * value. Offer it only on those rows, so the dropdown shows their real value
  * instead of silently snapping to another type, and the CAM can reclassify.
  *
- * 'Simulation' is here for the same reason and is NOT legacy. It is a live type
- * on 126 accounts across 124 clients, and it is deliberately absent from the
- * list everyone else gets: a CAM classifying a new account is answering "what
- * is this client's money doing", and Simulation is not an answer to that. It is
- * what the account already is. Until the Simulation tab existed these rows were
- * drawn nowhere, so the omission cost nothing; now that they render, a select
- * whose options do not include the row's own value shows the wrong type and
- * writes it on the first change. Offered on exactly the rows that hold it, so
- * the value is shown truthfully and the CAM can move it off simulation when the
- * account turns out to be real. */
+ * 'Simulation' used to get the same treatment: offered only on rows that already
+ * held it, on the theory that a CAM never needs to answer "simulation" when
+ * classifying. Production said otherwise. NinjaTrader names every simulation
+ * account a client creates Sim<whatever they typed>, so a client who opens four
+ * practice accounts arrives with SimAlex, SimAlex2, SimAlex3 and SimAlex4, none
+ * of which matched the Sim<number> rule. They landed as Unassigned in Review,
+ * and with Simulation missing from this list the only types a CAM could give
+ * them were real money ones. On 2026-10-15 twelve such accounts on six clients
+ * were typed Cash - Straight and counted as cash. It is now a type like any
+ * other. */
 function typeOptionsFor(accountType) {
   if (accountType === ACCOUNT_TYPES.CASH) return [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.CASH];
-  if (accountType === ACCOUNT_TYPES.SIMULATION) return [...ACCOUNT_TYPE_OPTIONS, ACCOUNT_TYPES.SIMULATION];
   return ACCOUNT_TYPE_OPTIONS;
 }
 
@@ -43,10 +43,10 @@ function typeOptionsFor(accountType) {
  * component ever put the key in a patch, so the whole ladder was uncorrectable.
  * That is why a CAM could turn the report's simulation section on and watch
  * nothing happen: the toggle was never the problem, the absence of any way to
- * mark an account was. The two routes that looked like a way in are circular —
- * `typeOptionsFor` offers the Simulation type only on rows that already hold it,
- * and `buildVisibleTabs` offers the Simulation tab only to clients who already
- * have one.
+ * mark an account was. At the time the two routes that looked like a way in were
+ * circular: `typeOptionsFor` offered the Simulation type only on rows that
+ * already held it, and `buildVisibleTabs` offers the Simulation tab only to
+ * clients who already have one. The type is now offered on every row.
  *
  * AUTO is the ABSENCE of an opinion, not a third value, so it is labelled for
  * what it does: the automatic ladder runs and the cell says what it decided. The

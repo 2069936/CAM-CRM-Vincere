@@ -151,6 +151,38 @@ describe('reconcileDailyImport', () => {
     expect(result.simulation.denominator.accountsInClose).toBe(3);
   });
 
+  it('seeds a client-created NinjaTrader simulator as Simulation and leaves a CAM-typed one alone', () => {
+    // A client who adds simulation accounts in NinjaTrader gets SimAlex2,
+    // SimAlex3. Before, both arrived Unassigned, read as live money, and the
+    // only types a CAM could give them were real money ones.
+    const registry = {
+      SimAlex3: { accountName: 'SimAlex3', alias: 'SimAlex3', accountType: ACCOUNT_TYPES.CASH_STRAIGHT, status: 'Active' },
+    };
+    const parsed = {
+      accounts: [
+        { accountName: 'SimAlex2', connection: 'Playback', grossRealizedPnl: 120, accountBalance: 50120, weeklyPnl: 120 },
+        { accountName: 'SimAlex3', connection: 'Playback', grossRealizedPnl: 40, accountBalance: 50040, weeklyPnl: 40 },
+      ],
+      strategies: [],
+      orders: [],
+      executions: [],
+    };
+
+    const result = reconcileDailyImport({ clientId: 'client-1', date: '2026-10-15', registry, parsed });
+
+    // Brand new: typed Simulation, kept out of every live total, and announced.
+    expect(result.accounts.SimAlex2.accountType).toBe(ACCOUNT_TYPES.SIMULATION);
+    expect(result.simulation.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['SimAlex2']);
+    const simFlag = result.flags.find((flag) => flag.type === 'New simulation account');
+    expect(simFlag.accountName).toBe('SimAlex2');
+    expect(simFlag.message).toContain('NinjaTrader starts the name of every simulation account');
+
+    // Already typed by a CAM: the record stands and nothing moves under them.
+    expect(result.accounts.SimAlex3.accountType).toBe(ACCOUNT_TYPES.CASH_STRAIGHT);
+    expect(result.snapshots.map((snapshot) => snapshot.accountName)).toEqual(['SimAlex3']);
+    expect(result.flags.filter((flag) => flag.accountName === 'SimAlex3' && flag.type === 'New simulation account')).toEqual([]);
+  });
+
   it('does not flag a registered simulation account as missing when it stays idle', () => {
     // The old filter dropped sim accounts before `seen.add()`, so the registry
     // sweep fired on a registered Sim101 EVERY close and dragged the whole

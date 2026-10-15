@@ -6,10 +6,10 @@
 // `classifyAccountNature` consults it before every other signal. No component in
 // src/ ever put the key in a patch, so the override was unreachable: a CAM could
 // turn the report's simulation section on and watch nothing happen, with nothing
-// anywhere to change. The two routes that looked like a way in are circular —
-// `typeOptionsFor` offers the Simulation type only on rows that already hold it,
-// and `buildVisibleTabs` offers the Simulation tab only to clients who already
-// have one.
+// anywhere to change. The two routes that looked like a way in were circular:
+// `typeOptionsFor` offered the Simulation type only on rows that already held
+// it (it now offers it on every row), and `buildVisibleTabs` offers the
+// Simulation tab only to clients who already have one.
 //
 // Asserted on the rendered markup, the idiom AccountManagerTypes.test.jsx beside
 // it uses.
@@ -38,13 +38,15 @@ describe('the Sim / Live control', () => {
   });
 
   it('does not collide with the account TYPE select two cells to the left', () => {
-    /* AccountManagerTypes.test.jsx asserts that `>Simulation</option>` appears only
-     * on rows that already hold the Simulation type. The labels here deliberately
-     * avoid that word: the type select answers "what is this client's money doing"
-     * and this one answers "is it money at all", and two controls reading the same
-     * would be worse than one. */
+    /* The account TYPE select offers Simulation on every row (and in the add
+     * form). The labels here deliberately avoid that word: the type select
+     * answers "what is this client's money doing" and this one answers "is it
+     * money at all", and two controls reading the same would be worse than one.
+     * Rendered without the add form, so the word appears exactly once, in the
+     * row's type select, and never here. */
     const markup = markupFor({ accountName: 'ROME7045', accountType: ACCOUNT_TYPES.FUNDED, status: 'Active' });
-    expect(markup).not.toContain('>Simulation</option>');
+    expect(markup.match(/>Simulation<\/option>/g)).toHaveLength(1);
+    expect(markup).toContain('>Simulated funds</option>');
   });
 
   it('shows the row\'s own stored override as selected', () => {
