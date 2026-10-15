@@ -70,6 +70,13 @@ export const SIMULATION_MODES = {
 export const SIMULATION_ACCOUNT_TYPE = 'Simulation';
 
 /**
+ * account_type value of an account nobody has classified yet. Declared here for
+ * the same leaf-module reason as SIMULATION_ACCOUNT_TYPE, and held equal to
+ * reconcile.js ACCOUNT_TYPES.UNASSIGNED by simulationAccounts.test.js.
+ */
+export const UNASSIGNED_ACCOUNT_TYPE = 'Unassigned';
+
+/**
  * account_type values that assert the account holds real money.
  *
  * Mirrors reconcile.js ACCOUNT_TYPES minus Simulation, Unassigned and
@@ -110,9 +117,9 @@ const PLATFORM_SIM_NAME = /^sim[\s_-]*\d+$/i;
  * same string, and guessing either way is how money gets misreported.
  *
  * Note what is NOT here: `Simmons - Main` and `Simon 01`. The old
- * `startsWith('sim')` filter matched and silently deleted both; they now fall
- * through to LIVE, which is what they are. Making them undetermined would trade
- * one wrong answer for another.
+ * `startsWith('sim')` filter matched and silently deleted both. They are read
+ * by CLIENT_SIM_NAME below, which reports them as simulated, announces it, and
+ * gives way to any type a CAM has set on the account.
  *
  * 0 of the 62 distinct account names in the 11 real exports and 0 of the 764
  * rows in the redacted book match this, so nothing on today's data moves because
@@ -137,6 +144,34 @@ const AMBIGUOUS_NAME = /^sim$|^sim[^a-z0-9]|\b(?:demo|practice|simulator|simulat
  * which bucket money belongs in gets reported instead of made.
  */
 const PLATFORM_SIM_NAME_WITH_SUFFIX = /^sim[\s_-]*\d/i;
+
+/**
+ * NinjaTrader's naming for a simulation account the CLIENT created.
+ *
+ * Sim101 is the account NinjaTrader ships. When a client adds another one, the
+ * platform puts `Sim` in front of whatever they type: SimAccount1 by default,
+ * SimAlex, SimAlex2, SimPractice. None of those matched PLATFORM_SIM_NAME, so
+ * every one of them read as live money and arrived in Review as Unassigned.
+ * Measured on 2026-10-15: 39 accounts on the book were named this way. Twelve,
+ * on six clients, had been typed Cash - Straight by their CAM and were counted
+ * as cash; eight more were sitting unclassified.
+ *
+ * This is a weaker signal than the platform's own naming, for the reason the
+ * comment above AMBIGUOUS_NAME gives: `Simmons - Main` is a plausible name for a
+ * real account and reads exactly like a client's simulator. So it decides only
+ * when nothing else has. Any type a CAM has set on the account, Inactive /
+ * Ignore included, wins over it without being reported as a conflict
+ * (`defersToRecord`), and the account's simulation setting wins over
+ * everything. Only Unassigned, the type every new account starts with, leaves
+ * the name in charge. That keeps the 18 Sim-named accounts CAMs had already set
+ * to Inactive / Ignore exactly where they were, out of every section. When it does decide, the result is a
+ * heuristic, which reconcile.js announces with a `New simulation account` flag
+ * telling the CAM to confirm it or mark it as live money.
+ *
+ * Checked after AMBIGUOUS_NAME and PLATFORM_SIM_NAME_WITH_SUFFIX, so a name
+ * those already treat as undetermined (`Sim - test`, `Simulator 2`) stays so.
+ */
+const CLIENT_SIM_NAME = /^sim[a-z]/i;
 
 /**
  * Characters that are invisible on every surface a human reads.
@@ -186,6 +221,13 @@ function nameSignal(accountName) {
       reason: `the name ${name} starts with NinjaTrader's Sim<number> simulation naming but does not end there, so it could be a copy of a simulator or a real account numbered that way`,
     };
   }
+  if (CLIENT_SIM_NAME.test(match)) {
+    return {
+      nature: ACCOUNT_NATURES.SIMULATION,
+      defersToRecord: true,
+      reason: `the account is named ${name}, and NinjaTrader starts the name of every simulation account a client creates with Sim`,
+    };
+  }
   return null;
 }
 
@@ -231,7 +273,12 @@ export function classifyAccountNature(meta = {}, context = {}) {
       ? ACCOUNT_NATURES.LIVE
       : null;
 
-  const named = nameSignal(accountName);
+  // A name that defers to the record says nothing once a CAM has typed the
+  // account as anything but Unassigned. See CLIENT_SIM_NAME.
+  const typedByCam = Boolean(accountType) && accountType !== UNASSIGNED_ACCOUNT_TYPE;
+  const signal = nameSignal(accountName);
+  const deferred = Boolean(signal?.defersToRecord && typedByCam);
+  const named = deferred ? null : signal;
   const namedDecisive = named && named.nature !== ACCOUNT_NATURES.UNDETERMINED ? named.nature : null;
 
   // The name is only consulted when the platform has said nothing. Provider ==
@@ -252,6 +299,12 @@ export function classifyAccountNature(meta = {}, context = {}) {
     // falling into the live bucket by default.
     if (named) {
       return decided(ACCOUNT_NATURES.UNDETERMINED, 'name', true, named.reason);
+    }
+    if (deferred) {
+      // Typed Inactive / Ignore, or any other type that says nothing about the
+      // money. Routed exactly as before the client simulator name was read.
+      return decided(ACCOUNT_NATURES.LIVE, 'accountType', false,
+        `a CAM set the account's type to ${accountType}, which outranks its Sim name`);
     }
     return decided(ACCOUNT_NATURES.LIVE, 'default', false,
       'no simulation signal on the name, the account record or the platform');

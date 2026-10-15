@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_NATURES,
   MONEY_ACCOUNT_TYPES,
+  UNASSIGNED_ACCOUNT_TYPE,
   SIMULATION_ACCOUNT_TYPE,
   classifyAccountNature,
   mergeSimulationRows,
@@ -65,16 +66,76 @@ describe('classifyAccountNature', () => {
     },
   );
 
-  it.each(['Simmons - Main', 'Simon 01', 'Simba'])(
-    'does NOT delete a real account merely because its name starts with sim: %s',
+  it.each(['SimAccount1', 'SimAlex', 'SimAlex2', 'SimAlex 3', 'simpractice'])(
+    'reads %s as a simulation account a client created in NinjaTrader',
     (name) => {
-      // The old startsWith('sim') filter dropped these from every close with no
-      // flag, no warning and no count. They are live money and read as such.
+      // NinjaTrader puts Sim in front of whatever the client types when they add
+      // a simulation account. These used to fall through to live money and land
+      // in Review as Unassigned, where a CAM could only type them as real money.
       const result = classifyAccountNature({}, { accountName: name });
-      expect(result.nature).toBe(ACCOUNT_NATURES.LIVE);
-      expect(result.source).toBe('default');
+      expect(result).toMatchObject({
+        nature: ACCOUNT_NATURES.SIMULATION,
+        source: 'name',
+        heuristic: true,
+        conflict: null,
+      });
+      expect(result.reason).toContain(`named ${name}`);
+      expect(result.reason).toContain('NinjaTrader starts the name of every simulation account');
     },
   );
+
+  it.each(['Simmons - Main', 'Simon 01', 'Simba'])(
+    'never deletes %s, and keeps it live the moment anybody says it is',
+    (name) => {
+      // The old startsWith('sim') filter dropped these from every close with no
+      // flag, no warning and no count. They now read as a client's simulator,
+      // which is what NinjaTrader's naming says, but only until a human
+      // decides: any type on the record or the simulation setting wins.
+      expect(classifyAccountNature({}, { accountName: name })).toMatchObject({
+        nature: ACCOUNT_NATURES.SIMULATION,
+        heuristic: true,
+      });
+      expect(classifyAccountNature({ accountType: ACCOUNT_TYPES.CASH_STRAIGHT }, { accountName: name }))
+        .toMatchObject({ nature: ACCOUNT_NATURES.LIVE, source: 'accountType', conflict: null });
+      expect(classifyAccountNature({ simulationMode: 'live' }, { accountName: name }))
+        .toMatchObject({ nature: ACCOUNT_NATURES.LIVE, source: 'registry' });
+    },
+  );
+
+  it('lets a CAM-set type win over a client simulator name without a conflict, unlike Sim<number>', () => {
+    // SimAlex2 typed Cash - Straight is the CAM's call and is respected as is.
+    // Sim101 typed Funded is two determinations that disagree and is reported.
+    expect(classifyAccountNature({ accountType: ACCOUNT_TYPES.CASH_STRAIGHT }, { accountName: 'SimAlex2' }))
+      .toMatchObject({ nature: ACCOUNT_NATURES.LIVE, source: 'accountType', heuristic: false, conflict: null });
+    expect(classifyAccountNature({ accountType: ACCOUNT_TYPES.FUNDED }, { accountName: 'Sim101' }))
+      .toMatchObject({ nature: ACCOUNT_NATURES.UNDETERMINED, source: 'conflict' });
+    // Typed Simulation, it is simulated on the record's say, not the name's.
+    expect(classifyAccountNature({ accountType: ACCOUNT_TYPES.SIMULATION }, { accountName: 'SimAlex2' }))
+      .toMatchObject({ nature: ACCOUNT_NATURES.SIMULATION, source: 'accountType', heuristic: false });
+    // Unassigned is where every new account starts, so the name decides.
+    expect(classifyAccountNature({ accountType: ACCOUNT_TYPES.UNASSIGNED }, { accountName: 'SimAlex2' }))
+      .toMatchObject({ nature: ACCOUNT_NATURES.SIMULATION, source: 'name', heuristic: true });
+  });
+
+  it('leaves a Sim-named account a CAM set to Inactive / Ignore where it was', () => {
+    // 18 such accounts on the book. Moving them into the simulation section
+    // would undo a decision a CAM already made.
+    const result = classifyAccountNature({ accountType: ACCOUNT_TYPES.IGNORE }, { accountName: 'SimAlex-LOW-01' });
+    expect(result).toMatchObject({ nature: ACCOUNT_NATURES.LIVE, source: 'accountType', heuristic: false, conflict: null });
+    expect(result.reason).toContain('Inactive / Ignore');
+    // Sim<number> keeps its own behaviour: the platform's naming still decides.
+    expect(classifyAccountNature({ accountType: ACCOUNT_TYPES.IGNORE }, { accountName: 'Sim101' }).nature)
+      .toBe(ACCOUNT_NATURES.SIMULATION);
+  });
+
+  it('keeps UNASSIGNED_ACCOUNT_TYPE equal to the reconcile value', () => {
+    expect(UNASSIGNED_ACCOUNT_TYPE).toBe(ACCOUNT_TYPES.UNASSIGNED);
+  });
+
+  it('lets the platform flag overrule a client simulator name', () => {
+    expect(classifyAccountNature({}, { accountName: 'SimAlex', isSimulated: false }))
+      .toMatchObject({ nature: ACCOUNT_NATURES.LIVE, source: 'platform' });
+  });
 
   it.each(['Sim', 'Sim - Craig test', 'Demo', 'Practice account', 'Simulator 2'])(
     'reports %s as undetermined rather than guessing',
