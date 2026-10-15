@@ -272,10 +272,10 @@ export function buildSimulationSection(client, dailyImport, liveAccountCount = 0
     // money, which is the same misreport as the opposite one and lands on the
     // client rather than on the desk.
     label: simRows.length
-      ? 'Simulation (not real money)'
+      ? 'Simulation*'
       : 'Accounts not included in the figures above',
     note: simRows.length
-      ? 'These accounts trade simulated funds. Their balances and results are shown separately and are not included in any figure above.'
+      ? '*Simulated funds, not real money. These balances and results are shown separately and are not included in any figure above.'
       : 'These accounts could not be identified as either real money or simulated funds, so they are left out of every figure above. They are not being reported as simulated either.',
     hasSimulation: simRows.length > 0,
     accounts: simRows,
