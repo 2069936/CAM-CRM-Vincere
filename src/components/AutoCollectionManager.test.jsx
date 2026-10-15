@@ -70,6 +70,28 @@ it('lists every failed close across the fleet with one replay for all of them', 
   expect(html).toContain(fleet.rows[0].client.name);
 });
 
+/* WHY IT WAS REJECTED, UNDER THE CODE (step 69). */
+it('shows why a close was rejected under its code, muted and labelled, and nothing for a close without a reason', () => {
+  const reason = 'orders[*].accountName does not reference an account (APEX 4521 07); accounts[*].netLiquidation must be a number or null (+2 more)';
+  const failed = [
+    { id: 'b1', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-10-14', receivedAt: '2026-10-14T20:45:09Z', rowCounts: { accounts: 8 }, errorCode: 'invalid_auto_import_snapshot', errorDetail: reason, status: 'failed' },
+    { id: 'b2', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-10-13', receivedAt: '2026-10-13T20:45:09Z', rowCounts: { accounts: 8 }, errorCode: 'invalid_auto_import_snapshot', errorDetail: null, status: 'failed' },
+    { id: 'b3', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-10-12', receivedAt: '2026-10-12T20:45:09Z', rowCounts: { accounts: 8 }, errorCode: 'normalization_failed', errorDetail: '   ', status: 'failed' },
+  ];
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={failed} disableAutoLoad />);
+  // One label, for the one close that has a reason, right after its code.
+  expect(html.match(/Why it was rejected/g)).toHaveLength(1);
+  expect(html).toContain('<span class="negative">invalid_auto_import_snapshot</span><div class="collector-failed-reason"><span>Why it was rejected</span><small>orders[*].accountName does not reference an account (APEX 4521 07); accounts[*].netLiquidation must be a number or null (+2 more)</small></div></td>');
+  expect(html).toContain('<span class="negative">normalization_failed</span></td>');
+});
+
+it('the label is sentence case English with no dash for punctuation', () => {
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={[{ id: 'b1', clientUuid: fleet.rows[0].client.uuid, tradingDate: '2026-10-14', rowCounts: {}, errorCode: 'invalid_auto_import_snapshot', errorDetail: 'schemaVersion must be 1', status: 'failed' }]} disableAutoLoad />);
+  const label = /<div class="collector-failed-reason"><span>([^<]*)<\/span>/.exec(html)[1];
+  expect(label).toBe('Why it was rejected');
+  expect(label).not.toMatch(/[‐-―−-]/);
+});
+
 it('shows no failed closes panel when there is nothing to replay', () => {
   const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} initialFailedBatches={[]} disableAutoLoad />);
   expect(html).not.toContain('the CRM refused');

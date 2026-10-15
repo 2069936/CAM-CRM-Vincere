@@ -5,10 +5,12 @@ import { createServiceClient } from '../../apiLib/apiAuth.js';
 import {
   createAutoImportStore,
   decodeSnapshotRequest,
+  recordValidationReason,
 } from '../../apiLib/autoImportStore.js';
 import { createDeviceAuthStore, requireIngestDevice } from '../../apiLib/deviceAuth.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
 import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
+import { VALIDATION_REASON_CODES } from '../../../src/domain/autoImportValidationReason.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
 import { resolveAutoCollectionLimits } from '../../apiLib/autoCollectionLimits.js';
@@ -457,7 +459,7 @@ export function createHandler({
           });
         }
         const preciseValidationCode = stage === 'normalize'
-          && ['unsupported_schema_version', 'invalid_auto_import_snapshot'].includes(error?.code)
+          && VALIDATION_REASON_CODES.includes(error?.code)
           ? error.code
           : null;
         const preciseStorageCode = stage === 'storage' && error?.message === 'immutable_object_conflict'
@@ -487,6 +489,7 @@ export function createHandler({
             underlying: error,
           });
         }
+        let finalized = false;
         try {
           await completeBatch(store, {
             eventType: 'ingest_batch_failed', clientId: device.clientId,
@@ -499,10 +502,18 @@ export function createHandler({
             // it took there is the first question anyone asks about one.
             ...timer.seal(),
           });
+          finalized = true;
         } catch (completionError) {
           if (isDeviceCredentialError(completionError)) return sendDeviceCredentialError(res);
           // Preserve the original stable public failure if cleanup also fails.
         }
+        /* WHY, AND NOT ONLY WHAT. The code alone is what the batch kept until
+         * step 69: thirteen closes refused between 2026-10-08 and 10-14 said
+         * invalid_auto_import_snapshot and nothing else. The validator knows
+         * which rules each row broke; this keeps them on the batch, after the
+         * finalize (which clears the field), for the failed closes panel. Best
+         * effort: it cannot throw and the answer below does not depend on it. */
+        if (finalized && preciseValidationCode) await recordValidationReason(store, batch.id, error.errors);
         const failure = preciseValidationCode
           ? new ApiError(422, preciseValidationCode)
           : (error instanceof ApiError && error.status === 409 ? error : publicFailure(stage, error));

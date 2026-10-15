@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
+import { REASON_MAX_CHARS, VALIDATION_REASON_CODES } from '../../../src/domain/autoImportValidationReason.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -15,8 +16,20 @@ const SAFE_SELECT = [
   'id', 'capture_id', 'device_id', 'client_id', 'trading_date', 'captured_at',
   'received_at', 'processed_at', 'status', 'schema_version', 'byte_count',
   'row_counts', 'completeness', 'daily_import_id', 'replaces_batch_id', 'error_code',
-  'reprocess_mode',
+  'error_detail', 'reprocess_mode',
 ].join(',');
+
+/* WHY IT WAS REJECTED, AND ONLY THAT.
+ *
+ * error_detail is read since step 69 and shown only beside the two validation
+ * codes, because those are the only rows step 69's function writes it on, in
+ * the shape validationReasonSummary gives it: field paths, fixed rule text and
+ * account names, never a figure. On any other row it is not the reason this
+ * route vouches for, so it is not sent. */
+function errorDetail(row) {
+  if (!VALIDATION_REASON_CODES.includes(row.error_code) || typeof row.error_detail !== 'string') return null;
+  return row.error_detail.trim().slice(0, REASON_MAX_CHARS) || null;
+}
 
 function scalar(value, field) {
   if (value == null || value === '') return null;
@@ -135,6 +148,7 @@ function publicBatch(row = {}) {
     dailyImportId: row.daily_import_id || null,
     replacesBatchId: row.replaces_batch_id || null,
     errorCode: SAFE_ERROR_CODES.has(row.error_code) ? row.error_code : null,
+    errorDetail: errorDetail(row),
     reprocessMode: ['normal', 'closed_day'].includes(row.reprocess_mode) ? row.reprocess_mode : null,
   };
 }

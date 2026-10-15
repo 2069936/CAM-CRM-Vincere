@@ -82,8 +82,43 @@ describe('admin collector batch history', () => {
       rowCounts: { accounts: 1, strategies: 1, orders: 1, executions: 1 },
       reprocessMode: null,
     });
+    expect(res.body.batches[0].errorDetail).toBeNull();
     const serialized = JSON.stringify(res.body);
     expect(serialized).not.toMatch(/storage_path|storagePath|content_sha|sha256|error_detail|must-not-leak|processing_token/i);
+  });
+
+  /* WHY IT WAS REJECTED (step 69). error_detail is sent beside the two
+   * validation codes, the only rows step 69's function writes it on, and on no
+   * other row whatever the column holds. */
+  it('sends why a close was rejected beside the two validation codes, and nowhere else', async () => {
+    const reason = 'orders[*].accountName does not reference an account (APEX 4521 07); accounts[*].netLiquidation must be a number or null';
+    const rows = [
+      row({ id: '55555555-5555-4555-8555-555555555551', status: 'failed', error_code: 'invalid_auto_import_snapshot', error_detail: reason }),
+      row({ id: '55555555-5555-4555-8555-555555555552', status: 'failed', error_code: 'unsupported_schema_version', error_detail: '  schemaVersion must be 1  ' }),
+      row({ id: '55555555-5555-4555-8555-555555555553', status: 'failed', error_code: 'normalization_failed', error_detail: 'must-not-leak' }),
+      row({ id: '55555555-5555-4555-8555-555555555554', status: 'failed', error_code: 'persistence_failed', error_detail: 'must-not-leak' }),
+      row({ id: '55555555-5555-4555-8555-555555555555', status: 'failed', error_code: 'not_a_safe_code', error_detail: 'must-not-leak' }),
+      row({ id: '55555555-5555-4555-8555-555555555556', status: 'failed', error_code: 'invalid_auto_import_snapshot', error_detail: null }),
+      row({ id: '55555555-5555-4555-8555-555555555557', status: 'failed', error_code: 'invalid_auto_import_snapshot', error_detail: '   ' }),
+      row({ id: '55555555-5555-4555-8555-555555555558', status: 'failed', error_code: 'invalid_auto_import_snapshot', error_detail: { forged: true } }),
+      row({ id: '55555555-5555-4555-8555-555555555559', status: 'failed', error_code: 'invalid_auto_import_snapshot', error_detail: 'x'.repeat(2500) }),
+    ];
+    const { handler } = setup({ rows });
+    const res = response();
+    await handler({ method: 'GET', headers: {}, query: { status: 'failed' } }, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.batches.map((batch) => [batch.errorCode, batch.errorDetail])).toEqual([
+      ['invalid_auto_import_snapshot', reason],
+      ['unsupported_schema_version', 'schemaVersion must be 1'],
+      ['normalization_failed', null],
+      ['persistence_failed', null],
+      [null, null],
+      ['invalid_auto_import_snapshot', null],
+      ['invalid_auto_import_snapshot', null],
+      ['invalid_auto_import_snapshot', null],
+      ['invalid_auto_import_snapshot', 'x'.repeat(2000)],
+    ]);
+    expect(JSON.stringify(res.body)).not.toMatch(/must-not-leak|forged|error_detail/);
   });
 
   it('passes bounded filters and returns a stable received-at/id cursor', async () => {
@@ -192,7 +227,9 @@ describe('batch history Supabase adapter', () => {
       cursor: { receivedAt: '2026-07-23T20:45:03.000Z', id: BATCH_ID },
     });
     const selected = calls.find(([kind]) => kind === 'select')[1];
-    expect(selected).not.toMatch(/storage_path|content_sha256|error_detail|processing_token/);
+    expect(selected).not.toMatch(/storage_path|content_sha256|processing_token/);
+    // Read since step 69, and sent only beside the two validation codes.
+    expect(selected.split(',')).toContain('error_detail');
     expect(calls).toContainEqual(['order', 'received_at', { ascending: false }]);
     expect(calls).toContainEqual(['order', 'id', { ascending: false }]);
     expect(calls).toContainEqual(['limit', 11]);

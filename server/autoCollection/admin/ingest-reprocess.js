@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { createDownloadStore } from './ingest-download.js';
-import { createAutoImportStore } from '../../apiLib/autoImportStore.js';
+import { createAutoImportStore, recordValidationReason } from '../../apiLib/autoImportStore.js';
 import { verifyStoredSnapshot } from '../../apiLib/autoExportDownload.js';
 import { ApiError, handleApiError, readJsonBody, requireMethod, sendJson } from '../../apiLib/http.js';
 import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
+import { VALIDATION_REASON_CODES } from '../../../src/domain/autoImportValidationReason.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
 
@@ -83,7 +84,29 @@ export function createReplayStore(admin) {
       };
     },
     completeBatch: ingest.completeBatch,
+    recordBatchErrorDetail: ingest.recordBatchErrorDetail,
   };
+}
+
+/* A REPLAY REFUSED BY THE VALIDATOR IS RECORDED AS THE UPLOAD WAS.
+ *
+ * Every replay failure used to be recorded 'ingest_failed', so replaying a
+ * close refused as invalid_auto_import_snapshot overwrote that code with a
+ * vaguer one, and step 69 (which writes a reason only for the two validation
+ * codes) would have nothing to write it on. The validator speaks in three
+ * places on this path: normalize, as at upload; the stored snapshot's contract
+ * check in verifyStoredSnapshot, whose bytes matched their hash and still
+ * break the contract; and the schema version check in front of both. Each is
+ * recorded with the code the upload got and the rules it broke. */
+function validationRefusal(error) {
+  if (VALIDATION_REASON_CODES.includes(error?.code) && Array.isArray(error?.errors)) {
+    return { code: error.code, errors: error.errors };
+  }
+  if (Array.isArray(error?.validationErrors)) return { code: 'invalid_auto_import_snapshot', errors: error.validationErrors };
+  if (error instanceof ApiError && error.message === 'unsupported_schema_version') {
+    return { code: 'unsupported_schema_version', errors: ['schemaVersion must be 1'] };
+  }
+  return null;
 }
 
 export async function processStoredReplay({ batch, store, processingToken, actorId, reason, closedReplacement, normalize = normalizeAutoImportSnapshot, reconcile = reconcileDailyImport, persist = persistDailyImportWithClient }) {
@@ -109,9 +132,14 @@ export async function processStoredReplay({ batch, store, processingToken, actor
     return { status, dailyImportId: dailyImport.id };
   } catch (error) {
     if (!persisted) {
+      const refusal = validationRefusal(error);
+      let finalized = false;
       try {
-        await store.completeBatch({ eventType: 'ingest_batch_failed', clientId: batch.clientId, deviceId: batch.deviceId, batchId: batch.id, dailyImportId: null, processingToken, capturedAt: batch.capturedAt, success: false, status: 'failed', errorCode: 'ingest_failed', rowCounts: batch.rowCounts, completeness: {} });
+        await store.completeBatch({ eventType: 'ingest_batch_failed', clientId: batch.clientId, deviceId: batch.deviceId, batchId: batch.id, dailyImportId: null, processingToken, capturedAt: batch.capturedAt, success: false, status: 'failed', errorCode: refusal?.code || 'ingest_failed', rowCounts: batch.rowCounts, completeness: {} });
+        finalized = true;
       } catch { /* the lease remains bounded and the original failure is safer */ }
+      // Why, after the finalize that clears it; best effort, never throws.
+      if (finalized && refusal) await recordValidationReason(store, batch.id, refusal.errors);
     }
     throw error;
   }

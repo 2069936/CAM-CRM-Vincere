@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { normalizeAutoImportSnapshot } from '../../../../src/domain/autoImport.js';
 import { DailyImportClosedError } from '../../../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../../../src/domain/reconcile.js';
@@ -28,8 +28,8 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offlineRegistry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay } = {}) {
-  const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [], currentDay: [] };
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offlineRegistry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay, recordDetail } = {}) {
+  const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [], currentDay: [], detail: [], finish: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
     async claimBatch(value) { calls.order.push('claim'); calls.claim.push(value); return claim ? claim(value) : { outcome: 'owned', batch: { ...batch, status: 'processing' } }; },
@@ -48,7 +48,14 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offli
       },
     }),
     createPersistenceAdapter(processingToken) { return { persistDailyImportAtomic: async (value) => persist(value), supportsDailyImportSourceColumns: true, processingToken }; },
-    async finalizeBatch(value) { calls.terminal.push(value); if (complete) return complete(value); return { ...batch, ...value }; },
+    async finalizeBatch(value) { calls.finish.push('finalize'); calls.terminal.push(value); if (complete) return complete(value); return { ...batch, ...value }; },
+    ...(recordDetail === false ? {} : {
+      async recordBatchErrorDetail(value) {
+        calls.finish.push('detail');
+        calls.detail.push(value);
+        return recordDetail ? recordDetail(value) : true;
+      },
+    }),
     async recordDeviceResult(value) { calls.device.push(value); },
     async writeAudit(value) { calls.audit.push(value); },
   };
@@ -550,6 +557,103 @@ describe('daily snapshot ingest', () => {
     const res = await ingest(handler, value, { body: incoming });
     expect(res).toMatchObject({ statusCode: 413, body: { error: 'compressed_payload_too_large' } });
     expect(calls.claim).toHaveLength(0);
+  });
+});
+
+/* WHY, AND NOT ONLY WHAT (step 69).
+ *
+ * Thirteen closes between 2026-10-08 and 10-14 were refused as
+ * invalid_auto_import_snapshot and the batch kept the code alone. The route
+ * now hands the validator's rules to record_ingest_batch_error_detail, after
+ * the finalize, and nothing about its answer depends on whether that worked. */
+describe('the reason a refused close was refused', () => {
+  const unknownAccount = () => {
+    const value = structuredClone(contractFixture);
+    value.orders.push({ ...value.orders[0], orderId: 'order-02', accountName: 'APEX 4521 07' });
+    value.executions.push({ ...value.executions[0], executionId: 'execution-02', accountName: 'APEX 4521 07' });
+    value.accounts[0].netLiquidation = 'fifty one thousand';
+    return value;
+  };
+
+  it('records the validator\'s rules on the batch, after the finalize that marks it failed', async () => {
+    const { handler, calls } = setup({ useRealDomain: true });
+    const value = structuredClone(contractFixture);
+    value.orders.push({ ...value.orders[0], orderId: 'order-02', accountName: 'APEX 4521 07' });
+    value.executions.push({ ...value.executions[0], executionId: 'execution-02', accountName: 'APEX 4521 07' });
+    const res = await ingest(handler, value);
+    expect(res).toMatchObject({ statusCode: 422, body: { error: 'invalid_auto_import_snapshot' } });
+    expect(calls.terminal).toEqual([expect.objectContaining({ status: 'failed', errorCode: 'invalid_auto_import_snapshot' })]);
+    expect(calls.detail).toEqual([{
+      batchId: 'batch-1',
+      detail: 'orders[*].accountName does not reference an account (APEX 4521 07); executions[*].accountName does not reference an account (APEX 4521 07)',
+    }]);
+    expect(calls.finish).toEqual(['finalize', 'detail']);
+  });
+
+  it('records the structural rules, collapsed, and never the value that broke them', async () => {
+    const { handler, calls } = setup({ useRealDomain: true });
+    const res = await ingest(handler, unknownAccount());
+    expect(res).toMatchObject({ statusCode: 422, body: { error: 'invalid_auto_import_snapshot' } });
+    expect(calls.detail).toEqual([{ batchId: 'batch-1', detail: 'accounts[*].netLiquidation must be a number or null' }]);
+    expect(JSON.stringify(calls.detail)).not.toContain('fifty one thousand');
+  });
+
+  it('records why for an unsupported schema version too', async () => {
+    const { handler, calls } = setup({ useRealDomain: true });
+    const res = await ingest(handler, snapshot({ schemaVersion: 2 }));
+    expect(res).toMatchObject({ statusCode: 422, body: { error: 'unsupported_schema_version' } });
+    expect(calls.detail).toEqual([{ batchId: 'batch-1', detail: 'schemaVersion must be 1' }]);
+  });
+
+  it.each([
+    ['a normalize that throws something other than the validator', { normalize: () => { throw Object.assign(new Error('raw account data'), { errors: ['accounts[0].x is required'] }); } }, 422, 'snapshot_processing_failed'],
+    ['a reconcile failure', { reconcile: () => { throw new Error('registry detail'); } }, 422, 'snapshot_processing_failed'],
+    ['a persistence failure from the snapshot', { persist: () => { throw new Error('violates check constraint'); } }, 422, 'snapshot_processing_failed'],
+    ['a transient persistence failure', { persist: () => { throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }); } }, 503, 'snapshot_ingest_failed'],
+    ['a storage failure', { storeRaw: () => { throw new Error('storage down'); } }, 503, 'snapshot_ingest_failed'],
+    ['a stored object that does not match', { storeRaw: () => { throw new Error('immutable_object_conflict'); } }, 503, 'snapshot_ingest_failed'],
+  ])('does not call it for %s', async (_name, options, statusCode, error) => {
+    const { handler, calls } = setup(options);
+    const res = await ingest(handler);
+    expect(res).toMatchObject({ statusCode, body: { error } });
+    expect(calls.detail).toEqual([]);
+  });
+
+  it('does not call it for a close that was accepted', async () => {
+    const { handler, calls } = setup({ useRealDomain: true });
+    expect(await ingest(handler, contractFixture)).toMatchObject({ statusCode: 201 });
+    expect(calls.detail).toEqual([]);
+  });
+
+  it('does not call it when the finalize failed, so the batch is not yet failed', async () => {
+    const { handler, calls } = setup({ useRealDomain: true, complete: () => { throw new Error('finalizer unavailable'); } });
+    const res = await ingest(handler, unknownAccount());
+    expect(res).toMatchObject({ statusCode: 422, body: { error: 'invalid_auto_import_snapshot' } });
+    expect(calls.terminal).toHaveLength(1);
+    expect(calls.detail).toEqual([]);
+  });
+
+  it('a failing or refusing RPC, or a store without it, changes nothing in the answer, and a failure is logged without the reason', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const answers = [];
+      for (const recordDetail of [undefined, false, () => false, () => { throw Object.assign(new Error('Could not find the function public.record_ingest_batch_error_detail'), { code: 'PGRST202' }); }, async () => { throw new Error('statement timeout'); }]) {
+        const { handler, calls } = setup({ useRealDomain: true, recordDetail });
+        const res = await ingest(handler, unknownAccount());
+        answers.push({ statusCode: res.statusCode, body: res.body, headers: res.headers });
+        expect(calls.terminal).toEqual([expect.objectContaining({ status: 'failed', errorCode: 'invalid_auto_import_snapshot' })]);
+      }
+      for (const answer of answers) expect(answer).toEqual(answers[0]);
+      expect(answers[0]).toMatchObject({ statusCode: 422, body: { error: 'invalid_auto_import_snapshot' } });
+      const lines = logged.mock.calls.map((args) => args.join(' ')).filter((line) => line.includes('could not record why'));
+      expect(lines).toEqual([
+        '[CRM] could not record why batch batch-1 was rejected: Error PGRST202 Could not find the function public.record_ingest_batch_error_detail',
+        '[CRM] could not record why batch batch-1 was rejected: Error statement timeout',
+      ]);
+      for (const line of lines) expect(line).not.toContain('netLiquidation');
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 

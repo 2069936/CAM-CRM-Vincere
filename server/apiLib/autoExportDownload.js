@@ -104,7 +104,11 @@ export function verifyStoredSnapshot({
   }
   if (snapshot?.schemaVersion !== 1) throw new ApiError(409, 'unsupported_schema_version');
   const validation = validateAutoExportSnapshot(snapshot);
-  if (!validation.ok) throw corruption();
+  // The bytes are the ones received (the hash matched above), so this is the
+  // snapshot the upload was refused for rather than a damaged object. The
+  // answer stays stored_snapshot_corrupt; a replay reads the rules from the
+  // error to record why the close was rejected (step 69).
+  if (!validation.ok) throw Object.assign(corruption(), { validationErrors: validation.errors });
   const canonical = canonicalSnapshotPayload(snapshot).utf8;
   if (!jsonBytes.equals(canonical)
     || snapshot.captureId !== batch.captureId
