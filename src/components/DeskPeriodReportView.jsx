@@ -8,7 +8,7 @@ import {
   setSessionImport,
 } from '../domain/benchmarkSessionCache';
 import { listPeriods, resolvePeriod } from '../domain/deskPeriod';
-import { buildDeskPeriodReport, formatDeskPeriodReport } from '../domain/deskPeriodReport';
+import { buildDeskPeriodReport, closesNeedingRows, formatDeskPeriodReport } from '../domain/deskPeriodReport';
 import DeskPeriodReportSheet from './DeskPeriodReportSheet';
 
 /**
@@ -69,6 +69,13 @@ export default function DeskPeriodReportView({
   // different figures under identical labels over the same month.
   summaries = null,
   builtBy = '',
+  // App.jsx `ensureStrategyParameters`: fetches a list of closes' account and
+  // strategy rows into state, deduplicated against what this session already
+  // asked for. Null in a local snapshot or a test, where every close already
+  // holds its rows.
+  onNeedCloseRows = null,
+  // App.jsx `panelLoadFor`: the state of a fetch, by the key it was asked under.
+  closeRowsLoadFor = null,
 }) {
   const book = scopedClients || clients;
   const [selection, setSelection] = useState({ kind: 'week', key: '', from: '', to: '' });
@@ -146,6 +153,45 @@ export default function DeskPeriodReportView({
     loading: saved === null,
   }), [imported, saved]);
 
+  /* THE REPORT FETCHES ITS OWN ROWS.
+   *
+   * A login holds each client's latest close account by account and every
+   * other close as a summary. The money table reads the summaries and was
+   * right; every account count, the ranking and the roster read the rows and
+   * printed zeros for the eleven October closes no one had opened. The ranking
+   * board fixed the same hole for its window by asking for its closes' rows
+   * when it opens; this does the same for the period and the period before it,
+   * over the desk's clients because the desk wide sections read them all. */
+  const neededIds = useMemo(() => closesNeedingRows(clients, period), [clients, period]);
+  const neededKey = neededIds.join(',');
+  // One load state per period. A single key would hand a newly chosen period
+  // the previous one's `loaded` for the render before its own fetch starts,
+  // and the sheet would print that render's zeros.
+  const rowsKey = `period-report:${period.priorFrom || period.from}:${period.to}`;
+  const closeRowsLoad = closeRowsLoadFor ? closeRowsLoadFor(rowsKey) : null;
+  const requestRows = useCallback(() => (
+    onNeedCloseRows && neededIds.length
+      ? onNeedCloseRows(rowsKey, neededIds, { withAccountRows: true })
+      : undefined
+    // neededKey stands for neededIds: a new array with the same ids must not
+    // fetch again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [onNeedCloseRows, neededKey, rowsKey]);
+  useEffect(() => {
+    const pending = requestRows();
+    if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+  }, [requestRows]);
+  const rowsLoad = onNeedCloseRows && neededIds.length
+    ? {
+      status: closeRowsLoad?.status || 'loading',
+      error: closeRowsLoad?.error || '',
+      missing: neededIds.length,
+      waiting: `Reading the account rows of ${neededIds.length} close${neededIds.length === 1 ? '' : 's'} `
+        + `for ${period.label} and the period before it. The report is built once they arrive.`,
+      onRetry: requestRows,
+    }
+    : null;
+
   const report = useMemo(
     () => buildDeskPeriodReport(book, {
       period,
@@ -189,6 +235,7 @@ export default function DeskPeriodReportView({
         });
       }}
       copied={copied}
+      rowsLoad={rowsLoad}
     />
   );
 }

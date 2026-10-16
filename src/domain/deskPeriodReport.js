@@ -175,6 +175,50 @@ export function splitElement(element) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 0. Which closes this report needs row by row.                       */
+
+/**
+ * A close whose account rows this session has not fetched.
+ *
+ * NOT LOADED IS NOT EMPTY. A login holds the account rows of each client's
+ * LATEST close only (supabaseStore.js, `snapshotsLoaded`), and every older close
+ * arrives with `snapshots: []`. Read as data, that empty array is a close on
+ * which no account reported. On 2026-10-16 the month of October printed
+ * `Accounts reporting 0` on eleven of its thirteen closes for exactly that
+ * reason, under 94 clients reporting on each of them.
+ *
+ * Only an explicit `false` means not fetched. A local snapshot or a test holds
+ * whole tables and leaves the flag undefined.
+ */
+export function closeRowsMissing(dailyImport) {
+  return dailyImport?.snapshotsLoaded === false;
+}
+
+/**
+ * The closes whose account rows this report reads and this session does not
+ * hold yet: every close in the period and in the period before it, which the
+ * money change, the movement table and the book ranking's prior window read.
+ *
+ * Ids are the database id (`uuid`) when there is one, the key the row fetch
+ * filters on, as windowImportIds in App.jsx does for the ranking board.
+ */
+export function closesNeedingRows(clients = [], period = {}) {
+  const from = period.priorFrom && !period.priorEmpty ? period.priorFrom : period.from;
+  const to = period.to;
+  if (!from || !to) return [];
+  const ids = [];
+  for (const client of clients || []) {
+    for (const dailyImport of client?.dailyImports || []) {
+      const date = day(dailyImport?.date);
+      if (!date || date < from || date > to) continue;
+      if (!closeRowsMissing(dailyImport)) continue;
+      ids.push(dailyImport.uuid || dailyImport.id);
+    }
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
+/* ------------------------------------------------------------------ */
 /* 1. Coverage: the denominator of everything after it.                */
 
 function buildCoverage(clients, period) {
@@ -184,6 +228,7 @@ function buildCoverage(clients, period) {
   let accountCloses = 0;
   let lateCloses = 0;
   let afterPeriodCloses = 0;
+  let closesWithoutRows = 0;
 
   for (const client of clients || []) {
     const registry = registryOf(client);
@@ -199,10 +244,15 @@ function buildCoverage(clients, period) {
         lateImports: 0,
         importsOnDate: 0,
         afterPeriod: 0,
+        rowsNotLoaded: 0,
       };
       seen.clients.add(client?.id ?? client?.name ?? '');
       clientsInPeriod.add(client?.id ?? client?.name ?? '');
       seen.importsOnDate += 1;
+      if (closeRowsMissing(dailyImport)) {
+        seen.rowsNotLoaded += 1;
+        closesWithoutRows += 1;
+      }
       const importedDay = day(dailyImport?.importedAt);
       // "Arrived late" is the import landing on a LATER calendar date than the
       // trading date it describes. A timestamp earlier than its trading date —
@@ -250,6 +300,9 @@ function buildCoverage(clients, period) {
     accountDaysWithPnl: row.accountDaysWithPnl,
     arrivedLate: row.lateImports,
     closes: row.importsOnDate,
+    // Closes on this date whose account rows were never read. Their accounts
+    // are absent from every count on the row, which is not the same as zero.
+    rowsNotLoaded: row.rowsNotLoaded,
   }));
 
   // A weekday inside the period with no close is a ROW, with the word `No
@@ -367,6 +420,11 @@ function buildCoverage(clients, period) {
       clientsReporting: clientsInPeriod.size,
       accountsReporting: accountsInPeriod.size,
       accountCloses,
+      // Closes inside the period read without their account rows. Nonzero
+      // means every account count on this page is short by those closes, and
+      // the sheet says so above the table instead of printing the shortfall
+      // as accounts that did not report.
+      closesWithoutRows,
       fullestClose: fullest ? { date: fullest.date, accounts: fullest.accountRows, clients: fullest.clients.size } : null,
       thinnestClose: thinnest ? { date: thinnest.date, accounts: thinnest.accountRows, clients: thinnest.clients.size } : null,
       coverageRatio: ratio,
@@ -554,7 +612,18 @@ function buildRoster(clients, period, coverage) {
   // all New would report where the export begins as a decision the desk took.
   // 115 of this book's 180 funded accounts first appear on its first close for
   // exactly the same reason.
-  const newMeasurable = Boolean(period.bookFirstClose) && period.from > period.bookFirstClose;
+  //
+  // AND ONLY WHEN THE HISTORY BEFORE THE PERIOD WAS READ. `firstSeen` is the
+  // earliest close an element appears on among the closes whose account rows
+  // this session holds. A login holds each client's latest close only and this
+  // report fetches its own period and the one before, so an algorithm running
+  // since August reads as first seen this month unless every earlier close was
+  // read. Refused rather than guessed.
+  const historyUnread = (clients || []).some((client) => (client?.dailyImports || []).some((dailyImport) => {
+    const date = day(dailyImport?.date);
+    return Boolean(date) && date < period.from && closeRowsMissing(dailyImport);
+  }));
+  const newMeasurable = Boolean(period.bookFirstClose) && period.from > period.bookFirstClose && !historyUnread;
 
   for (const client of clients || []) {
     const registry = registryOf(client);
@@ -726,9 +795,13 @@ function buildRoster(clients, period, coverage) {
     newMeasurable,
     newRefusal: newMeasurable
       ? null
-      : 'No algorithm is marked New in this period: the period starts on or before the book’s '
-        + `first close (${period.bookFirstClose}), so every algorithm’s first appearance falls `
-        + 'inside it and "new" would mean "the export begins here".',
+      : historyUnread && Boolean(period.bookFirstClose) && period.from > period.bookFirstClose
+        ? 'No algorithm is marked New in this period: the account rows of the closes before '
+          + `${period.from} were not read for this report, so an algorithm’s first appearance `
+          + 'cannot be told apart from the first close this report read.'
+        : 'No algorithm is marked New in this period: the period starts on or before the book’s '
+          + `first close (${period.bookFirstClose}), so every algorithm’s first appearance falls `
+          + 'inside it and "new" would mean "the export begins here".',
     stateNote: `Running is decided on ${stateClose || 'the last close inside this period'}`
       + `${chosen.stateCloseIsLastClose
         ? ', the last close inside this period.'

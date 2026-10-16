@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { formatCurrency } from '../domain/report';
 import { describeMoneyCompleteness } from '../domain/deskMoney';
+import PanelLoadState from './PanelLoadState';
 import ReportSheetActions from './ReportSheetActions';
 import {
   AccountsPerCloseChart,
@@ -145,10 +146,47 @@ export default function DeskPeriodReportSheet({
   benchmarkSource = null,
   onCopySummary = null,
   copied = false,
+  // The account rows this period needs and the session does not hold yet:
+  // { status, error, missing, waiting, onRetry }, or null when nothing is
+  // outstanding. See DeskPeriodReportView.
+  rowsLoad = null,
 }) {
   const sheetRef = useRef(null);
   const [changesOpen, setChangesOpen] = useState(false);
   if (!report) return null;
+
+  /* NOTHING IS PRINTED, DOWNLOADED OR COPIED OVER ROWS THAT HAVE NOT ARRIVED.
+   *
+   * Every account count on this page reads the closes' account rows. Built
+   * before they land, the coverage table read `Accounts reporting 0` under 94
+   * clients reporting, and the Download PDF and Copy summary buttons sat next to
+   * it. While the rows are on their way, or failed to come, the period controls
+   * stay and the sheet does not render. */
+  const blocked = rowsLoad && rowsLoad.missing > 0 && rowsLoad.status !== 'loaded';
+  if (blocked) {
+    return (
+      <div className="page-stack desk-period-report">
+        <div className="report-actions no-print">
+          <PeriodControls
+            period={report.period}
+            periods={periods}
+            kind={kind}
+            onPeriodChange={onPeriodChange}
+            benchmarkRisk={benchmarkRisk}
+            onBenchmarkRiskChange={onBenchmarkRiskChange}
+            riskLevels={report.benchmark.riskLevels}
+          />
+        </div>
+        <section className="report-sheet">
+          <PanelLoadState
+            load={{ status: rowsLoad.status, error: rowsLoad.error }}
+            waiting={rowsLoad.waiting}
+            onRetry={rowsLoad.onRetry || null}
+          />
+        </section>
+      </div>
+    );
+  }
 
   const {
     period, scope, stamp, coverage, money: moneyBlock, roster, results,
@@ -230,6 +268,25 @@ export default function DeskPeriodReportSheet({
         </header>
 
         <p className="desk-refusal report-separation"><strong>{report.separation}</strong></p>
+
+        {coverage.totals.closesWithoutRows > 0 ? (
+          <p className="desk-refusal">
+            <strong>
+              {`${count(coverage.totals.closesWithoutRows)} close${coverage.totals.closesWithoutRows === 1 ? '' : 's'} `}
+              {'in this period could not be read account by account, so every account count below leaves '}
+              {coverage.totals.closesWithoutRows === 1 ? 'it' : 'them'}
+              {' out. They are missing, not zero.'}
+            </strong>
+            {rowsLoad?.onRetry ? (
+              <>
+                {' '}
+                <button type="button" className="ghost-button no-print" onClick={rowsLoad.onRetry}>
+                  Try again
+                </button>
+              </>
+            ) : null}
+          </p>
+        ) : null}
 
         {period.partial ? (
           <p className="desk-refusal">

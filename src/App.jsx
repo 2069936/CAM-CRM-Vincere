@@ -5273,6 +5273,8 @@ export function ManagerOverview({
             scope="desk"
             summaries={closeSummaries}
             builtBy={session?.displayName || session?.username || ""}
+            onNeedCloseRows={onNeedParameters}
+            closeRowsLoadFor={panelLoadFor}
           />
         ) : showAutoCollection ? (
           <AutoCollectionManager visible={showAutoCollection} initialSelectedClient={autoCollectionTarget} />
@@ -17112,6 +17114,8 @@ export default function App() {
                 camProfileId={currentCamProfile?.id || null}
                 summaries={closeSummaries}
                 builtBy={session?.displayName || session?.username || ""}
+                onNeedCloseRows={ensureStrategyParameters}
+                closeRowsLoadFor={panelLoadFor}
               />
             </main>
           ) : showProfile ? (
