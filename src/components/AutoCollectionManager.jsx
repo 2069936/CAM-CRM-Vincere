@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, RefreshCw, RotateCcw, Search, Server, X } from 'lucide-react';
 import { autoCollectionApi } from '../domain/autoCollectionApi';
 import { describeQuarantineItem, quarantineHeadline, quarantineNeedsDesk } from '../domain/autoCollectionFleet';
+import { agentUpdateResultWords, describeAgentUpdate, fleetAgentUpdateConfirmation, fleetAgentUpdateLabel, fleetNeedsVpsWords } from '../domain/agentUpdate';
 
 function fmt(value) {
   if (!value) return 'Not yet';
@@ -87,7 +88,32 @@ function FailedReason({ detail }) {
   </div>;
 }
 
-export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false }) {
+/* EVERY OUTDATED AGENT, UPDATED FROM HERE (step 70).
+ *
+ * The fleet route works the plan out over the whole fleet, not the page: the
+ * devices the CRM can send the pinned release to now, and how many outdated
+ * machines only an install on the VPS can update. This screen is the
+ * Manager's (the fleet route answers no one else), and the button asks once,
+ * naming how many and which version, before it sends anything. */
+function FleetAgentUpdate({ plan, busy, onRequest }) {
+  const count = plan?.deviceIds?.length || 0;
+  const needsVps = fleetNeedsVpsWords(plan);
+  if (!count && !needsVps) return null;
+  return <section className="panel collector-agent-update" aria-label="Agent updates">
+    {count ? <button type="button" className="secondary-button" disabled={busy} onClick={onRequest} data-action="update-outdated-agents"><RefreshCw size={13} /> {busy ? 'Requesting updates…' : fleetAgentUpdateLabel(plan)}</button> : null}
+    {needsVps ? <p className="muted">{needsVps}</p> : null}
+  </section>;
+}
+
+/* Where a row's last update request stands, under its version. Nothing when
+ * no request was ever made or it was cancelled. Aged against the server's
+ * clock from the same answer; without one it says "requested" and no age. */
+function AgentUpdateRowLine({ device, serverTime }) {
+  const line = describeAgentUpdate(device, Date.parse(serverTime || ''));
+  return line ? <small className="collector-agent-update-row">{line}</small> : null;
+}
+
+export default function AutoCollectionManager({ api = autoCollectionApi, visible = true, initialFleet = null, initialSelectedClient = null, initialBatches = null, initialReplayBatch = null, initialFailedBatches = null, disableAutoLoad = false, confirm = (message) => window.confirm(message) }) {
   const [fleet, setFleet] = useState(initialFleet);
   const [page, setPage] = useState(initialFleet?.page || 1);
   const [search, setSearch] = useState('');
@@ -105,6 +131,8 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
   const [bulkReason, setBulkReason] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResults, setBulkResults] = useState(null);
+  const [agentUpdateBusy, setAgentUpdateBusy] = useState(false);
+  const [agentUpdateResult, setAgentUpdateResult] = useState('');
 
   async function loadFailed(signal) {
     try {
@@ -136,8 +164,9 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
   useEffect(() => {
     if (!visible || disableAutoLoad) return undefined;
     const controller = new AbortController();
-    loadFailed(controller.signal);
-    return () => controller.abort();
+    // Deferred a tick, like the fleet read above, so no state is set inside the effect body.
+    const start = window.setTimeout(() => loadFailed(controller.signal), 0);
+    return () => { window.clearTimeout(start); controller.abort(); };
   }, [visible, disableAutoLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function runBulkReplay(event) {
@@ -164,6 +193,20 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
       await loadFleet();
     } catch (caught) { setError(caught.message); }
     finally { setBulkBusy(false); }
+  }
+
+  async function runFleetAgentUpdate() {
+    const plan = fleet?.agentUpdate;
+    if (agentUpdateBusy || !plan?.deviceIds?.length) return;
+    if (!confirm(fleetAgentUpdateConfirmation(plan))) return;
+    setAgentUpdateBusy(true); setError(''); setAgentUpdateResult('');
+    try {
+      // Sent in slices of 300 by the API; the counts come back added up.
+      const result = await api.requestAgentUpdate(plan.deviceIds);
+      setAgentUpdateResult(agentUpdateResultWords(result));
+      await loadFleet();
+    } catch (caught) { setError(caught.message); }
+    finally { setAgentUpdateBusy(false); }
   }
 
   const clientNames = new Map((fleet?.rows || []).map((row) => [row.client.uuid, row.client.name]));
@@ -220,9 +263,11 @@ export default function AutoCollectionManager({ api = autoCollectionApi, visible
     </section> : null}
     {bulkResults ? <div className={`notice ${bulkResults.replayed === bulkResults.requested ? 'success' : 'warning'}`} role="status">Replayed {bulkResults.replayed} of {bulkResults.requested}.{bulkResults.results.filter((r) => r.outcome !== 'replayed').map((r) => ` ${clientNames.get(r.clientUuid) || r.batchId} ${r.tradingDate || ''}: ${r.outcome}${r.reason ? ` (${r.reason})` : ''}${r.error ? ` (${r.error})` : ''}.`).join('')}</div> : null}
     <section className="collector-summary" aria-label="Fleet summary"><div><strong>{fleet?.summary?.total || 0}</strong><span>Clients</span></div><div><strong>{fleet?.summary?.received || 0}</strong><span>Received</span></div><div><strong>{fleet?.summary?.expected || 0}</strong><span>Expected</span></div><div className="attention"><strong>{fleet?.summary?.attention || 0}</strong><span>Need attention</span></div></section>
+    <FleetAgentUpdate plan={fleet?.agentUpdate} busy={agentUpdateBusy} onRequest={runFleetAgentUpdate} />
+    {agentUpdateResult ? <div className="notice success" role="status">{agentUpdateResult}</div> : null}
     {fleet?.ingestDay ? <p className="muted collector-ingest-line" aria-label="Ingest timing for the selected day">Ingest on {fleet.tradingDate || 'the selected day'}: {ingestLine(fleet.ingestDay)}</p> : null}
     <section className="panel"><div className="collector-toolbar"><form onSubmit={(event) => { event.preventDefault(); setPage(1); setQuery(search.trim()); }}><Search size={15} /><input aria-label="Search clients or VPS" placeholder="Search clients or VPS" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="secondary-button" type="submit">Search</button></form><span>{fleet?.total || 0} clients</span></div>
-      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client / VPS</th><th>Schedule</th><th>Last seen</th><th>Today&apos;s batch</th><th>Rows</th><th>Version</th><th>Status</th></tr></thead><tbody>{(fleet?.rows || []).map((row) => <tr key={row.client.uuid}><td><button type="button" className="collector-client-button" onClick={() => openHistory(row.client)}><strong>{row.client.name}</strong><small>{row.device?.id || 'Not paired'}</small></button></td><td>{schedule(row.device?.schedule)}</td><td>{fmt(row.device?.lastSeenAt)}</td><td>{row.todayBatch?.status || '—'}</td><td><small>{counts(row.todayBatch?.rowCounts)}</small></td><td>{row.device?.agentVersion || '—'}</td><td><span className={`collector-status state-${row.operationalStatus.state}`} aria-label={`Collector status: ${row.operationalStatus.label}`}>{row.operationalStatus.label}</span><QuarantineChip quarantine={row.quarantine} /></td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table className="ops-table"><thead><tr><th>Client / VPS</th><th>Schedule</th><th>Last seen</th><th>Today&apos;s batch</th><th>Rows</th><th>Version</th><th>Status</th></tr></thead><tbody>{(fleet?.rows || []).map((row) => <tr key={row.client.uuid}><td><button type="button" className="collector-client-button" onClick={() => openHistory(row.client)}><strong>{row.client.name}</strong><small>{row.device?.id || 'Not paired'}</small></button></td><td>{schedule(row.device?.schedule)}</td><td>{fmt(row.device?.lastSeenAt)}</td><td>{row.todayBatch?.status || '—'}</td><td><small>{counts(row.todayBatch?.rowCounts)}</small></td><td>{row.device?.agentVersion || '—'}<AgentUpdateRowLine device={row.device} serverTime={fleet?.serverTime} /></td><td><span className={`collector-status state-${row.operationalStatus.state}`} aria-label={`Collector status: ${row.operationalStatus.label}`}>{row.operationalStatus.label}</span><QuarantineChip quarantine={row.quarantine} /></td></tr>)}</tbody></table></div>
       <div className="collector-pagination"><button className="ghost-button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {totalPages}</span><button className="ghost-button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>Next</button></div>
     </section>
     {selectedClient ? <aside className="collector-drawer" aria-label={`Batch history for ${selectedClient.name}`}><header><div><span className="eyebrow">Client detail</span><h2>{selectedClient.name}</h2></div><button className="ghost-button icon-only" aria-label="Close batch history" onClick={() => setSelectedClient(null)}><X size={16} /></button></header><QuarantineList quarantine={drawerQuarantine} /><h3>Immutable batch history</h3>{batches.map((batch) => <article key={batch.id} className="collector-batch"><div><strong>{batch.tradingDate} · {batch.status}</strong><span>{fmt(batch.receivedAt)}</span></div><small>{counts(batch.rowCounts)}</small>{batch.errorCode ? <span className="negative">{batch.errorCode}</span> : null}{batch.replacesBatchId ? <small>Replaces {batch.replacesBatchId}</small> : null}<div><button className="ghost-button" onClick={() => download(batch, 'json')}><Download size={13} /> Download JSON</button><button className="ghost-button" onClick={() => download(batch, 'zip')}><Download size={13} /> Download four-CSV ZIP</button>{['failed', 'incomplete', 'late_closed_day'].includes(batch.status) && replayBatch?.id !== batch.id ? <button className={isClosedReplay(batch) ? 'danger-button' : 'secondary-button'} onClick={() => { setReplayBatch(batch); setReplayReason(''); setReplayConfirmation(''); }}><RotateCcw size={13} /> {isClosedReplay(batch) ? 'Replace closed day' : 'Reprocess batch'}</button> : null}</div></article>)}{!batches.length ? <p className="muted">No batches found for this client.</p> : null}{replayBatch ? <form className="collector-replay-confirm" onSubmit={runReplay}><span className="eyebrow">Controlled replay</span><h3>{isClosedReplay(replayBatch) ? 'Replace this closed day?' : 'Reprocess immutable snapshot?'}</h3><p>This creates a new processing attempt. The original stored snapshot is never modified.</p><label>Operational reason<textarea value={replayReason} maxLength={500} onChange={(event) => setReplayReason(event.target.value)} /></label><label>Type <code>{`${isClosedReplay(replayBatch) ? 'REPLACE' : 'REPROCESS'} ${selectedClient.name} ${replayBatch.tradingDate}`}</code> to confirm<input value={replayConfirmation} onChange={(event) => setReplayConfirmation(event.target.value)} autoComplete="off" /></label><div><button type="button" className="ghost-button" disabled={replayBusy} onClick={() => setReplayBatch(null)}>Cancel</button><button type="submit" className={isClosedReplay(replayBatch) ? 'danger-button' : 'primary-button'} disabled={replayBusy || replayReason.trim().length < 10 || replayConfirmation !== `${isClosedReplay(replayBatch) ? 'REPLACE' : 'REPROCESS'} ${selectedClient.name} ${replayBatch.tradingDate}`}>{replayBusy ? 'Processing…' : isClosedReplay(replayBatch) ? 'Replace closed day' : 'Reprocess batch'}</button></div></form> : null}</aside> : null}

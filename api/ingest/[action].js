@@ -1,4 +1,5 @@
 import accounts from '../../server/autoCollection/ingest/accounts.js';
+import agentUpdate from '../../server/autoCollection/ingest/agentUpdate.js';
 import daily from '../../server/autoCollection/ingest/daily.js';
 import heartbeat from '../../server/autoCollection/ingest/heartbeat.js';
 import pair from '../../server/autoCollection/ingest/pair.js';
@@ -22,10 +23,16 @@ import strategies from '../../server/autoCollection/ingest/strategies.js';
 // the agent against `ingest_devices`, and that one deliberately reads no table
 // at all. It exists for the day Postgres is down and Vercel is not, which is
 // the day the others cannot answer.
+//
+// /agent-update is where agent 1.3.0 and later asks whether a Manager wants it
+// updated and reports how the update is going (step 70). Its own key for the
+// reason /strategies has one: the heartbeat answers 400 to a key it does not
+// know.
 export const config = { api: { bodyParser: false } };
 
 const handlers = Object.freeze({
   accounts,
+  'agent-update': agentUpdate,
   daily,
   heartbeat,
   pair,

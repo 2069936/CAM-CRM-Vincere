@@ -188,3 +188,13 @@ it('shows no chip and no list when the folder is empty or has not been reported'
   const unreported = { ...fleet, rows: [{ ...fleet.rows[0], quarantine: null }] };
   expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={unreported} initialSelectedClient={unreported.rows[0].client} initialBatches={[]} disableAutoLoad />)).not.toContain('Quarantine on the VPS');
 });
+
+/* EVERY OUTDATED AGENT AT ONCE (step 70). The click and its confirmation are
+ * in AgentUpdate.test.jsx; this is the static render. */
+it('offers the bulk update for the agents the CRM can update, and counts those that need the VPS', () => {
+  const plan = { version: '1.3.1', minimumAddonVersion: null, deviceIds: ['a', 'b'], needsVps: 1 };
+  const html = renderToStaticMarkup(<AutoCollectionManager initialFleet={{ ...fleet, agentUpdate: plan }} disableAutoLoad />);
+  expect(html).toContain('Update 2 outdated agents to 1.3.1');
+  expect(html).toContain('1 outdated agent needs an install on the VPS to reach 1.3.1');
+  expect(renderToStaticMarkup(<AutoCollectionManager initialFleet={fleet} disableAutoLoad />)).not.toContain('outdated agent');
+});

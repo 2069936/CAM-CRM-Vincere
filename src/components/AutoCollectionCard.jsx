@@ -19,6 +19,7 @@ import {
 import { autoCollectionApi } from '../domain/autoCollectionApi';
 import { collectorFlags } from '../domain/collectorFlags';
 import { describeQuarantineItem, quarantineCounts } from '../domain/autoCollectionFleet';
+import { AGENT_UPDATE_BLOCKER_COPY, agentUpdatePlan, describeAgentUpdate } from '../domain/agentUpdate';
 import AccountTrackerPanel from './AccountTrackerPanel';
 import TrackerCloseComparisonPanel from './TrackerCloseComparisonPanel';
 import useTrackerCloseComparison from './useTrackerCloseComparison';
@@ -103,6 +104,43 @@ function QuarantineLine({ quarantine, canReplay }) {
         <span>{parts.join('; ')}.</span>
         {canReplay ? <span>Replay them from Auto Collection, in the failed closes panel, once the refusal is fixed on this side.</span> : null}
       </div>
+    </div>
+  );
+}
+
+/* UPDATING THE AGENT FROM HERE (step 70), for a Manager.
+ *
+ * The status line says where the last request stands, in words. The Update
+ * button is offered when the agent is below the release the CRM pins and the
+ * agent can act on a request; Cancel while one is pending. A VPS the button
+ * can never reach (an agent older than the first self updating build, or an
+ * update that changes the NinjaTrader AddOn) gets the sentence that says what
+ * to do on the VPS instead, and no button. */
+function AgentUpdatePanel({ device, release, nowMs, busy, error, onRequest, onCancel }) {
+  const plan = agentUpdatePlan(device, release);
+  const line = describeAgentUpdate(device, nowMs);
+  if (!line && !plan.blockers.length && !plan.canRequest && !plan.pending && !error) return null;
+  return (
+    <div className="auto-collection-agent-update" aria-label="Agent update">
+      {line ? <p className="auto-collection-agent-update-line" role="status">{line}</p> : null}
+      {plan.blockers.map((blocker) => (
+        <p key={blocker} className="auto-collection-step-hint" data-blocker={blocker}>{AGENT_UPDATE_BLOCKER_COPY[blocker]}</p>
+      ))}
+      {plan.canRequest || plan.pending ? (
+        <div className="auto-collection-agent-update-actions">
+          {plan.canRequest ? (
+            <button type="button" className="secondary-button" disabled={busy} onClick={onRequest} data-action="request-agent-update">
+              {busy ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} {`Update agent to ${plan.version}`}
+            </button>
+          ) : null}
+          {plan.pending ? (
+            <button type="button" className="ghost-button" disabled={busy} onClick={onCancel} data-action="cancel-agent-update">
+              <X size={14} /> Cancel update
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {error ? <p className="auto-collection-step-hint" role="alert">{error.message}</p> : null}
     </div>
   );
 }
@@ -284,6 +322,8 @@ export default function AutoCollectionCard({
   // browser; whether anything ran on the VPS is invisible until the agent
   // pairs. buildEnrollmentStepStates treats it as `active`, never as `done`.
   const [commandHandedOff, setCommandHandedOff] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState(null);
   const [nowMs, setNowMs] = useState(() => Date.parse(initialStatus?.serverTime || '') || Date.now());
   const requestSequence = useRef(0);
   const activeRequest = useRef(null);
@@ -418,6 +458,26 @@ export default function AutoCollectionCard({
       if (caught?.name !== 'AbortError' && sequence === requestSequence.current) setError(caught);
     } finally {
       if (sequence === requestSequence.current) setBusy(false);
+    }
+  }
+
+  /* The request, or its cancellation, and then the card read again, so the
+   * line says what the database now holds rather than what was clicked. A
+   * failure stays beside the buttons: a refused update is not a reason to
+   * replace the whole card with an error. */
+  async function runAgentUpdate(kind) {
+    const deviceId = status?.device?.id;
+    if (!deviceId || updateBusy) return;
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      if (kind === 'request') await api.requestAgentUpdate([deviceId]);
+      else await api.cancelAgentUpdate([deviceId]);
+      await loadStatus();
+    } catch (caught) {
+      if (caught?.name !== 'AbortError') setUpdateError(caught);
+    } finally {
+      setUpdateBusy(false);
     }
   }
 
@@ -802,6 +862,17 @@ export default function AutoCollectionCard({
           <StatusDetail label="Last successful upload" value={formatTime(device.lastSuccessAt)} dateTime={device.lastSuccessAt} />
           <StatusDetail label="Installed versions" value={`Agent ${device.agentVersion || '—'} · Add-on ${device.addonVersion || '—'} · NinjaTrader ${device.ninjaTraderVersion || '—'}`} />
         </div>
+      ) : null}
+      {activeDevice && status?.permissions?.updateAgent ? (
+        <AgentUpdatePanel
+          device={activeDevice}
+          release={status?.release ?? null}
+          nowMs={nowMs}
+          busy={updateBusy}
+          error={updateError}
+          onRequest={() => runAgentUpdate('request')}
+          onCancel={() => runAgentUpdate('cancel')}
+        />
       ) : null}
       {device ? <QuarantineLine quarantine={status?.quarantine} canReplay={Boolean(status?.permissions?.replay)} /> : null}
 

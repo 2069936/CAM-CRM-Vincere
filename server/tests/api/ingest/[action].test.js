@@ -25,6 +25,11 @@ describe('ingest route dispatcher', () => {
     expect(strategies).not.toBe(accounts);
   });
 
+  it('dispatches /api/ingest/agent-update to its own handler', async () => {
+    const agentUpdate = (await import('../../../autoCollection/ingest/agentUpdate.js')).default;
+    expect(resolveIngestHandler('agent-update')).toBe(agentUpdate);
+  });
+
   it('does not dispatch unknown paths', () => {
     expect(resolveIngestHandler('unknown')).toBeNull();
   });

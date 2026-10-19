@@ -163,6 +163,8 @@ describe('installer release manifest validation', () => {
       publishedAt: '2026-07-23T14:00:00.000Z',
       size: 300,
       signingThumbprint: 'A'.repeat(40),
+      // Optional in the manifest since the agent can update itself; absent here.
+      minimumAddonVersion: null,
     });
     // 'manual', not 'error'. GitHub Releases answer a download URL with a 302 to
     // a signed object host, so refusing redirects outright could not fetch one at
@@ -298,6 +300,8 @@ describe('collector profile status store', () => {
     await expect(createIngestStatusStore(admin).load(CLIENT_ID)).resolves.toEqual({
       client: rows.clients,
       device: rows.ingest_devices,
+      // Step 70's columns were in the select and the database answered.
+      agentUpdateSupported: true,
       enrollment: rows.ingest_enrollments,
       attempt: rows.audit_logs,
       quarantine: rows.ingest_quarantine_reports,
