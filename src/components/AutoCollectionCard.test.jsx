@@ -300,8 +300,26 @@ describe('install command', () => {
       + '$hash=(Get-FileHash -LiteralPath "$d.zip" -Algorithm SHA256).Hash; '
       + `if ($hash -ne '${SHA}') { Remove-Item -LiteralPath "$d.zip" -Force -ErrorAction SilentlyContinue; throw "SHA256 mismatch, nothing was installed: $hash" }; `
       + 'Expand-Archive "$d.zip" $d -Force; '
-      + '& "$d\\install-agent.ps1" -PackagePath $d',
+      + '$only=@{}; '
+      + "if (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue) { $only=@{SkipAddOn=$true; SkipBackup=$true}; Write-Host 'NinjaTrader is open: installing the agent only and leaving the AddOn as it is. Close NinjaTrader and run this line again to update the AddOn.' }; "
+      + '& "$d\\install-agent.ps1" -PackagePath $d @only',
     );
+  });
+
+  it('installs the agent only when NinjaTrader is open, and in full when it is closed', () => {
+    const command = buildInstallCommand(release121);
+    const reset = command.indexOf('$only=@{}');
+    const look = command.indexOf("Get-Process -Name 'NinjaTrader'");
+    const run = command.indexOf('install-agent.ps1');
+    expect(reset).toBeGreaterThan(command.indexOf('Expand-Archive'));
+    expect(look).toBeGreaterThan(reset);
+    expect(run).toBeGreaterThan(look);
+    // The switches exist only inside the NinjaTrader branch: a closed
+    // NinjaTrader gets the full install, AddOn and backup included.
+    expect(command.split('-SkipAddOn')).toHaveLength(1);
+    expect(command.split('SkipAddOn=$true')).toHaveLength(2);
+    expect(command).toContain('-PackagePath $d @only');
+    expect(command).not.toContain('-NoPairing');
   });
 
   it('stays one line, the same for a first install and an update', () => {
