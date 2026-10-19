@@ -28,8 +28,10 @@ command: **Auto Collection → the client → step 1**, with a copy button.
    to Disabled; a service that is only stopped is started again.
 8. Opens the pairing window.
 
-`uninstall-agent.ps1` reverses it. The data folder is kept by default so a
-re-install stays paired; `-RemoveData` forces a fresh pairing.
+`uninstall-agent.ps1` reverses it, including the `Vincere Auto Export update`
+task an update from the CRM leaves behind if it is interrupted. The data folder
+is kept by default so a re-install stays paired; `-RemoveData` forces a fresh
+pairing.
 
 ## Running it
 
@@ -50,6 +52,66 @@ Updating the agent later, leaving NinjaTrader alone:
 ```powershell
 .\install-agent.ps1 -PackagePath <new package> -SkipAddOn
 ```
+
+## Updating from the CRM
+
+From agent 1.3.0 on, a machine can be updated without anyone opening the VPS.
+
+**What the Manager does.** Presses **Update** for the machine in the CRM. The
+CRM records the version to install; nothing else is sent to the machine.
+
+**What the machine does.** Every five minutes the agent asks the CRM whether an
+update is waiting and reports how the last one went. When one is:
+
+1. It checks the request. The version must be newer than the one running, and
+   the manifest address must be this repository's own GitHub release for that
+   version (`agent-v<version>/release-manifest.json`). Anything else is refused.
+2. It downloads the release manifest and checks it against the SHA-256 the CRM
+   pinned, then downloads `Vincere-AutoExport-Agent.zip` and checks its size and
+   SHA-256 against the manifest. It needs three times the package size free on
+   the ProgramData drive and refuses otherwise.
+3. It extracts the package to
+   `C:\ProgramData\Vincere\AutoExport\updates\<version>\package` and reports
+   **staged**.
+4. It waits until it is **outside 15:45 to 17:45 New York time on a weekday**
+   (the daily capture and upload) and until nothing is uploading. Weekends are
+   always allowed.
+5. It reports **applying** and starts the `Vincere Auto Export update` scheduled
+   task, which runs `update-agent.ps1` as SYSTEM. The script copies
+   `C:\Program Files\Vincere\Auto Export` to `updates\rollback`, runs the package's
+   `install-agent.ps1 -SkipAddOn -SkipBackup -NoPairing`, and checks that the
+   service is running the new version within two minutes. If not, it puts the
+   backup back, re-creates and starts the service, and re-registers the watchdog.
+   The service is stopped for a minute or two either way, and an open Setup
+   window is closed.
+
+A machine tries at most three times per press of Update; a failed download
+counts as a try, and tries are at least 45 minutes apart once an install has
+started. A failure that would only repeat (`package_invalid`, `manifest_invalid`,
+`version_mismatch`, `addon_update_required`) ends the tries at once. Pressing
+Update again starts a new count. Each failure is reported to the CRM as
+**failed** with a code, for example `disk_space`, `package_hash_mismatch`,
+`install_failed` or `service_not_running`.
+
+**The NinjaTrader AddOn is never updated this way.** The update runs with
+`-SkipAddOn`, so NinjaTrader, its Documents folder, the AddOn and the strategies
+are not touched and NinjaTrader can stay open. A release that needs a newer AddOn
+says so in its manifest (`minimumAddonVersion`), and a machine whose AddOn is
+older, or has not reported one yet, refuses it with `addon_update_required`.
+Update the AddOn by hand with the full installer first.
+
+**Where to look on the machine.**
+
+- the script's log: `C:\ProgramData\Vincere\AutoExport\logs\update-<version>-<time>.log`
+- the outcome of the last install: `C:\ProgramData\Vincere\AutoExport\updates\last-result.json`
+  (`installed` or `rolled_back`, with the error code)
+- what the agent reports to the CRM: `C:\ProgramData\Vincere\AutoExport\updates\state.json`
+
+**To stop it.** Set the `Vincere Auto Export` service to Disabled (a disabled
+agent asks for nothing and the watchdog leaves it alone), or uninstall it with
+`uninstall-agent.ps1`, which also removes the update task. Both stop the agent
+altogether, captures included; the machine has no switch that turns off only
+updates. A machine nobody presses Update for is never updated.
 
 ## The backup, and getting a strategy set back
 

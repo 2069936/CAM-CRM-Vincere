@@ -85,6 +85,86 @@ public interface ICollectorCrmClient
         StrategySampleV1 sample,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(StrategySampleReportResult.Unsupported("not_implemented"));
+
+    /* "UPDATE THE AGENT FROM THE CRM": REPORT WHERE THIS MACHINE IS, AND HEAR
+     * WHETHER A MANAGER HAS ASKED FOR A NEWER AGENT. POST api/ingest/agent-update.
+     *
+     * Its own route, never the heartbeat, for the reason every other addition
+     * gives: the heartbeat refuses keys it does not know. A CRM that has not
+     * deployed the route answers 404, which comes back as Unsupported and means
+     * "this CRM does not update agents yet", quietly.
+     *
+     * Defaulted to Unsupported so every existing test double compiles, and one
+     * that does not override it never asks this machine to update. */
+    Task<AgentUpdatePollResult> PollAgentUpdateAsync(
+        AgentUpdatePollRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(AgentUpdatePollResult.Unsupported());
+}
+
+/// <summary>
+/// The poll body, exactly the four keys the CRM validates. <c>ErrorCode</c> is
+/// non-null only when <c>State</c> is "failed"; <c>TargetVersion</c> is null when
+/// <c>State</c> is.
+/// </summary>
+[JsonObject(MemberSerialization.OptIn)]
+public sealed record AgentUpdatePollRequest(
+    [property: JsonProperty("agentVersion")] string AgentVersion,
+    [property: JsonProperty("state")] string State,
+    [property: JsonProperty("errorCode")] string ErrorCode,
+    [property: JsonProperty("targetVersion")] string TargetVersion);
+
+/// <summary>
+/// What the CRM asked for, as raw text. Nothing here is trusted: the version,
+/// the URL and the digest are checked by UpdateDirectiveValidator before any of
+/// them is used, so a reply that is merely well-formed JSON gets no further.
+/// </summary>
+public sealed record AgentUpdateDirective(
+    string Version,
+    string ManifestUrl,
+    string ManifestSha256,
+    string RequestedAt);
+
+public enum AgentUpdatePollStatus
+{
+    /// <summary>The CRM answered. <c>Update</c> is null when nothing is asked of this machine.</summary>
+    Accepted,
+
+    /// <summary>404 or 405: a CRM without the route. Not a fault; nothing is updated.</summary>
+    Unsupported,
+
+    /// <summary>Refused, unreachable or unreadable this time. The next poll tries again.</summary>
+    Failed,
+}
+
+public sealed record AgentUpdatePollResult(
+    AgentUpdatePollStatus Status,
+    AgentUpdateDirective Update,
+    string Code,
+    CrmFailureDisposition Disposition = CrmFailureDisposition.Stop)
+{
+    public static AgentUpdatePollResult Accepted(AgentUpdateDirective update) =>
+        new(AgentUpdatePollStatus.Accepted, update, null);
+
+    public static AgentUpdatePollResult Unsupported() =>
+        new(AgentUpdatePollStatus.Unsupported, null, "agent_update_unsupported");
+
+    public static AgentUpdatePollResult Failed(
+        string code,
+        CrmFailureDisposition disposition = CrmFailureDisposition.Stop) =>
+        new(AgentUpdatePollStatus.Failed, null, code, disposition);
+}
+
+/// <summary>The four states the poll may report, besides null for "nothing in progress".</summary>
+public static class AgentUpdateStates
+{
+    public const string Downloading = "downloading";
+    public const string Staged = "staged";
+    public const string Applying = "applying";
+    public const string Failed = "failed";
+
+    public static bool IsKnown(string value) =>
+        value is Downloading or Staged or Applying or Failed;
 }
 
 public enum StrategySampleReportStatus

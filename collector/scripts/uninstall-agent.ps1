@@ -26,6 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 $ServiceName = 'Vincere Auto Export'
 $WatchdogTaskName = 'Vincere Auto Export watchdog'
+$UpdateTaskName = 'Vincere Auto Export update'
 $InstallRoot = Join-Path ${env:ProgramFiles} 'Vincere\Auto Export'
 $DataRoot = Join-Path ${env:ProgramData} 'Vincere\AutoExport'
 
@@ -47,6 +48,14 @@ if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrat
 if (Get-ScheduledTask -TaskName $WatchdogTaskName -ErrorAction SilentlyContinue) {
     Write-Step "Removing the $WatchdogTaskName task"
     Unregister-ScheduledTask -TaskName $WatchdogTaskName -Confirm:$false
+}
+
+# The task the agent registers to install an update from the CRM. It has no
+# trigger and runs only when the agent starts it, but it runs update-agent.ps1 as
+# SYSTEM, and nothing should be left that can do that once the agent is gone.
+if (Get-ScheduledTask -TaskName $UpdateTaskName -ErrorAction SilentlyContinue) {
+    Write-Step "Removing the $UpdateTaskName task"
+    Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false
 }
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue

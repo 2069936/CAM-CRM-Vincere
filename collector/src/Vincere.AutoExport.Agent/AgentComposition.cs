@@ -11,6 +11,7 @@ using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
 using Vincere.AutoExport.Agent.Security;
 using Vincere.AutoExport.Agent.Service;
+using Vincere.AutoExport.Agent.Updates;
 
 namespace Vincere.AutoExport.Agent;
 
@@ -236,6 +237,36 @@ public static class AgentComposition
             provider.GetRequiredService<IAgentOptionsStore>(),
             provider.GetRequiredService<ICollectorClock>(),
             provider.GetRequiredService<IServiceReporter>()));
+        /* UPDATING THIS AGENT WHEN A MANAGER PRESSES UPDATE IN THE CRM.
+         *
+         * Built by hand because it needs the version and the updates folder, and
+         * its constructor has no optional parameters, so nothing here can be left
+         * out and still compile. AgentCompositionTests resolves it.
+         *
+         * The downloader is its own HTTP client, separate from the CRM's: it follows
+         * GitHub's redirect to its download host, which the CRM client must never
+         * do. Everything it fetches is pinned by digest. The task scheduler shells
+         * out to System32\schtasks.exe and to nothing else. */
+        services.AddSingleton<ICollectorLoop>(provider =>
+        {
+            UpdateLayout layout = new(paths.Updates ?? Path.Combine(paths.Root, "updates"));
+            HttpUpdateDownloader downloader = HttpUpdateDownloader.CreateProduction();
+            return new AgentUpdateLoop(
+                provider.GetRequiredService<ICollectorCrmClient>(),
+                provider.GetRequiredService<IDeviceTokenStore>(),
+                provider.GetRequiredService<ICollectorQueue>(),
+                provider.GetRequiredService<CollectorState>(),
+                new UpdateStateStore(layout),
+                new ReleaseManifestReader(downloader),
+                new UpdatePackageStager(layout, downloader, new SystemUpdateDisk(), new WindowsAgentDirectorySecurity()),
+                new UpdateApplyWindow(),
+                new SchtasksUpdateTaskScheduler(new SystemProcessRunner(), SchtasksUpdateTaskScheduler.DefaultSchtasksPath),
+                layout,
+                provider.GetRequiredService<ICollectorClock>(),
+                version,
+                provider.GetRequiredService<IServiceReporter>(),
+                provider.GetRequiredService<IRedactingLogger>());
+        });
         services.AddSingleton<ICollectorLoop, ControlPipeServer>();
         services.AddHostedService<Worker>();
         return services;

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Vincere.AutoExport.Agent.Capture;
 using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Service;
+using Vincere.AutoExport.Agent.Updates;
 using Xunit;
 
 namespace Vincere.AutoExport.Agent.Tests;
@@ -93,7 +94,7 @@ public sealed class AgentCompositionTests : IDisposable
         Assert.Equal(
             new[]
             {
-                "account-sample", "control", "heartbeat", "quarantine-review",
+                "account-sample", "agent-update", "control", "heartbeat", "quarantine-review",
                 "queue-recovery", "report-email", "scheduler", "uploader",
             },
             loops.Select(loop => loop.Name).OrderBy(name => name, StringComparer.Ordinal).ToArray());
@@ -215,6 +216,32 @@ public sealed class AgentCompositionTests : IDisposable
 
         Assert.Null(state.Snapshot().NinjaTraderVersion);
         Assert.Null(state.Snapshot().AddonVersion);
+    }
+
+    /* THE UPDATER IS SUPERVISED, ONCE, AND POINTED AT ProgramData\...\updates.
+     *
+     * Its constructor takes fourteen arguments and none of them is optional, so a
+     * registration that compiles has all of them; this proves the container can
+     * build it and that the folder it runs code from is the one under the
+     * restricted data root, not somewhere a user can write. */
+    [Fact]
+    public void The_updater_is_supervised_once_and_works_under_the_data_root()
+    {
+        using ServiceProvider provider = BuildRealContainer();
+
+        Worker supervisor = Assert.Single(provider.GetServices<IHostedService>().OfType<Worker>());
+        AgentUpdateLoop loop = Assert.Single(SupervisedLoops(supervisor).OfType<AgentUpdateLoop>());
+        Assert.Equal("agent-update", loop.Name);
+        Assert.Equal(TimeSpan.FromMinutes(5), loop.Interval);
+
+        FieldInfo field = typeof(AgentUpdateLoop).GetField("layout", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        Assert.Equal(
+            Path.Combine(AgentPaths.FromProgramData(programData).Root, "updates"),
+            ((UpdateLayout)field.GetValue(loop)).Root);
+        Assert.DoesNotContain(
+            typeof(AgentUpdateLoop).GetConstructors().Single().GetParameters(),
+            parameter => parameter.IsOptional || parameter.HasDefaultValue);
     }
 
     [Fact]

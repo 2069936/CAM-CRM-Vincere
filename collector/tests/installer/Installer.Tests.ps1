@@ -424,6 +424,12 @@ Describe 'The service is started again when Windows leaves it stopped' {
         $installText | Should -Match ([regex]::Escape("`$WatchdogTaskName = 'Vincere Auto Export watchdog'"))
     }
 
+    It 'gives the service three tries of two minutes to start, not one of thirty seconds' {
+        $installText | Should -Match ([regex]::Escape("WaitForStatus('Running', '00:02:00')"))
+        $installText | Should -Not -Match ([regex]::Escape("WaitForStatus('Running', '00:00:30')"))
+        $installText | Should -Match ([regex]::Escape('if ($startAttempt -ge 3) { throw }'))
+    }
+
     It 'lets the recovery actions run when the service stops itself with an error' {
         $installText | Should -Match ([regex]::Escape('& sc.exe failureflag "$ServiceName" 1'))
     }
@@ -468,6 +474,242 @@ Describe 'The service is started again when Windows leaves it stopped' {
     }
 }
 
+Describe 'An update from the CRM installs the agent, never NinjaTrader, and puts it back if it fails' {
+    # update-agent.ps1 runs as SYSTEM from a scheduled task the agent starts when
+    # a Manager presses Update in the CRM. It is read here as a syntax tree and as
+    # text and never run: running it would replace the service on this machine.
+    BeforeAll {
+        $script:updatePath = Join-Path $collectorRoot 'scripts\update-agent.ps1'
+        $script:updateText = Get-Content -LiteralPath $updatePath -Raw
+        $script:installText = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\install-agent.ps1') -Raw
+        $script:uninstallText = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\uninstall-agent.ps1') -Raw
+        $script:windowsWorkflow = Get-Content -LiteralPath (
+            [IO.Path]::GetFullPath((Join-Path $collectorRoot '..\.github\workflows\collector-windows.yml'))) -Raw
+
+        $tokens = $null
+        $parseErrors = $null
+        $script:updateAst = [System.Management.Automation.Language.Parser]::ParseFile($updatePath, [ref]$tokens, [ref]$parseErrors)
+        $script:updateParseErrors = $parseErrors
+
+        function script:Get-UpdateFunction {
+            param([string]$Name)
+            $found = $updateAst.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name
+            }, $true)
+            if (-not $found) { throw "update-agent.ps1 no longer defines $Name." }
+            return $found
+        }
+
+        # Every command the script itself runs, outside the function definitions
+        # too, with comments excluded because the syntax tree has none.
+        $script:updateCommands = @($updateAst.FindAll({
+            param($node) $node -is [System.Management.Automation.Language.CommandAst]
+        }, $true))
+        $script:updateStrings = @($updateAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+                $node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]
+        }, $true) | ForEach-Object { $_.Value })
+
+        $script:installCall = $updateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and
+                $node.CommandElements[0].Extent.Text -eq '$installScript'
+        }, $true)
+    }
+
+    It 'parses, uses only Windows PowerShell 5.1 syntax, and is ASCII' {
+        $updateParseErrors | Should -BeNullOrEmpty
+        $updateText | Should -Not -Match '\)\?\.'
+        $updateText | Should -Not -Match '\?\?'
+        $bytes = [IO.File]::ReadAllBytes($updatePath)
+        @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0
+    }
+
+    It 'takes exactly the two parameters the agent passes it' {
+        # The agent's task runs: -File update-agent.ps1 -PackagePath "..." -ExpectedVersion "x.y.z"
+        $names = @($updateAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+        $names | Should -Be @('PackagePath', 'ExpectedVersion')
+    }
+
+    It 'runs the package installer with -SkipAddOn -SkipBackup -NoPairing' {
+        $installCall | Should -Not -BeNullOrEmpty
+        $switches = @($installCall.CommandElements |
+            Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
+            ForEach-Object { $_.ParameterName })
+        $switches | Should -Contain 'PackagePath'
+        $switches | Should -Contain 'SkipAddOn'
+        $switches | Should -Contain 'SkipBackup'
+        $switches | Should -Contain 'NoPairing'
+        $updateText | Should -Match ([regex]::Escape("`$installScript = Join-Path `$PackagePath 'install-agent.ps1'"))
+    }
+
+    It 'relies on install-agent.ps1 refusing an open NinjaTrader only without -SkipAddOn, and prompting for nothing' {
+        # The two places install-agent.ps1 reaches NinjaTrader are behind the two
+        # switches the update passes. Neither script waits for a person.
+        $installText | Should -Match ([regex]::Escape("if (-not `$SkipAddOn -and (Get-Process -Name 'NinjaTrader'"))
+        $installText | Should -Match ([regex]::Escape('if (-not $SkipBackup) {'))
+        $installText | Should -Match ([regex]::Escape('if (-not $SkipAddOn) {'))
+        $installText | Should -Not -Match 'Read-Host'
+        $updateText | Should -Not -Match 'Read-Host'
+    }
+
+    It 'never names a NinjaTrader path, folder or process' {
+        foreach ($value in $updateStrings) {
+            $value | Should -Not -Match 'NinjaTrader 8|bin\\Custom|AddOns|MyDocuments|Documents\\|NinjaTrader\.exe'
+        }
+        $updateText | Should -Not -Match 'NinjaTraderDocumentsPath|NinjaTraderHome|GetFolderPath'
+        # The only processes it may stop are this agent's own.
+        foreach ($command in $updateCommands | Where-Object { $_.GetCommandName() -in @('Get-Process', 'Stop-Process') }) {
+            $command.Extent.Text | Should -Not -Match 'NinjaTrader'
+        }
+        @($updateCommands | Where-Object { $_.GetCommandName() -eq 'Get-Process' } |
+            ForEach-Object { $_.Extent.Text }) | Should -Be @("Get-Process -Name 'Vincere.AutoExport.Agent.UI' -ErrorAction SilentlyContinue")
+    }
+
+    It 'refuses a package from anywhere but the updates folder, before it changes anything' {
+        $updateText | Should -Match ([regex]::Escape('$PackagePath.StartsWith($updatesPrefix, [StringComparison]::OrdinalIgnoreCase)'))
+        $updateText | Should -Match ([regex]::Escape('$ExpectedVersion -notmatch ''^\d{1,5}\.\d{1,5}\.\d{1,5}$'''))
+        $updateText.IndexOf('$updatesPrefix') | Should -BeLessThan $updateText.IndexOf("`$errorCode = 'backup_failed'")
+    }
+
+    It 'backs up the install root before it runs the installer, and keeps the old backup until the new one is whole' {
+        $backupCall = $updateAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Backup-InstallRoot'
+        }, $true)
+        $backupCall | Should -Not -BeNullOrEmpty
+        $backupCall.Extent.StartOffset | Should -BeLessThan $installCall.Extent.StartOffset
+        $updateText | Should -Match ([regex]::Escape("`$RollbackRoot = Join-Path `$UpdatesRoot 'rollback'"))
+        $backup = (Get-UpdateFunction 'Backup-InstallRoot').Extent.Text
+        $backup.IndexOf('Move-Item -LiteralPath $staging -Destination $RollbackRoot') |
+            Should -BeGreaterThan $backup.IndexOf('Copy-Item -LiteralPath $item.FullName -Destination $staging')
+    }
+
+    It 'only restores when the installer was started, and restores whenever it was' {
+        $updateText | Should -Match 'if \(\$changed\) \{\s*try \{\s*Restore-AgentInstall'
+        $updateText.IndexOf('$changed = $true') | Should -BeLessThan $installCall.Extent.StartOffset
+        $updateText.IndexOf('$changed = $true') | Should -BeGreaterThan $updateText.IndexOf("`$errorCode = 'backup_failed'")
+    }
+
+    It 'restores with the watchdog off and the service stopped, then re-creates the service if it is gone and starts it' {
+        $restore = (Get-UpdateFunction 'Restore-AgentInstall').Extent.Text
+        $unregisterAt = $restore.IndexOf('Unregister-ScheduledTask -TaskName $WatchdogTaskName')
+        $stopAt = $restore.IndexOf('Stop-AgentService')
+        $copyAt = $restore.IndexOf('Copy-Item -LiteralPath $item.FullName -Destination $InstallRoot')
+        $registerAt = $restore.IndexOf('Register-AgentService')
+        $startAt = $restore.IndexOf('Start-Service -Name $ServiceName')
+        $watchdogAt = $restore.IndexOf('Register-AgentWatchdogIfMissing')
+        foreach ($at in @($unregisterAt, $stopAt, $copyAt, $registerAt, $startAt, $watchdogAt)) { $at | Should -BeGreaterThan -1 }
+        $unregisterAt | Should -BeLessThan $stopAt
+        $stopAt | Should -BeLessThan $copyAt
+        $copyAt | Should -BeLessThan $registerAt
+        $registerAt | Should -BeLessThan $startAt
+        $startAt | Should -BeLessThan $watchdogAt
+        $restore | Should -Match ([regex]::Escape('if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue))'))
+    }
+
+    It 're-creates the service exactly as install-agent.ps1 registers it' {
+        $register = (Get-UpdateFunction 'Register-AgentService').Extent.Text
+        foreach ($line in @(
+            '-BinaryPathName "`"$serviceBinary`""',
+            '-DisplayName $ServiceName',
+            "-Description 'Collects NinjaTrader data for the Vincere CRM.'",
+            '-StartupType Automatic',
+            '& sc.exe config "$ServiceName" start= delayed-auto',
+            '& sc.exe failure "$ServiceName" reset= 86400 actions= restart/15000/restart/15000/restart/15000',
+            '& sc.exe failureflag "$ServiceName" 1'
+        )) {
+            $register | Should -Match ([regex]::Escape($line))
+            $installText | Should -Match ([regex]::Escape($line))
+        }
+        $updateText | Should -Match ([regex]::Escape("`$ServiceName = 'Vincere Auto Export'"))
+        $updateText | Should -Match ([regex]::Escape("`$WatchdogTaskName = 'Vincere Auto Export watchdog'"))
+    }
+
+    It 'puts the watchdog back from the package installer by its syntax tree, never by running it' {
+        $watchdog = (Get-UpdateFunction 'Register-AgentWatchdogIfMissing').Extent.Text
+        $watchdog | Should -Match ([regex]::Escape('[System.Management.Automation.Language.Parser]::ParseFile($installScript'))
+        $watchdog | Should -Match ([regex]::Escape("`$node.Name -eq 'New-AgentWatchdogTaskXml'"))
+        $watchdog | Should -Match ([regex]::Escape('Register-ScheduledTask -TaskName $WatchdogTaskName -Xml $watchdogXml -Force'))
+        # And the function it lifts is one the installer still defines.
+        $installAst = [System.Management.Automation.Language.Parser]::ParseInput($installText, [ref]$null, [ref]$null)
+        $installAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-AgentWatchdogTaskXml'
+        }, $true) | Should -Not -BeNullOrEmpty
+        # Even when the restore itself fails.
+        $updateText | Should -Match "rollback_failed'[\s\S]*Register-AgentWatchdogIfMissing"
+    }
+
+    It 'calls it installed only when the service runs the expected version' {
+        $updateText | Should -Match ([regex]::Escape('Wait-AgentServiceRunning -TimeoutSeconds 120'))
+        $updateText.IndexOf('if (-not (Test-InstalledAgentVersion))') | Should -BeGreaterThan $installCall.Extent.StartOffset
+        $updateText.IndexOf('$installed = $true') | Should -BeGreaterThan $updateText.IndexOf('if (-not (Test-InstalledAgentVersion))')
+        # And still running half a minute later, which a crash loop never is.
+        $updateText.IndexOf('$installed = $true') |
+            Should -BeGreaterThan $updateText.IndexOf('if (-not (Test-AgentServiceStaysRunning -Seconds 30))')
+        $updateText.IndexOf('if (-not (Test-AgentServiceStaysRunning -Seconds 30))') | Should -BeGreaterThan -1
+        # A whole version, not a prefix: 1.3.10 must not pass for 1.3.1.
+        $updateText | Should -Match ([regex]::Escape("'^' + [regex]::Escape(`$ExpectedVersion) + '([+.-]|`$)'"))
+        $pattern = '^' + [regex]::Escape('1.3.1') + '([+.-]|$)'
+        '1.3.1+abcdef' | Should -Match $pattern
+        '1.3.1' | Should -Match $pattern
+        '1.3.1.0' | Should -Match $pattern
+        '1.3.10' | Should -Not -Match $pattern
+    }
+
+    It 'writes last-result.json for both outcomes and removes its own task last' {
+        $updateText | Should -Match ([regex]::Escape("`$LastResultPath = Join-Path `$UpdatesRoot 'last-result.json'"))
+        $updateText | Should -Match ([regex]::Escape("`$UpdateTaskName = 'Vincere Auto Export update'"))
+        $installedAt = $updateText.LastIndexOf("Write-UpdateResult -Outcome 'installed'")
+        $rolledBackAt = $updateText.LastIndexOf("Write-UpdateResult -Outcome 'rolled_back' -ErrorCode `$errorCode")
+        $unregisterAt = $updateText.LastIndexOf('Unregister-ScheduledTask -TaskName $UpdateTaskName')
+        $installedAt | Should -BeGreaterThan -1
+        $rolledBackAt | Should -BeGreaterThan -1
+        $unregisterAt | Should -BeGreaterThan $installedAt
+        $unregisterAt | Should -BeGreaterThan $rolledBackAt
+    }
+
+    It 'writes a result the agent can read: the four keys, no byte order mark' {
+        . ([scriptblock]::Create((Get-UpdateFunction 'Write-Ok').Extent.Text))
+        . ([scriptblock]::Create((Get-UpdateFunction 'Write-UpdateResult').Extent.Text))
+        $UpdatesRoot = Join-Path $TestDrive 'updates'
+        $LastResultPath = Join-Path $UpdatesRoot 'last-result.json'
+        $ExpectedVersion = '1.3.1'
+
+        Write-UpdateResult -Outcome 'rolled_back' -ErrorCode 'service_not_running'
+
+        $bytes = [IO.File]::ReadAllBytes($LastResultPath)
+        $bytes[0] | Should -Not -Be 0xEF
+        $result = [IO.File]::ReadAllText($LastResultPath) | ConvertFrom-Json
+        @($result.PSObject.Properties.Name) | Should -Be @('version', 'outcome', 'errorCode', 'at')
+        $result.version | Should -Be '1.3.1'
+        $result.outcome | Should -Be 'rolled_back'
+        $result.errorCode | Should -Be 'service_not_running'
+        $result.at | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath "$LastResultPath.tmp" | Should -BeFalse
+
+        Write-UpdateResult -Outcome 'installed'
+        $installed = [IO.File]::ReadAllText($LastResultPath) | ConvertFrom-Json
+        $installed.outcome | Should -Be 'installed'
+        $installed.errorCode | Should -BeNullOrEmpty
+    }
+
+    It 'ships in the package next to install-agent.ps1' {
+        $windowsWorkflow | Should -Match ([regex]::Escape("'collector\scripts\update-agent.ps1',"))
+    }
+
+    It 'is removed by the uninstaller, before the service' {
+        $unregisterAt = $uninstallText.IndexOf('Unregister-ScheduledTask -TaskName $UpdateTaskName')
+        $unregisterAt | Should -BeGreaterThan -1
+        $unregisterAt | Should -BeLessThan $uninstallText.IndexOf('Stop-Service -Name $ServiceName')
+        $uninstallText | Should -Match ([regex]::Escape("`$UpdateTaskName = 'Vincere Auto Export update'"))
+    }
+}
+
 Describe 'Every helper a script calls is a helper that script defines' {
     # uninstall-agent.ps1 called Write-Ok at line 56 and never defined it. It
     # defines only Write-Step. With $ErrorActionPreference = 'Stop' set at the
@@ -490,6 +732,7 @@ Describe 'Every helper a script calls is a helper that script defines' {
     It 'defines every Write- helper called in <Name>' -ForEach @(
         @{ Name = 'install-agent.ps1' }
         @{ Name = 'uninstall-agent.ps1' }
+        @{ Name = 'update-agent.ps1' }
     ) {
         $text = Get-Content -LiteralPath (Join-Path $scriptRoot $Name) -Raw
         $defined = @([regex]::Matches($text, '(?m)^function\s+(Write-[A-Za-z]+)') |
