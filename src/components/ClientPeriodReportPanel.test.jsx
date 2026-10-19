@@ -87,7 +87,13 @@ describe('the report, read top to bottom', () => {
     expect(sheet.textContent).toContain('$1,900.00 of $2.5k');
     const algorithms = sheet.querySelector('[aria-labelledby="cpr-algorithms"]');
     expect(within(algorithms).getByText('NSTAR 2.1')).toBeTruthy();
-    expect(algorithms.textContent).toContain('+$800.00');
+    expect(algorithms.textContent).toContain('+$550.00');
+    // What the algorithms did not place has its own row, and the rows add up to
+    // the accounts' realized P&L.
+    expect(algorithms.textContent).toContain('Fees and other account charges');
+    expect(algorithms.textContent).toContain('-$10.00');
+    expect(algorithms.querySelector('tfoot').textContent).toContain('+$750.00');
+    expect(algorithms.textContent).not.toContain('Not split');
     // The simulated account is in its own row and in nothing above it.
     const simulation = sheet.querySelector('[aria-labelledby="cpr-simulation"]');
     expect(simulation.textContent).toContain('Sim101');

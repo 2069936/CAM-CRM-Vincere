@@ -19,10 +19,10 @@
  * the close's `snapshots` are live only (simulationAccounts.js splits them
  * first) and the simulated side is read through `buildSimulationSection`, into
  * its own row and nowhere else. Which algorithm ran, and what it made on an
- * account day, is the attribution algorithmTemperature.js already uses
- * (`dayAlgoRows` on the traded basis, a sole algorithm credited the whole
- * account day, several credited their own figures only when those add up to
- * the account's day, otherwise not split). The buffer is read by the rules in
+ * account day, starts from `dayAlgoRows` on the traded basis; each algorithm is
+ * credited the trades it placed (its own fills, or the platform's own figure
+ * for it), and what the algorithms did not place, mostly the firm's fees, is
+ * reported as account charges (see attributeAccountDay). The buffer is read by the rules in
  * accountLifecycle.js and propFirmRules.js and never from a guessed plan.
  *
  * THE THREE RULES EVERY FIGURE HERE OBEYS.
@@ -43,7 +43,6 @@ import { buildDailyReportSummary, buildSimulationSection } from './report.js';
 import { ACCOUNT_STATUSES, ACCOUNT_TYPES, isCashType } from './reconcile.js';
 import { dayAlgoRows, executionsForAccount } from './comboPerformance';
 import { measuredOnAccountDay } from './algorithmRanking';
-import { reconcilesOn } from './algoContribution';
 import { familyFromStrategyName } from './strategyRan';
 import { parseStrategyVersion } from './csvImport';
 import { instrumentRoot } from './instrumentSpecs';
@@ -400,48 +399,73 @@ function fillsFor(algo, accountFills, sameFamilyCount) {
 /**
  * Which algorithms ran on one account day, and what each one made.
  *
- * THE ATTRIBUTION algorithmTemperature.js USES, built from the same exported
- * pieces rather than a fourth copy of them: `dayAlgoRows` decides what ran and
- * what it is called, a sole algorithm is credited the whole account day, and
- * several are credited their own measured figures (`measuredOnAccountDay`)
- * only when those reconcile with the account's day (`reconcilesOn`). Anything
- * else is NOT SPLIT: the algorithms ran, the account's money is in the account
- * figures, and no algorithm is handed a share of it.
+ * EACH ALGORITHM IS CREDITED THE TRADES IT PLACED, AND NOTHING ELSE. Every fill
+ * names the strategy that placed it, so an algorithm's day is the result of its
+ * own fills (the platform's own figure for the strategy when the add-on reports
+ * one, otherwise the figure derived from the fills that carry its name). An
+ * algorithm that was loaded and placed no fill made exactly zero.
+ *
+ * This replaced a rule that credited a sole algorithm the whole account day and
+ * several algorithms only when their figures added up to the account's day to
+ * the cent. They never do: prop firms charge their fees to the account, the
+ * export carries every fill's commission as 0, so the account's realized P&L
+ * is the algorithms' trades minus the fees. On 2026-10-19, on an account
+ * running two algorithms, the gap was $3.76 per round trip on every day of the
+ * week, and the report called every one of those days "not split".
+ *
+ * The difference between the account's day and its algorithms' own trades is
+ * returned as `charges`: the firm's fees, and any trade no algorithm placed. It
+ * is reported on its own row, so the algorithms plus the charges add up to the
+ * accounts' realized P&L and nothing is shared out by assumption.
+ *
+ * Only when an algorithm's own figure cannot be read at all (fills not loaded
+ * and no figure reported) does the old fallback remain: a sole algorithm is
+ * credited the account day, several are left unsplit.
  */
 function attributeAccountDay(snapshot, accountFills, fillsLoaded) {
   const pnl = Number(snapshot?.grossRealizedPnl || 0);
   const algos = dayAlgoRows(snapshot, accountFills, { basis: 'traded', level: 'version' });
-  if (!algos.length) return { case: 'none', pnl, algos: [] };
+  const unnamedFills = fillsLoaded
+    ? accountFills.filter((execution) => !familyFromStrategyName(execution?.strategyName)).length
+    : null;
+  if (!algos.length) return { case: 'none', pnl, algos: [], charges: null, unnamedFills };
+
+  const familyCount = new Map();
+  for (const algo of algos) familyCount.set(algo.family, (familyCount.get(algo.family) || 0) + 1);
+  const figures = algos.map((algo) => {
+    let figure = null;
+    for (const strategy of algo.strategies) {
+      const measured = measuredOnAccountDay(strategy);
+      if (measured == null) continue;
+      figure = (figure == null ? 0 : figure) + measured;
+    }
+    // Loaded and not a single fill names it: it made nothing that day.
+    if (figure == null && fillsLoaded && fillsFor(algo, accountFills, familyCount.get(algo.family)) === 0) {
+      figure = 0;
+    }
+    return figure;
+  });
 
   let credits = null;
   let attribution = 'unsplit';
-  if (algos.length === 1) {
+  let charges = null;
+  if (figures.every((figure) => figure != null)) {
+    credits = figures;
+    attribution = algos.length === 1 ? 'sole' : 'measured';
+    charges = round2(pnl - figures.reduce((total, figure) => total + figure, 0));
+  } else if (algos.length === 1) {
+    // Its own figure cannot be read: the account day is the only measure.
     credits = [pnl];
     attribution = 'sole';
-  } else {
-    const figures = algos.map((algo) => {
-      let figure = null;
-      for (const strategy of algo.strategies) {
-        const measured = measuredOnAccountDay(strategy);
-        if (measured == null) continue;
-        figure = (figure == null ? 0 : figure) + measured;
-      }
-      return figure;
-    });
-    if (figures.every((figure) => figure != null)) {
-      const sum = figures.reduce((total, figure) => total + figure, 0);
-      if (reconcilesOn(pnl, sum, figures.some((figure) => figure !== 0))) {
-        credits = figures;
-        attribution = 'measured';
-      }
-    }
+    charges = 0;
   }
 
-  const families = new Map();
-  for (const algo of algos) families.set(algo.family, (families.get(algo.family) || 0) + 1);
+  const families = familyCount;
   return {
     case: attribution,
     pnl,
+    charges,
+    unnamedFills,
     algos: algos.map((algo, index) => {
       const roots = new Map();
       for (const strategy of algo.strategies) {
@@ -816,9 +840,20 @@ export function buildClientPeriodReport(client, {
   const algorithms = new Map();
   let unsplit = { accountDays: 0, realized: 0 };
   let unattributed = { accountDays: 0, realized: 0 };
+  let charges = { accountDays: 0, realized: 0 };
+  let unnamedFills = 0;
+  let unnamedFillsUnknown = false;
   for (const read of loaded) {
     for (const account of read.counted) {
       const attribution = account.attribution;
+      if (attribution.unnamedFills == null) unnamedFillsUnknown = true;
+      else unnamedFills += attribution.unnamedFills;
+      if (attribution.charges != null && attribution.charges !== 0) {
+        charges = {
+          accountDays: charges.accountDays + 1,
+          realized: round2(charges.realized + attribution.charges),
+        };
+      }
       if (attribution.case === 'none') {
         if (attribution.pnl !== 0) {
           unattributed = {
@@ -1043,7 +1078,7 @@ export function buildClientPeriodReport(client, {
     },
     {
       term: "An algorithm's realized P&L",
-      text: "comes from the accounts' own figures. When it was the only algorithm loaded on an account, that account's realized P&L for the day is its own. When several were loaded, each one's own reported result is used when together they add up to the account's result.",
+      text: "is the result of the trades that algorithm placed. Every fill names the algorithm that placed it, so each one's figure comes from its own fills, or from the platform's own figure for it when one is reported. An algorithm that was loaded and placed no trade made zero that day.",
     },
     {
       term: 'Buffer to limit',
@@ -1056,8 +1091,14 @@ export function buildClientPeriodReport(client, {
   ];
   if (unsplit.accountDays) {
     notes.push({
-      term: 'Not split',
-      text: `marks ${fmtCount(unsplit.accountDays)} account ${plural(unsplit.accountDays, 'day')} on which more than one algorithm was loaded and their own results did not add up to the account's result. Those days count for each algorithm that was loaded, and their ${fmtMoney(unsplit.realized, { sign: true })} is in the account figures and in no algorithm's figure.`,
+      term: 'Not split between algorithms',
+      text: `marks ${fmtCount(unsplit.accountDays)} account ${plural(unsplit.accountDays, 'day')} on which more than one algorithm was loaded and the figures of their own trades could not be read. Those days count for each algorithm that was loaded, and their ${fmtMoney(unsplit.realized, { sign: true })} is in the account figures and in no algorithm's figure.`,
+    });
+  }
+  if (charges.accountDays) {
+    notes.push({
+      term: 'Fees and other account charges',
+      text: `are the difference between the accounts' realized P&L and the trades their algorithms placed, ${fmtMoney(charges.realized, { sign: true })} over ${fmtCount(charges.accountDays)} account ${plural(charges.accountDays, 'day')}. It is mostly the fees the firm charges to the account, which the platform does not put on each fill${unnamedFills ? `, and it includes ${fmtCount(unnamedFills)} ${plural(unnamedFills, 'fill')} that named no algorithm` : ''}. With this row, the algorithms add up to the accounts' realized P&L.`,
     });
   }
   if (unattributed.accountDays) {
@@ -1131,6 +1172,8 @@ export function buildClientPeriodReport(client, {
       heatMax,
       unsplit,
       unattributed,
+      charges,
+      unnamedFills: unnamedFillsUnknown ? null : unnamedFills,
     },
     running,
     simulation,

@@ -181,7 +181,7 @@ describe('coverage, first', () => {
       evaluationAccounts: 1,
       algorithms: 2,
       algorithmAccountDays: 16,
-      unsplitAccountDays: 1,
+      unsplitAccountDays: 0,
       fills: 28,
     });
   });
@@ -283,38 +283,74 @@ describe('the start balance', () => {
 describe('each algorithm\'s own numbers', () => {
   const { report } = build();
 
-  it('counts account days, credits the attribution the ranking uses, and keeps the unsplit day out of the money', () => {
+  it('credits each algorithm the trades it placed, on every account day', () => {
     expect(algo(report, 'NSTAR 2.1')).toMatchObject({
       instruments: ['MNQ'],
       accounts: 2,
       accountDays: 8,
-      measuredAccountDays: 7,
-      unsplitAccountDays: 1,
+      measuredAccountDays: 8,
+      unsplitAccountDays: 0,
       daysTraded: 4,
-      // Oct 14 is not a gain: one of its two account days could not be split.
+      // Oct 14 is a loss: -250 on Funded 01 and +100 on Funded 02.
       daysWithGain: 3,
       fills: 18,
-      realized: 800,
-      perAccountDay: 114.29,
+      realized: 550,
+      perAccountDay: 68.75,
     });
     expect(algo(report, 'BRKOUT 1.4')).toMatchObject({
       instruments: ['MES'],
       accounts: 2,
       accountDays: 8,
-      measuredAccountDays: 7,
-      unsplitAccountDays: 1,
+      measuredAccountDays: 8,
+      unsplitAccountDays: 0,
       daysTraded: 4,
-      daysWithGain: 3,
+      daysWithGain: 4,
       fills: 10,
-      realized: 150,
+      realized: 210,
     });
-    expect(report.algorithms.unsplit).toEqual({ accountDays: 1, realized: -200 });
+    expect(report.algorithms.unsplit).toEqual({ accountDays: 0, realized: 0 });
   });
 
-  it('adds back up to the accounts: every dollar is an algorithm\'s, not split, or nobody\'s', () => {
+  it('reports what the algorithms did not place as account charges, never shared out', () => {
+    // Funded 01 on Oct 14: an account day of -200, its algorithms' own trades
+    // -190. The -10 is the firm's fees.
+    expect(report.algorithms.charges).toEqual({ accountDays: 1, realized: -10 });
+    expect(report.algorithms.unnamedFills).toBe(0);
+    const note = report.notes.find((entry) => entry.term === 'Fees and other account charges');
+    expect(note.text).toContain('-$10.00');
+    expect(report.notes.find((entry) => entry.term === 'Not split')).toBeUndefined();
+  });
+
+  it('adds back up to the accounts: every dollar is an algorithm\'s, an account charge, or nobody\'s', () => {
     const credited = report.algorithms.rows.reduce((total, row) => total + row.realized, 0);
-    expect(credited + report.algorithms.unsplit.realized + report.algorithms.unattributed.realized)
+    expect(credited + report.algorithms.charges.realized + report.algorithms.unsplit.realized
+      + report.algorithms.unattributed.realized)
       .toBe(report.summary.realized);
+  });
+
+  it('credits an algorithm that was loaded and placed no fill exactly zero, not an unsplit day', () => {
+    const shared = mini({
+      '2026-10-13': {
+        A1: {
+          realized: -410.52,
+          strategies: [['ONE', -403], ['TWO', null]],
+          fills: [['ONE', 4]],
+        },
+      },
+    });
+    const one = buildClientPeriodReport(shared, { window: weekOf(shared), asOf: AS_OF });
+    expect(algo(one, 'ONE 1.0')).toMatchObject({ realized: -403, unsplitAccountDays: 0 });
+    expect(algo(one, 'TWO 1.0')).toMatchObject({ realized: 0, unsplitAccountDays: 0, daysTraded: 0 });
+    expect(one.algorithms.charges).toEqual({ accountDays: 1, realized: -7.52 });
+  });
+
+  it('credits a sole algorithm its own trades too, with the fees on the charges row', () => {
+    const alone = mini({
+      '2026-10-13': { A1: { realized: 279.74, strategies: [['ONE', 283.5]], fills: [['ONE', 2]] } },
+    });
+    const one = buildClientPeriodReport(alone, { window: weekOf(alone), asOf: AS_OF });
+    expect(algo(one, 'ONE 1.0').realized).toBe(283.5);
+    expect(one.algorithms.charges).toEqual({ accountDays: 1, realized: -3.76 });
   });
 
   it('is ordered by name, never by result', () => {
@@ -327,9 +363,9 @@ describe('each algorithm\'s own numbers', () => {
     expect(keys).not.toContain('GHOST 9.9');
   });
 
-  it('draws each day as gain, loss, not split, quiet, not loaded or no close', () => {
+  it('draws each day as gain, loss, quiet, not loaded or no close', () => {
     expect(algo(report, 'NSTAR 2.1').cells.map((cell) => cell.state))
-      .toEqual(['noClose', 'gain', 'unsplit', 'gain', 'gain']);
+      .toEqual(['noClose', 'gain', 'loss', 'gain', 'gain']);
     expect(algo(report, 'NSTAR 2.1').cells[1]).toMatchObject({ realized: 350, fills: 4, accounts: 2 });
     expect(report.algorithms.heatMax).toBe(350);
 

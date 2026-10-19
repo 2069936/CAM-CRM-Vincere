@@ -15,9 +15,10 @@
 //   realized per close (counted)  Oct 13 +400, Oct 14 -100, Oct 15 +280,
 //                                 Oct 16 +170, total +750
 //   combined balance  prior 125,000 -> 125,400 -> 125,300 -> 125,580 -> 125,750
-//   NSTAR 2.1  8 account days, 7 measured, +800.00
-//   BRKOUT 1.4 8 account days, 7 measured, +150.00
-//   not split  Funded 01 on Oct 14, -200.00
+//   NSTAR 2.1  8 account days, every one its own trades, +550.00
+//   BRKOUT 1.4 8 account days, every one its own trades, +210.00
+//   charges    Funded 01 on Oct 14, -10.00 (the account day is -200.00,
+//              its two algorithms' own trades -190.00)
 
 export const PRIOR = '2026-10-09';
 export const CLOSES = ['2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16'];
@@ -96,8 +97,9 @@ const DAYS = {
     'APX-2003': [120, 50120, 1500, [['MEANREV', '3.0', 'M2K DEC26', 120]], [['MEANREV', 2]]],
   },
   '2026-10-14': {
-    // -250 + 60 = -190 against an account day of -200: the figures do not add
-    // up, so this account day is NOT SPLIT.
+    // -250 + 60 = -190 against an account day of -200. Each algorithm is
+    // credited its own trades and the -10.00 left over is the firm's fees,
+    // reported as account charges.
     'APX-1001': [-200, 50100, 600, [['NSTAR', '2.1', 'MNQ DEC26', -250], ['BRKOUT', '1.4', 'MES DEC26', 60]], [['NSTAR', 2], ['BRKOUT', 2]]],
     'LUC-1002': [100, 50250, 1900, [['NSTAR', '2.1', 'MNQ DEC26', 100]], [['NSTAR', 2]]],
     // Loaded, switched on, no fills and nothing realized.
