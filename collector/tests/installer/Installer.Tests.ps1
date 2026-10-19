@@ -342,6 +342,132 @@ Describe 'Installer safety authoring' {
     }
 }
 
+Describe 'The service is started again when Windows leaves it stopped' {
+    # 2026-10-18: the VPS provider powered machines off at 06:50 New York time.
+    # On 34 of them the agent missed Windows' 30 second start window after the
+    # reboot (System log 7009 then 7000) and stayed stopped for a day, because
+    # the restart-on-failure actions do not cover a start that timed out. The
+    # installer now registers a SYSTEM task that starts the service after boot
+    # and every 15 minutes. These tests pin the task, its place in the install
+    # and its removal.
+    BeforeAll {
+        $script:installPath = Join-Path $collectorRoot 'scripts\install-agent.ps1'
+        $script:installText = Get-Content -LiteralPath $installPath -Raw
+        $script:uninstallText = Get-Content -LiteralPath (Join-Path $collectorRoot 'scripts\uninstall-agent.ps1') -Raw
+
+        # The function is lifted out of the script by its syntax tree and defined
+        # here on its own. Running install-agent.ps1 would install a service.
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$parseErrors)
+        $definition = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'New-AgentWatchdogTaskXml'
+        }, $true)
+        if (-not $definition) { throw 'install-agent.ps1 no longer defines New-AgentWatchdogTaskXml.' }
+        . ([scriptblock]::Create($definition.Extent.Text))
+
+        $script:xmlText = New-AgentWatchdogTaskXml -ServiceName 'Vincere Auto Export' -StartBoundary ([datetime]'2026-10-19T08:00:00')
+        $script:task = [xml]$xmlText
+        $script:ns = New-Object System.Xml.XmlNamespaceManager($task.NameTable)
+        $ns.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
+    }
+
+    It 'starts the service five minutes after boot' {
+        $task.SelectSingleNode('//t:Triggers/t:BootTrigger/t:Delay', $ns).InnerText | Should -Be 'PT5M'
+        $task.SelectSingleNode('//t:Triggers/t:BootTrigger/t:Enabled', $ns).InnerText | Should -Be 'true'
+    }
+
+    It 'checks again every 15 minutes, with no end' {
+        $repetition = $task.SelectSingleNode('//t:Triggers/t:TimeTrigger/t:Repetition', $ns)
+        $repetition.SelectSingleNode('t:Interval', $ns).InnerText | Should -Be 'PT15M'
+        # A Duration would end the repetition; without one it never ends.
+        $repetition.SelectSingleNode('t:Duration', $ns) | Should -BeNullOrEmpty
+        $task.SelectSingleNode('//t:Triggers/t:TimeTrigger/t:StartBoundary', $ns).InnerText |
+            Should -Be '2026-10-19T08:00:00'
+    }
+
+    It 'runs as SYSTEM, without a logged on user and on any power source' {
+        $task.SelectSingleNode('//t:Principals/t:Principal/t:UserId', $ns).InnerText | Should -Be 'S-1-5-18'
+        $task.SelectSingleNode('//t:Settings/t:DisallowStartIfOnBatteries', $ns).InnerText | Should -Be 'false'
+        $task.SelectSingleNode('//t:Settings/t:StopIfGoingOnBatteries', $ns).InnerText | Should -Be 'false'
+        $task.SelectSingleNode('//t:Settings/t:RunOnlyIfNetworkAvailable', $ns).InnerText | Should -Be 'false'
+        $task.SelectSingleNode('//t:Settings/t:StartWhenAvailable', $ns).InnerText | Should -Be 'true'
+        $task.SelectSingleNode('//t:Settings/t:MultipleInstancesPolicy', $ns).InnerText | Should -Be 'IgnoreNew'
+        $task.SelectSingleNode('//t:Settings/t:ExecutionTimeLimit', $ns).InnerText | Should -Be 'PT5M'
+    }
+
+    It 'only ever starts the named service, through sc.exe' {
+        $exec = $task.SelectSingleNode('//t:Actions/t:Exec', $ns)
+        $exec.SelectSingleNode('t:Command', $ns).InnerText | Should -Be '%SystemRoot%\System32\sc.exe'
+        $exec.SelectSingleNode('t:Arguments', $ns).InnerText | Should -Be 'start "Vincere Auto Export"'
+        @($task.SelectNodes('//t:Actions/*', $ns)).Count | Should -Be 1
+    }
+
+    It 'escapes the service name into the XML' {
+        $odd = [xml](New-AgentWatchdogTaskXml -ServiceName 'A & B <test>' -StartBoundary ([datetime]'2026-10-19T08:00:00'))
+        $oddNs = New-Object System.Xml.XmlNamespaceManager($odd.NameTable)
+        $oddNs.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
+        $odd.SelectSingleNode('//t:Actions/t:Exec/t:Arguments', $oddNs).InnerText | Should -Be 'start "A & B <test>"'
+    }
+
+    It 'removes the watchdog before stopping the old service and registers it after the new one runs' {
+        $unregister = $installText.IndexOf('Unregister-ScheduledTask -TaskName $WatchdogTaskName')
+        $stop = $installText.IndexOf('Stop-Service -Name $ServiceName')
+        $start = $installText.IndexOf('Start-Service -Name $ServiceName')
+        $register = $installText.IndexOf('Register-ScheduledTask -TaskName $WatchdogTaskName -Xml')
+        $unregister | Should -BeGreaterThan -1
+        $register | Should -BeGreaterThan -1
+        $unregister | Should -BeLessThan $stop
+        $register | Should -BeGreaterThan $start
+        $installText | Should -Match ([regex]::Escape("`$WatchdogTaskName = 'Vincere Auto Export watchdog'"))
+    }
+
+    It 'lets the recovery actions run when the service stops itself with an error' {
+        $installText | Should -Match ([regex]::Escape('& sc.exe failureflag "$ServiceName" 1'))
+    }
+
+    It 'never fails an install that already has a running service because the task could not be registered' {
+        $registerAt = $installText.IndexOf('Register-ScheduledTask -TaskName $WatchdogTaskName -Xml')
+        $tryAt = $installText.LastIndexOf('try {', $registerAt)
+        $catchAt = $installText.IndexOf('catch {', $registerAt)
+        $tryAt | Should -BeGreaterThan $installText.IndexOf('Start-Service -Name $ServiceName')
+        $catchAt | Should -BeGreaterThan $registerAt
+        $installText.Substring($catchAt, 400) | Should -Match 'Write-Warning'
+    }
+
+    It 'removes the watchdog in the uninstaller before the service' {
+        $unregister = $uninstallText.IndexOf('Unregister-ScheduledTask -TaskName $WatchdogTaskName')
+        $stop = $uninstallText.IndexOf('Stop-Service -Name $ServiceName')
+        $unregister | Should -BeGreaterThan -1
+        $unregister | Should -BeLessThan $stop
+        $uninstallText | Should -Match ([regex]::Escape("`$WatchdogTaskName = 'Vincere Auto Export watchdog'"))
+    }
+
+    It 'is a task Windows accepts, with the triggers and action it was given' -Skip:(
+        [Environment]::OSVersion.Platform -ne 'Win32NT' -or
+        -not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        # Registered for real on the CI runner under a throwaway name and a
+        # service that does not exist, read back, and removed. Never run.
+        $name = "Vincere watchdog test $([guid]::NewGuid().ToString('N'))"
+        $xml = New-AgentWatchdogTaskXml -ServiceName 'Vincere Watchdog Test Missing Service' -StartBoundary (Get-Date)
+        try {
+            Register-ScheduledTask -TaskName $name -Xml $xml -Force | Out-Null
+            $registered = Get-ScheduledTask -TaskName $name
+            $registered.Principal.UserId | Should -BeIn @('SYSTEM', 'S-1-5-18', 'NT AUTHORITY\SYSTEM')
+            @($registered.Triggers).Count | Should -Be 2
+            ($registered.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' }).Delay | Should -Be 'PT5M'
+            ($registered.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskTimeTrigger' }).Repetition.Interval | Should -Be 'PT15M'
+            $registered.Actions[0].Arguments | Should -Be 'start "Vincere Watchdog Test Missing Service"'
+        }
+        finally {
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'Every helper a script calls is a helper that script defines' {
     # uninstall-agent.ps1 called Write-Ok at line 56 and never defined it. It
     # defines only Write-Step. With $ErrorActionPreference = 'Stop' set at the

@@ -66,11 +66,96 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ServiceName = 'Vincere Auto Export'
+$WatchdogTaskName = 'Vincere Auto Export watchdog'
 $InstallRoot = Join-Path ${env:ProgramFiles} 'Vincere\Auto Export'
 $DataRoot = Join-Path ${env:ProgramData} 'Vincere\AutoExport'
 
 function Write-Step { param([string]$Text) Write-Host "==> $Text" -ForegroundColor Cyan }
 function Write-Ok { param([string]$Text) Write-Host "    $Text" -ForegroundColor Green }
+
+# THE SERVICE CAN MISS ITS OWN START, AND WINDOWS DOES NOT TRY AGAIN.
+#
+# On 2026-10-18 at 06:50 New York time trading machines across the desk were
+# powered off by SYSTEM and came back about seven minutes later. On 34 of them
+# the agent did not come back. The System log on one of them says why: event 7009,
+# "A timeout was reached (30000 milliseconds) while waiting for the Vincere Auto
+# Export service to connect", then 7000. A just-booted VPS loading a 110 MB
+# self-contained .NET agent while everything else starts and the antivirus scans
+# it took longer than the 30 seconds Windows allows. The restart-on-failure
+# actions below never fired, because a start that times out is not a failure
+# they cover, and the machines sat silent for a day with NinjaTrader running.
+#
+# So a scheduled task, running as SYSTEM, starts the service five minutes after
+# boot and then every fifteen minutes. `sc.exe start` on a running service is a
+# no-op that answers 1056, so on a healthy machine the task does nothing. A
+# service set to Disabled stays stopped, which is how to keep the agent off on
+# purpose; a service merely stopped by hand is started again within 15 minutes.
+#
+# Defined as task XML rather than New-ScheduledTaskTrigger, whose repetition
+# parameters differ between Windows builds: a repetition with no Duration is
+# indefinite on every Task Scheduler that reads schema 1.2.
+function New-AgentWatchdogTaskXml {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][datetime]$StartBoundary
+    )
+    $escapedService = [Security.SecurityElement]::Escape($ServiceName)
+    $start = $StartBoundary.ToString('yyyy-MM-ddTHH:mm:ss')
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>Vincere</Author>
+    <Description>Starts the $escapedService service if it is stopped. Runs 5 minutes after boot and every 15 minutes. Does nothing while the service is running; a Disabled service is left alone.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT5M</Delay>
+    </BootTrigger>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>$start</StartBoundary>
+      <Repetition>
+        <Interval>PT15M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="LocalSystem">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="LocalSystem">
+    <Exec>
+      <Command>%SystemRoot%\System32\sc.exe</Command>
+      <Arguments>start "$escapedService"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
 
 # --- preflight -------------------------------------------------------------
 
@@ -215,6 +300,14 @@ if (-not $SkipBackup) {
 }
 
 # --- stop any existing install --------------------------------------------
+
+# The watchdog goes first. Left in place it would start the service again in the
+# middle of this install, against binaries being replaced. It is registered
+# again once the new service is running.
+if (Get-ScheduledTask -TaskName $WatchdogTaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $WatchdogTaskName -Confirm:$false
+    Write-Ok 'Existing watchdog task removed for the install.'
+}
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
@@ -476,12 +569,28 @@ New-Service -Name $ServiceName `
 # Three restarts, 15s apart, matching the MSI.
 & sc.exe config "$ServiceName" start= delayed-auto | Out-Null
 & sc.exe failure "$ServiceName" reset= 86400 actions= restart/15000/restart/15000/restart/15000 | Out-Null
+# By default those actions run only when the process dies. With the flag on they
+# also run when the service stops itself with an error code.
+& sc.exe failureflag "$ServiceName" 1 | Out-Null
 Write-Ok 'Service registered (delayed auto start, restarts on failure).'
 
 Write-Step 'Starting the service'
 Start-Service -Name $ServiceName
 (Get-Service -Name $ServiceName).WaitForStatus('Running', '00:00:30')
 Write-Ok 'Service running.'
+
+Write-Step 'Registering the watchdog that starts the service if it is ever left stopped'
+try {
+    $watchdogXml = New-AgentWatchdogTaskXml -ServiceName $ServiceName -StartBoundary (Get-Date)
+    Register-ScheduledTask -TaskName $WatchdogTaskName -Xml $watchdogXml -Force | Out-Null
+    Write-Ok 'Watchdog registered (5 minutes after boot, then every 15 minutes).'
+}
+catch {
+    # The service is installed and running; a machine without the watchdog is
+    # the machine every VPS had before 1.2.3. Said loudly, not fatal.
+    Write-Warning "The watchdog task could not be registered: $($_.Exception.Message)"
+    Write-Warning 'The agent runs, but if a reboot ever leaves the service stopped it will stay stopped. Re-run this installer to try again.'
+}
 
 # --- pairing ---------------------------------------------------------------
 
