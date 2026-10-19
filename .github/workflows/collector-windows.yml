@@ -198,9 +198,12 @@ jobs:
               throw "Build configuration is missing from the package: $($props.Name)"
             }
           }
+          # update-agent.ps1 travels too: the agent's updater requires it in the
+          # package, and runs it as SYSTEM to install the next update from the CRM.
           Copy-Item -LiteralPath @(
             'collector\scripts\install-agent.ps1',
             'collector\scripts\uninstall-agent.ps1',
+            'collector\scripts\update-agent.ps1',
             'collector\docs\installing.md'
           ) -Destination $stage
           Compress-Archive -Path "$stage\*" `

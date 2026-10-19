@@ -17,6 +17,7 @@ using Newtonsoft.Json;
 using Vincere.AutoExport.Agent.Security;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Diagnostics;
+using Vincere.AutoExport.Agent.Updates;
 using Vincere.AutoExport.Contracts;
 using Newtonsoft.Json.Linq;
 
@@ -689,6 +690,158 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
             CryptographicOperations.ZeroMemory(requestBytes);
         }
     }
+
+    /* THE AGENT-UPDATE POLL: WHERE THIS MACHINE IS, AND WHAT THE CRM ASKS OF IT.
+     *
+     * Authenticated exactly like the heartbeat: the device bearer token and the
+     * machine id header, through the same SendAsync and the same thirty-second
+     * request timeout.
+     *
+     * ONE ATTEMPT, NO RETRY LOOP. The loop that calls this runs every five
+     * minutes, so a failure costs five minutes. And one of its calls is the
+     * "applying" report sent just before the update task starts, where the
+     * heartbeat's thirteen minutes of retries would push the start past the check
+     * of the 15:45 New York window that the loop has just made.
+     *
+     * NOTHING IS THROWN for an ordinary failure: the caller is a loop that keeps
+     * its state and tries again next time.
+     *
+     * 404 AND 405 ARE UNSUPPORTED, the way the quarantine report treats them. A
+     * CRM older than this route answers 404, and that means the CRM does not
+     * update agents yet. Nothing is logged as an error and nothing is marked.
+     *
+     * A 401 or 403 comes back as Failed with the RePair disposition, and the caller
+     * deliberately does not act on it: the heartbeat hits the same credential
+     * every minute and is the one place that unpairs a machine. A bug on this new
+     * route must never be able to unpair the desk. */
+    public async Task<AgentUpdatePollResult> PollAgentUpdateAsync(
+        AgentUpdatePollRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        AgentUpdatePollRequest normalized = NormalizeAgentUpdatePoll(request);
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(normalized, Formatting.None));
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(
+                HttpMethod.Post,
+                "api/ingest/agent-update",
+                requestBytes,
+                authenticated: true,
+                contentEncoding: null,
+                cancellationToken).ConfigureAwait(false);
+            byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken).ConfigureAwait(false);
+
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+                return AgentUpdatePollResult.Unsupported();
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                return AgentUpdatePollResult.Failed("device_credential_revoked", CrmFailureDisposition.RePair);
+            if (!response.IsSuccessStatusCode)
+            {
+                bool retryable = response.StatusCode == HttpStatusCode.RequestTimeout
+                    || response.StatusCode == HttpStatusCode.TooManyRequests
+                    || (int)response.StatusCode >= 500;
+                return AgentUpdatePollResult.Failed(
+                    "agent_update_http_" + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture),
+                    retryable ? CrmFailureDisposition.Retry : CrmFailureDisposition.Stop);
+            }
+
+            return ParseAgentUpdateResponse(responseBytes);
+        }
+        catch (HttpRequestException exception) when (IsTlsFailure(exception))
+        {
+            return AgentUpdatePollResult.Failed("tls_failure");
+        }
+        catch (HttpRequestException)
+        {
+            return AgentUpdatePollResult.Failed("agent_update_unreachable", CrmFailureDisposition.Retry);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return AgentUpdatePollResult.Failed("agent_update_timeout", CrmFailureDisposition.Retry);
+        }
+        // device_not_paired and crm_response_invalid (a reply over 64 KB).
+        catch (CrmClientException exception)
+        {
+            return AgentUpdatePollResult.Failed(exception.Code, exception.Disposition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
+    private static readonly Regex AgentUpdateErrorCodePattern = new(
+        "^[a-z0-9_]{1,64}$",
+        RegexOptions.CultureInvariant);
+
+    /* The body the CRM validates, made to fit it rather than refused for not
+     * fitting. A state outside the four is sent as null; an error code goes only
+     * with "failed", and a failed state always carries one; the target only goes
+     * with a state. The agent version is the one field that must be right, and it
+     * throws like the heartbeat's does, because it comes from this build. */
+    private static AgentUpdatePollRequest NormalizeAgentUpdatePoll(AgentUpdatePollRequest request)
+    {
+        string state = AgentUpdateStates.IsKnown(request.State) ? request.State : null;
+        string errorCode = null;
+        if (state == AgentUpdateStates.Failed)
+        {
+            errorCode = request.ErrorCode != null && AgentUpdateErrorCodePattern.IsMatch(request.ErrorCode)
+                ? request.ErrorCode
+                : UpdateErrorCodes.UpdateFailed;
+        }
+        string target = state != null && UpdateVersion.IsTriple(request.TargetVersion)
+            ? request.TargetVersion
+            : null;
+        return new AgentUpdatePollRequest(
+            NormalizeVersion(request.AgentVersion, nameof(request.AgentVersion)),
+            state,
+            errorCode,
+            target);
+    }
+
+    /* Read as a tree, with date parsing OFF. Left to its defaults Newtonsoft turns
+     * "requestedAt" into a DateTime and back into a string in this machine's
+     * culture, and requestedAt is half of the key the attempt budget is counted
+     * under: the text the CRM sent is the text that has to come back out. */
+    private static AgentUpdatePollResult ParseAgentUpdateResponse(byte[] responseBytes)
+    {
+        JObject root;
+        try
+        {
+            using JsonTextReader reader = new(new StringReader(Encoding.UTF8.GetString(responseBytes)))
+            {
+                DateParseHandling = DateParseHandling.None,
+            };
+            root = JToken.ReadFrom(reader) as JObject;
+        }
+        catch (JsonException)
+        {
+            root = null;
+        }
+        if (root == null
+            || root["ok"] is not JValue { Type: JTokenType.Boolean } ok
+            || !(bool)ok.Value)
+        {
+            return AgentUpdatePollResult.Failed("agent_update_response_invalid");
+        }
+
+        JToken update = root["update"];
+        if (update == null || update.Type == JTokenType.Null)
+            return AgentUpdatePollResult.Accepted(null);
+        if (update is not JObject directive)
+            return AgentUpdatePollResult.Failed("agent_update_response_invalid");
+        return AgentUpdatePollResult.Accepted(new AgentUpdateDirective(
+            StringOrNull(directive["version"]),
+            StringOrNull(directive["manifestUrl"]),
+            StringOrNull(directive["manifestSha256"]),
+            StringOrNull(directive["requestedAt"])));
+    }
+
+    // A field that is not a JSON string is not read as one: the validator then
+    // refuses the directive rather than this method guessing what a number meant.
+    private static string StringOrNull(JToken token)
+        => token is JValue { Type: JTokenType.String } value ? (string)value.Value : null;
 
     public void Dispose()
     {

@@ -26,5 +26,6 @@ public sealed class AgentPathsTests
         Assert.Equal(Path.Combine(expected, "roster.json"), paths.Roster);
         Assert.Equal(Path.Combine(expected, "relay-secret.bin"), paths.RelaySecret);
         Assert.Equal(Path.Combine(expected, "environment.json"), paths.ObservedEnvironment);
+        Assert.Equal(Path.Combine(expected, "updates"), paths.Updates);
     }
 }
