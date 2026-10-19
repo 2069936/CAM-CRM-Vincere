@@ -7,13 +7,15 @@ import {
   flagResolutionPlan,
 } from '../domain/camFlagQueue';
 import { QUIET_SHAPES, buildQuietAccounts, quietEvidenceForFlag } from '../domain/quietAccounts';
+import { DATABASE_FLAG_TYPES, databaseFlagHint } from '../domain/databaseFlagTypes';
 
 /** The one flag type this file reads evidence back for. reconcile.js:582. */
 const MISSING_ACCOUNT = 'Missing account';
 const TARGET_REACHED = 'Evaluation target reached';
-/** Step 65's flag: the close marked an account Failed. One per account, or ONE
- * per client with no trading account when more than three flip in one close. */
-const MARKED_FAILED = 'Marked Failed by the close';
+/** The close marked an account Failed (steps 65 and 71; since 71 only once
+ * later closes confirm the breach). One per account, or ONE per client with no
+ * trading account when more than three flip in one close. */
+const MARKED_FAILED = DATABASE_FLAG_TYPES.MARKED_FAILED;
 
 /**
  * The account column always has a word, never a dash.
@@ -47,9 +49,20 @@ function accountCell(row) {
 // Answering writes the outcome AND resolves the flag, because a CAM who has
 // just said "it failed" has answered the flag too, and making them click twice
 // is how a book ends up with resolved flags and unclassified accounts.
+//
+// Step 71 adds two moments of the same kind. A Breach suspected flag is the
+// close saying "this may be dead, the closes have not confirmed it yet", and a
+// Reactivated by the close flag is the close saying "I failed this and it
+// traded, check it". In both the CAM may know from the prop firm that it did
+// fail, and saying so here is a person's Failed, which the close never sets
+// back. Marked Failed by the close already IS Failed, and Failed account traded
+// and Strategies still loaded are about an account already Failed, so none of
+// those three asks.
 const OUTCOME_QUESTION = {
   [TARGET_REACHED]: OUTCOME_PROMPTS.TARGET_REACHED,
   [MISSING_ACCOUNT]: OUTCOME_PROMPTS.WENT_MISSING,
+  [DATABASE_FLAG_TYPES.BREACH_SUSPECTED]: OUTCOME_PROMPTS.WENT_MISSING,
+  [DATABASE_FLAG_TYPES.REACTIVATED]: OUTCOME_PROMPTS.WENT_MISSING,
 };
 
 /**
@@ -262,7 +275,9 @@ export default function CamFlagQueue({
           style={{ marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 8 }}
         >
           <summary style={{ cursor: 'pointer' }}>
-            <strong>{group.type}</strong>{' '}
+            {/* The flags the database writes itself say what they mean in a
+                hover; reconcile.js's own types carry no title. */}
+            <strong title={databaseFlagHint(group.type)}>{group.type}</strong>{' '}
             {onSelectClient ? (
               <button
                 type="button"

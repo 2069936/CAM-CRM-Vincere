@@ -979,8 +979,9 @@ export function mapAccountObservationSettings(row) {
 
 /**
  * The one row of account_observation_settings: how many closes an account may
- * miss before it is gone, whether a breach fails it by itself, and how many
- * days a never seen account is still new.
+ * miss before it is gone, whether the close may mark an account Failed once
+ * later closes confirm its breach (step 71: a breach alone fails nothing), and
+ * how many days a never seen account is still new.
  *
  * @returns {Promise<{available: boolean, staleCloses: number, autoFailOnBreach: boolean, newAccountDays: number}>}
  *   available:false with the defaults when step 65 has not run (or there is no

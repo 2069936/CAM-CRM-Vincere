@@ -47,6 +47,7 @@ idempotent, so re-running is safe. None drops or rewrites existing data. 47 and
 | 68 | `step_68_flag_hygiene_manual_retire.sql` | `retired_flag_backlog_resolved_at` timestamptz on `account_observation_settings` (the one time resolve's marker); an AFTER UPDATE OF `status`, `account_type` trigger on `trading_accounts` (`trading_accounts_retire_resolves_flags`, security definer) that, when a row goes from alive to past the five live account flags by its status or its type (step 67's `account_is_past_live_flags` on the old and the new row with one observation, the old row's, absent read as alive) and `resolve_flags_on_fail` is on, sets that account's Open flags of the five Resolved (`resolved_at` now, `resolved_by_user_id` the app user signed in or NULL, note `Account marked Failed in the CRM.`, `Account marked Inactive in the CRM.`, `Account marked Reserve in the CRM.` or `Account set to Inactive or Ignore in the CRM.`) with one audit row per account when it resolved any (`trading_account.flags_resolved_on_retire`); and a one time resolve of every Open flag of the five on an account whose status is Inactive or Reserve, or whose type is Inactive / Ignore, when the file runs (note `Account already Inactive or Reserve when step 68 ran.`), with a NOTICE per type and one summary audit row (`flags.backlog_resolved_on_retired_accounts`). Grants restated | A CAM who marks an account Failed, Inactive or Reserve, or types it Inactive / Ignore, no longer finds its Missing account, Strategy disabled, Expected strategy missing or drawdown warnings in her queue the next day: the save closes them in her name. The flags already open on accounts a person retired before 68 are closed once. Failed accounts stay step 67's; an account the closes only call absent is not touched until a person retires it. Drawdown breached and the other kept types stay. Needs step 67 and refuses to run without it. Run it ANY time; no build is needed. The same switch as 67 turns it off: `update public.account_observation_settings set resolve_flags_on_fail = false, updated_at = now() where id;` (the one time resolve is not affected). A re-run of 65 or 67 leaves it in place |
 | 69 | `step_69_ingest_batch_error_detail.sql` | `record_ingest_batch_error_detail(batch_id, detail)`, security definer, EXECUTE for `service_role` only: it writes `ingest_batches.error_detail` on one batch, and returns true, only when the batch is `failed` with `error_code` `invalid_auto_import_snapshot` or `unsupported_schema_version`; the detail has its control characters replaced by spaces, is trimmed and is cut to 2,000 characters. Nothing else changes: `finalize_ingest_batch_v3` still sets the detail NULL and the replay claim still clears it | A close the CRM refuses as an invalid snapshot says why: the ingest route and the replay store the rules it broke (the unique rules, the first twelve, joined with "; ", and "(+N more)"; a field path and an account name, never a figure or free text) and the failed closes panel on Auto Collection shows them under the code as "Why it was rejected". Needs step 45 and refuses to run without it. Run it ANY time, before or after the build: until it runs, the build logs that the reason could not be recorded and answers exactly as before. Closes refused before it ran carry no reason; reprocess them from the failed closes panel (or, for a day a CAM already closed by hand, with Reprocess batch in the client drawer) and the attempt that fails again records it. Re-running it changes nothing |
 | 70 | `step_70_agent_update_requests.sql` | Six nullable columns on `ingest_devices`, each with its own CHECK: `update_target_version` (x.y.z, NULL when nothing is pending), `update_requested_at`, `update_requested_by` (the app user), `update_state` (`requested`, `downloading`, `staged`, `applying`, `failed`, `completed`, `cancelled`), `update_state_at` and `update_error_code` (`^[a-z][a-z0-9_]{0,63}$`). Three functions, security definer, EXECUTE for `service_role` only: `request_agent_update(device_ids, target_version, actor)` sets the request on each listed device that is active, not revoked and below the target (versions compared as numbers, so 1.10.0 is above 1.9.0; an unknown version counts as below) and returns how many; `cancel_agent_update(device_ids, actor)` clears each pending one as `cancelled` and returns how many; `record_agent_update_poll(device_id, agent_version, state, error_code, target_version)` is what the agent's poll writes: an agent at or above the pending target completes it (target cleared, `completed`), a state for the pending target is stored, a state for any other target is ignored, and it returns the pending target and when it was requested. One `audit_logs` row each for requested, cancelled, completed, and failed (on the way into failed only), `entity_type` `ingest_device`, actions `ingest_device.update_requested`, `ingest_device.update_cancelled`, `ingest_device.update_completed`, `ingest_device.update_failed` | A Manager updates the Windows agent from the CRM: Update agent on the client card, or Update N outdated agents on Auto Collection. Agent 1.3.0 and later polls `/api/ingest/agent-update`, gets the release the CRM pins, checks it and installs it outside the capture window, and the card says where it stands. Agents older than 1.3.0, and any release that needs a newer NinjaTrader AddOn than the VPS has, are not offered the button and still need the install line on the VPS. Needs step 28 and refuses to run without it. Run it BEFORE the build: until it runs the buttons stay hidden, the screens read as before and the agent's poll is answered 404, which it treats like a CRM without the route. Re-running it changes no row |
+| 71 | `step_71_confirmed_failure.sql` | `confirm_closes` (2, 1 to 10), `confirm_peer_accounts` (3, 1 to 50) and `auto_reactivate` (true) on `account_observation_settings`, each with its own CHECK; the value of `auto_fail_on_breach` is left exactly as it is. On `trading_accounts`, written by the database only: `auto_failed_at`, `auto_failed_prior_status` (Active or Payout Hold), `auto_failed_date_set` and `auto_failed_through` (the close's marker, set and cleared together) and `breach_flag_id`; step 65's guard trigger now refuses a browser write to them too and clears the marker when the browser changes the status. `refresh_account_observations` replaced with the same signature and grants: a breach observation alone no longer fails anything. An Active or Payout Hold account that becomes breached gets ONE `Breach suspected` flag; it is marked Failed (only while `auto_fail_on_breach` is on) when the client's last `confirm_closes` closes on or after `breached_on` show it missing (a close listing no account at all does not count), or present and not trading while at least `confirm_peer_accounts` accounts of OTHER clients traded a strategy family it carries that day; then `date_failed = coalesce(date_failed, breached_on)`, the marker, an audit row `trading_account.auto_failed` naming the evidence (`confirmedBy` `absent` or `peers_traded`, the dates, families and peer counts) and a `Marked Failed by the close` flag naming it, once per run of breached readings (a person who sets it back is not overruled). With `auto_reactivate` on, an account the close failed that nobody has changed since (no later `account.update` audit row with a status, the marker still on it) and that trades on a close after the failure goes back to its prior status, `date_failed` cleared only if the close wrote it, audit row `trading_account.auto_reactivated`, flag `Reactivated by the close`. A Failed account a person failed that trades after its `date_failed` is never set back: one `Failed account traded` flag. `failed_account_strategies_check(client, account)` (EXECUTE for `service_role` only) raises one `Strategies still loaded` flag on a Failed account whose latest tracker sample shows a strategy enabled and that has not traded since it failed, and resolves it with a note when that stops being true; the refresh calls it at every close and a new trigger on `account_live_samples` calls it on every sample of a Failed account. A one time marker on the accounts step 65 already failed (prior status read from the audit row, `before_data` then `after_data.previousStatus`), then the file recomputes every client with a close, once | A breach is a suspicion until the closes confirm it, so a model 2 account that keeps trading on a negative reading stays Active and stays in its client's report. The recompute at the end is what changes production: it sets back the accounts step 65 failed that traded afterwards (about 13, each with an audit row and a `Reactivated by the close` flag, so their trades reappear in the reports), writes a `Failed account traded` flag on each Failed account a person failed that traded after its date, writes the `Strategies still loaded` flag on the frozen account, and with `auto_fail_on_breach` off fails nothing new. It NOTICEs the counts. Needs steps 67, 55 and 47 and refuses to run without them. Run it ANY time; no build is needed (the browser only gains the flag hover and the answer button). To turn the auto fail back on after this step, if wanted: `update public.account_observation_settings set auto_fail_on_breach = true, updated_at = now() where id;` (each client confirms at its next close). To stop the close setting accounts back: `update public.account_observation_settings set auto_reactivate = false, updated_at = now() where id;`. If 65 or 67 is ever run again, run 71 again after it. Re-running it changes nothing |
 
 ## These three groups behave differently
 
@@ -120,7 +121,7 @@ dropped whenever convenient.
 
 ## Order
 
-28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65 → 66 → 67 → 68 → 69 → 70. Steps 29 and 30 build
+28 → 29 → 30 → 31 → 32 → 33 → 34 → 35 → 36 → 37 → 38 → 39 → 41 → 42 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 55 → 56 → 57 → 58 → 59 → 60 → 61 → 62 → 63 → 64 → 65 → 66 → 67 → 68 → 69 → 70 → 71. Steps 29 and 30 build
 on 28, 34 references `cam_profiles` and `clients`, and 35–37 alter
 `trading_accounts`, `strategy_snapshots` and `account_snapshots` — all of which
 already exist. 35, 36, 37, 38 and 39 are independent of each other and of
@@ -667,6 +668,48 @@ resolution_note = 'Account already Inactive or Reserve when step 68 ran.';`. A
 re-run of 65 or 67 leaves the trigger in place; a re-run of 68 restores its
 grants and resolves nothing.
 
+**71 turns a breach into a suspicion, and lets the close undo its own
+mistakes.** It needs step 67 (and through it 65), step 55 and step 47, and
+refuses to run without them: "step 71 needs step 67 (refresh_account_observations,
+live_account_flag_types, operational_flags.resolution_note,
+account_observation_settings.resolve_flags_on_fail): run it first".
+
+Why. On 2026-10-19 step 65 had marked 355 accounts Failed on the breach alone,
+and 13 of them kept trading, one on 10 of its 20 later closes while reading
+-1524. None had `max_drawdown_limit` set, so model 2 (a reading below zero is a
+breach) read an ordinary distance from the peak as a dead account, and because
+the client report leaves out a Failed account from the day after it failed,
+their trades vanished from their clients' reports.
+
+What the close does from now on. The reading rule is unchanged. An Active or
+Payout Hold account that becomes breached gets one `Breach suspected` flag
+saying the reading and what would confirm it. It is marked Failed only while
+`auto_fail_on_breach` is on, and only when the client's last `confirm_closes`
+closes on or after the breach show it missing, or present and not trading while
+at least `confirm_peer_accounts` accounts of other clients traded the same
+strategy family that day. The audit row and the `Marked Failed by the close`
+flag name that evidence. An account the close failed that trades on a later
+close goes back to the status it had (`auto_reactivate`), with an audit row and
+a `Reactivated by the close` flag; one a person failed is never set back and
+gets a `Failed account traded` flag instead. A Failed account whose tracker
+sample still shows a strategy enabled, and that has not traded since it failed,
+gets a `Strategies still loaded` flag, raised and resolved by the close and by
+the tracker's own samples.
+
+What running it changes. First, once, the accounts step 65 failed and nobody has
+touched since get the close's marker. Then every client with a close is
+recomputed: the accounts step 65 failed that traded afterwards are set back
+(expected about 13), Failed accounts a person failed that traded after their
+date are flagged, and the frozen account's strategies are flagged. With
+`auto_fail_on_breach` off, as it is now, nothing new is marked Failed. The
+NOTICE says "step 71: refreshed N account(s) across M client(s): R set back to
+their status before the close failed them, F marked Failed, ..." with the
+counts. To turn the auto fail back on, if wanted: `update
+public.account_observation_settings set auto_fail_on_breach = true, updated_at
+= now() where id;`; each client's next close then confirms what its closes
+show. A re-run of 65 or 67 puts their refresh back (the breach alone fails an
+account again), so run 71 again after either.
+
 **58 replaces one function and nothing else, and it is safe to run at any
 time.** Step 48's `replace_close_summaries` is SECURITY DEFINER, granted to
 `authenticated`, and as written it checked nothing about its caller: it deleted
@@ -1035,7 +1078,8 @@ one statement in the SQL editor: `update public.account_observation_settings
 set auto_fail_on_breach = false, updated_at = now() where id;` (the observation
 is still written, the status is left alone). The browser reads the seven
 columns and the settings row; the lights and the client page start reading
-them in the PR after this one.
+them in the PR after this one. Step 71 replaces the auto fail: since it runs, a
+breach alone fails nothing until later closes confirm it.
 
 Step 39 adds columns and rewrites nothing. Every client already marked Inactive
 keeps a null reason and a null date, which the app reports as "Not recorded"
