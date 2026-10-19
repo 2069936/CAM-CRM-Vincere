@@ -11,8 +11,11 @@ import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountObservationDefaults.js';
  * sampled" on the live tracker and pile up on the client page, and a CAM cannot
  * tell a dead account from a new one from a missing one. The database now
  * writes an observation on every row (trading_accounts.observed_state and its
- * five companions, refreshed whenever a close lands) and marks a breached
- * account Failed by itself. This module turns one client's registry into the
+ * five companions, refreshed whenever a close lands). Since step 71 a breach on
+ * the close is a suspicion, not a death: the database marks the account Failed
+ * only when later closes confirm it (missing from them, or not trading while its
+ * algorithm trades on other clients' accounts), and sets back an account it
+ * failed that trades afterwards. This module turns one client's registry into the
  * six buckets a screen prints, with one sentence each, so the lights and the
  * client page can stop showing a dead account everywhere and say why.
  *
@@ -22,10 +25,14 @@ import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountObservationDefaults.js';
  *                        Inactive / Ignore. Nothing is expected of these, so
  *                        no light and no question.
  *   looksFailed          still Active or Payout Hold but the closes say
- *                        breached. Rare once the auto fail runs; it is the
- *                        shape when auto_fail_on_breach is off, and when a
- *                        stale browser tab re-uploaded a close and reset a
- *                        status the database had set.
+ *                        breached. Since step 71 this is the ordinary shape
+ *                        of a breach waiting for the closes to confirm it (the
+ *                        account carries a Breach suspected flag), and of an
+ *                        account the close set back because it kept trading;
+ *                        also when auto_fail_on_breach is off, when a person
+ *                        revived an account, and when a stale browser tab
+ *                        re-uploaded a close and reset a status the database
+ *                        had set. The reading rule is unchanged.
  *   goneFromClose        absent from at least stale_closes of the client's
  *                        closes. A reporting fact, not a death: six accounts
  *                        on this book skipped a close and came back.

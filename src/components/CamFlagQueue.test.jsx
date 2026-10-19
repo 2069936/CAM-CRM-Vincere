@@ -423,3 +423,75 @@ describe('the account column has a word for every row, never a dash', () => {
     expect(queue(strandedBook())).toMatch(/flag-evidence/);
   });
 });
+
+/* ── The flags the database writes since step 71 ──────────────────────────── */
+
+describe('the flags step 71 writes', () => {
+  /* What a close writes now: a breach is a suspicion, the close sets back an
+   * account it failed that traded, a person's Failed that trades is flagged,
+   * and a Failed account with strategies still loaded is flagged. Fictional
+   * client and accounts; the messages are the database's own words. */
+  const step71Book = () => [
+    {
+      id: 'client-7',
+      name: 'Rowan Hill',
+      dailyImports: [{
+        id: 'imp-0807',
+        date: '2026-08-07',
+        flags: [
+          flag('f-suspected', {
+            type: 'Breach suspected',
+            accountName: 'ACC 10',
+            message: 'ACC 10 read -$300 on 2026-08-05, past its drawdown rule. It stays Active: the CRM marks it Failed only if, '
+              + 'for 2 closes in a row, it stops trading while its algorithm keeps trading on at least 3 accounts of other clients, or it disappears from the closes.',
+          }),
+          flag('f-reactivated', {
+            type: 'Reactivated by the close',
+            accountName: 'ACC 11',
+            message: 'ACC 11 was marked Failed by the CRM on 2026-07-22 but traded on 2026-08-07. It is Active again. Its drawdown limit is not set, so check it.',
+          }),
+          flag('f-traded', {
+            type: 'Failed account traded',
+            accountName: 'ACC 12',
+            message: 'ACC 12 is marked Failed but traded on 2026-08-07. Check it.',
+          }),
+          flag('f-loaded', {
+            type: 'Strategies still loaded',
+            accountName: 'ACC 13',
+            message: 'ACC 13 failed on 2026-07-22 and has had no trades since, but its strategies are still loaded in NinjaTrader. Remove them.',
+          }),
+        ],
+      }],
+    },
+  ];
+
+  it('asks "Did this account fail?" on a suspected breach and on a reactivation, and on nothing else of the four', () => {
+    const written = [];
+    const resolved = [];
+    const tree = CamFlagQueue({
+      clients: step71Book(),
+      today: TODAY,
+      onResolveFlag: (clientId, importId, flagId) => resolved.push(flagId),
+      onClassifyAccount: (clientId, accountName, patch) => written.push({ accountName, patch }),
+    });
+    const asked = buttons(tree, 'classify-account');
+    expect(asked.map((node) => node.props['data-outcome-type']).sort()).toEqual(['Breach suspected', 'Reactivated by the close']);
+    for (const node of asked) expect(node.props.title).toBe('Did this account fail?');
+    asked.find((node) => node.props['data-account-name'] === 'ACC 10').props.onClick();
+    // A person's Failed, which the close never sets back, and the flag answered.
+    expect(written).toEqual([{ accountName: 'ACC 10', patch: { status: 'Failed' } }]);
+    expect(resolved).toEqual(['f-suspected']);
+  });
+
+  it('says what each of the database\'s flags means in a hover on its heading, and nothing on reconcile\'s', () => {
+    const html = renderToStaticMarkup(
+      <CamFlagQueue clients={[...step71Book(), ...strandedBook()]} today={TODAY} onResolveFlag={() => {}} defaultOpenGroups={999} />,
+    );
+    expect(html).toContain('<strong title="The latest trailing reading is past the drawdown rule. The account stays as it is until later closes confirm the breach.">Breach suspected</strong>');
+    expect(html).toContain('<strong title="This account is Failed and has not traded since, but NinjaTrader still shows strategies enabled on it.">Strategies still loaded</strong>');
+    expect(html).toMatch(/<strong title="The close had marked this account Failed and it traded afterwards[^"]*">Reactivated by the close<\/strong>/);
+    expect(html).toMatch(/<strong title="This account is marked Failed and traded after its failure date[^"]*">Failed account traded<\/strong>/);
+    expect(html).toContain('<strong>Missing account</strong>');
+    expect(strip(html)).not.toMatch(/—|–| - /);
+  });
+});
