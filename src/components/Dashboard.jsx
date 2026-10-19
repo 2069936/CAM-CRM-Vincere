@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown, FileText, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, CalendarRange, CheckCircle2, ChevronDown, FileText, RefreshCw, X } from 'lucide-react';
 import { formatCurrency, summarizeAccountRows } from '../domain/report';
 import { PAYOUT_STATES } from '../domain/reconcile';
 import { fillsLoadedFor } from '../domain/closeLoadState';
@@ -384,7 +384,7 @@ function TargetNotSet({ meta, stopClick = false }) {
   );
 }
 
-export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, client }) {
+export default function Dashboard({ dailyImport, rows = [], title, mode, onBuildReport, onBuildPeriodReport = null, onRecalculate, onResolveFlag, onBulkResolveFlags, onUpdateAccount, client }) {
   // Whether this close's orders and executions are in hand. Everything the
   // Recalculate button re-derives about "did it run" comes from them.
   const fillsLoaded = fillsLoadedFor(dailyImport);
@@ -455,6 +455,15 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
             <button className="secondary-button" onClick={onBuildReport}>
               <FileText size={16} /> Build Daily Report
             </button>
+            {onBuildPeriodReport ? (
+              <button
+                className="secondary-button"
+                onClick={onBuildPeriodReport}
+                title="A report over a week, several weeks, a month or a custom range"
+              >
+                <CalendarRange size={16} /> Build Period Report
+              </button>
+            ) : null}
           </div>
         </div>
         {flags.length ? (

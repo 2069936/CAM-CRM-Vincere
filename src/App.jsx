@@ -208,6 +208,8 @@ import ReportReasonsSection from "./components/ReportReasonsSection";
 import ReportNoteSection from "./components/ReportNoteSection";
 import ReportSheetActions from "./components/ReportSheetActions";
 import DeskPeriodReportView from "./components/DeskPeriodReportView";
+import ClientPeriodReportPanel from "./components/ClientPeriodReportPanel";
+import { createWindowDetailLoader } from "./domain/closeDetailWindowLoader";
 import SetFileMatchPanel from "./components/SetFileMatchPanel";
 import { deskConfigDayFor, deskDayImportIds } from "./domain/deskConfigOutliers";
 import AccountLifecyclePanel from "./components/AccountLifecyclePanel";
@@ -7709,216 +7711,6 @@ export function ManagerOverview({
   );
 }
 
-function MonthlyReportPanel({ client, month, onClose }) {
-  // The live sheet, so ReportSheetActions can send its outerHTML to
-  // /api/report/pdf. It is the SAME DOM window.print() would have printed, which
-  // is the whole reason the downloaded file and the printed one agree.
-  const sheetRef = useRef(null);
-  // month = 'YYYY-MM'
-  const lastMonthImport = (client?.dailyImports || [])
-    .filter((di) => di.date?.startsWith(month))
-    .at(-1);
-  const registry = mergeRegistryCi(
-    lastMonthImport?.accounts,
-    client?.accountRegistry,
-  );
-  const monthImports = (client?.dailyImports || []).filter((di) =>
-    di.date?.startsWith(month),
-  );
-  const allDays = monthImports.map((di) => {
-    const pnl = (di.snapshots || []).reduce(
-      (s, snap) => s + Number(snap.grossRealizedPnl || 0),
-      0,
-    );
-    return { date: di.date, pnl, status: di.status };
-  });
-  const totalPnl = allDays.reduce((s, d) => s + d.pnl, 0);
-  const positiveDays = allDays.filter((d) => d.pnl > 0);
-  const negativeDays = allDays.filter((d) => d.pnl < 0);
-  const bestDay = allDays.length
-    ? allDays.reduce((b, d) => (d.pnl > b.pnl ? d : b), allDays[0])
-    : null;
-  const worstDay = allDays.length
-    ? allDays.reduce((w, d) => (d.pnl < w.pnl ? d : w), allDays[0])
-    : null;
-
-  // Per-account monthly summary
-  const accountMap = {};
-  for (const di of monthImports) {
-    for (const snap of di.snapshots || []) {
-      const meta = ciMeta(registry, snap.accountName);
-      if (meta.accountType === "Inactive / Ignore") continue;
-      if (!accountMap[snap.accountName]) {
-        accountMap[snap.accountName] = {
-          alias: meta.alias || snap.accountName,
-          type: meta.accountType || "",
-          pnl: 0,
-          days: 0,
-          winDays: 0,
-        };
-      }
-      const pnl = Number(snap.grossRealizedPnl || 0);
-      accountMap[snap.accountName].pnl += pnl;
-      accountMap[snap.accountName].days += 1;
-      if (pnl > 0) accountMap[snap.accountName].winDays += 1;
-    }
-  }
-  const accountRows = Object.values(accountMap).sort((a, b) => b.pnl - a.pnl);
-
-  const sign = (n) => (n >= 0 ? "+" : "");
-  const monthLabel = new Date(month + "-02").toLocaleDateString("en-US", {
-    month: "long",
-    year: "numeric",
-  });
-
-  return (
-    <div
-      className="report-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div className="report-sheet" ref={sheetRef}>
-        <div className="report-actions no-print">
-          <ReportSheetActions title={`${client?.name || "Client"} - ${monthLabel} monthly report`} sheetRef={sheetRef} />
-          <button
-            className="report-close-button"
-            type="button"
-            onClick={onClose}
-            aria-label="Close report"
-            title="Close report"
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <header className="report-header">
-          <div>
-            <p className="report-firm">Vincere Trading</p>
-            <h1>{client?.name}</h1>
-            <span>Monthly performance report · {monthLabel}</span>
-          </div>
-          <div className="report-header-right">
-            <strong className={totalPnl >= 0 ? "positive" : "negative"}>
-              {sign(totalPnl)}
-              {formatCurrency(totalPnl)}
-            </strong>
-            <small>net P&amp;L</small>
-          </div>
-        </header>
-
-        <section className="report-metrics">
-          <div>
-            <span>Trading days</span>
-            <strong>{allDays.length}</strong>
-          </div>
-          <div>
-            <span>Positive days</span>
-            <strong className="positive">{positiveDays.length}</strong>
-          </div>
-          <div>
-            <span>Negative days</span>
-            <strong className={negativeDays.length ? "negative" : ""}>
-              {negativeDays.length}
-            </strong>
-          </div>
-          <div>
-            <span>Win rate</span>
-            <strong>
-              {allDays.length
-                ? Math.round((positiveDays.length / allDays.length) * 100)
-                : 0}
-              %
-            </strong>
-          </div>
-          {bestDay ? (
-            <div>
-              <span>Best day</span>
-              <strong className="positive">
-                {sign(bestDay.pnl)}
-                {formatCurrency(bestDay.pnl)} <small>({bestDay.date})</small>
-              </strong>
-            </div>
-          ) : null}
-          {worstDay ? (
-            <div>
-              <span>Worst day</span>
-              <strong className={worstDay.pnl < 0 ? "negative" : ""}>
-                {sign(worstDay.pnl)}
-                {formatCurrency(worstDay.pnl)} <small>({worstDay.date})</small>
-              </strong>
-            </div>
-          ) : null}
-        </section>
-
-        {accountRows.length > 0 ? (
-          <section>
-            <h2>Account breakdown</h2>
-            <table className="ops-table">
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Type</th>
-                  <th>Monthly P&amp;L</th>
-                  <th>Trade days</th>
-                  <th>Win rate</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accountRows.map((row) => (
-                  <tr key={row.alias}>
-                    <td>
-                      <strong>{row.alias}</strong>
-                    </td>
-                    <td>{row.type}</td>
-                    <td className={row.pnl >= 0 ? "positive" : "negative"}>
-                      {sign(row.pnl)}
-                      {formatCurrency(row.pnl)}
-                    </td>
-                    <td>{row.days}</td>
-                    <td>
-                      {row.days
-                        ? Math.round((row.winDays / row.days) * 100)
-                        : 0}
-                      %
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        ) : null}
-
-        {allDays.length > 0 ? (
-          <section>
-            <h2>Daily P&amp;L</h2>
-            <table className="ops-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>P&amp;L</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {allDays.map((d) => (
-                  <tr key={d.date}>
-                    <td>{d.date}</td>
-                    <td className={d.pnl >= 0 ? "positive" : "negative"}>
-                      {sign(d.pnl)}
-                      {formatCurrency(d.pnl)}
-                    </td>
-                    <td>{d.status || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 /**
  * The report designer.
  *
@@ -14316,7 +14108,10 @@ export default function App() {
   // working list is that the CAM stops scrolling past them every morning.
   const [showFormerClients, setShowFormerClients] = useState(false);
   const [showCamDayReport, setShowCamDayReport] = useState(false);
-  const [monthlyReportMonth, setMonthlyReportMonth] = useState(null);
+  // The client period report: null when closed, else the window it opens on.
+  // `anchorDate` is set only by the overview's month strip, which names the
+  // month it wants; the report buttons open on the workspace date.
+  const [periodReport, setPeriodReport] = useState(null);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
@@ -14483,6 +14278,23 @@ export default function App() {
     for (const id of wanted) closeDetailCache.current.set(id, { status: "loading", promise: request });
     return request;
   }
+
+  /**
+   * A window of closes in full, with a load state of its own: the client
+   * period report. Account rows, strategy rows and fills in one close-detail
+   * fetch per window, on the same cache opening a close uses, keyed per panel
+   * so each window has its own state. Why this fetch and not the ranking one,
+   * and the care it takes, are in src/domain/closeDetailWindowLoader.js.
+   *
+   * Built once: everything it is handed is stable across renders (a ref, a
+   * state setter, and setPanelLoad, which reads nothing but a setter).
+   */
+  const ensureCloseDetailFor = useMemo(() => createWindowDetailLoader({
+    cache: closeDetailCache,
+    load: loadSupabaseCloseDetail,
+    onLoaded: (detail) => setState((current) => mergeSupabaseCloseDetail(current, detail)),
+    setPanelLoad,
+  }), []);
 
   /**
    * The rows a configuration panel or the ranking board needs, for its own day.
@@ -17376,6 +17188,18 @@ export default function App() {
                       >
                         <FileText size={16} /> Build Daily Report
                       </button>
+                      {/* The other report a client gets: a week, two, four, a
+                          month or a range, built from every close in it. Not
+                          tied to this date having a close, because the week
+                          around it may well have others. */}
+                      <button
+                        className="secondary-button workspace-period-button"
+                        disabled={!(selectedClient?.dailyImports || []).length}
+                        onClick={() => setPeriodReport({ kind: "week" })}
+                        title="A report over a week, several weeks, a month or a custom range"
+                      >
+                        <CalendarRange size={16} /> Build Period Report
+                      </button>
                       {dailyImport ? (
                         <button
                           className="ghost-button"
@@ -17697,7 +17521,7 @@ export default function App() {
                           allClients={state.clients || []}
                           camName={currentCamProfile?.name || ""}
                           onRequestMonthlyReport={(month) =>
-                            setMonthlyReportMonth(month)
+                            setPeriodReport({ kind: "month", anchorDate: `${month}-01` })
                           }
                           onLogPayout={handleLogPayout}
                         />
@@ -17857,6 +17681,7 @@ export default function App() {
                           title={effectiveActiveTab}
                           mode={tabMode(effectiveActiveTab)}
                           onBuildReport={() => setReportImport(dailyImport)}
+                          onBuildPeriodReport={() => setPeriodReport({ kind: "week" })}
                           onRecalculate={recalculateImport}
                           onResolveFlag={handleResolveFlag}
                           onBulkResolveFlags={handleBulkResolveFlags}
@@ -17958,11 +17783,23 @@ export default function App() {
             onClose={() => setShowCamDayReport(false)}
           />
         ) : null}
-        {monthlyReportMonth ? (
-          <MonthlyReportPanel
+        {periodReport && selectedClient ? (
+          <ClientPeriodReportPanel
+            // Remounted per client and per request, so a window chosen for one
+            // client is never carried over to the next one opened.
+            key={`${selectedClient.id}:${periodReport.kind}:${periodReport.anchorDate || selectedDate}`}
             client={selectedClient}
-            month={monthlyReportMonth}
-            onClose={() => setMonthlyReportMonth(null)}
+            selectedDate={selectedDate}
+            anchorDate={periodReport.anchorDate || ""}
+            initialKind={periodReport.kind}
+            accountManager={
+              (state.camProfiles || []).find((cam) => (cam.clientIds || []).includes(selectedClient.id))?.name
+              || currentCamProfile?.name
+              || ""
+            }
+            onNeedCloseRows={ensureCloseDetailFor}
+            closeRowsLoadFor={panelLoadFor}
+            onClose={() => setPeriodReport(null)}
           />
         ) : null}
         {showShortcuts && (

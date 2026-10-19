@@ -1074,7 +1074,8 @@ small {
 }
 
 .client-primary-actions .date-nav,
-.client-primary-actions .primary-button {
+.client-primary-actions .primary-button,
+.client-primary-actions .workspace-period-button {
   width: 100%;
 }
 
@@ -9793,4 +9794,239 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
+}
+
+/* ------------------------------------------------------------------------- *
+   The client period report (src/components/ClientPeriodReportPanel.jsx).
+
+   A `.report-sheet` like the daily report: light paper whatever the app theme
+   is, printed and downloaded through the same `@media print` rules, because
+   /api/report/pdf renders this very stylesheet against the sheet's outerHTML.
+   Everything is scoped under `.client-period-report` so no other report moves.
+
+   Set in the two families the PDF route ships (Inter, Outfit) with tabular
+   figures; the demo's monospace labels are Inter caps here, because a third
+   family is a font the PDF function would have to fetch and does not.
+ * ------------------------------------------------------------------------- */
+.report-sheet.client-period-report {
+  --cpr-ink: #102033;
+  --cpr-muted: #5d6c7e;
+  --cpr-faint: #8a97a6;
+  --cpr-rule: #dde3ea;
+  --cpr-soft: #f3f6f9;
+  --cpr-accent: #1d5fd1;
+  --cpr-pos: #11804a;
+  --cpr-neg: #c23a2f;
+  --cpr-empty: #eef1f4;
+  width: min(1040px, 100%);
+  color: var(--cpr-ink);
+  font-size: 14px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.client-period-report .cpr-actions { justify-content: flex-end; }
+.client-period-report .cpr-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-right: auto;
+}
+.client-period-report .cpr-segmented {
+  display: inline-flex; border: 1px solid #ccd9e3; border-radius: 8px; overflow: hidden; background: #ffffff;
+}
+.client-period-report .cpr-segmented button {
+  font: 500 13px var(--font-sans); color: #4b5c6d; background: transparent; border: 0;
+  border-right: 1px solid #ccd9e3; border-radius: 0; padding: 7px 13px; min-height: 0; cursor: pointer;
+}
+.client-period-report .cpr-segmented button:last-child { border-right: 0; }
+.client-period-report .cpr-segmented button[aria-pressed="true"] { background: #102033; color: #ffffff; }
+.client-period-report .cpr-segmented button:focus-visible { outline: 2px solid #1d5fd1; outline-offset: -2px; }
+.client-period-report .cpr-stepper { display: inline-flex; align-items: center; gap: 6px; }
+.client-period-report .cpr-window-label { font-size: 13px; color: #12202b; white-space: nowrap; }
+.client-period-report .cpr-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #536477; }
+.client-period-report .cpr-field input {
+  background: #ffffff; color: #12202b; border: 1px solid #cbd5e1; border-radius: 6px;
+  min-height: 32px; padding: 0 8px; font: inherit;
+}
+.client-period-report .cpr-control-note { font-size: 12px; color: #536477; }
+.client-period-report .cpr-loading { padding: 24px 0; }
+
+.client-period-report .cpr-body { display: grid; gap: 30px; min-width: 0; }
+.client-period-report .cpr-section { min-width: 0; }
+.client-period-report .cpr-head { display: grid; gap: 14px; }
+.client-period-report .cpr-brandline {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline;
+}
+.client-period-report .cpr-firm {
+  font: 600 11px var(--font-sans); letter-spacing: 0.16em; text-transform: uppercase; color: var(--cpr-muted);
+}
+.client-period-report .cpr-stamp { font-size: 11px; color: var(--cpr-faint); }
+.client-period-report h1 {
+  font: 600 34px/1.1 var(--font-heading); margin: 0; letter-spacing: -0.01em; color: var(--cpr-ink);
+}
+.client-period-report .cpr-who { display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--cpr-muted); font-size: 13px; }
+.client-period-report .cpr-who b { color: var(--cpr-ink); font-weight: 600; }
+.client-period-report h2 { font: 600 18px/1.2 var(--font-heading); margin: 0 0 4px; color: var(--cpr-ink); }
+.client-period-report h3 { font: 600 14px/1.3 var(--font-heading); margin: 0 0 2px; color: var(--cpr-ink); }
+.client-period-report .cpr-sub { color: var(--cpr-muted); font-size: 13px; margin: 0 0 14px; max-width: 72ch; }
+.client-period-report .cpr-empty { color: var(--cpr-muted); font-size: 13px; margin: 0; }
+.client-period-report .cpr-subblock { margin-top: 18px; }
+
+/* Coverage: the denominator of everything below, printed first. */
+.client-period-report .cpr-coverage {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; margin: 0;
+  background: var(--cpr-rule); border: 1px solid var(--cpr-rule); border-radius: 6px; overflow: hidden;
+}
+.client-period-report .cpr-coverage div { background: var(--cpr-soft); padding: 12px 14px; display: grid; gap: 2px; }
+.client-period-report .cpr-coverage dt {
+  font: 600 11px var(--font-sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--cpr-muted);
+}
+.client-period-report .cpr-coverage dd { margin: 0; font: 500 20px var(--font-heading); }
+.client-period-report .cpr-coverage dd small { font: 400 12px var(--font-sans); color: var(--cpr-muted); margin-left: 4px; }
+.client-period-report .cpr-coverage-note { font-size: 12px; color: var(--cpr-muted); margin: 8px 0 0; }
+
+.client-period-report .cpr-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 22px 28px; }
+.client-period-report .cpr-kpi { display: grid; gap: 4px; border-top: 2px solid var(--cpr-ink); padding-top: 10px; }
+.client-period-report .cpr-kpi-label {
+  font: 600 11px var(--font-sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--cpr-muted);
+}
+.client-period-report .cpr-kpi-value { font: 600 28px/1.1 var(--font-heading); }
+.client-period-report .cpr-kpi-detail { font-size: 12px; color: var(--cpr-muted); }
+
+.client-period-report .cpr-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 26px; }
+.client-period-report .cpr-chart { min-width: 0; }
+.client-period-report .cpr-chart-title { font: 600 14px var(--font-heading); margin: 0 0 2px; }
+.client-period-report .cpr-chart-sub { font-size: 12px; color: var(--cpr-muted); margin: 0 0 8px; }
+.client-period-report .cpr-chart-empty { font-size: 12px; color: var(--cpr-muted); margin: 24px 0; }
+.client-period-report .cpr-chart svg { display: block; width: 100%; height: auto; max-width: 100%; }
+.client-period-report svg text { font-family: var(--font-sans); font-size: 10px; fill: var(--cpr-muted); }
+.client-period-report svg .cpr-hole-label { font-style: italic; fill: var(--cpr-faint); }
+.client-period-report .cpr-grid-line { stroke: var(--cpr-rule); stroke-width: 1; }
+.client-period-report .cpr-zero-line { stroke: var(--cpr-faint); stroke-width: 1; }
+.client-period-report .cpr-bar-pos { fill: var(--cpr-pos); }
+.client-period-report .cpr-bar-neg { fill: var(--cpr-neg); }
+.client-period-report .cpr-line { fill: none; stroke: var(--cpr-accent); stroke-width: 2; stroke-linejoin: round; }
+.client-period-report .cpr-area { fill: var(--cpr-accent); fill-opacity: 0.08; }
+.client-period-report .cpr-dot { fill: #ffffff; stroke: var(--cpr-accent); stroke-width: 1.5; }
+.client-period-report .cpr-dot-last { fill: var(--cpr-accent); stroke: var(--cpr-accent); stroke-width: 1.5; }
+.client-period-report .cpr-spark { width: 90px; height: 24px; display: inline-block; vertical-align: middle; }
+.client-period-report .cpr-spark-line { stroke-width: 1.5; }
+
+.client-period-report .cpr-table-scroll { overflow-x: auto; border: 1px solid var(--cpr-rule); border-radius: 6px; }
+.client-period-report .cpr-table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+.client-period-report .cpr-table th,
+.client-period-report .cpr-table td {
+  padding: 9px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--cpr-rule); vertical-align: middle;
+}
+.client-period-report .cpr-table th {
+  font: 600 11px var(--font-sans); letter-spacing: 0.05em; text-transform: uppercase; color: var(--cpr-muted);
+  background: var(--cpr-soft);
+  /* Headings wrap between words so nine columns fit the sheet; figures never do. */
+  white-space: normal; vertical-align: bottom;
+}
+.client-period-report .cpr-table th:first-child,
+.client-period-report .cpr-table td:first-child { text-align: left; }
+/* A label column, so a long account name wraps rather than widening the
+   table past the sheet. */
+.client-period-report .cpr-table td:first-child { white-space: normal; overflow-wrap: anywhere; min-width: 90px; }
+.client-period-report .cpr-table tbody tr:last-child td { border-bottom: 0; }
+.client-period-report .cpr-table tfoot td { font-weight: 600; border-top: 1px solid var(--cpr-ink); border-bottom: 0; }
+.client-period-report .cpr-table td.cpr-hole { text-align: left; font-style: italic; }
+.client-period-report .cpr-pos { color: var(--cpr-pos); }
+.client-period-report .cpr-neg { color: var(--cpr-neg); }
+.client-period-report .cpr-muted { color: var(--cpr-muted); }
+.client-period-report .cpr-strong { font-weight: 600; }
+.client-period-report .cpr-meta { display: block; font-size: 11px; color: var(--cpr-muted); font-weight: 400; }
+.client-period-report .cpr-bar-cell { width: 22%; min-width: 110px; }
+.client-period-report .cpr-hbar { position: relative; height: 10px; }
+.client-period-report .cpr-hbar-axis { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--cpr-faint); }
+.client-period-report .cpr-hbar-fill { position: absolute; top: 0; bottom: 0; border-radius: 2px; }
+.client-period-report .cpr-fill-pos { background: var(--cpr-pos); }
+.client-period-report .cpr-fill-neg { background: var(--cpr-neg); }
+
+/* The activity grid. A hatched cell is a day with no close; a blank one is a
+   day the algorithm was not loaded; a dashed one ran beside another algorithm
+   whose result could not be split from its own. */
+.client-period-report .cpr-heat-scroll { overflow-x: auto; }
+.client-period-report .cpr-heat { display: grid; gap: 3px; min-width: 520px; }
+.client-period-report .cpr-heat-row { display: grid; gap: 3px; align-items: center; }
+.client-period-report .cpr-heat-lab {
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px;
+}
+.client-period-report .cpr-heat-day { font-size: 9px; color: var(--cpr-muted); text-align: center; white-space: nowrap; overflow: visible; }
+.client-period-report .cpr-heat-cell { display: block; height: 22px; border-radius: 3px; }
+.client-period-report .cpr-quiet { background: var(--cpr-empty); }
+.client-period-report .cpr-notloaded { background: transparent; }
+.client-period-report .cpr-noclose {
+  background: repeating-linear-gradient(45deg, #dfe4ea, #dfe4ea 3px, transparent 3px, transparent 6px);
+}
+.client-period-report .cpr-unsplit { background: #ffffff; border: 1px dashed var(--cpr-faint); }
+.client-period-report .cpr-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11px; color: var(--cpr-muted); margin-top: 10px; align-items: center;
+}
+.client-period-report .cpr-key {
+  display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 5px;
+}
+.client-period-report .cpr-gain-key { background: rgba(17, 128, 74, 0.75); }
+.client-period-report .cpr-loss-key { background: rgba(194, 58, 47, 0.75); }
+
+.client-period-report .cpr-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.client-period-report .cpr-chip {
+  display: inline-flex; gap: 8px; align-items: baseline; border: 1px solid var(--cpr-rule); border-radius: 999px;
+  padding: 4px 12px; font-size: 12px; background: var(--cpr-soft);
+}
+.client-period-report .cpr-chip b { font-weight: 600; }
+.client-period-report .cpr-chip span { color: var(--cpr-muted); font-size: 11px; }
+
+.client-period-report .cpr-sim-row {
+  display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; background: var(--cpr-soft);
+  border: 1px dashed var(--cpr-rule); border-radius: 6px; padding: 12px 14px; margin-top: 8px;
+}
+.client-period-report .cpr-sim-row b { font-weight: 600; }
+.client-period-report .cpr-notes {
+  display: grid; gap: 6px; font-size: 12px; color: var(--cpr-muted); border-top: 1px solid var(--cpr-rule); padding-top: 16px;
+}
+.client-period-report .cpr-notes p { margin: 0; max-width: 96ch; }
+.client-period-report .cpr-notes b { color: var(--cpr-ink); font-weight: 600; }
+
+@media (max-width: 520px) {
+  .client-period-report h1 { font-size: 26px; }
+  .client-period-report .cpr-kpi-value { font-size: 24px; }
+  .client-period-report .cpr-table th,
+  .client-period-report .cpr-table td { padding: 8px 9px; }
+}
+
+/* Paper. The page box is about 725px wide, so the grids are pinned to the
+   column counts that fit it rather than to the screen's breakpoints, the
+   scroll boxes open up (a scroll box prints as whatever it was showing), and
+   what reads only whole (a chart, a figure, a row of the grid, a chip) is
+   never cut across two sheets. */
+@media print {
+  .report-sheet.client-period-report { width: 100%; font-size: 12px; }
+  .client-period-report .cpr-body { gap: 16px; }
+  .client-period-report h1 { font-size: 26px; }
+  .client-period-report h2 { font-size: 15px; }
+  .client-period-report .cpr-sub { margin-bottom: 8px; }
+  .client-period-report .cpr-coverage { grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); }
+  .client-period-report .cpr-coverage dd { font-size: 16px; }
+  .client-period-report .cpr-kpis { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .client-period-report .cpr-kpi-value { font-size: 20px; }
+  .client-period-report .cpr-charts { grid-template-columns: 1fr 1fr; gap: 16px; }
+  .client-period-report .cpr-table-scroll,
+  .client-period-report .cpr-heat-scroll { overflow: visible; }
+  .client-period-report .cpr-heat { min-width: 0; }
+  .client-period-report .cpr-table th,
+  .client-period-report .cpr-table td { padding: 5px 6px; }
+  .client-period-report .cpr-bar-cell { min-width: 80px; }
+  /* Eight columns of figures and a sparkline are 20px wider than the page at
+     screen sizes; the sparkline is the one that can give. */
+  .client-period-report .cpr-spark { width: 60px; height: 20px; }
+  .client-period-report .cpr-head,
+  .client-period-report .cpr-coverage,
+  .client-period-report .cpr-kpi,
+  .client-period-report .cpr-chart,
+  .client-period-report .cpr-heat-row,
+  .client-period-report .cpr-legend,
+  .client-period-report .cpr-chip,
+  .client-period-report .cpr-sim-row {
+    break-inside: avoid;
+  }
+  .client-period-report .cpr-notes { break-before: avoid; }
 }
