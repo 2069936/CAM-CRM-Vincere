@@ -19,7 +19,14 @@ command: **Auto Collection → the client → step 1**, with a copy button.
    when the package carries one.
 5. Registers the `Vincere Auto Export` service as LocalSystem, delayed auto
    start, restarting three times on failure.
-6. Starts the service and opens the pairing window.
+6. Starts the service.
+7. Registers the `Vincere Auto Export watchdog` scheduled task, which runs as
+   SYSTEM five minutes after boot and every 15 minutes and starts the service
+   if it is stopped. Windows gives a service 30 seconds to start and does not
+   try again when it misses them, which is what left 34 machines silent after
+   the reboot of 2026-10-18. To keep the agent off on purpose, set the service
+   to Disabled; a service that is only stopped is started again.
+8. Opens the pairing window.
 
 `uninstall-agent.ps1` reverses it. The data folder is kept by default so a
 re-install stays paired; `-RemoveData` forces a fresh pairing.
@@ -90,6 +97,7 @@ AddOn is in place.
 Install on **one** VPS first and confirm:
 
 - the service is running — `Get-Service 'Vincere Auto Export'`
+- the watchdog is registered — `Get-ScheduledTask 'Vincere Auto Export watchdog'`
 - the machine appears under **Auto Collection** in the CRM after pairing
 - the next scheduled capture lands as that client's daily close, and its four
   sections match what a manual upload produces for the same day

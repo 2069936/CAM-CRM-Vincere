@@ -25,6 +25,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ServiceName = 'Vincere Auto Export'
+$WatchdogTaskName = 'Vincere Auto Export watchdog'
 $InstallRoot = Join-Path ${env:ProgramFiles} 'Vincere\Auto Export'
 $DataRoot = Join-Path ${env:ProgramData} 'Vincere\AutoExport'
 
@@ -39,6 +40,13 @@ function Write-Ok { param([string]$Text) Write-Host "    $Text" -ForegroundColor
 $identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run this from an elevated PowerShell (right-click > Run as administrator).'
+}
+
+# The watchdog first, or it starts the service again while it is being removed
+# and keeps trying to start a service that no longer exists every 15 minutes.
+if (Get-ScheduledTask -TaskName $WatchdogTaskName -ErrorAction SilentlyContinue) {
+    Write-Step "Removing the $WatchdogTaskName task"
+    Unregister-ScheduledTask -TaskName $WatchdogTaskName -Confirm:$false
 }
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
