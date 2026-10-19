@@ -85,7 +85,18 @@ export function hasVerifiableSha256(release) {
  * Returns '' when there is nothing verifiable to hand over: no release, a
  * signed setup executable (run directly, so it gets the download link), or a
  * package without a well formed sha256. Handing over an unverified line is
- * exactly what this exists to prevent. */
+ * exactly what this exists to prevent.
+ *
+ * WITH NINJATRADER OPEN IT INSTALLS THE AGENT ONLY. install-agent.ps1 refuses
+ * to run while NinjaTrader is open, because the AddOn it rebuilds is loaded
+ * there, so every install had to wait for the market to close or for someone
+ * to type -SkipAddOn by hand. The line now looks first: with NinjaTrader
+ * running it passes -SkipAddOn and -SkipBackup (the backup exists to protect
+ * the strategies from an AddOn replacement that is not happening) and says so,
+ * and the AddOn stays at the version it is. With NinjaTrader closed it is the
+ * full install it always was. A release that needs a newer AddOn says so in
+ * the CRM (minimumAddonVersion), and that one still has to be run with
+ * NinjaTrader closed. */
 export function buildInstallCommand(release) {
   const url = String(release?.url || '').trim();
   // Only the package release is expandable. A signed setup executable is run
@@ -103,7 +114,9 @@ export function buildInstallCommand(release) {
     '$hash=(Get-FileHash -LiteralPath "$d.zip" -Algorithm SHA256).Hash',
     `if ($hash -ne '${sha256}') { Remove-Item -LiteralPath "$d.zip" -Force -ErrorAction SilentlyContinue; throw "SHA256 mismatch, nothing was installed: $hash" }`,
     'Expand-Archive "$d.zip" $d -Force',
-    '& "$d\\install-agent.ps1" -PackagePath $d',
+    '$only=@{}',
+    "if (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue) { $only=@{SkipAddOn=$true; SkipBackup=$true}; Write-Host 'NinjaTrader is open: installing the agent only and leaving the AddOn as it is. Close NinjaTrader and run this line again to update the AddOn.' }",
+    '& "$d\\install-agent.ps1" -PackagePath $d @only',
   ].join('; ');
 }
 

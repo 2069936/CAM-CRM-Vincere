@@ -14,7 +14,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -65,7 +65,12 @@ describe.skipIf(!hasPwsh)('the install line under a real PowerShell', () => {
     // with which -PackagePath, which is what the hash check must prevent.
     await writeFile(
       path.join(packageDir, 'install-agent.ps1'),
-      "param([string]$PackagePath)\nSet-Content -LiteralPath (Join-Path $env:TEMP 'installer-ran.txt') -Value $PackagePath\n",
+      [
+        'param([string]$PackagePath, [switch]$SkipAddOn, [switch]$SkipBackup)',
+        "Set-Content -LiteralPath (Join-Path $env:TEMP 'installer-ran.txt') -Value $PackagePath",
+        "Set-Content -LiteralPath (Join-Path $env:TEMP 'installer-switches.txt') -Value ('SkipAddOn=' + $SkipAddOn.IsPresent + ' SkipBackup=' + $SkipBackup.IsPresent)",
+        '',
+      ].join('\n'),
     );
     const zipPath = path.join(root, 'package.zip');
     const built = await runPwsh(
@@ -107,6 +112,35 @@ describe.skipIf(!hasPwsh)('the install line under a real PowerShell', () => {
     const ran = await readFile(path.join(temp, 'installer-ran.txt'), 'utf8');
     expect(ran.trim()).toMatch(/vincere-agent$/);
     expect(existsSync(path.join(temp, 'vincere-agent', 'install-agent.ps1'))).toBe(true);
+    // No NinjaTrader on this machine, so the full install: no switches.
+    const switches = await readFile(path.join(temp, 'installer-switches.txt'), 'utf8');
+    expect(switches.trim()).toBe('SkipAddOn=False SkipBackup=False');
+  }, 60_000);
+
+  /* A PROCESS CALLED NinjaTrader, SO THE LINE'S OWN CHECK IS WHAT IS TESTED.
+   * Get-Process -Name matches the process name, which on Linux is the
+   * executable's file name; a copy of `sleep` named NinjaTrader is therefore,
+   * to the line, an open NinjaTrader. Linux only: that is where CI runs pwsh. */
+  it.skipIf(process.platform !== 'linux')('installs the agent only, without the AddOn or the backup, while NinjaTrader is open', async () => {
+    const temp = await freshTemp('ninjatrader-open');
+    const fake = path.join(root, 'NinjaTrader');
+    const sleepPath = ['/bin/sleep', '/usr/bin/sleep'].find((candidate) => existsSync(candidate));
+    expect(sleepPath).toBeTruthy();
+    await copyFile(sleepPath, fake);
+    await chmod(fake, 0o755);
+    const ninja = spawn(fake, ['120'], { stdio: 'ignore' });
+    try {
+      // Give the process a moment to exist before the line looks for it.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const command = buildInstallCommand({ url: `${baseUrl}/Vincere-AutoExport-Agent.zip`, kind: 'zip', sha256 });
+      const result = await runPwsh(command, { TEMP: temp });
+      expect(result.code, result.stderr).toBe(0);
+      expect(flatten(result.stdout)).toContain(flatten('NinjaTrader is open: installing the agent only'));
+      const switches = await readFile(path.join(temp, 'installer-switches.txt'), 'utf8');
+      expect(switches.trim()).toBe('SkipAddOn=True SkipBackup=True');
+    } finally {
+      ninja.kill('SIGKILL');
+    }
   }, 60_000);
 
   it('accepts the digest whatever its case, since Get-FileHash answers in upper case', async () => {
