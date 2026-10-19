@@ -575,8 +575,25 @@ New-Service -Name $ServiceName `
 Write-Ok 'Service registered (delayed auto start, restarts on failure).'
 
 Write-Step 'Starting the service'
-Start-Service -Name $ServiceName
-(Get-Service -Name $ServiceName).WaitForStatus('Running', '00:00:30')
+# Up to three tries, two minutes each. Windows gives a starting service 30
+# seconds to connect and gives up after that without retrying (events 7009 and
+# 7000), and a just-copied 110 MB agent on a busy VPS, with the antivirus
+# scanning it, can miss that window: it is what kept 34 machines silent after
+# the reboot of 2026-10-18. A first install would throw, and an update from the
+# CRM would roll back, for a start that only needed a second chance.
+$serviceStarted = $false
+for ($startAttempt = 1; -not $serviceStarted; $startAttempt++) {
+    try {
+        Start-Service -Name $ServiceName
+        (Get-Service -Name $ServiceName).WaitForStatus('Running', '00:02:00')
+        $serviceStarted = $true
+    }
+    catch {
+        if ($startAttempt -ge 3) { throw }
+        Write-Warning "The service did not start on try $startAttempt ($($_.Exception.Message)). Trying again."
+        Start-Sleep -Seconds 10
+    }
+}
 Write-Ok 'Service running.'
 
 Write-Step 'Registering the watchdog that starts the service if it is ever left stopped'

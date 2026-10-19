@@ -424,6 +424,12 @@ Describe 'The service is started again when Windows leaves it stopped' {
         $installText | Should -Match ([regex]::Escape("`$WatchdogTaskName = 'Vincere Auto Export watchdog'"))
     }
 
+    It 'gives the service three tries of two minutes to start, not one of thirty seconds' {
+        $installText | Should -Match ([regex]::Escape("WaitForStatus('Running', '00:02:00')"))
+        $installText | Should -Not -Match ([regex]::Escape("WaitForStatus('Running', '00:00:30')"))
+        $installText | Should -Match ([regex]::Escape('if ($startAttempt -ge 3) { throw }'))
+    }
+
     It 'lets the recovery actions run when the service stops itself with an error' {
         $installText | Should -Match ([regex]::Escape('& sc.exe failureflag "$ServiceName" 1'))
     }
