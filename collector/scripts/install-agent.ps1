@@ -164,8 +164,20 @@ if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrat
     throw 'Run this from an elevated PowerShell (right-click > Run as administrator). Registering a Windows service needs admin.'
 }
 
+# WITH NINJATRADER OPEN, THE AGENT ONLY.
+#
+# This used to refuse and change nothing, because the AddOn it rebuilds is
+# loaded in NinjaTrader. That made every install wait for the market to close or
+# for someone to type -SkipAddOn. The agent itself has nothing to do with
+# NinjaTrader being open, so now the install goes ahead without the AddOn and
+# without the backup (which exists to protect the strategies from an AddOn
+# replacement that is not happening), and says so. With NinjaTrader closed it is
+# the full install it always was. A release that needs a newer AddOn says so in
+# the CRM, and that one still has to be run with NinjaTrader closed.
 if (-not $SkipAddOn -and (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue)) {
-    throw 'Close NinjaTrader completely before installing, then run this again. The AddOn cannot be replaced while it is loaded.'
+    Write-Warning 'NinjaTrader is open, so only the agent is installed and the AddOn stays as it is. Close NinjaTrader and run this again to update the AddOn.'
+    $SkipAddOn = [switch]$true
+    $SkipBackup = [switch]$true
 }
 
 # --- resolve the package ---------------------------------------------------

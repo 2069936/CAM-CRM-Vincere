@@ -28,6 +28,12 @@ command: **Auto Collection → the client → step 1**, with a copy button.
    to Disabled; a service that is only stopped is started again.
 8. Opens the pairing window.
 
+With NinjaTrader open, steps 1 and 4 are skipped and the script says so: the
+agent is installed and the AddOn and the backup are left alone, because the
+AddOn cannot be replaced while NinjaTrader has it loaded. Run it again with
+NinjaTrader closed when a release needs a newer AddOn; the CRM says which ones
+do. The CRM's install line makes the same check before it calls the script.
+
 `uninstall-agent.ps1` reverses it, including the `Vincere Auto Export update`
 task an update from the CRM leaves behind if it is interrupted. The data folder
 is kept by default so a re-install stays paired; `-RemoveData` forces a fresh

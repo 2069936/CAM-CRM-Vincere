@@ -424,6 +424,19 @@ Describe 'The service is started again when Windows leaves it stopped' {
         $installText | Should -Match ([regex]::Escape("`$WatchdogTaskName = 'Vincere Auto Export watchdog'"))
     }
 
+    It 'installs the agent only, without the AddOn or the backup, while NinjaTrader is open' {
+        $check = $installText.IndexOf("if (-not `$SkipAddOn -and (Get-Process -Name 'NinjaTrader'")
+        $check | Should -BeGreaterThan -1
+        $block = $installText.Substring($check, 500)
+        $block | Should -Match ([regex]::Escape('$SkipAddOn = [switch]$true'))
+        $block | Should -Match ([regex]::Escape('$SkipBackup = [switch]$true'))
+        $block | Should -Match 'Write-Warning'
+        $installText | Should -Not -Match 'Close NinjaTrader completely before installing'
+        # Decided before the backup and the AddOn steps read the switches.
+        $check | Should -BeLessThan $installText.IndexOf('if (-not $SkipBackup) {')
+        $check | Should -BeLessThan $installText.IndexOf('if (-not $SkipAddOn) {')
+    }
+
     It 'gives the service three tries of two minutes to start, not one of thirty seconds' {
         $installText | Should -Match ([regex]::Escape("WaitForStatus('Running', '00:02:00')"))
         $installText | Should -Not -Match ([regex]::Escape("WaitForStatus('Running', '00:00:30')"))
@@ -546,7 +559,7 @@ Describe 'An update from the CRM installs the agent, never NinjaTrader, and puts
         $updateText | Should -Match ([regex]::Escape("`$installScript = Join-Path `$PackagePath 'install-agent.ps1'"))
     }
 
-    It 'relies on install-agent.ps1 refusing an open NinjaTrader only without -SkipAddOn, and prompting for nothing' {
+    It 'relies on install-agent.ps1 checking for an open NinjaTrader only without -SkipAddOn, and prompting for nothing' {
         # The two places install-agent.ps1 reaches NinjaTrader are behind the two
         # switches the update passes. Neither script waits for a person.
         $installText | Should -Match ([regex]::Escape("if (-not `$SkipAddOn -and (Get-Process -Name 'NinjaTrader'"))
