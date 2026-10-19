@@ -189,7 +189,9 @@ public sealed class ReleaseCheck
             "$hash=(Get-FileHash -LiteralPath \"$d.zip\" -Algorithm SHA256).Hash",
             "if ($hash -ne '" + sha + "') { Remove-Item -LiteralPath \"$d.zip\" -Force -ErrorAction SilentlyContinue; throw \"SHA256 mismatch, nothing was installed: $hash\" }",
             "Expand-Archive \"$d.zip\" $d -Force",
-            "& \"$d\\install-agent.ps1\" -PackagePath $d",
+            "$only=@{}",
+            "if (Get-Process -Name 'NinjaTrader' -ErrorAction SilentlyContinue) { $only=@{SkipAddOn=$true; SkipBackup=$true}; Write-Host 'NinjaTrader is open: installing the agent only and leaving the AddOn as it is. Close NinjaTrader and run this line again to update the AddOn.' }",
+            "& \"$d\\install-agent.ps1\" -PackagePath $d @only",
         });
     }
 
