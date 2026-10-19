@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
+import { chunkDeviceIds } from './agentUpdate';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REBIND_REASONS = new Set(['vps_rebuilt', 'device_replaced', 'support_reset']);
@@ -24,6 +25,9 @@ const SAFE_MESSAGES = Object.freeze({
   // desk re-clicking a button that cannot work.
   collector_not_configured: 'Automatic collection is not configured for this deployment yet. INGEST_TOKEN_PEPPER has to be set on the server before a VPS can be paired.',
   unavailable: 'Collector setup is temporarily unavailable. Try again.',
+  // The request route sends only the release the CRM pins, and there is none
+  // it can verify right now (GitHub unreachable, or no release configured).
+  release_unavailable: 'No agent release is available to update to right now. Try again in a few minutes.',
 });
 
 export class AutoCollectionApiError extends Error {
@@ -39,6 +43,12 @@ function validateUuid(value) {
   const normalized = String(value || '').trim();
   if (!UUID.test(normalized)) throw new AutoCollectionApiError('invalid_request', { status: 400 });
   return normalized.toLowerCase();
+}
+
+/** Device ids for an agent update: at least one, each a uuid, each once. */
+function agentUpdateIds(deviceIds) {
+  if (!Array.isArray(deviceIds) || !deviceIds.length) throw new AutoCollectionApiError('invalid_request', { status: 400 });
+  return [...new Set(deviceIds.map((id) => validateUuid(id)))];
 }
 
 function boundedInteger(value, fallback, maximum) {
@@ -92,7 +102,7 @@ const INELIGIBILITY_CODES = [
 function errorCode(status, body) {
   if (status === 401 || status === 403) return 'permission_denied';
   const serverCode = typeof body?.error === 'string' ? body.error : '';
-  if (status === 409 && ['active_device_exists', ...INELIGIBILITY_CODES].includes(serverCode)) return serverCode;
+  if (status === 409 && ['active_device_exists', 'release_unavailable', ...INELIGIBILITY_CODES].includes(serverCode)) return serverCode;
   if (status === 404 && serverCode === 'ingest_access_not_found') return serverCode;
   if (status === 503 && serverCode === 'collector_not_configured') return serverCode;
   if (status >= 400 && status < 500) return 'invalid_request';
@@ -230,6 +240,39 @@ export function createAutoCollectionApi({
         throw new AutoCollectionApiError('invalid_request', { status: 400 });
       }
       return request('/api/admin/ingest-reprocess-failed', { method: 'POST', signal, payload: { batchIds: ids, reason: normalizedReason } });
+    },
+
+    /* UPDATING THE AGENT FROM THE CRM (step 70), Manager only.
+     *
+     * Any number of devices: the route takes 300 at a time, so a fleet is
+     * sent in slices of 300 and the counts are added up. The version is the
+     * one the route answered with, the release the CRM pins; the caller never
+     * names one. needsVps counts the machines only an install on the VPS can
+     * update (an agent older than the first self updating build, or an AddOn
+     * below what the release needs). */
+    async requestAgentUpdate(deviceIds, { signal } = {}) {
+      const total = { ok: true, version: null, requested: 0, skipped: 0, needsVps: 0 };
+      for (const chunk of chunkDeviceIds(agentUpdateIds(deviceIds))) {
+        const result = await request('/api/admin/ingest-agent-update', {
+          method: 'POST', signal, payload: { action: 'request', deviceIds: chunk },
+        });
+        total.version = result.version || total.version;
+        total.requested += Number(result.requested) || 0;
+        total.skipped += Number(result.skipped) || 0;
+        total.needsVps += Number(result.needsVps) || 0;
+      }
+      return total;
+    },
+
+    async cancelAgentUpdate(deviceIds, { signal } = {}) {
+      const total = { ok: true, cancelled: 0 };
+      for (const chunk of chunkDeviceIds(agentUpdateIds(deviceIds))) {
+        const result = await request('/api/admin/ingest-agent-update', {
+          method: 'POST', signal, payload: { action: 'cancel', deviceIds: chunk },
+        });
+        total.cancelled += Number(result.cancelled) || 0;
+      }
+      return total;
     },
 
     async loadStatus(clientUuid, { signal } = {}) {

@@ -689,3 +689,40 @@ describe('captures in quarantine on the card', () => {
     expect(html).toContain('1 is final and will not be sent again by the agent; 1 waits for a replay here and is sent again by the agent until then; 1 will be retried by the agent at its next daily review.');
   });
 });
+
+/* UPDATING THE AGENT FROM THE CARD (step 70). The clicks are in
+ * AgentUpdate.test.jsx; this is the static render, Manager against CAM. */
+describe('updating the agent from the card', () => {
+  const device = {
+    id: 'device', status: 'active', healthStatus: 'online', lastSeenAt: '2026-07-23T16:44:00.000Z',
+    agentVersion: '1.3.0', addonVersion: '1.3.0', updateTargetVersion: null, updateState: null,
+  };
+  const manager = { ...base, permissions: { ...base.permissions, updateAgent: true }, device };
+
+  it('offers a Manager the pinned release for an outdated VPS', () => {
+    const html = render(manager);
+    expect(html).toContain('Update agent to 1.4.2');
+    expect(html).toContain('data-action="request-agent-update"');
+    expect(html).not.toContain('Cancel update');
+  });
+
+  it('offers a CAM nothing, and says nothing about a request', () => {
+    const html = render({ ...manager, permissions: { ...base.permissions, updateAgent: false }, device: { ...device, updateTargetVersion: '1.4.2', updateState: 'applying' } });
+    expect(html).not.toContain('Update agent to');
+    expect(html).not.toContain('Cancel update');
+    expect(html).not.toContain('Installing 1.4.2');
+  });
+
+  it('shows where a pending request stands, with Cancel update', () => {
+    const html = render({ ...manager, device: { ...device, updateTargetVersion: '1.4.2', updateState: 'applying' } });
+    expect(html).toContain('Installing 1.4.2');
+    expect(html).toContain('Cancel update');
+    expect(html).not.toContain('Update agent to');
+  });
+
+  it('sends a VPS with an agent older than 1.3.0 to the VPS instead', () => {
+    const html = render({ ...manager, device: { ...device, agentVersion: '1.2.2' } });
+    expect(html).toContain('This agent is older than 1.3.0 and cannot update itself. Install 1.3.0 on the VPS once; later updates can be sent from here.');
+    expect(html).not.toContain('Update agent to');
+  });
+});

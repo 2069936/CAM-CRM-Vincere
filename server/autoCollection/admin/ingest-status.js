@@ -3,6 +3,8 @@ import { createApiClients, requireAppUser, requireClientAssignment } from '../..
 import { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
 import { summarizeQuarantine } from '../../../src/domain/autoCollectionFleet.js';
+import { AGENT_UPDATE_COLUMNS, publicAgentUpdateFields } from '../../../src/domain/agentUpdate.js';
+import { isMissingColumn } from './ingest-fleet.js';
 
 export { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 
@@ -22,6 +24,10 @@ const DEVICE_SELECT = [
   'agent_version', 'addon_version', 'ninjatrader_version', 'last_seen_at',
   'last_capture_at', 'last_success_at', 'last_error_code', 'revoked_at', 'created_at',
 ].join(',');
+// Step 70's columns, dropped from the select when the migration has not run,
+// the way the fleet view drops them: the card then shows no update line and
+// offers no update button, and everything else reads as before.
+const DEVICE_UPDATE_SELECT = `${DEVICE_SELECT},${AGENT_UPDATE_COLUMNS}`;
 const ENROLLMENT_SELECT = 'id,expires_at,consumed_at,revoked_at,created_at';
 const QUARANTINE_SELECT = 'device_id,capture_id,trading_date,code,attempts,quarantined_at,last_attempt_at,reported_at,final';
 /* The tracker's own columns, and nothing the close already stores. The screen
@@ -200,14 +206,19 @@ export function createIngestStatusStore(admin) {
   return {
     async load(clientId) {
       const clientPromise = admin.from('clients').select('id,name').eq('id', clientId).maybeSingle();
-      const devicePromise = maybeLatest('ingest_devices', DEVICE_SELECT, clientId);
+      const devicePromise = maybeLatest('ingest_devices', DEVICE_UPDATE_SELECT, clientId)
+        .then((row) => ({ row, updatable: true }))
+        .catch(async (failure) => {
+          if (!isMissingColumn(failure)) throw failure;
+          return { row: await maybeLatest('ingest_devices', DEVICE_SELECT, clientId), updatable: false };
+        });
       const enrollmentPromise = maybeLatest('ingest_enrollments', ENROLLMENT_SELECT, clientId);
       const attemptPromise = lastPairAttempt(clientId);
       const quarantinePromise = quarantineRows(clientId);
       const batchPromise = lastBatch(clientId);
       const samplePromise = accountSampleRows(clientId);
       const settingsPromise = trackerSettings();
-      const [{ data: client, error }, device, enrollment, attempt, quarantine, batch, samples, settings] = await Promise.all([
+      const [{ data: client, error }, deviceRead, enrollment, attempt, quarantine, batch, samples, settings] = await Promise.all([
         clientPromise,
         devicePromise,
         enrollmentPromise,
@@ -219,7 +230,10 @@ export function createIngestStatusStore(admin) {
       ]);
       if (error) throw error;
       if (!client?.id) throw new ApiError(404, 'client_not_found');
-      return { client, device, enrollment, attempt, quarantine, batch, samples, settings };
+      return {
+        client, device: deviceRead.row, agentUpdateSupported: deviceRead.updatable,
+        enrollment, attempt, quarantine, batch, samples, settings,
+      };
     },
   };
 }
@@ -266,6 +280,8 @@ function publicDevice(row) {
       time: row.schedule_time,
       timezone: row.schedule_timezone,
     },
+    // Step 70: where the last update request stands. All null before it runs.
+    ...publicAgentUpdateFields(row),
   };
 }
 
@@ -418,6 +434,10 @@ export function createHandler({
           // Replaying a refused close happens in Auto Collection, which only a
           // Manager can open, so only a Manager is pointed there.
           replay: actor.role === 'Manager',
+          // Sending the agent an update, or taking the request back, is the
+          // Manager's (/api/admin/ingest-agent-update), and only once step 70
+          // has given the request somewhere to live.
+          updateAgent: actor.role === 'Manager' && status.agentUpdateSupported !== false,
         },
         release,
         device: publicDevice(status.device),

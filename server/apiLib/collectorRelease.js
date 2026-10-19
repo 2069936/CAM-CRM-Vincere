@@ -137,10 +137,17 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
   // malformed value is rejected rather than treated as unsigned. Integrity does
   // not depend on it — the manifest is pinned by SHA-256 through the environment
   // and every artifact carries its own SHA-256 below.
+  //
+  // minimumAddonVersion is optional the same way: the lowest NinjaTrader AddOn
+  // the release fully works with, present only when a release needs a newer
+  // AddOn than earlier ones. The agent cannot install the AddOn on its own
+  // (NinjaTrader has to be closed), so a VPS below it is told to update on the
+  // VPS instead of being sent the release from the CRM. Present means a
+  // version; anything else is a broken manifest, not "no minimum".
   if (!exactKeys(
     manifest,
     ['schemaVersion', 'version', 'minimumAgentVersion', 'minimumSchemaVersion', 'publishedAt', 'artifacts'],
-    ['signingThumbprint'],
+    ['signingThumbprint', 'minimumAddonVersion'],
   )
     || manifest.schemaVersion !== 1
     || !VERSION.test(manifest.version)
@@ -148,6 +155,7 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
     || !Number.isInteger(manifest.minimumSchemaVersion) || manifest.minimumSchemaVersion < 1
     || !canonicalTimestamp(manifest.publishedAt)
     || ('signingThumbprint' in manifest && !THUMBPRINT.test(manifest.signingThumbprint))
+    || ('minimumAddonVersion' in manifest && !VERSION.test(manifest.minimumAddonVersion))
     || !Array.isArray(manifest.artifacts) || manifest.artifacts.length < 1) throw new Error('manifest');
 
   const names = new Set();
@@ -183,6 +191,7 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
     publishedAt: canonicalTimestamp(manifest.publishedAt),
     size: setup.size,
     signingThumbprint: manifest.signingThumbprint ?? null,
+    minimumAddonVersion: manifest.minimumAddonVersion ?? null,
   });
 }
 
@@ -205,13 +214,14 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * Environment variables still win when set, so another deployment can point
  * elsewhere without touching code.
  *
- * Agent 1.2.2, built by run 38390436240 of the Collector Windows workflow
- * (artifact collector-agent-package-137, the head of PR 105) and published on
- * release agent-v1.2.2. The package is 110,635,838 bytes with sha256
- * 2d3355a8…ed32, and the manifest naming it (sha256 43dacd04…282c) was verified
- * against resolveInstallerRelease itself before it was committed. It holds the
- * same 747 files as 1.2.1; what changed is the line the agent window copies,
- * which now checks the package's SHA-256 before it expands or installs anything.
+ * Agent 1.3.0, built by run 39257064979 of the Collector Windows workflow
+ * (artifact collector-agent-package-142, the head of PR 113) and published on
+ * release agent-v1.3.0. The package is 110,679,688 bytes with sha256
+ * b12b7925…7e0e, and the manifest naming it (sha256 ab049906…8267) was verified
+ * against resolveInstallerRelease itself before it was committed. It is the
+ * first agent that updates itself when a Manager asks from the CRM, and the
+ * first whose installer registers the watchdog task. Every machine below it has
+ * to install it by hand once.
  *
  * A NEW FILE RATHER THAN A REPLACED ONE, and that is the point of the digest.
  * The manifest this used to name still sits beside the new one, untouched and
@@ -221,7 +231,7 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * states are each individually valid and the switch is this one commit.
  *
  * It also means the way back is this constant, not a scramble: set it to the
- * previous pair (agent-v1.2.1, 7f0c60a5…b31e) and the desk installs 1.2.1 again.
+ * previous pair (agent-v1.2.2, 43dacd04…282c) and the desk installs 1.2.2 again.
  *
  * THE FILE IT REPLACED WAS WRONG, which is worth recording. It declared version
  * 1.0.3 and a sha256 of 3f3444ee… for a 108,034,406 byte package, while the
@@ -231,22 +241,17 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * while handing them 1.0.8, and the "agent needs updating" flag could never
  * fire because every machine looked newer than the release.
  */
-const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.2.2/release-manifest.json';
-const DEFAULT_RELEASE_MANIFEST_SHA256 = '43dacd04763f3dd6cbfb1805fa826774acbe1aedb48b8110f89310373824282c';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.3.0/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = 'ab049906a3204a694b9f1f1fc3225c193f64704cd9e2f3cd84dcab4714468267';
 
-export async function resolveInstallerRelease(env = process.env, {
-  production = env.NODE_ENV === 'production',
-  fetchImpl = globalThis.fetch,
-} = {}) {
-  // Whether the values came from configuration or from the constants above, and
-  // it decides what a failure MEANS.
-  //
-  // A configured URL that will not resolve is a mistake someone made and has to
-  // hear about, so it throws. The committed default failing is a different
-  // event: GitHub is unreachable, or the release was pulled. Throwing there
-  // turns a third party's outage into a 500 that takes the whole Auto Collection
-  // card down for every client, when the honest answer is the one this function
-  // already has a shape for — no release available right now.
+/* WHICH MANIFEST THIS DEPLOYMENT PINS, AND WHETHER SOMEBODY CONFIGURED IT.
+ *
+ * The environment wins over the committed constants above, and a half
+ * configuration (one of the two set) is refused rather than completed from the
+ * defaults. Shared by resolveInstallerRelease, which fetches and verifies the
+ * manifest, and pinnedReleaseManifest, which hands its address to an agent, so
+ * the two can never name different files. */
+function releaseManifestSource(env) {
   const configured = Boolean(
     String(env.AUTO_COLLECTION_RELEASE_MANIFEST_URL || '').trim()
     || String(env.AUTO_COLLECTION_RELEASE_MANIFEST_SHA256 || '').trim(),
@@ -267,10 +272,47 @@ export async function resolveInstallerRelease(env = process.env, {
     // than what they were reaching for, silently.
     throw new Error('Invalid auto-collection installer manifest configuration.');
   }
+  return {
+    configured,
+    url: String(values[0]).trim(),
+    sha256: String(values[1]).trim().toLowerCase(),
+  };
+}
+
+/**
+ * The manifest the CRM pins, as { url, sha256 }, or null when nothing is pinned.
+ *
+ * What /api/ingest/agent-update hands an agent with its directive: the agent
+ * fetches this url itself and checks the bytes against this digest, the same
+ * pair resolveInstallerRelease verified. It does not fetch or verify anything
+ * here, so the route only offers it after resolveInstallerRelease has
+ * succeeded. Throws on a half configuration, like resolveInstallerRelease.
+ */
+export function pinnedReleaseManifest(env = process.env) {
+  const source = releaseManifestSource(env);
+  return source ? { url: source.url, sha256: source.sha256 } : null;
+}
+
+export async function resolveInstallerRelease(env = process.env, {
+  production = env.NODE_ENV === 'production',
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  // Whether the values came from configuration or from the constants above, and
+  // it decides what a failure MEANS.
+  //
+  // A configured URL that will not resolve is a mistake someone made and has to
+  // hear about, so it throws. The committed default failing is a different
+  // event: GitHub is unreachable, or the release was pulled. Throwing there
+  // turns a third party's outage into a 500 that takes the whole Auto Collection
+  // card down for every client, when the honest answer is the one this function
+  // already has a shape for — no release available right now.
+  const source = releaseManifestSource(env);
+  if (!source) return null;
+  const { configured } = source;
 
   try {
-    const url = approvedUrl(String(values[0]).trim(), { production });
-    const sha256 = String(values[1]).trim().toLowerCase();
+    const url = approvedUrl(source.url, { production });
+    const sha256 = source.sha256;
     if (!SHA256.test(sha256) || typeof fetchImpl !== 'function') throw new Error('fields');
     let cache = verifiedReleaseCache.get(fetchImpl);
     if (!cache) {

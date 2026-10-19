@@ -1,4 +1,5 @@
 import clientExport from '../../server/export/clientExport.js';
+import agentUpdate from '../../server/autoCollection/admin/ingest-agent-update.js';
 import batches from '../../server/autoCollection/admin/ingest-batches.js';
 import download from '../../server/autoCollection/admin/ingest-download.js';
 import enrollment from '../../server/autoCollection/admin/ingest-enrollment.js';
@@ -18,6 +19,7 @@ import verify from '../../server/autoCollection/admin/ingest-verify.js';
 // ingest-* prefix.
 const handlers = Object.freeze({
   'client-export': clientExport,
+  'ingest-agent-update': agentUpdate,
   'ingest-batches': batches,
   'ingest-download': download,
   'ingest-enrollment': enrollment,

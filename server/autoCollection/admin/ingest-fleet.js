@@ -3,6 +3,7 @@ import { createApiClients, requireAppUser } from '../../apiLib/apiAuth.js';
 import { resolveInstallerRelease } from '../../apiLib/collectorRelease.js';
 import { ApiError, handleApiError, requireMethod, sendJson } from '../../apiLib/http.js';
 import { classifyFleetRow, newYorkTradingClock, summarizeFleet, summarizeIngestDay, summarizeQuarantine } from '../../../src/domain/autoCollectionFleet.js';
+import { AGENT_UPDATE_COLUMNS, planFleetAgentUpdate, publicAgentUpdateFields } from '../../../src/domain/agentUpdate.js';
 
 const DEVICE_COLUMNS = 'id,client_id,status,health_status,schedule_time,schedule_timezone,agent_version,addon_version,ninjatrader_version,last_seen_at,last_capture_at,last_success_at,last_error_code,revoked_at,created_at';
 const BATCH_COLUMNS = 'id,capture_id,client_id,device_id,trading_date,captured_at,received_at,processed_at,status,row_counts,completeness,daily_import_id,replaces_batch_id,error_code';
@@ -13,7 +14,13 @@ const BATCH_COLUMNS = 'id,capture_id,client_id,device_id,trading_date,captured_a
  * manager nothing at all. The day line disappears instead. */
 const BATCH_TIMING_COLUMNS = `${BATCH_COLUMNS},ingest_duration_ms,admission_deferrals,stage_durations_ms`;
 
-function isMissingColumn(error) {
+/* THE UPDATE COLUMNS STEP 70 ADDS, under the same rule as the timing columns:
+ * asked for beside the device's own, and dropped from the select when the
+ * migration has not run, so the screen shows every device it showed before,
+ * with no update line and no update button, instead of nothing at all. */
+const DEVICE_UPDATE_COLUMNS = `${DEVICE_COLUMNS},${AGENT_UPDATE_COLUMNS}`;
+
+export function isMissingColumn(error) {
   if (String(error?.code || '') === '42703') return true;
   const message = String(error?.message || '').toLowerCase();
   return message.includes('column') && message.includes('does not exist');
@@ -80,6 +87,8 @@ function publicDevice(row) {
     lastCaptureAt: row.last_capture_at || null, lastSuccessAt: row.last_success_at || null,
     lastErrorCode: SAFE_DEVICE_ERRORS.has(row.last_error_code) ? row.last_error_code : row.last_error_code ? 'collector_error' : null,
     revokedAt: row.revoked_at || null,
+    // Step 70: where the last update request stands. All null before it runs.
+    ...publicAgentUpdateFields(row),
   };
 }
 
@@ -162,12 +171,18 @@ async function loadQuarantine(admin, deviceIds) {
 
 export function createFleetStore(admin) {
   return {
-    async list({ page, pageSize, search, tradingDate, now, releaseVersion }) {
+    async list({ page, pageSize, search, tradingDate, now, releaseVersion, release = null }) {
       const dayBatches = (query) => query.eq('trading_date', tradingDate).order('received_at', { ascending: false });
+      const newestFirst = (query) => query.order('created_at', { ascending: false });
       let timed = true;
+      let updatable = true;
       const [clients, devices, batches] = await Promise.all([
         loadAll(admin, 'clients', 'id,name', (query) => query.order('name', { ascending: true }).order('id', { ascending: true })),
-        loadAll(admin, 'ingest_devices', DEVICE_COLUMNS, (query) => query.order('created_at', { ascending: false })),
+        loadAll(admin, 'ingest_devices', DEVICE_UPDATE_COLUMNS, newestFirst).catch((error) => {
+          if (!isMissingColumn(error)) throw error;
+          updatable = false;
+          return loadAll(admin, 'ingest_devices', DEVICE_COLUMNS, newestFirst);
+        }),
         loadAll(admin, 'ingest_batches', BATCH_TIMING_COLUMNS, dayBatches).catch((error) => {
           if (!isMissingColumn(error)) throw error;
           timed = false;
@@ -202,6 +217,12 @@ export function createFleetStore(admin) {
         // One pass over rows already in memory. The search box and the page
         // number do not narrow it: this line is about the day, not the page.
         ingestDay: timed ? summarizeIngestDay(batches.map(publicBatch)) : null,
+        // The bulk "Update N outdated agents" button, over the whole fleet and
+        // not the page: the ids the CRM can update now and how many need an
+        // install on the VPS. Null with no release pinned, and before step 70.
+        agentUpdate: updatable
+          ? planFleetAgentUpdate(allRows.map((row) => row.device).filter(Boolean), release || (releaseVersion ? { version: releaseVersion } : null))
+          : null,
       };
     },
   };
@@ -229,8 +250,12 @@ export function createHandler({
       const filters = parseFleetQuery(req.query || {});
       const serverTime = now();
       const tradingDate = newYorkTradingClock(serverTime)?.date;
-      const releaseVersion = (await resolveRelease(env, { production, fetchImpl: fetchRelease }))?.version || null;
-      const result = await createStore(admin).list({ ...filters, tradingDate, now: serverTime, releaseVersion });
+      const resolved = await resolveRelease(env, { production, fetchImpl: fetchRelease });
+      const releaseVersion = resolved?.version || null;
+      const release = releaseVersion
+        ? { version: releaseVersion, minimumAddonVersion: resolved.minimumAddonVersion || null }
+        : null;
+      const result = await createStore(admin).list({ ...filters, tradingDate, now: serverTime, releaseVersion, release });
       res.setHeader('Cache-Control', 'private, no-store');
       // The New York trading date the day line and every row's status were
       // computed against. Without it the screen would have to re-derive it from
