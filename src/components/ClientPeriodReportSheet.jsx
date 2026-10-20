@@ -298,9 +298,16 @@ function ShareBar({ value, maxAbs }) {
 }
 
 function Algorithms({ report }) {
-  const { rows } = report.algorithms;
+  const { rows, charges, unattributed, unsplit } = report.algorithms;
   const showUnsplit = rows.some((row) => row.unsplitAccountDays > 0);
   const maxAbs = Math.max(1, ...rows.map((row) => Math.abs(row.realized)));
+  // Every dollar of the accounts' realized P&L is on one of these rows: an
+  // algorithm's own trades, the account charges (the firm's fees and any trade
+  // no algorithm placed), or an account day with no algorithm at all.
+  const showCharges = Boolean(charges?.accountDays);
+  const showUnattributed = Boolean(unattributed?.accountDays);
+  const showUnsplitRow = Boolean(unsplit?.accountDays);
+  const columns = showUnsplit ? 9 : 8;
   return (
     <section className="cpr-section" aria-labelledby="cpr-algorithms">
       <h2 id="cpr-algorithms">Performance by algorithm</h2>
@@ -340,7 +347,48 @@ function Algorithms({ report }) {
                   <td className="cpr-bar-cell"><ShareBar value={row.realized} maxAbs={maxAbs} /></td>
                 </tr>
               ))}
+              {showCharges ? (
+                <tr className="cpr-charges-row">
+                  <td>
+                    <span className="cpr-strong">Fees and other account charges</span>
+                    <span className="cpr-meta">{`${fmtCount(charges.accountDays)} account ${charges.accountDays === 1 ? 'day' : 'days'}, not placed by an algorithm`}</span>
+                  </td>
+                  <td colSpan={5} />
+                  <td className={tone(charges.realized)}><b>{fmtMoney(charges.realized, { sign: true })}</b></td>
+                  <td colSpan={columns - 7} />
+                </tr>
+              ) : null}
+              {showUnsplitRow ? (
+                <tr className="cpr-charges-row">
+                  <td>
+                    <span className="cpr-strong">Not split between algorithms</span>
+                    <span className="cpr-meta">{`${fmtCount(unsplit.accountDays)} account ${unsplit.accountDays === 1 ? 'day' : 'days'} whose algorithms' own figures could not be read`}</span>
+                  </td>
+                  <td colSpan={5} />
+                  <td className={tone(unsplit.realized)}><b>{fmtMoney(unsplit.realized, { sign: true })}</b></td>
+                  <td colSpan={columns - 7} />
+                </tr>
+              ) : null}
+              {showUnattributed ? (
+                <tr className="cpr-charges-row">
+                  <td>
+                    <span className="cpr-strong">No algorithm loaded</span>
+                    <span className="cpr-meta">{`${fmtCount(unattributed.accountDays)} account ${unattributed.accountDays === 1 ? 'day' : 'days'} with a result and no algorithm`}</span>
+                  </td>
+                  <td colSpan={5} />
+                  <td className={tone(unattributed.realized)}><b>{fmtMoney(unattributed.realized, { sign: true })}</b></td>
+                  <td colSpan={columns - 7} />
+                </tr>
+              ) : null}
             </tbody>
+            <tfoot>
+              <tr>
+                <td>All real money accounts</td>
+                <td colSpan={5} />
+                <td className={tone(report.summary?.realized)}>{report.summary ? fmtMoney(report.summary.realized, { sign: true }) : ""}</td>
+                <td colSpan={columns - 7} />
+              </tr>
+            </tfoot>
           </table>
         </div>
       ) : <p className="cpr-empty">No algorithm was loaded on these accounts in this period.</p>}
@@ -367,7 +415,7 @@ function heatCellProps(cell, heatMax) {
     const known = cell.realized ? `, ${fmtMoney(cell.realized, { sign: true })} on the other accounts` : '';
     return {
       className: 'cpr-heat-cell cpr-unsplit',
-      title: `${when}: loaded with another algorithm on ${fmtCount(cell.unsplit)} account${cell.unsplit === 1 ? '' : 's'}, result not split${known}, ${fills}`,
+      title: `${when}: loaded with another algorithm on ${fmtCount(cell.unsplit)} account${cell.unsplit === 1 ? '' : 's'}, own figures not available${known}, ${fills}`,
     };
   }
   if (cell.state === 'quiet') {
@@ -421,7 +469,7 @@ function Activity({ report }) {
             <span><i className="cpr-key cpr-gain-key" />Gain</span>
             <span><i className="cpr-key cpr-loss-key" />Loss</span>
             <span><i className="cpr-key cpr-quiet" />Loaded, no realized P&amp;L</span>
-            {anyUnsplit ? <span><i className="cpr-key cpr-unsplit" />Loaded with another algorithm, result not split</span> : null}
+            {anyUnsplit ? <span><i className="cpr-key cpr-unsplit" />Loaded with another algorithm, own figures not available</span> : null}
             <span><i className="cpr-key cpr-noclose" />{anyMissing ? 'No close that day, or its figures were not loaded' : 'No close that day'}</span>
             <span>Blank space means the algorithm was not loaded.</span>
           </div>
