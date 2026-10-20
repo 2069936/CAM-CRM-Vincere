@@ -338,11 +338,19 @@ export function buildDeskConfigOutliers(clients = [], {
   };
   if (!day) return { ...emptyResult(basis), reason: 'no-date' };
 
-  // Pass one: every row of the day, bucketed on its full identity, with the
-  // stated data series of each (family, version, contract) remembered so the
-  // rows that state none can be placed.
+  // Pass one: every row of the day, bucketed on (family, version, contract).
+  //
+  // NOT ON THE DATA SERIES. The snapshot's dataSeries is the AddOn reading
+  // strategy.BarsPeriod at capture time, and while a strategy runs NinjaTrader
+  // answers with the series it processed last: usually the 1 Minute (Bullet
+  // Bot: 1 Second) series the algorithm adds for itself, not the 15 Minute or
+  // 20 Second it was configured on. The same strategy instance reads 15 Minute
+  // before it starts, 1 Minute while it runs and 15 Minute again once stopped,
+  // and across the book the "1 Minute" and "1 Second" rows are rows that ran in
+  // all but one case of 6,633. Grouping on it split every algorithm into a
+  // running group and a stopped group, so each account was compared with half
+  // its peers. The AddOn is not changing, so the field is left out here.
   const buckets = new Map();
-  const seriesByBase = new Map();
 
   for (const client of clients || []) {
     let closed = false;
@@ -358,17 +366,10 @@ export function buildDeskConfigOutliers(clients = [], {
         const version = String(strategy?.strategyVersion || '').trim();
         const instrument = deskInstrumentOf(strategy?.instrument);
         const base = [family, version, instrument.label].join('');
-        const series = String(strategy?.dataSeries || '').trim();
-        if (series) {
-          if (!seriesByBase.has(base)) seriesByBase.set(base, new Map());
-          const counts = seriesByBase.get(base);
-          counts.set(series, (counts.get(series) || 0) + 1);
-        }
         if (!buckets.has(base)) buckets.set(base, []);
         buckets.get(base).push({
           client,
           strategy,
-          series,
           instrument,
           family,
           version,
@@ -379,23 +380,10 @@ export function buildDeskConfigOutliers(clients = [], {
     if (closed) basis.clients += 1;
   }
 
-  // Pass two: place the rows that stated no data series, and build the groups.
-  //
-  // A blank data series is absent information, not a data series of its own. Of
-  // the book's last close 36 of 417 rows state none, and holding them out would
-  // have invented six groups that nobody runs. They join the busiest stated
-  // series of their own (family, version, contract) and the group SAYS how many
-  // of its accounts arrived that way, so a reader can discount them. The one
-  // account genuinely on a second series — Bullet Bot 1.1 on NQ at 1 Minute
-  // while 106 run it at 20 Second, on 2026-07-13 — still stands alone, because
-  // it stated its series and was never a blank to place.
+  // Pass two: build the groups.
   const groups = new Map();
-  for (const [base, entries] of buckets) {
-    const stated = seriesByBase.get(base) || new Map();
-    const busiest = [...stated.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  for (const [key, entries] of buckets) {
     for (const entry of entries) {
-      const series = entry.series || (busiest ? busiest[0] : '');
-      const key = `${base}${series}`;
       if (!groups.has(key)) {
         groups.set(key, {
           key,
@@ -404,9 +392,7 @@ export function buildDeskConfigOutliers(clients = [], {
           instrument: entry.instrument.label,
           instrumentRoot: entry.instrument.root,
           contract: entry.instrument.contract,
-          dataSeries: series,
           spellings: new Set(),
-          unstatedSeries: 0,
           rows: 0,
           unreadable: 0,
           unnamed: 0,
@@ -418,7 +404,6 @@ export function buildDeskConfigOutliers(clients = [], {
       const group = groups.get(key);
       group.rows += 1;
       if (entry.spelling) group.spellings.add(entry.spelling);
-      if (!entry.series) group.unstatedSeries += 1;
 
       const accountName = String(entry.strategy?.accountName || '').trim();
       if (!accountName) {
@@ -522,8 +507,8 @@ export function buildDeskConfigOutliers(clients = [], {
 
   built.sort((a, b) => b.accounts - a.accounts
     || a.family.localeCompare(b.family)
-    || a.instrument.localeCompare(b.instrument)
-    || a.dataSeries.localeCompare(b.dataSeries));
+    || a.version.localeCompare(b.version)
+    || a.instrument.localeCompare(b.instrument));
 
   return { date: day, basis, groups: built, reason: null };
 }
@@ -582,9 +567,7 @@ function measureGroup(group, {
     instrument: group.instrument,
     instrumentRoot: group.instrumentRoot,
     contract: group.contract,
-    dataSeries: group.dataSeries,
     spellings: [...group.spellings].sort(),
-    unstatedSeries: group.unstatedSeries,
     rows: group.rows,
     accounts: accounts.length,
     clients: group.clientIds.size,

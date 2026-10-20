@@ -354,16 +354,19 @@ describe('every day of the book, not only the one this file quotes', () => {
   });
 
   it('keeps the review list short enough to read', () => {
-    // 68 to 88 accounts a day out of 389 to 508, across 13 to 15 groups. The
+    // 68 to 88 accounts a day out of 389 to 509, across 13 to 15 groups. The
     // plain-majority rule this replaced produced 200 on the last close alone,
-    // 45 of them for one field nobody had decided.
+    // 45 of them for one field nobody had decided. 2026-07-13 compared 508
+    // while the data series split groups: a Bullet Bot account on NQ whose
+    // close read its running 1 Minute series sat alone, outside the 106 it
+    // runs with.
     const measured = days.map((day) => {
       const answer = buildDeskConfigOutliers(clients, { date: day });
       return [day, answer.basis.accountsCompared, answer.basis.accountsDiffering];
     });
 
     expect(measured).toEqual([
-      ['2026-07-13', 508, 88],
+      ['2026-07-13', 509, 88],
       ['2026-07-22', 389, 78],
       ['2026-07-23', 417, 68],
       ['2026-07-24', 394, 71],
