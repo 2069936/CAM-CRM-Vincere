@@ -30,6 +30,14 @@ describe('ingest route dispatcher', () => {
     expect(resolveIngestHandler('agent-update')).toBe(agentUpdate);
   });
 
+  it('dispatches the three trading export routes to their own handlers (step 72)', async () => {
+    const routes = await import('../../../autoCollection/ingest/tradingExport.js');
+    expect(resolveIngestHandler('export-request')).toBe(routes.exportRequest);
+    expect(resolveIngestHandler('export-upload-url')).toBe(routes.exportUploadUrl);
+    expect(resolveIngestHandler('export-complete')).toBe(routes.exportComplete);
+    expect(new Set([routes.exportRequest, routes.exportUploadUrl, routes.exportComplete]).size).toBe(3);
+  });
+
   it('does not dispatch unknown paths', () => {
     expect(resolveIngestHandler('unknown')).toBeNull();
   });

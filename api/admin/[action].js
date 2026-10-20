@@ -7,6 +7,7 @@ import fleet from '../../server/autoCollection/admin/ingest-fleet.js';
 import reprocess from '../../server/autoCollection/admin/ingest-reprocess.js';
 import reprocessFailed from '../../server/autoCollection/admin/ingest-reprocess-failed.js';
 import status from '../../server/autoCollection/admin/ingest-status.js';
+import tradingExport from '../../server/autoCollection/admin/ingest-trading-export.js';
 import verify from '../../server/autoCollection/admin/ingest-verify.js';
 
 // Static routes (users, data-export and intake-sheet) keep precedence. This
@@ -27,6 +28,9 @@ const handlers = Object.freeze({
   'ingest-reprocess': reprocess,
   'ingest-reprocess-failed': reprocessFailed,
   'ingest-status': status,
+  // The Manager's half of a slim trading export (step 72): request, cancel,
+  // list, download and delete, for the Data lab page.
+  'ingest-trading-export': tradingExport,
   'ingest-verify': verify,
 });
 

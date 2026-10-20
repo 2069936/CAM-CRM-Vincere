@@ -554,7 +554,13 @@ begin
     ('ingest_batches',            '', 'step 28:356-359, revoked outright'),
     ('ingest_devices',            '', 'step 28:356-359, revoked outright'),
     ('ingest_enrollments',        '', 'step 28:356-359, revoked outright'),
-    ('ingest_pair_rate_limits',   '', 'step 28:356-359, revoked outright');
+    ('ingest_pair_rate_limits',   '', 'step 28:356-359, revoked outright'),
+    -- STEP 72'S TABLE, closed like ingest_devices: the trading exports are
+    -- requested, listed and downloaded through the Manager's route as the
+    -- service role, and nothing in the browser reads the table. Named before
+    -- step 72 exists for the same reason as 57's pair; a re-run of 56 before 72
+    -- names it in its NOTICE.
+    ('trading_export_requests',   '', 'step 72, service role only like ingest_devices');
 
   -- THE LOOP. Every base table in public, read from the catalogue, with no list.
   for r in
