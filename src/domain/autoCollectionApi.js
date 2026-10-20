@@ -1,10 +1,12 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { chunkDeviceIds } from './agentUpdate';
+import { TRADING_EXPORT_DATASETS, TRADING_EXPORT_STATUSES, chunkIds, normalizeDatasets } from './tradingExport';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REBIND_REASONS = new Set(['vps_rebuilt', 'device_replaced', 'support_reset']);
 const REVOKE_REASONS = new Set(['client_offboarded', 'security_revoke', 'support_reset']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TRADING_EXPORT_PATH = '/api/admin/ingest-trading-export';
 
 const SAFE_MESSAGES = Object.freeze({
   permission_denied: 'You do not have access to this client setup.',
@@ -28,6 +30,11 @@ const SAFE_MESSAGES = Object.freeze({
   // The request route sends only the release the CRM pins, and there is none
   // it can verify right now (GitHub unreachable, or no release configured).
   release_unavailable: 'No agent release is available to update to right now. Try again in a few minutes.',
+  // The trading export route before step 72 has run.
+  trading_export_unavailable: 'Trading exports need step 72 in the database. Run it, then reload this page.',
+  export_not_found: 'This export no longer exists. Refresh the list.',
+  export_not_ready: 'This export is not ready to download.',
+  export_expired: 'This export has expired and its file is gone. Request a new one.',
 });
 
 export class AutoCollectionApiError extends Error {
@@ -102,8 +109,9 @@ const INELIGIBILITY_CODES = [
 function errorCode(status, body) {
   if (status === 401 || status === 403) return 'permission_denied';
   const serverCode = typeof body?.error === 'string' ? body.error : '';
-  if (status === 409 && ['active_device_exists', 'release_unavailable', ...INELIGIBILITY_CODES].includes(serverCode)) return serverCode;
-  if (status === 404 && serverCode === 'ingest_access_not_found') return serverCode;
+  if (status === 409 && ['active_device_exists', 'release_unavailable', 'export_not_ready', ...INELIGIBILITY_CODES].includes(serverCode)) return serverCode;
+  if (status === 404 && ['ingest_access_not_found', 'trading_export_unavailable', 'export_not_found'].includes(serverCode)) return serverCode;
+  if (status === 410 && serverCode === 'export_expired') return serverCode;
   if (status === 503 && serverCode === 'collector_not_configured') return serverCode;
   if (status >= 400 && status < 500) return 'invalid_request';
   return 'unavailable';
@@ -273,6 +281,76 @@ export function createAutoCollectionApi({
         total.cancelled += Number(result.cancelled) || 0;
       }
       return total;
+    },
+
+    /* SLIM TRADING EXPORTS (step 72), Manager only, for the Data lab page.
+     *
+     * One route, an action per call. A request for any number of devices is
+     * sent in slices of 300 and the counts are added up; needsVps counts the
+     * devices whose agent is older than the first that can build an export. */
+    async loadTradingExportDevices({ signal } = {}) {
+      return request(TRADING_EXPORT_PATH, { method: 'POST', signal, payload: { action: 'devices' } });
+    },
+
+    async requestTradingExports({ deviceIds, from = null, to = null, datasets = TRADING_EXPORT_DATASETS, signal } = {}) {
+      const ids = agentUpdateIds(deviceIds);
+      const normalizedFrom = boundedDate(from);
+      const normalizedTo = boundedDate(to);
+      const normalizedDatasets = normalizeDatasets(datasets);
+      if (!normalizedDatasets || (normalizedFrom && normalizedTo && normalizedFrom > normalizedTo)) {
+        throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      }
+      const total = { ok: true, requested: 0, skipped: 0, needsVps: 0 };
+      for (const chunk of chunkIds(ids)) {
+        const result = await request(TRADING_EXPORT_PATH, {
+          method: 'POST',
+          signal,
+          payload: { action: 'request', deviceIds: chunk, from: normalizedFrom, to: normalizedTo, datasets: normalizedDatasets },
+        });
+        total.requested += Number(result.requested) || 0;
+        total.skipped += Number(result.skipped) || 0;
+        total.needsVps += Number(result.needsVps) || 0;
+      }
+      return total;
+    },
+
+    async listTradingExports({ limit = 50, offset = 0, status = null, signal } = {}) {
+      const normalizedStatus = status || null;
+      if (normalizedStatus !== null && !TRADING_EXPORT_STATUSES.includes(normalizedStatus)) {
+        throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      }
+      const normalizedOffset = Number(offset);
+      if (!Number.isInteger(normalizedOffset) || normalizedOffset < 0) throw new AutoCollectionApiError('invalid_request', { status: 400 });
+      return request(TRADING_EXPORT_PATH, {
+        method: 'POST',
+        signal,
+        payload: { action: 'listAll', limit: boundedInteger(limit, 50, 200), offset: normalizedOffset, status: normalizedStatus },
+      });
+    },
+
+    async listClientTradingExports(clientUuid, { signal } = {}) {
+      return request(TRADING_EXPORT_PATH, { method: 'POST', signal, payload: { action: 'list', clientId: validateUuid(clientUuid) } });
+    },
+
+    async cancelTradingExports(requestIds, { signal } = {}) {
+      const total = { ok: true, cancelled: 0 };
+      for (const chunk of chunkIds(agentUpdateIds(requestIds))) {
+        const result = await request(TRADING_EXPORT_PATH, { method: 'POST', signal, payload: { action: 'cancel', requestIds: chunk } });
+        total.cancelled += Number(result.cancelled) || 0;
+      }
+      return total;
+    },
+
+    /** A signed URL that lives five minutes, and the name the file is saved under. */
+    async downloadTradingExport(requestId, { signal } = {}) {
+      const result = await request(TRADING_EXPORT_PATH, { method: 'POST', signal, payload: { action: 'download', requestId: validateUuid(requestId) } });
+      // Only a web address is ever handed to the browser to open.
+      if (typeof result?.url !== 'string' || !/^https?:\/\//i.test(result.url)) throw new AutoCollectionApiError('unavailable');
+      return { url: result.url, fileName: String(result.fileName || 'trading-export.jsonl.gz'), expiresAt: result.expiresAt || null };
+    },
+
+    async deleteTradingExport(requestId, { signal } = {}) {
+      return request(TRADING_EXPORT_PATH, { method: 'POST', signal, payload: { action: 'delete', requestId: validateUuid(requestId) } });
     },
 
     async loadStatus(clientUuid, { signal } = {}) {

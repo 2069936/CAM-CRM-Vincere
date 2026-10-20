@@ -1152,14 +1152,16 @@ describe('the order guard', () => {
 
 /* ── The file and the runbook ─────────────────────────────────────────────── */
 
-describe('step 71 is the one that runs last', () => {
-  it('is the highest number and appears once, and 54 is still a deliberate gap', () => {
+describe('step 71 is here once, after the steps it builds on', () => {
+  it('appears once, 72 now carries the highest-number claim, and 54 is still a deliberate gap', () => {
     const numbers = readdirSync(new URL('./', import.meta.url))
       .map((name) => /^step_(\d+)_.*\.sql$/.exec(name))
       .filter(Boolean)
       .map((match) => Number(match[1]));
     expect(numbers.filter((n) => n === 71)).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(71);
+    // Step 72's test now holds "the highest number"; this one only says 71 is
+    // here once, after the steps it builds on.
+    expect(Math.max(...numbers)).toBeGreaterThanOrEqual(71);
     expect(numbers).not.toContain(54);
     for (const merged of [55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70]) expect(numbers).toContain(merged);
   });

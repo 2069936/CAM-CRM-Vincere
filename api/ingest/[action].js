@@ -6,6 +6,7 @@ import pair from '../../server/autoCollection/ingest/pair.js';
 import quarantine from '../../server/autoCollection/ingest/quarantine.js';
 import reportEmail from '../../server/autoCollection/ingest/reportEmail.js';
 import strategies from '../../server/autoCollection/ingest/strategies.js';
+import { exportComplete, exportRequest, exportUploadUrl } from '../../server/autoCollection/ingest/tradingExport.js';
 
 // Preserve the existing public routes (/api/ingest/accounts, /daily, /heartbeat,
 // /pair and /quarantine) while deploying one Vercel function instead of five.
@@ -28,12 +29,20 @@ import strategies from '../../server/autoCollection/ingest/strategies.js';
 // updated and reports how the update is going (step 70). Its own key for the
 // reason /strategies has one: the heartbeat answers 400 to a key it does not
 // know.
+//
+// /export-request, /export-upload-url and /export-complete are agent 1.4.0's
+// half of a slim trading export (step 72): the agent asks whether a Manager
+// wants one, gets a signed URL to upload it to storage directly, and says how
+// it went. Keys here and not files of their own for the function count above.
 export const config = { api: { bodyParser: false } };
 
 const handlers = Object.freeze({
   accounts,
   'agent-update': agentUpdate,
   daily,
+  'export-complete': exportComplete,
+  'export-request': exportRequest,
+  'export-upload-url': exportUploadUrl,
   heartbeat,
   pair,
   quarantine,

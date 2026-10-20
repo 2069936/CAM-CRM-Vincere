@@ -10030,3 +10030,16 @@ details.drift-row[open] > summary .drift-head::before { transform: rotate(90deg)
   }
   .client-period-report .cpr-notes { break-before: avoid; }
 }
+
+/* Data lab (step 72): the Manager's slim trading exports. */
+.data-lab-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; margin-bottom: 12px; }
+.data-lab-controls > label { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.data-lab-datasets { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; border: 0; }
+.data-lab-datasets legend { margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
+.data-lab-datasets label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
+.data-lab-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.data-lab-note { margin: 0 0 12px; }
+.data-lab-hint { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.data-lab-status.state-ready { color: var(--success); }
+.data-lab-status.state-failed { color: var(--warning); }
+.data-lab-status.state-expired, .data-lab-status.state-cancelled { color: var(--muted); }

@@ -138,6 +138,9 @@ const EXPECTED = {
   ingest_devices: '',
   ingest_enrollments: '',
   ingest_pair_rate_limits: '',
+  /* STEP 72'S TABLE, closed like ingest_devices: the Manager's route reads and
+   * writes it as the service role, and the browser never does. */
+  trading_export_requests: '',
 };
 
 /* The tables step 56's exception table deliberately does NOT narrow: all four

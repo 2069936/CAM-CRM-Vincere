@@ -16,6 +16,7 @@ import {
   Edit3,
   FileUp,
   FileText,
+  FlaskConical,
   Building2,
   Clock3,
   Eye,
@@ -65,6 +66,7 @@ import ClientTagPicker from "./components/ClientTagPicker";
 import ClientAccountFocusPicker from "./components/ClientAccountFocusPicker";
 import RevenueHealthPanel from "./components/RevenueHealthPanel";
 import AutoCollectionManager from "./components/AutoCollectionManager";
+import DataLab from "./components/DataLab";
 import ClientExportDialog from "./components/ClientExportDialog";
 import {
   Dialog,
@@ -4521,6 +4523,10 @@ export function ManagerOverview({
   const [showUserPanel, setShowUserPanel] = useState(false);
   const [showAuditPanel, setShowAuditPanel] = useState(false);
   const [showAutoCollection, setShowAutoCollection] = useState(false);
+  // Data lab: the desk owner's slim trading exports from the clients' VPS
+  // (step 72). A developer tool, so it lives with the Manager's own
+  // destinations and a CAM session never sees it.
+  const [showDataLab, setShowDataLab] = useState(false);
   // The desk period report's sidebar destination. A desk-level artefact, so it
   // lives where the other desk-level destinations do rather than inside a
   // client workspace nobody would open it from.
@@ -5101,11 +5107,12 @@ export function ManagerOverview({
         </div>
         <div className="manager-sidebar-main">
           <button
-            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showProfilePanel && !showPeriodReport ? "client-link active" : "client-link"}
+            className={!showUserPanel && !showAuditPanel && !showAutoCollection && !showDataLab && !showProfilePanel && !showPeriodReport ? "client-link active" : "client-link"}
             onClick={() => {
               setShowUserPanel(false);
               setShowAuditPanel(false);
               setShowAutoCollection(false);
+              setShowDataLab(false);
               setShowProfilePanel(false);
               setShowPeriodReport(false);
               closeMobileSidebar();
@@ -5186,6 +5193,7 @@ export function ManagerOverview({
               setShowUserPanel(true);
               setShowAuditPanel(false);
               setShowAutoCollection(false);
+              setShowDataLab(false);
               setShowProfilePanel(false);
               setShowPeriodReport(false);
               closeMobileSidebar();
@@ -5199,6 +5207,7 @@ export function ManagerOverview({
             onClick={() => {
               setShowPeriodReport(true);
               setShowAutoCollection(false);
+              setShowDataLab(false);
               setShowAuditPanel(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
@@ -5213,6 +5222,7 @@ export function ManagerOverview({
             onClick={() => {
               setAutoCollectionTarget(null);
               setShowAutoCollection(true);
+              setShowDataLab(false);
               setShowAuditPanel(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
@@ -5224,10 +5234,26 @@ export function ManagerOverview({
             <span>Auto Collection</span>
           </button>
           <button
+            className={showDataLab ? "client-link active" : "client-link"}
+            onClick={() => {
+              setShowDataLab(true);
+              setShowAutoCollection(false);
+              setShowAuditPanel(false);
+              setShowUserPanel(false);
+              setShowProfilePanel(false);
+              setShowPeriodReport(false);
+              closeMobileSidebar();
+            }}
+          >
+            <FlaskConical size={16} />
+            <span>Data lab</span>
+          </button>
+          <button
             className={showAuditPanel ? "client-link active" : "client-link"}
             onClick={() => {
               setShowAuditPanel(true);
               setShowAutoCollection(false);
+              setShowDataLab(false);
               setShowUserPanel(false);
               setShowProfilePanel(false);
               setShowPeriodReport(false);
@@ -5242,6 +5268,7 @@ export function ManagerOverview({
             onClick={() => {
               setShowProfilePanel(true);
               setShowAutoCollection(false);
+              setShowDataLab(false);
               setShowUserPanel(false);
               setShowAuditPanel(false);
               setShowPeriodReport(false);
@@ -5280,6 +5307,8 @@ export function ManagerOverview({
           />
         ) : showAutoCollection ? (
           <AutoCollectionManager visible={showAutoCollection} initialSelectedClient={autoCollectionTarget} />
+        ) : showDataLab ? (
+          <DataLab />
         ) : showAuditPanel ? (
           <AuditLogsPanel onOpenCollectorBatch={(log) => {
             setAutoCollectionTarget({ uuid: log.afterData.clientId, name: log.afterData.clientName || "Selected client" });

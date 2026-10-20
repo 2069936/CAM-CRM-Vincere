@@ -154,3 +154,96 @@ describe('the reason a client cannot be enrolled reaches the CAM', () => {
       .rejects.toMatchObject({ code: 'client_not_eligible' });
   });
 });
+
+/* ── Slim trading exports (step 72), for the Data lab page ───────────────── */
+
+describe('trading exports', () => {
+  const PATH = '/api/admin/ingest-trading-export';
+  const REQUEST_ID = '55555555-5555-4555-8555-555555555555';
+  const ids = (count) => Array.from({ length: count }, (_, n) => `d0000000-0000-4000-8000-${String(n).padStart(12, '0')}`);
+  const bodies = (fetchImpl) => fetchImpl.mock.calls.map(([, options]) => JSON.parse(options.body));
+
+  it('requests any number of devices in slices of 300 and adds the counts up', async () => {
+    const fetchImpl = vi.fn(async (_path, options) => {
+      const { deviceIds } = JSON.parse(options.body);
+      return jsonResponse({ ok: true, requested: deviceIds.length - 1, skipped: 1, needsVps: 1 });
+    });
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'manager-token' });
+    await expect(api.requestTradingExports({ deviceIds: ids(301), from: '2026-07-01', to: '', datasets: ['trades', 'orders'] }))
+      .resolves.toEqual({ ok: true, requested: 299, skipped: 2, needsVps: 2 });
+    expect(fetchImpl.mock.calls.every(([path, options]) => path === PATH && options.method === 'POST')).toBe(true);
+    expect(bodies(fetchImpl).map((body) => [body.action, body.deviceIds.length, body.from, body.to, body.datasets]))
+      .toEqual([['request', 300, '2026-07-01', null, ['orders', 'trades']], ['request', 1, '2026-07-01', null, ['orders', 'trades']]]);
+  });
+
+  it('refuses a request it can see is wrong before fetching', async () => {
+    const fetchImpl = vi.fn();
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'token' });
+    for (const input of [
+      { deviceIds: [] },
+      { deviceIds: ['device-1'] },
+      { deviceIds: ids(1), datasets: [] },
+      { deviceIds: ids(1), datasets: ['fills'] },
+      { deviceIds: ids(1), from: '2026-10-20', to: '2026-10-19' },
+      { deviceIds: ids(1), from: '2026-02-30' },
+    ]) {
+      await expect(api.requestTradingExports(input), JSON.stringify(input)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('lists every client\'s exports by page and status, and the devices', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, exports: [], total: 0, devices: [] }));
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'token' });
+    await api.listTradingExports({ limit: 200, offset: 400, status: 'ready' });
+    await api.listTradingExports();
+    await api.loadTradingExportDevices();
+    await api.listClientTradingExports(CLIENT_ID.toUpperCase());
+    expect(bodies(fetchImpl)).toEqual([
+      { action: 'listAll', limit: 200, offset: 400, status: 'ready' },
+      { action: 'listAll', limit: 50, offset: 0, status: null },
+      { action: 'devices' },
+      { action: 'list', clientId: CLIENT_ID },
+    ]);
+    await expect(api.listTradingExports({ status: 'done' })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(api.listTradingExports({ limit: 201 })).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('cancels, downloads and deletes by request id', async () => {
+    const fetchImpl = vi.fn(async (_path, options) => {
+      const { action } = JSON.parse(options.body);
+      if (action === 'download') return jsonResponse({ ok: true, url: 'https://storage.example.test/sign/x?token=t', fileName: 'Gray-Elm_2026-07-01_2026-10-19.jsonl.gz', expiresAt: '2026-10-20T15:05:00.000Z' });
+      if (action === 'cancel') return jsonResponse({ ok: true, cancelled: 1 });
+      return jsonResponse({ ok: true, deleted: true });
+    });
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'token' });
+    await expect(api.cancelTradingExports([REQUEST_ID])).resolves.toEqual({ ok: true, cancelled: 1 });
+    await expect(api.downloadTradingExport(REQUEST_ID)).resolves.toEqual({
+      url: 'https://storage.example.test/sign/x?token=t', fileName: 'Gray-Elm_2026-07-01_2026-10-19.jsonl.gz', expiresAt: '2026-10-20T15:05:00.000Z',
+    });
+    await expect(api.deleteTradingExport(REQUEST_ID)).resolves.toEqual({ ok: true, deleted: true });
+    expect(bodies(fetchImpl)).toEqual([
+      { action: 'cancel', requestIds: [REQUEST_ID] },
+      { action: 'download', requestId: REQUEST_ID },
+      { action: 'delete', requestId: REQUEST_ID },
+    ]);
+  });
+
+  it('never hands the browser something that is not a web address to open', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, url: 'javascript:alert(1)', fileName: 'x' }));
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'token' });
+    await expect(api.downloadTradingExport(REQUEST_ID)).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it.each([
+    [404, 'trading_export_unavailable', 'Trading exports need step 72 in the database. Run it, then reload this page.'],
+    [404, 'export_not_found', 'This export no longer exists. Refresh the list.'],
+    [409, 'export_not_ready', 'This export is not ready to download.'],
+    [410, 'export_expired', 'This export has expired and its file is gone. Request a new one.'],
+  ])('reads %i %s as its own message', async (status, code, message) => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: code }, { status }));
+    const api = createAutoCollectionApi({ fetchImpl, getAccessToken: async () => 'token' });
+    await expect(api.downloadTradingExport(REQUEST_ID)).rejects.toMatchObject({ code, status, message });
+    expect(new AutoCollectionApiError(code).message).not.toMatch(/[‒–—―]/);
+  });
+});
