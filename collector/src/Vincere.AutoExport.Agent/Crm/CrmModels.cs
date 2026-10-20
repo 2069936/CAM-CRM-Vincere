@@ -100,6 +100,165 @@ public interface ICollectorCrmClient
         AgentUpdatePollRequest request,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(AgentUpdatePollResult.Unsupported());
+
+    /* "REQUEST A TRADING EXPORT FROM THE CRM", THE MACHINE'S HALF: three routes
+     * and one upload, each its own call for the reason every addition above
+     * gives. POST api/ingest/export-request asks whether a Manager wants one; an
+     * older CRM answers 404, which is Unsupported. POST export-upload-url hands
+     * back where the bytes go, POST export-complete says how it went, and the
+     * bytes themselves go by HTTP PUT to the storage address, never to the CRM.
+     *
+     * Defaulted like the others, so every existing test double compiles, and a
+     * double that does not override them never builds an export. */
+    Task<ExportRequestPollResult> PollExportRequestAsync(
+        string agentVersion,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(ExportRequestPollResult.Unsupported());
+
+    Task<ExportUploadUrlResult> RequestExportUploadUrlAsync(
+        ExportUploadUrlRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(ExportUploadUrlResult.Failed("not_implemented"));
+
+    Task<ExportUploadResult> UploadExportAsync(
+        Uri uploadUrl,
+        string filePath,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(ExportUploadResult.Failed("not_implemented"));
+
+    Task<ExportCompleteResult> CompleteExportAsync(
+        ExportCompleteRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(ExportCompleteResult.Failed("not_implemented"));
+}
+
+/* ---------------------------------------------------------------------------
+ * THE TRADING EXPORT CONTRACT, AS THE CRM VALIDATES IT.
+ *
+ * The CRM refuses a body with a key it does not know, so each request record is
+ * opt-in serialised and carries exactly the keys the contract names, nulls
+ * included. The reply types hold raw values: TradingExportRequestValidator
+ * decides what a request means, and nothing here trusts it.
+ * ------------------------------------------------------------------------- */
+
+/// <summary>The poll body: exactly one key.</summary>
+[JsonObject(MemberSerialization.OptIn)]
+public sealed record ExportRequestPoll(
+    [property: JsonProperty("agentVersion")] string AgentVersion);
+
+/// <summary>
+/// What the CRM asked for, as it wrote it. From and To are the CRM's own
+/// YYYY-MM-DD text, never parsed into a DateTime on the way in. A field of the
+/// wrong JSON type arrives as null; DatasetsWellFormed is false when the list
+/// held something that was not a string.
+/// </summary>
+public sealed record TradingExportRequest(
+    string Id,
+    string From,
+    string To,
+    IReadOnlyList<string> Datasets,
+    long? MaxBytes,
+    bool DatasetsWellFormed = true);
+
+public enum ExportRequestPollStatus
+{
+    /// <summary>The CRM answered. <c>Request</c> is null when nothing is asked of this machine.</summary>
+    Accepted,
+
+    /// <summary>404 or 405: a CRM without the route. Not a fault; asked again in an hour.</summary>
+    Unsupported,
+
+    /// <summary>Refused, unreachable or unreadable this time. The next poll tries again.</summary>
+    Failed,
+}
+
+public sealed record ExportRequestPollResult(
+    ExportRequestPollStatus Status,
+    TradingExportRequest Request,
+    string Code,
+    CrmFailureDisposition Disposition = CrmFailureDisposition.Stop)
+{
+    public static ExportRequestPollResult Accepted(TradingExportRequest request) =>
+        new(ExportRequestPollStatus.Accepted, request, null);
+
+    public static ExportRequestPollResult Unsupported() =>
+        new(ExportRequestPollStatus.Unsupported, null, "export_request_unsupported");
+
+    public static ExportRequestPollResult Failed(
+        string code,
+        CrmFailureDisposition disposition = CrmFailureDisposition.Stop) =>
+        new(ExportRequestPollStatus.Failed, null, code, disposition);
+}
+
+/// <summary>The upload-url body: exactly four keys, the content type fixed.</summary>
+[JsonObject(MemberSerialization.OptIn)]
+public sealed record ExportUploadUrlRequest(
+    [property: JsonProperty("requestId")] string RequestId,
+    [property: JsonProperty("sha256")] string Sha256,
+    [property: JsonProperty("byteSize")] long ByteSize)
+{
+    public const string GzipContentType = "application/gzip";
+
+    [JsonProperty("contentType")]
+    public string ContentType => GzipContentType;
+}
+
+/// <summary>Where the bytes go. UploadUrl has already passed the storage-host check.</summary>
+public sealed record ExportUploadTarget(Uri UploadUrl, string Path, string ExpiresAt);
+
+public sealed record ExportUploadUrlResult(bool Ok, ExportUploadTarget Target, string Code)
+{
+    public static ExportUploadUrlResult Accepted(ExportUploadTarget target) => new(true, target, null);
+
+    public static ExportUploadUrlResult Failed(string code) => new(false, null, code);
+}
+
+public sealed record ExportUploadResult(bool Ok, string Code)
+{
+    public static ExportUploadResult Accepted() => new(true, null);
+
+    public static ExportUploadResult Failed(string code) => new(false, code);
+}
+
+/// <summary>Rows per dataset, all four always present; zero for a dataset that was not asked for.</summary>
+[JsonObject(MemberSerialization.OptIn)]
+public sealed record ExportRowCounts(
+    [property: JsonProperty("executions")] long Executions,
+    [property: JsonProperty("orders")] long Orders,
+    [property: JsonProperty("strategies")] long Strategies,
+    [property: JsonProperty("trades")] long Trades);
+
+/// <summary>
+/// The complete body: exactly eight keys. "ready" carries the digest, the size and
+/// the row counts and no error code; "failed" carries a code and nulls for those
+/// three. CrmClient makes a request fit that shape before it is sent.
+/// </summary>
+[JsonObject(MemberSerialization.OptIn)]
+public sealed record ExportCompleteRequest(
+    [property: JsonProperty("requestId")] string RequestId,
+    [property: JsonProperty("status")] string Status,
+    [property: JsonProperty("sha256")] string Sha256,
+    [property: JsonProperty("byteSize")] long? ByteSize,
+    [property: JsonProperty("rowCounts")] ExportRowCounts RowCounts,
+    [property: JsonProperty("from")] string From,
+    [property: JsonProperty("to")] string To,
+    [property: JsonProperty("errorCode")] string ErrorCode)
+{
+    public const string Ready = "ready";
+    public const string Failed = "failed";
+}
+
+public sealed record ExportCompleteResult(
+    bool Ok,
+    string Code,
+    CrmFailureDisposition Disposition = CrmFailureDisposition.Stop)
+{
+    public static ExportCompleteResult Accepted() => new(true, null);
+
+    public static ExportCompleteResult Failed(
+        string code,
+        CrmFailureDisposition disposition = CrmFailureDisposition.Stop) =>
+        new(false, code, disposition);
 }
 
 /// <summary>

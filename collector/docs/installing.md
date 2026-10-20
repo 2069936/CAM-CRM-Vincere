@@ -119,6 +119,64 @@ agent asks for nothing and the watchdog leaves it alone), or uninstall it with
 altogether, captures included; the machine has no switch that turns off only
 updates. A machine nobody presses Update for is never updated.
 
+## Trading exports
+
+From agent 1.4.0 on, the CRM can ask a machine for its trading history without
+anyone opening the VPS.
+
+**What the Manager does.** In the CRM, requests a trading export for the
+client: a range of days (or none, for the whole history) and which of the four
+datasets to include. The machine picks the request up within five minutes. If
+the CRM says the file is too large, ask again for a narrower range.
+
+**What the machine does.** Every five minutes the agent asks the CRM whether an
+export is wanted. When one is, it copies NinjaTrader's database to
+`C:\ProgramData\Vincere\AutoExport\exports\work-*` (through SQLite's backup API
+while NinjaTrader is running, as plain bytes when it is closed), builds one
+gzip file of JSON lines from the copy, uploads it to the CRM's storage, tells
+the CRM it is ready, and deletes the copy and the file. NinjaTrader keeps
+running throughout: nothing is stopped, nothing is written in its folders, and
+the work runs at below-normal priority. It needs, free on the ProgramData drive,
+twice the database plus the file plus 512 MB, and refuses otherwise.
+
+**What it sends.** One file, at most 25 MB compressed (less if the CRM asks for
+less). The first line describes it (agent and NinjaTrader versions, the range,
+row counts); then, as requested:
+
+- `executions` and `orders` in the range: time, account name, instrument, side
+  or action, quantity, price, order type, limit and stop prices, order state,
+  order and signal names, entry or exit, the order ids (including every broker
+  id an order carried) and the strategy that placed it;
+- `strategies`: each strategy NinjaTrader holds, with its family, version,
+  account, instrument and parameters. Every value whose name looks like a
+  credential (`LicenseKey`, any password, token, key or secret) is replaced by
+  `***`, and so is that value wherever else it appears;
+- `trades` in the range: the per-trade geometry the Deep Export's attribution
+  already computes.
+
+**What it never sends.** Logs, traces, workspaces, the strategy templates, the
+database file, the agent's configuration, the device token, a licence key, any
+path, or the Windows user or machine name. The upload goes only to an `https`
+address on the CRM's storage (`*.supabase.co`) and carries no credential of the
+machine; anything else is refused with `url_not_allowed`.
+
+**Which NinjaTrader folder.** The service runs as SYSTEM, so it cannot ask
+Windows for "my Documents". It uses the installer's rule: every profile under
+`C:\Users` (except Public and Default), in `Documents` and
+`OneDrive\Documents`, and it uses the one `NinjaTrader 8` folder that holds a
+database. If none does it fails with `ninjatrader_folder_not_found` or
+`database_not_found`; if more than one does, with
+`ninjatrader_folder_ambiguous`. It never guesses. A Documents folder moved
+anywhere else is not found.
+
+**When it fails** the CRM shows one of: `request_invalid`,
+`ninjatrader_folder_not_found`, `ninjatrader_folder_ambiguous`,
+`database_not_found`, `database_unreadable`, `disk_space`, `export_too_large`,
+`export_failed`, `upload_url_failed`, `url_not_allowed`, `upload_failed`,
+`upload_timeout`. Each request is answered once; ask again for another try.
+What the machine last did is in
+`C:\ProgramData\Vincere\AutoExport\exports\state.json`.
+
 ## The backup, and getting a strategy set back
 
 On 2026-09-28 two machines came out of an update with an empty Strategies table

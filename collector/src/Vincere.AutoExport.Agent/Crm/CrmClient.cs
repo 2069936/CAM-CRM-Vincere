@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -842,6 +843,357 @@ public sealed class CrmClient : ICollectorCrmClient, IDisposable
     // refuses the directive rather than this method guessing what a number meant.
     private static string StringOrNull(JToken token)
         => token is JValue { Type: JTokenType.String } value ? (string)value.Value : null;
+
+    /* ---------------------------------------------------------------------
+     * THE TRADING EXPORT: THREE CRM ROUTES AND ONE UPLOAD.
+     *
+     * The three routes are authenticated exactly like the heartbeat - the device
+     * bearer token and the machine id header, through the same SendAsync and the
+     * same thirty-second request timeout - and each makes ONE attempt and returns
+     * a result rather than throwing, the agent-update poll's rules: the loop that
+     * calls them runs every five minutes and keeps what it has learned, so a
+     * failure costs one tick. A 401 or 403 is reported with the RePair
+     * disposition and acted on by nobody here; the heartbeat owns unpairing.
+     *
+     * THE UPLOAD IS NOT A CRM ROUTE AND CARRIES NONE OF THE CRM'S CREDENTIALS.
+     * The bytes go by PUT to a signed storage address the CRM handed out, whose
+     * own query string is the only authority it needs. So the PUT is built here
+     * by hand rather than through SendAsync: no bearer token, no machine id, no
+     * Accept header, nothing that says which machine or client this is beyond
+     * the bytes the CRM asked for. The address is checked twice, when the CRM
+     * hands it over and again right before the PUT, and only HTTPS on a host
+     * under supabase.co (the CRM's storage) on the default port is accepted.
+     * Redirects are not followed - the production handler refuses them - so a
+     * signed address cannot bounce the bytes anywhere else.
+     *
+     * NOTHING HERE LOGS THE ADDRESS. Its query string is a credential for one
+     * object; codes only leave this class.
+     * ------------------------------------------------------------------- */
+
+    /// <summary>The host suffix of the CRM's storage. An upload address anywhere else is refused.</summary>
+    public const string ExportStorageHostSuffix = ".supabase.co";
+
+    /* 25 MB is the most a trading export may be. At a slow 1 Mbit/s that is
+     * about three and a half minutes; ten minutes leaves room for a congested
+     * uplink without letting a stalled PUT hold the loop for an evening. */
+    public static readonly TimeSpan ExportUploadTimeout = TimeSpan.FromMinutes(10);
+
+    private static readonly Regex ExportCodePattern = new("^[a-z0-9_]{1,64}$", RegexOptions.CultureInvariant);
+    private static readonly Regex ExportDatePattern = new(@"^\d{4}-\d{2}-\d{2}$", RegexOptions.CultureInvariant);
+    private static readonly Regex Sha256HexPattern = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
+
+    public async Task<ExportRequestPollResult> PollExportRequestAsync(
+        string agentVersion,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(
+            new ExportRequestPoll(NormalizeVersion(agentVersion, nameof(agentVersion))),
+            Formatting.None));
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(
+                HttpMethod.Post,
+                "api/ingest/export-request",
+                requestBytes,
+                authenticated: true,
+                contentEncoding: null,
+                cancellationToken).ConfigureAwait(false);
+            byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken).ConfigureAwait(false);
+
+            // An older CRM has no such route. Not a fault: asked again in an hour.
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+                return ExportRequestPollResult.Unsupported();
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                return ExportRequestPollResult.Failed("device_credential_revoked", CrmFailureDisposition.RePair);
+            if (!response.IsSuccessStatusCode)
+                return ExportRequestPollResult.Failed(HttpCode("export_request", response.StatusCode), Disposition(response.StatusCode));
+
+            return ParseExportRequestResponse(responseBytes);
+        }
+        catch (HttpRequestException exception) when (IsTlsFailure(exception))
+        {
+            return ExportRequestPollResult.Failed("tls_failure");
+        }
+        catch (HttpRequestException)
+        {
+            return ExportRequestPollResult.Failed("export_request_unreachable", CrmFailureDisposition.Retry);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ExportRequestPollResult.Failed("export_request_timeout", CrmFailureDisposition.Retry);
+        }
+        // device_not_paired and crm_response_invalid (a reply over 64 KB).
+        catch (CrmClientException exception)
+        {
+            return ExportRequestPollResult.Failed(exception.Code, exception.Disposition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
+    public async Task<ExportUploadUrlResult> RequestExportUploadUrlAsync(
+        ExportUploadUrlRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (string.IsNullOrWhiteSpace(request.RequestId)
+            || !Sha256HexPattern.IsMatch(request.Sha256 ?? string.Empty)
+            || request.ByteSize <= 0)
+            throw new ArgumentException("An upload address needs a request id, a lowercase SHA-256 and a size.", nameof(request));
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(request, Formatting.None));
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(
+                HttpMethod.Post,
+                "api/ingest/export-upload-url",
+                requestBytes,
+                authenticated: true,
+                contentEncoding: null,
+                cancellationToken).ConfigureAwait(false);
+            byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken).ConfigureAwait(false);
+
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                return ExportUploadUrlResult.Failed("device_credential_revoked");
+            if (!response.IsSuccessStatusCode)
+                return ExportUploadUrlResult.Failed(HttpCode("export_upload_url", response.StatusCode));
+
+            JObject root = ReadOkObject(responseBytes);
+            string uploadUrl = root == null ? null : StringOrNull(root["uploadUrl"]);
+            if (uploadUrl == null) return ExportUploadUrlResult.Failed("export_upload_url_response_invalid");
+            if (!TryAllowedUploadUrl(uploadUrl, out Uri allowed))
+                return ExportUploadUrlResult.Failed("url_not_allowed");
+            return ExportUploadUrlResult.Accepted(new ExportUploadTarget(
+                allowed,
+                StringOrNull(root["path"]),
+                StringOrNull(root["expiresAt"])));
+        }
+        catch (HttpRequestException)
+        {
+            return ExportUploadUrlResult.Failed("export_upload_url_unreachable");
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ExportUploadUrlResult.Failed("export_upload_url_timeout");
+        }
+        catch (CrmClientException exception)
+        {
+            return ExportUploadUrlResult.Failed(exception.Code);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
+    public async Task<ExportUploadResult> UploadExportAsync(
+        Uri uploadUrl,
+        string filePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (uploadUrl == null || !TryAllowedUploadUrl(uploadUrl.OriginalString, out Uri allowed))
+            return ExportUploadResult.Failed("url_not_allowed");
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return ExportUploadResult.Failed("upload_file_missing");
+
+        using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(ExportUploadTimeout);
+        try
+        {
+            await using FileStream file = new(
+                filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+            using HttpRequestMessage request = new(HttpMethod.Put, allowed);
+            request.Content = new StreamContent(file, 81920);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue(ExportUploadUrlRequest.GzipContentType);
+            request.Content.Headers.ContentLength = file.Length;
+            // Headers only: nothing in the storage's reply is acted on beyond its
+            // status, so its body is never read into a buffer at all.
+            using HttpResponseMessage response = await httpClient
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, limit.Token)
+                .ConfigureAwait(false);
+            return response.IsSuccessStatusCode
+                ? ExportUploadResult.Accepted()
+                : ExportUploadResult.Failed(HttpCode("upload", response.StatusCode));
+        }
+        catch (HttpRequestException exception) when (IsTlsFailure(exception))
+        {
+            return ExportUploadResult.Failed("tls_failure");
+        }
+        catch (HttpRequestException)
+        {
+            return ExportUploadResult.Failed("upload_unreachable");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ExportUploadResult.Failed("upload_timeout");
+        }
+        catch (IOException)
+        {
+            return ExportUploadResult.Failed("upload_file_unreadable");
+        }
+    }
+
+    public async Task<ExportCompleteResult> CompleteExportAsync(
+        ExportCompleteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ExportCompleteRequest normalized = NormalizeExportComplete(request);
+        byte[] requestBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(normalized, Formatting.None));
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(
+                HttpMethod.Post,
+                "api/ingest/export-complete",
+                requestBytes,
+                authenticated: true,
+                contentEncoding: null,
+                cancellationToken).ConfigureAwait(false);
+            byte[] responseBytes = await ReadResponseBytesAsync(response, cancellationToken).ConfigureAwait(false);
+
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                return ExportCompleteResult.Failed("device_credential_revoked", CrmFailureDisposition.RePair);
+            if (!response.IsSuccessStatusCode)
+                return ExportCompleteResult.Failed(HttpCode("export_complete", response.StatusCode), Disposition(response.StatusCode));
+            return ReadOkObject(responseBytes) == null
+                ? ExportCompleteResult.Failed("export_complete_response_invalid")
+                : ExportCompleteResult.Accepted();
+        }
+        catch (HttpRequestException exception) when (IsTlsFailure(exception))
+        {
+            return ExportCompleteResult.Failed("tls_failure");
+        }
+        catch (HttpRequestException)
+        {
+            return ExportCompleteResult.Failed("export_complete_unreachable", CrmFailureDisposition.Retry);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ExportCompleteResult.Failed("export_complete_timeout", CrmFailureDisposition.Retry);
+        }
+        catch (CrmClientException exception)
+        {
+            return ExportCompleteResult.Failed(exception.Code, exception.Disposition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
+    }
+
+    /// <summary>
+    /// HTTPS, a DNS host strictly under <see cref="ExportStorageHostSuffix"/>,
+    /// the default port and no user info. Everything else is url_not_allowed.
+    /// </summary>
+    public static bool TryAllowedUploadUrl(string value, out Uri allowed)
+    {
+        allowed = null;
+        if (string.IsNullOrWhiteSpace(value)
+            || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out Uri uri)
+            || uri.Scheme != Uri.UriSchemeHttps
+            || !uri.IsDefaultPort
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || uri.HostNameType != UriHostNameType.Dns)
+            return false;
+        string host = uri.IdnHost.TrimEnd('.').ToLowerInvariant();
+        if (!host.EndsWith(ExportStorageHostSuffix, StringComparison.Ordinal)
+            || host.Length <= ExportStorageHostSuffix.Length)
+            return false;
+        allowed = uri;
+        return true;
+    }
+
+    /* Read as a tree with date parsing OFF, for the reason the agent-update reply
+     * is: "from" and "to" are the CRM's own YYYY-MM-DD text and must come back out
+     * as that text, not as a DateTime rendered in this machine's culture. */
+    private static ExportRequestPollResult ParseExportRequestResponse(byte[] responseBytes)
+    {
+        JObject root = ReadOkObject(responseBytes);
+        if (root == null) return ExportRequestPollResult.Failed("export_request_response_invalid");
+        JToken request = root["request"];
+        if (request == null || request.Type == JTokenType.Null)
+            return ExportRequestPollResult.Accepted(null);
+        if (request is not JObject body)
+            return ExportRequestPollResult.Failed("export_request_response_invalid");
+
+        List<string> datasets = null;
+        bool datasetsWellFormed = true;
+        if (body["datasets"] is JArray array)
+        {
+            datasets = new List<string>();
+            foreach (JToken item in array)
+            {
+                string name = StringOrNull(item);
+                if (name == null) datasetsWellFormed = false;
+                else datasets.Add(name);
+            }
+        }
+        long? maxBytes = body["maxBytes"] is JValue { Type: JTokenType.Integer } max
+            ? Convert.ToInt64(max.Value, CultureInfo.InvariantCulture)
+            : null;
+        return ExportRequestPollResult.Accepted(new TradingExportRequest(
+            StringOrNull(body["id"]),
+            StringOrNull(body["from"]),
+            StringOrNull(body["to"]),
+            datasets,
+            maxBytes,
+            datasetsWellFormed));
+    }
+
+    /// <summary>The reply as an object whose "ok" is the boolean true, or null.</summary>
+    private static JObject ReadOkObject(byte[] responseBytes)
+    {
+        JObject root;
+        try
+        {
+            using JsonTextReader reader = new(new StringReader(Encoding.UTF8.GetString(responseBytes)))
+            {
+                DateParseHandling = DateParseHandling.None,
+            };
+            root = JToken.ReadFrom(reader) as JObject;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        return root != null && root["ok"] is JValue { Type: JTokenType.Boolean } ok && (bool)ok.Value ? root : null;
+    }
+
+    /* The body the CRM validates, made to fit it. "ready" goes with a digest, a
+     * size and the row counts and never a code; anything else is "failed", with a
+     * code of the agreed shape and nulls for those three. A "ready" that is
+     * missing what makes it ready is sent as failed rather than as a promise the
+     * bytes cannot keep. The dates go only in the CRM's own shape. */
+    private static ExportCompleteRequest NormalizeExportComplete(ExportCompleteRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.RequestId))
+            throw new ArgumentException("A completion needs the request id.", nameof(request));
+        string from = request.From != null && ExportDatePattern.IsMatch(request.From) ? request.From : null;
+        string to = request.To != null && ExportDatePattern.IsMatch(request.To) ? request.To : null;
+        bool ready = request.Status == ExportCompleteRequest.Ready
+            && request.Sha256 != null && Sha256HexPattern.IsMatch(request.Sha256)
+            && request.ByteSize is > 0
+            && request.RowCounts != null;
+        if (ready)
+        {
+            return new ExportCompleteRequest(
+                request.RequestId, ExportCompleteRequest.Ready, request.Sha256, request.ByteSize, request.RowCounts, from, to, null);
+        }
+        string code = request.Status == ExportCompleteRequest.Failed
+            && request.ErrorCode != null && ExportCodePattern.IsMatch(request.ErrorCode)
+            ? request.ErrorCode
+            : "export_failed";
+        return new ExportCompleteRequest(request.RequestId, ExportCompleteRequest.Failed, null, null, null, from, to, code);
+    }
+
+    private static string HttpCode(string route, HttpStatusCode status)
+        => route + "_http_" + ((int)status).ToString(CultureInfo.InvariantCulture);
+
+    private static CrmFailureDisposition Disposition(HttpStatusCode status)
+        => status == HttpStatusCode.RequestTimeout || status == HttpStatusCode.TooManyRequests || (int)status >= 500
+            ? CrmFailureDisposition.Retry
+            : CrmFailureDisposition.Stop;
 
     public void Dispose()
     {

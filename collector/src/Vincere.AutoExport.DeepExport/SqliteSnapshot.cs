@@ -346,6 +346,56 @@ public static class SqliteSnapshot
         }
     }
 
+    /* THE SERVICE'S COPY, WHICH MUST NOT LEAVE A FILE BESIDE THE LIVE DATABASE.
+     *
+     * Copy above opens the live file through SQLite, read-only. That is right
+     * while NinjaTrader is running: the platform already holds the -wal and -shm
+     * files, the backup reads under the platform's own locks, and nothing new
+     * appears in its folder. It is NOT harmless when the platform is closed.
+     * Measured with this repository's Microsoft.Data.Sqlite against a WAL-mode
+     * file at rest: a read-only open followed by the backup CREATES
+     * NinjaTrader.sqlite-wal and NinjaTrader.sqlite-shm in the db folder and
+     * leaves both behind after the connection closes. For a person running the
+     * Deep Export by hand that is a leftover; for a SYSTEM service whose rule is
+     * "never write into NinjaTrader's folders" it is a breach.
+     *
+     * So this asks first whether the platform holds the file. Both companions
+     * present means a live writer (or one that died holding it), and the backup
+     * API is the only consistent way to read it - exactly Copy, which then adds
+     * nothing to the folder. Otherwise the database is at rest and its bytes ARE
+     * the database: the main file, and a -wal left by a crash if there is one,
+     * are read as plain files with the sharing flags Copy's own fallback uses,
+     * into the destination folder, and SQLite is only ever pointed at the copy.
+     * Recovering a leftover WAL then happens beside the copy, not beside
+     * NinjaTrader's file.
+     *
+     * The window this leaves is a platform that starts during the read. Its
+     * first writes go to a new -wal, not the main file, so the bytes read are
+     * still the state at rest; the caller checks the copy before using it. */
+    public static string CopyLeavingSourceFolderUntouched(string livePath, string destination, IList<string> warnings)
+    {
+        if (File.Exists(livePath + "-wal") && File.Exists(livePath + "-shm"))
+            return Copy(livePath, destination, warnings);
+
+        string directory = Path.GetDirectoryName(destination);
+        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+        Remove(destination);
+        foreach (string suffix in new[] { "", "-wal" })
+        {
+            string from = livePath + suffix;
+            if (!File.Exists(from)) continue;
+            using FileStream input = new(from, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using FileStream output = new(destination + suffix, FileMode.Create, FileAccess.Write, FileShare.None);
+            input.CopyTo(output);
+        }
+        using (var copy = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = destination, Pooling = false }.ConnectionString))
+        {
+            copy.Open();
+            SingleFile(copy, warnings);
+        }
+        return "at_rest_copy";
+    }
+
     private static void SingleFile(SqliteConnection connection, IList<string> warnings)
     {
         try
