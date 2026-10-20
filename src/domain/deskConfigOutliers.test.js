@@ -459,23 +459,22 @@ describe('what a group is', () => {
     ]);
   });
 
-  it('places a row that stated no data series on the busiest one, and counts it', () => {
-    const stated = desk(4);
-    const blank = client('blank', [strategy('BLANK', {}, { dataSeries: '' })]);
+  // The captured data series says whether the strategy was running when the
+  // close was read (the 1 Minute fill resolution series) or not (the 15 Minute
+  // it was configured on), so it is no part of a group's identity.
+  it('puts running, stopped and unstated data series in one group', () => {
+    const running = [0, 1].map((index) => client(`run${index}`, [strategy(`RUN${index}`, {}, { dataSeries: '1 Minute' })]));
+    const stopped = [0, 1].map((index) => client(`stop${index}`, [strategy(`STOP${index}`)]));
+    const blank = client('blank', [strategy('BLANK', { StopLossTicks: '250' }, { dataSeries: '' })]);
 
-    const group = groupOf(buildDeskConfigOutliers([...stated, blank], { date: DAY }));
-    expect(group.dataSeries).toBe('15 Minute');
+    const result = buildDeskConfigOutliers([...running, ...stopped, blank], { date: DAY });
+    expect(result.groups).toHaveLength(1);
+    const [group] = result.groups;
     expect(group.accounts).toBe(5);
-    expect(group.unstatedSeries).toBe(1);
-  });
-
-  it('keeps an account that stated a different data series in its own group', () => {
-    const fifteen = desk(4);
-    const oneMinute = client('fast', [strategy('FAST', {}, { dataSeries: '1 Minute' })]);
-
-    const result = buildDeskConfigOutliers([...fifteen, oneMinute], { date: DAY });
-    expect(result.groups.map((group) => group.dataSeries)).toEqual(['15 Minute', '1 Minute']);
-    expect(result.groups[1].measured).toBe(false);
+    expect(group.measured).toBe(true);
+    expect(group.outliers.map((outlier) => outlier.accountName)).toEqual(['BLANK']);
+    expect(group).not.toHaveProperty('dataSeries');
+    expect(group).not.toHaveProperty('unstatedSeries');
   });
 
   it('counts a row with no trading account rather than attributing it', () => {

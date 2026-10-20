@@ -107,8 +107,8 @@ export default function DeskConfigOutlierPanel({
         </p>
       ) : null}
       <p className="drift-ask">
-        A group is one algorithm, one version, one contract and one data series, across every
-        client that closed that day. Different is not wrong. Customisation is legitimate, and this
+        A group is one algorithm, one version and one contract, across every client that closed
+        that day. Different is not wrong. Customisation is legitimate, and this
         is a list to verify rather than a fault list.
       </p>
 
@@ -162,7 +162,7 @@ export default function DeskConfigOutlierPanel({
 }
 
 function groupName(group) {
-  return [group.family, group.version, group.instrument, group.dataSeries]
+  return [group.family, group.version, group.instrument]
     .filter(Boolean)
     .join(' · ');
 }
@@ -183,7 +183,6 @@ function GroupRow({ group, open = false }) {
           <strong>{group.family}</strong>
           <span className="muted">
             {group.version} {group.instrument}
-            {group.dataSeries ? ` ${group.dataSeries}` : ''}
           </span>
           <span className="drift-count">
             {group.outliers.length
@@ -220,11 +219,8 @@ function GroupRow({ group, open = false }) {
       </summary>
 
       <div className="drift-detail">
-        {group.unstatedSeries || group.unreadable || group.unnamed ? (
+        {group.unreadable || group.unnamed ? (
           <p className="muted desk-config-note">
-            {group.unstatedSeries
-              ? `${group.unstatedSeries} row${group.unstatedSeries === 1 ? ' stated' : 's stated'} no data series and ${group.unstatedSeries === 1 ? 'was' : 'were'} placed on this group's busiest data series. `
-              : ''}
             {group.unreadable
               ? `${group.unreadable} row${group.unreadable === 1 ? ' exported' : 's exported'} settings nobody could read and ${group.unreadable === 1 ? 'was' : 'were'} left out. `
               : ''}

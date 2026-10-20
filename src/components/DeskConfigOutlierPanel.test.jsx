@@ -119,7 +119,8 @@ describe('a group too small to have a consensus', () => {
   it('lists the group rather than dropping it', () => {
     // "checked and uniform", "too small" and "does not exist" must not render
     // identically.
-    expect(text).toContain('URGO · 4.5 · MNQ 2026-09 · 15 Minute');
+    expect(text).toContain('URGO · 4.5 · MNQ 2026-09');
+    expect(text).not.toContain('15 Minute');
     expect(text).toContain('2 accounts');
   });
 
