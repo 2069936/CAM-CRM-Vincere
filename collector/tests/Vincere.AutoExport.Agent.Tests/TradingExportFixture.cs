@@ -147,9 +147,20 @@ internal sealed class TradingExportFixture : IDisposable
             // of data, and only its presence is compared.
             files[relative] = ignoreSharedMemoryContent && relative.EndsWith("-shm", StringComparison.Ordinal)
                 ? "present"
-                : Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(full)));
+                : Convert.ToHexString(SHA256.HashData(ReadSharingWithThePlatform(full)));
         }
         return files;
+    }
+
+    // File.ReadAllBytes allows only other readers, so on Windows it fails while
+    // the platform's SQLite holds the database open for writing. Share the way
+    // the agent's own copy does.
+    private static byte[] ReadSharingWithThePlatform(string path)
+    {
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using MemoryStream bytes = new();
+        stream.CopyTo(bytes);
+        return bytes.ToArray();
     }
 
     /// <summary>A connection that holds the database as the running platform does: WAL, a write not yet checkpointed.</summary>
