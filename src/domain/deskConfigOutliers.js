@@ -342,9 +342,11 @@ export function buildDeskConfigOutliers(clients = [], {
   //
   // NOT ON THE DATA SERIES. The snapshot's dataSeries is the AddOn reading
   // strategy.BarsPeriod at capture time, and while a strategy runs NinjaTrader
-  // answers with the series it processed last: usually the 1 Minute (Bullet
-  // Bot: 1 Second) series the algorithm adds for itself, not the 15 Minute or
-  // 20 Second it was configured on. The same strategy instance reads 15 Minute
+  // answers with the series it processed last, not the 15 Minute or 20 Second
+  // it was configured on. Usually that is 1 Minute: the series NinjaTrader
+  // loads for the templates' Order Fill Resolution High at 1 Minute (none of
+  // the algorithms' assemblies calls AddDataSeries). Bullet Bot reads 1 Second
+  // the same way. The same strategy instance reads 15 Minute
   // before it starts, 1 Minute while it runs and 15 Minute again once stopped,
   // and across the book the "1 Minute" and "1 Second" rows are rows that ran in
   // all but one case of 6,633. Grouping on it split every algorithm into a

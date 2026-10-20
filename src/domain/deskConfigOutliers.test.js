@@ -460,8 +460,8 @@ describe('what a group is', () => {
   });
 
   // The captured data series says whether the strategy was running when the
-  // close was read (its own 1 Minute series) or not (the 15 Minute it was
-  // configured on), so it is no part of a group's identity.
+  // close was read (the 1 Minute fill resolution series) or not (the 15 Minute
+  // it was configured on), so it is no part of a group's identity.
   it('puts running, stopped and unstated data series in one group', () => {
     const running = [0, 1].map((index) => client(`run${index}`, [strategy(`RUN${index}`, {}, { dataSeries: '1 Minute' })]));
     const stopped = [0, 1].map((index) => client(`stop${index}`, [strategy(`STOP${index}`)]));

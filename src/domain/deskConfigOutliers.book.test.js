@@ -358,8 +358,7 @@ describe('every day of the book, not only the one this file quotes', () => {
     // plain-majority rule this replaced produced 200 on the last close alone,
     // 45 of them for one field nobody had decided. 2026-07-13 compared 508
     // while the data series split groups: a Bullet Bot account on NQ whose
-    // close read its running 1 Minute series sat alone, outside the 106 it
-    // runs with.
+    // close read 1 Minute sat alone, outside the 106 it runs with.
     const measured = days.map((day) => {
       const answer = buildDeskConfigOutliers(clients, { date: day });
       return [day, answer.basis.accountsCompared, answer.basis.accountsDiffering];
