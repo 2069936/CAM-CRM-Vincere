@@ -83,9 +83,9 @@
 --     claim_trading_export(device_id uuid, agent_version text) returns
 --       table(request_id, export_from, export_to, export_datasets). The
 --       oldest open request of this device that is requested (it becomes
---       building, started_at set, one audit row) or building (a poll after an
---       agent restart gets the same one, and nothing is written). An
---       uploading one is not handed out again. export_from is from_date, or
+--       building, started_at set, one audit row) or building or uploading
+--       (a poll after an agent restart gets the same one back, nothing is
+--       written, and the agent uploads again). export_from is from_date, or
 --       when that is NULL the covered_to of this device's last export that
 --       reached ready (ready, or expired since), or NULL when there is none:
 --       full history. The end day itself is included again, because the last
@@ -583,7 +583,10 @@ begin
     into v_request
     from public.trading_export_requests as request
    where request.device_id = p_device_id
-     and request.status in ('requested', 'building')
+     -- uploading too: an agent that restarted in the middle of an upload
+     -- gets its request back and uploads again (the signed URL overwrites),
+     -- instead of leaving it stranded until a Manager cancels it.
+     and request.status in ('requested', 'building', 'uploading')
    order by request.requested_at, request.id
    limit 1
      for update;

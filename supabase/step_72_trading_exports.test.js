@@ -317,9 +317,14 @@ describe('claim_trading_export', () => {
     expect((await auditRows(world.pollerRequest)).filter((r) => r.action === 'trading_export.started')).toHaveLength(1);
   });
 
-  it('does not hand out an uploading one again', async () => {
+  it('hands an uploading one back after a restart, so the agent uploads again instead of stranding it', async () => {
     await beginUpload(world.poller, world.pollerRequest);
-    expect(await claim(world.poller)).toBeNull();
+    const before = await row(world.pollerRequest);
+    expect((await claim(world.poller)).request_id).toBe(world.pollerRequest);
+    // Still uploading, nothing rewritten, and a second upload is accepted.
+    expect(await row(world.pollerRequest)).toEqual(before);
+    await beginUpload(world.poller, world.pollerRequest);
+    expect((await row(world.pollerRequest)).status).toBe('uploading');
   });
 
   it('resolves from null to the end of the last export that reached ready, even expired, and keeps an explicit from', async () => {
