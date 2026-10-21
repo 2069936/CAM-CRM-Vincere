@@ -214,14 +214,15 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * Environment variables still win when set, so another deployment can point
  * elsewhere without touching code.
  *
- * Agent 1.4.0, built by run 39446977659 of the Collector Windows workflow
- * (artifact collector-agent-package-146, the head of PR 121) and published on
- * release agent-v1.4.0. The package is 110,727,643 bytes with sha256
- * 7c90dbd3…4716, and the manifest naming it (sha256 7efa073b…0108) was verified
- * against resolveInstallerRelease itself before it was committed. It adds the
- * slim trading export that Data lab asks for and changes nothing in the AddOn,
- * so a machine on 1.3.0 or later takes it with Update agent and NinjaTrader
- * keeps running.
+ * Agent 1.4.1, built by run 39625509052 of the Collector Windows workflow
+ * (artifact collector-agent-package-148, the head of PR 125) and published on
+ * release agent-v1.4.1. The package is 110,780,354 bytes with sha256
+ * a2fe8e27…b8c2, and the manifest naming it (sha256 c173d5df…cbd5) was verified
+ * against resolveInstallerRelease itself before it was committed. It is 1.4.0
+ * (the slim trading export Data lab asks for) plus a Deep Export that leaves
+ * NinjaTrader's db folder untouched when NinjaTrader is closed. Nothing in the
+ * AddOn changes, so a machine on 1.3.0 or later takes it with Update agent and
+ * NinjaTrader keeps running.
  *
  * A NEW FILE RATHER THAN A REPLACED ONE, and that is the point of the digest.
  * The manifest this used to name still sits beside the new one, untouched and
@@ -231,7 +232,7 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * states are each individually valid and the switch is this one commit.
  *
  * It also means the way back is this constant, not a scramble: set it to the
- * previous pair (agent-v1.3.1, 8484dc7e…e049) and the desk installs 1.3.1 again.
+ * previous pair (agent-v1.4.0, 7efa073b…0108) and the desk installs 1.4.0 again.
  *
  * THE FILE IT REPLACED WAS WRONG, which is worth recording. It declared version
  * 1.0.3 and a sha256 of 3f3444ee… for a 108,034,406 byte package, while the
@@ -241,8 +242,8 @@ function verifiedManifest(bytes, expectedSha256, manifestUrl, production) {
  * while handing them 1.0.8, and the "agent needs updating" flag could never
  * fire because every machine looked newer than the release.
  */
-const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.4.0/release-manifest.json';
-const DEFAULT_RELEASE_MANIFEST_SHA256 = '7efa073baa4322dd3fe88b9a5b4203d545a600c1375e3de9b6ff4f28bbf30108';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://github.com/2069936/CAM-CRM-Vincere/releases/download/agent-v1.4.1/release-manifest.json';
+const DEFAULT_RELEASE_MANIFEST_SHA256 = 'c173d5df3e5973fdb5b277710afe60837a961c12e4f75dd86117f1a0d405cbd5';
 
 /* WHICH MANIFEST THIS DEPLOYMENT PINS, AND WHETHER SOMEBODY CONFIGURED IT.
  *
