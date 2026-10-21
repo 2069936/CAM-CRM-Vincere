@@ -21,7 +21,10 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *
  * NOTHING BELOW READS THE LIVE FILE. Row counts, the schema, the rows that go
  * into the shipped database: all of it comes off the copy. NinjaTrader is opened
- * read-only, once, for the duration of the backup, and never touched again.
+ * read-only, once, for the duration of the backup, and never touched again -
+ * and only while the platform holds it. With NinjaTrader closed SQLite is never
+ * pointed at its file at all, because a read-only open of a database at rest
+ * still writes beside it; CopyLeavingSourceFolderUntouched has the measurement.
  *
  * The raw copy fallback exists because a backup can fail for reasons that are
  * not ours (a corrupt WAL, an odd permission), and a possibly inconsistent copy
@@ -289,8 +292,12 @@ public static class SqliteSnapshot
 
     private static readonly string[] AlwaysDumped = { "Accounts", "Executions", "Orders", "Positions", "Strategies" };
 
-    /// <summary>Copy the live database to <paramref name="destination"/> consistently, or fall back to a raw copy.</summary>
-    public static string Copy(string livePath, string destination, IList<string> warnings)
+    /// <summary>
+    /// Copy the live database to <paramref name="destination"/> consistently, or
+    /// fall back to a raw copy. PRIVATE: with NinjaTrader closed this leaves -wal
+    /// and -shm in its folder, so the only way in is CopyLeavingSourceFolderUntouched.
+    /// </summary>
+    private static string Copy(string livePath, string destination, IList<string> warnings)
     {
         string directory = Path.GetDirectoryName(destination);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
@@ -346,7 +353,7 @@ public static class SqliteSnapshot
         }
     }
 
-    /* THE SERVICE'S COPY, WHICH MUST NOT LEAVE A FILE BESIDE THE LIVE DATABASE.
+    /* THE ONE COPY, WHICH MUST NOT LEAVE A FILE BESIDE THE LIVE DATABASE.
      *
      * Copy above opens the live file through SQLite, read-only. That is right
      * while NinjaTrader is running: the platform already holds the -wal and -shm
@@ -355,11 +362,19 @@ public static class SqliteSnapshot
      * Measured with this repository's Microsoft.Data.Sqlite against a WAL-mode
      * file at rest: a read-only open followed by the backup CREATES
      * NinjaTrader.sqlite-wal and NinjaTrader.sqlite-shm in the db folder and
-     * leaves both behind after the connection closes. For a person running the
-     * Deep Export by hand that is a leftover; for a SYSTEM service whose rule is
-     * "never write into NinjaTrader's folders" it is a breach.
+     * leaves both behind after the connection closes. A -wal with no -shm, the
+     * shape a crash can leave, is no better: the same open builds a 32,768-byte
+     * -shm beside it and leaves that.
      *
-     * So this asks first whether the platform holds the file. Both companions
+     * THIS WAS WRITTEN FOR THE SERVICE AND IS NOW THE DEEP EXPORT'S TOO. It used
+     * to say that for a person running the Deep Export by hand the two files are
+     * a leftover and only for the SYSTEM service a breach. It is a breach for
+     * both: DeepExportRunner's header promises never to write into NinjaTrader's
+     * folders, and on 2026-10-20 a Deep Export with NinjaTrader closed left both
+     * files in Documents\NinjaTrader 8\db on a real machine. So both callers come
+     * through here, and Copy is private so that a third cannot go around it.
+     *
+     * This asks first whether the platform holds the file. Both companions
      * present means a live writer (or one that died holding it), and the backup
      * API is the only consistent way to read it - exactly Copy, which then adds
      * nothing to the folder. Otherwise the database is at rest and its bytes ARE
@@ -371,7 +386,10 @@ public static class SqliteSnapshot
      *
      * The window this leaves is a platform that starts during the read. Its
      * first writes go to a new -wal, not the main file, so the bytes read are
-     * still the state at rest; the caller checks the copy before using it. */
+     * still the state at rest - unless it checkpoints before the read ends. So
+     * the copy is quick-checked here and a failure is a warning, which is what
+     * the Deep Export ships with it, as it ships a raw copy; the service refuses
+     * such a copy outright by its own check. */
     public static string CopyLeavingSourceFolderUntouched(string livePath, string destination, IList<string> warnings)
     {
         if (File.Exists(livePath + "-wal") && File.Exists(livePath + "-shm"))
@@ -392,8 +410,24 @@ public static class SqliteSnapshot
         {
             copy.Open();
             SingleFile(copy, warnings);
+            if (!QuickCheckHolds(copy))
+                warnings.Add("database copied at rest failed its quick check; NinjaTrader may have started during the copy");
         }
         return "at_rest_copy";
+    }
+
+    private static bool QuickCheckHolds(SqliteConnection connection)
+    {
+        try
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "PRAGMA quick_check";
+            return string.Equals(command.ExecuteScalar() as string, "ok", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (SqliteException)
+        {
+            return false;
+        }
     }
 
     private static void SingleFile(SqliteConnection connection, IList<string> warnings)

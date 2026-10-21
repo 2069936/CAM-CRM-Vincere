@@ -45,8 +45,9 @@
          only place that touches the database and the template folder. -->
     <ProjectReference Include="../Vincere.AutoExport.NinjaTrader.Core/Vincere.AutoExport.NinjaTrader.Core.csproj" />
     <!-- The deep export copies NinjaTrader's database through the SQLite
-         Online Backup API. Copying the file by hand while the platform holds
-         it open produces a snapshot whose pages disagree with each other. -->
+         Online Backup API while the platform holds it open, because copying
+         the file by hand then produces a snapshot whose pages disagree with
+         each other. At rest it copies the bytes; see SqliteSnapshot. -->
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Newtonsoft.Json" />
   </ItemGroup>
