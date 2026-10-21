@@ -7,6 +7,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 
 namespace Vincere.AutoExport.Agent.UI.DeepExport;
@@ -21,9 +22,13 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  *
  * WHAT IT PROMISES.
  *   - It never writes into NinjaTrader's folders. The output goes to
- *     AutoExport\deep and a copy to the Desktop.
+ *     AutoExport\deep and a copy to the Desktop. That includes the files SQLite
+ *     writes on its own: measured on 2026-10-20, a run with NinjaTrader closed
+ *     left NinjaTrader.sqlite-wal and -shm in its db folder, which is why the
+ *     copy now goes through SqliteSnapshot.CopyLeavingSourceFolderUntouched.
  *   - It never blocks the platform. The database is read through the SQLite
- *     backup API and everything else is a file copy at BelowNormal priority.
+ *     backup API while NinjaTrader holds it and as plain bytes while it is
+ *     closed, and everything else is a file copy at BelowNormal priority.
  *   - A source that fails is a warning in the manifest, not an abort. The only
  *     abort is being unable to write the ZIP itself.
  *   - Nothing that authenticates leaves the machine, and nothing says WHO it is
@@ -192,12 +197,31 @@ public sealed class DeepExportRunner
             //    package; copyPath is built from it by the allowlist.
             SqliteSnapshotResult database = null;
             SqliteFilterResult filter = null;
+            string method = null;
             string livePath = Path.GetFullPath(Path.Combine(ninjaTraderRoot, DeepExportSources.DatabaseRelativePath));
             string workingCopy = Path.Combine(working, "NinjaTrader.sqlite");
             string copyPath = Path.Combine(staging, "db", "NinjaTrader.sqlite");
             if (File.Exists(livePath))
             {
-                string method = SqliteSnapshot.Copy(livePath, workingCopy, warnings);
+                try
+                {
+                    method = SqliteSnapshot.CopyLeavingSourceFolderUntouched(livePath, workingCopy, warnings);
+                }
+                catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+                {
+                    // A WARNING, NOT AN ABORT, as the header promises for every
+                    // source. Copy caught its own failures and fell back; the
+                    // copy of a database at rest is plain file reads and throws
+                    // what they throw.
+                    warnings.Add($"database could not be copied ({exception.GetType().Name}); no database is in this package");
+                }
+            }
+            else
+            {
+                warnings.Add("database not found at " + DeepExportSources.DatabaseRelativePath);
+            }
+            if (method != null)
+            {
                 filter = SqliteSnapshot.CopyAllowedTables(workingCopy, copyPath, warnings);
                 // DESCRIBED FROM THE FILE THAT SHIPS. Row counts, size and the
                 // executions range are read off the filtered database, so the
@@ -229,10 +253,6 @@ public sealed class DeepExportRunner
                     warnings.Add($"schema could not be written: {exception.GetType().Name}");
                 }
             }
-            else
-            {
-                warnings.Add("database not found at " + DeepExportSources.DatabaseRelativePath);
-            }
             Report("database");
 
             // 1b. WHICH ALGORITHM PLACED WHAT, worked out here rather than
@@ -249,8 +269,9 @@ public sealed class DeepExportRunner
             // order's integer instrument id into a symbol, and both are withheld
             // from the package. That is a need during the run, not a reason to
             // ship them - this step resolves the symbols so the reader does not
-            // have to. It therefore has to run before the working copy is gone.
-            AttributionSummary attribution = !File.Exists(workingCopy)
+            // have to. It therefore has to run before the working copy is gone,
+            // and not at all over one a failed copy left half-written.
+            AttributionSummary attribution = method == null || !File.Exists(workingCopy)
                 ? null
                 : AttributionExport.Write(
                     staging,

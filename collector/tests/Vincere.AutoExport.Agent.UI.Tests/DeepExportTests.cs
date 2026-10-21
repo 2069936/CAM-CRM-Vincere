@@ -352,7 +352,9 @@ public sealed class DeepExportTests : IDisposable
         Assert.Equal(1, (int)manifest["db"]["rowCounts"]["Accounts"]);
         Assert.Equal("2026-08-01 09:30:00", (string)manifest["db"]["executionsRange"]["min"]);
         Assert.Equal("2026-09-15 10:21:00", (string)manifest["db"]["executionsRange"]["max"]);
-        Assert.Equal("backup_api", (string)manifest["db"]["copyMethod"]);
+        // The fixture's database is at rest, so it is copied as bytes; the
+        // backup API is for a platform that holds it, two tests down.
+        Assert.Equal("at_rest_copy", (string)manifest["db"]["copyMethod"]);
         Assert.Equal(nt, (string)manifest["source"]["ntDocumentsPath"]);
         Assert.Equal(agent, (string)manifest["source"]["agentDataPath"]);
     }
@@ -396,6 +398,136 @@ public sealed class DeepExportTests : IDisposable
         Assert.NotNull(zip.GetEntry("db/NinjaTrader.sqlite"));
         Assert.Null(zip.GetEntry("db/NinjaTrader.sqlite-wal"));
         Assert.Null(zip.GetEntry("db/NinjaTrader.sqlite-shm"));
+    }
+
+    [Fact]
+    public async Task WithNinjaTraderClosedNotAByteOfItsFolderChanges()
+    {
+        // Rule 1's other half, and the one that was broken. Measured on a real
+        // machine on 2026-10-20: with NinjaTrader closed, the backup API's
+        // read-only open of a WAL database at rest CREATED NinjaTrader.sqlite-wal
+        // and NinjaTrader.sqlite-shm in Documents\NinjaTrader 8\db and left both
+        // there, under a header that promises never to write into NinjaTrader's
+        // folders. The fixture's database is at rest: its last connection closed
+        // in the constructor, which folds the WAL back and removes both files.
+        // AutoExport\deep is where the packages go and the one place under
+        // NinjaTrader 8 this may write, so it alone is left out of the comparison.
+        string db = Path.Combine(nt, "db", "NinjaTrader.sqlite");
+        Assert.False(File.Exists(db + "-wal"));
+        Assert.False(File.Exists(db + "-shm"));
+        var before = EverythingUnderNinjaTraderButThePackages();
+
+        DeepExportResult result = await Runner().RunAsync();
+
+        // Not a byte changed, and not a file added or removed.
+        Assert.Equal(before, EverythingUnderNinjaTraderButThePackages());
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.Equal("at_rest_copy", (string)manifest["db"]["copyMethod"]);
+        Assert.Equal(2, (int)manifest["db"]["rowCounts"]["Executions"]);
+        Assert.DoesNotContain(result.Warnings, w => w.Contains("quick check", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WithAWalLeftByACrashNotAByteOfItsFolderChangesAndItsRowsShip()
+    {
+        // The other shape of a closed platform: one that died with a write still
+        // in its WAL and no -shm beside it. Measured against the backup API's
+        // read-only open: the main file and the -wal come through unchanged and
+        // a 32,768-byte NinjaTrader.sqlite-shm is built beside them and left
+        // there. So both are copied as bytes, the WAL is recovered beside the
+        // copy, and the row it holds still ships.
+        string db = Path.Combine(nt, "db", "NinjaTrader.sqlite");
+        string crashed = Path.Combine(root, "crashed");
+        Directory.CreateDirectory(crashed);
+        using (var platform = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = db, Pooling = false }.ConnectionString))
+        {
+            platform.Open();
+            using (SqliteCommand insert = platform.CreateCommand())
+            {
+                insert.CommandText = "PRAGMA wal_autocheckpoint=0; INSERT INTO Executions VALUES (3, 'LTATAGREH509159302022', '2026-09-16 15:59:00', 7690.5)";
+                insert.ExecuteNonQuery();
+            }
+            // What the disk holds at the moment of the crash: the file and its
+            // WAL, read with the sharing a live SQLite file needs on Windows.
+            foreach (string suffix in new[] { "", "-wal" })
+            {
+                using FileStream input = new(db + suffix, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using FileStream output = File.Create(Path.Combine(crashed, "NinjaTrader.sqlite" + suffix));
+                input.CopyTo(output);
+            }
+        }
+        // The clean close just checkpointed and removed the WAL; put the crash back.
+        foreach (string suffix in new[] { "", "-wal" })
+            File.Copy(Path.Combine(crashed, "NinjaTrader.sqlite" + suffix), db + suffix, overwrite: true);
+        Assert.True(File.Exists(db + "-wal"));
+        Assert.False(File.Exists(db + "-shm"));
+        var before = EverythingUnderNinjaTraderButThePackages();
+
+        DeepExportResult result = await Runner().RunAsync();
+
+        Assert.Equal(before, EverythingUnderNinjaTraderButThePackages());
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.Equal("at_rest_copy", (string)manifest["db"]["copyMethod"]);
+        Assert.Equal(3, (int)manifest["db"]["rowCounts"]["Executions"]);
+        Assert.Equal("2026-09-16 15:59:00", (string)manifest["db"]["executionsRange"]["max"]);
+    }
+
+    [Fact]
+    public async Task ADatabaseThatCannotBeCopiedIsAWarningNotAnAbort()
+    {
+        // The copy of a database at rest is plain file reads, and those throw
+        // where the backup API used to fall back to a raw copy. Held here with
+        // no sharing at all - a sharing violation on Windows, a lock elsewhere -
+        // so the read fails, and the rest of the package must still be written.
+        string db = Path.Combine(nt, "db", "NinjaTrader.sqlite");
+        DeepExportResult result;
+        using (new FileStream(db, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            result = await Runner().RunAsync();
+
+        Assert.True(File.Exists(result.ZipPath));
+        Assert.Contains(result.Warnings, w => w.StartsWith("database could not be copied", StringComparison.Ordinal));
+        JObject manifest = ReadManifest(result.ZipPath);
+        Assert.Equal(JTokenType.Null, manifest["db"].Type);
+        using ZipArchive zip = ZipFile.OpenRead(result.ZipPath);
+        Assert.Null(zip.GetEntry("db/NinjaTrader.sqlite"));
+        Assert.NotNull(zip.GetEntry("workspaces/Main.xml"));
+    }
+
+    [Fact]
+    public void ACopyAtRestThatFailsItsQuickCheckSaysSo()
+    {
+        // What a platform that checkpointed during the read would leave: pages
+        // from two moments. Standing in for it, a page overwritten in the middle
+        // of the file. The Deep Export ships such a copy, as it ships a raw one,
+        // so the warning is the only thing that tells the reader.
+        string source = Path.Combine(root, "torn", "NinjaTrader.sqlite");
+        Directory.CreateDirectory(Path.GetDirectoryName(source));
+        File.Copy(Path.Combine(nt, "db", "NinjaTrader.sqlite"), source);
+        using (FileStream file = new(source, FileMode.Open, FileAccess.Write))
+        {
+            file.Position = 4096;
+            file.Write(Enumerable.Repeat((byte)0xFF, 64).ToArray());
+        }
+        var warnings = new System.Collections.Generic.List<string>();
+
+        string method = SqliteSnapshot.CopyLeavingSourceFolderUntouched(source, Path.Combine(root, "torn-copy", "NinjaTrader.sqlite"), warnings);
+
+        Assert.Equal("at_rest_copy", method);
+        Assert.Contains(warnings, w => w.Contains("failed its quick check", StringComparison.Ordinal));
+    }
+
+    /// <summary>Every file under NinjaTrader 8 but the packages' own folder, by relative path, with its SHA-256.</summary>
+    private System.Collections.Generic.Dictionary<string, string> EverythingUnderNinjaTraderButThePackages()
+    {
+        var files = new System.Collections.Generic.Dictionary<string, string>(StringComparer.Ordinal);
+        string packages = Path.GetFullPath(outDir) + Path.DirectorySeparatorChar;
+        foreach (string path in Directory.EnumerateFiles(nt, "*", SearchOption.AllDirectories))
+        {
+            string full = Path.GetFullPath(path);
+            if (full.StartsWith(packages, StringComparison.Ordinal)) continue;
+            files[Path.GetRelativePath(nt, full)] = DeepExportRunner.HashFile(full);
+        }
+        return files;
     }
 
     [Fact]
