@@ -34,10 +34,10 @@ namespace Vincere.AutoExport.Agent.UI.DeepExport;
  * a database and nothing else, because it is the half that cannot be compiled
  * or tested anywhere but Windows.
  * ------------------------------------------------------------------------- */
-internal static class AttributionExport
+public static class AttributionExport
 {
     /// <summary>Never let a courtesy read cost the export its database copy.</summary>
-    public static AttributionSummary Write(
+    internal static AttributionSummary Write(
         string stagingRoot,
         string ninjaTraderRoot,
         string databaseCopyPath,
@@ -98,16 +98,79 @@ internal static class AttributionExport
             firstSeenUtc = link.FirstSeenUtc,
         }));
 
+        Dictionary<long, string> recorded = Recorded(ledger);
+        TradeComputation computed = ComputeTrades(tables, catalog, recorded);
+
+        WriteLines(Path.Combine(folder, "trades.jsonl"), computed.Rows);
+        LedgerCoverage coverage = StrategyLinkLedger.Coverage(ledger, tables.OrderCount);
+        return new AttributionSummary(
+            templates.Count, computed.Rows.Count, computed.Matched, computed.Versioned, recorded.Count,
+            coverage.Orders, tables.OrderCount);
+    }
+
+    /* THE SAME ANSWER, HANDED BACK RATHER THAN WRITTEN INTO A PACKAGE.
+     *
+     * The service's trading export (Vincere.AutoExport.Agent/Exports) needs the
+     * trades this file reconstructs, the catalogue it matches them against and
+     * the ledger it keeps, as values it can filter to a date range. Until now
+     * they existed only as three files in a staging folder. This is the same
+     * computation, the same reads and the same ledger update as Write - Run and
+     * Read share every step below - so the two exports cannot come to disagree
+     * about which algorithm placed a trade.
+     *
+     * The ledger is still merged and saved, because that is what keeps the
+     * cascade from taking back a link the platform has shown us, whichever
+     * export happened to see it. Nothing is written anywhere else.
+     *
+     * Null, with a warning, when the database copy is missing or unreadable:
+     * the same courtesy rule as Write. */
+    public static AttributionReading Read(
+        string ninjaTraderRoot,
+        string databaseCopyPath,
+        string ledgerPath,
+        IList<string> warnings)
+    {
+        try
+        {
+            if (!File.Exists(databaseCopyPath)) return null;
+            IList<StrategyTemplate> templates = ReadTemplates(ninjaTraderRoot, warnings);
+            var catalog = new StrategyCatalog(templates);
+            AttributionTables tables = ReadTables(databaseCopyPath);
+            IList<StrategyOrderLink> ledger = StrategyLinkLedger.Merge(ReadLedger(ledgerPath, warnings), tables.Links);
+            WriteLedger(ledgerPath, ledger, warnings);
+            TradeComputation computed = ComputeTrades(tables, catalog, Recorded(ledger));
+            return new AttributionReading(templates.ToList(), catalog, ledger.ToList(), computed.Rows);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            warnings.Add($"attribution skipped: {exception.GetType().Name}");
+            return null;
+        }
+    }
+
+    private static Dictionary<long, string> Recorded(IEnumerable<StrategyOrderLink> ledger)
+    {
         var recorded = new Dictionary<long, string>();
         foreach (StrategyOrderLink link in ledger)
         {
             if (!string.IsNullOrWhiteSpace(link.StrategyName)) recorded[link.OrderId] = link.StrategyName;
         }
+        return recorded;
+    }
 
-        var rows = new List<object>();
-        int matched = 0;
-        int versioned = 0;
-        int trades = 0;
+    private sealed class TradeComputation
+    {
+        public List<AttributionTrade> Rows = new List<AttributionTrade>();
+        public int Matched;
+        public int Versioned;
+    }
+
+    private static TradeComputation ComputeTrades(
+        AttributionTables tables,
+        StrategyCatalog catalog,
+        IReadOnlyDictionary<long, string> recorded)
+    {
+        var computed = new TradeComputation();
         foreach (KeyValuePair<string, List<TradeOrder>> group in tables.OrdersByGroup)
         {
             double tick;
@@ -116,7 +179,6 @@ internal static class AttributionExport
             {
                 StrategyFingerprint print = trade.Fingerprint();
                 if (print == null) continue;
-                trades++;
 
                 string fromLedger = null;
                 foreach (long id in trade.OrderIds)
@@ -134,33 +196,28 @@ internal static class AttributionExport
                 // RECORD ALWAYS BEATS INFERENCE. The ledger is what the platform
                 // itself asserted; the geometry is what we worked out.
                 string basis = fromLedger != null ? "record" : (match.Matched ? "inferred" : "none");
-                if (fromLedger == null && match.Matched) matched++;
-                if (fromLedger == null && match.VersionCertain) versioned++;
+                if (fromLedger == null && match.Matched) computed.Matched++;
+                if (fromLedger == null && match.VersionCertain) computed.Versioned++;
 
-                rows.Add(new
+                computed.Rows.Add(new AttributionTrade
                 {
-                    account = trade.Entry.AccountName,
-                    instrument = print.Instrument,
-                    entryOrderId = trade.Entry.OrderId,
-                    entryTime = trade.Entry.Time,
-                    entryQuantity = trade.Entry.Quantity,
-                    exits = trade.Exits.Count,
-                    geometry = geometry.ToString(),
-                    basis,
-                    strategy = fromLedger,
-                    family = fromLedger == null ? match.Family : null,
-                    version = fromLedger == null ? match.Version : null,
-                    risk = fromLedger == null ? match.Risk : null,
-                    candidates = match.Candidates,
+                    Account = trade.Entry.AccountName,
+                    Instrument = print.Instrument,
+                    EntryOrderId = trade.Entry.OrderId,
+                    EntryTime = trade.Entry.Time,
+                    EntryQuantity = trade.Entry.Quantity,
+                    Exits = trade.Exits.Count,
+                    Geometry = geometry.ToString(),
+                    Basis = basis,
+                    Strategy = fromLedger,
+                    Family = fromLedger == null ? match.Family : null,
+                    Version = fromLedger == null ? match.Version : null,
+                    Risk = fromLedger == null ? match.Risk : null,
+                    Candidates = match.Candidates,
                 });
             }
         }
-
-        WriteLines(Path.Combine(folder, "trades.jsonl"), rows);
-        LedgerCoverage coverage = StrategyLinkLedger.Coverage(ledger, tables.OrderCount);
-        return new AttributionSummary(
-            templates.Count, trades, matched, versioned, recorded.Count,
-            coverage.Orders, tables.OrderCount);
+        return computed;
     }
 
     private static IList<StrategyTemplate> ReadTemplates(string ninjaTraderRoot, IList<string> warnings)
@@ -354,6 +411,58 @@ internal static class AttributionExport
         public string account { get; set; }
         public string firstSeenUtc { get; set; }
     }
+}
+
+/* ONE RECONSTRUCTED TRADE, AS trades.jsonl HAS ALWAYS WRITTEN IT.
+ *
+ * It was an anonymous object until a second reader needed it. The property
+ * names and their order are the file's, so the Deep Export's trades.jsonl is
+ * byte for byte what it was: Newtonsoft writes declared properties in
+ * declaration order, as it wrote the anonymous type's. EntryOrderId is the
+ * database row id of the entry order, not the broker's id, and EntryTime is the
+ * .NET tick NinjaTrader stores. */
+public sealed class AttributionTrade
+{
+    [JsonProperty("account")] public string Account { get; init; }
+    [JsonProperty("instrument")] public string Instrument { get; init; }
+    [JsonProperty("entryOrderId")] public long EntryOrderId { get; init; }
+    [JsonProperty("entryTime")] public long EntryTime { get; init; }
+    [JsonProperty("entryQuantity")] public int EntryQuantity { get; init; }
+    [JsonProperty("exits")] public int Exits { get; init; }
+    [JsonProperty("geometry")] public string Geometry { get; init; }
+    [JsonProperty("basis")] public string Basis { get; init; }
+    [JsonProperty("strategy")] public string Strategy { get; init; }
+    [JsonProperty("family")] public string Family { get; init; }
+    [JsonProperty("version")] public string Version { get; init; }
+    [JsonProperty("risk")] public string Risk { get; init; }
+    [JsonProperty("candidates")] public int Candidates { get; init; }
+}
+
+/// <summary>What <see cref="AttributionExport.Read"/> worked out, for a caller that writes its own file.</summary>
+public sealed class AttributionReading
+{
+    public AttributionReading(
+        IReadOnlyList<StrategyTemplate> templates,
+        StrategyCatalog catalog,
+        IReadOnlyList<StrategyOrderLink> ledger,
+        IReadOnlyList<AttributionTrade> trades)
+    {
+        Templates = templates;
+        Catalog = catalog;
+        Ledger = ledger;
+        Trades = trades;
+    }
+
+    /// <summary>The machine's template library, reduced to fingerprints.</summary>
+    public IReadOnlyList<StrategyTemplate> Templates { get; }
+
+    /// <summary>The same library, ready to match a geometry against.</summary>
+    public StrategyCatalog Catalog { get; }
+
+    /// <summary>Every strategy-to-order link seen so far, this run's included.</summary>
+    public IReadOnlyList<StrategyOrderLink> Ledger { get; }
+
+    public IReadOnlyList<AttributionTrade> Trades { get; }
 }
 
 internal sealed class AttributionSummary

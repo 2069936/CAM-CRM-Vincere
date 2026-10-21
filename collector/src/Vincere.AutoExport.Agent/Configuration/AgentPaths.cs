@@ -20,7 +20,9 @@ public sealed record AgentPaths(
     /// <summary>What the add-on last said it and NinjaTrader were, kept so a restarted service reports the real NinjaTrader version in its first heartbeat instead of null until that day's capture. See ObservedEnvironmentStore. A trailing default, like RelaySecret, so every caller that builds the record by hand keeps compiling.</summary>
     string ObservedEnvironment = null,
     /// <summary>Where an update from the CRM is downloaded, staged and recorded, and where update-agent.ps1 keeps its rollback copy. See UpdateLayout. A trailing default like the two above.</summary>
-    string Updates = null)
+    string Updates = null,
+    /// <summary>Where a trading export the CRM asked for is built, and where the record of the last one is kept. Under the data root, never under NinjaTrader's folders. See TradingExportBuilder. A trailing default like the three above.</summary>
+    string Exports = null)
 {
     public static AgentPaths FromEnvironment()
     {
@@ -46,6 +48,7 @@ public sealed record AgentPaths(
             Path.Combine(root, "roster.json"),
             Path.Combine(root, "relay-secret.bin"),
             Path.Combine(root, "environment.json"),
-            Path.Combine(root, "updates"));
+            Path.Combine(root, "updates"),
+            Path.Combine(root, "exports"));
     }
 }

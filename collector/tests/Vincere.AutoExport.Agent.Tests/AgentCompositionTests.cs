@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Vincere.AutoExport.Agent.Capture;
 using Vincere.AutoExport.Agent.Configuration;
+using Vincere.AutoExport.Agent.Exports;
 using Vincere.AutoExport.Agent.Service;
 using Vincere.AutoExport.Agent.Updates;
 using Xunit;
@@ -95,7 +96,7 @@ public sealed class AgentCompositionTests : IDisposable
             new[]
             {
                 "account-sample", "agent-update", "control", "heartbeat", "quarantine-review",
-                "queue-recovery", "report-email", "scheduler", "uploader",
+                "queue-recovery", "report-email", "scheduler", "trading-export", "uploader",
             },
             loops.Select(loop => loop.Name).OrderBy(name => name, StringComparer.Ordinal).ToArray());
     }
@@ -242,6 +243,34 @@ public sealed class AgentCompositionTests : IDisposable
         Assert.DoesNotContain(
             typeof(AgentUpdateLoop).GetConstructors().Single().GetParameters(),
             parameter => parameter.IsOptional || parameter.HasDefaultValue);
+    }
+
+    /* THE TRADING EXPORT IS SUPERVISED, ONCE, AND BUILDS UNDER THE DATA ROOT.
+     *
+     * Built by hand like the updater, so this proves the container can build it,
+     * that its work folder is ProgramData\...\exports and nowhere a user or
+     * NinjaTrader owns, and that neither it nor its builder can be registered
+     * with an argument quietly left out. */
+    [Fact]
+    public void The_trading_export_is_supervised_once_and_works_under_the_data_root()
+    {
+        using ServiceProvider provider = BuildRealContainer();
+
+        Worker supervisor = Assert.Single(provider.GetServices<IHostedService>().OfType<Worker>());
+        TradingExportLoop loop = Assert.Single(SupervisedLoops(supervisor).OfType<TradingExportLoop>());
+        Assert.Equal("trading-export", loop.Name);
+        Assert.Equal(TimeSpan.FromMinutes(5), loop.Interval);
+
+        FieldInfo field = typeof(TradingExportLoop).GetField("builder", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        TradingExportBuilder builder = Assert.IsType<TradingExportBuilder>(field.GetValue(loop));
+        Assert.Equal(Path.Combine(AgentPaths.FromProgramData(programData).Root, "exports"), builder.ExportsRoot);
+        foreach (Type type in new[] { typeof(TradingExportLoop), typeof(TradingExportBuilder) })
+        {
+            Assert.DoesNotContain(
+                type.GetConstructors().Single().GetParameters(),
+                parameter => parameter.IsOptional || parameter.HasDefaultValue);
+        }
     }
 
     [Fact]

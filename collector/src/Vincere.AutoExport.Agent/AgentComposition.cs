@@ -6,6 +6,7 @@ using Vincere.AutoExport.Agent.Configuration;
 using Vincere.AutoExport.Agent.Control;
 using Vincere.AutoExport.Agent.Crm;
 using Vincere.AutoExport.Agent.Diagnostics;
+using Vincere.AutoExport.Agent.Exports;
 using Vincere.AutoExport.Agent.History;
 using Vincere.AutoExport.Agent.Queue;
 using Vincere.AutoExport.Agent.Scheduling;
@@ -262,6 +263,39 @@ public static class AgentComposition
                 new UpdateApplyWindow(),
                 new SchtasksUpdateTaskScheduler(new SystemProcessRunner(), SchtasksUpdateTaskScheduler.DefaultSchtasksPath),
                 layout,
+                provider.GetRequiredService<ICollectorClock>(),
+                version,
+                provider.GetRequiredService<IServiceReporter>(),
+                provider.GetRequiredService<IRedactingLogger>());
+        });
+        /* A SLIM TRADING EXPORT WHEN A MANAGER ASKS FOR ONE IN THE CRM.
+         *
+         * Built by hand for the reason the updater is: it needs the version, the
+         * exports folder and the data root, and neither its constructor nor the
+         * builder's has an optional parameter, so nothing can be left out and
+         * still compile. AgentCompositionTests resolves it.
+         *
+         * Everything it writes is under paths.Root. The NinjaTrader folder is
+         * found by the installer's own profile rule, because this service runs as
+         * SYSTEM and "my Documents" is not the trader's; see
+         * ProfileNinjaTraderFolderLocator. The NinjaTrader version in the file is
+         * whatever the last capture reported, read from the one CollectorState. */
+        services.AddSingleton<ICollectorLoop>(provider =>
+        {
+            string exports = paths.Exports ?? Path.Combine(paths.Root, "exports");
+            return new TradingExportLoop(
+                provider.GetRequiredService<ICollectorCrmClient>(),
+                provider.GetRequiredService<IDeviceTokenStore>(),
+                new TradingExportBuilder(
+                    ProfileNinjaTraderFolderLocator.ForThisMachine(),
+                    exports,
+                    paths.Root,
+                    new SystemUpdateDisk(),
+                    new WindowsAgentDirectorySecurity(),
+                    version,
+                    () => provider.GetRequiredService<CollectorState>().Snapshot().NinjaTraderVersion,
+                    () => DateTimeOffset.UtcNow),
+                new TradingExportStateStore(exports),
                 provider.GetRequiredService<ICollectorClock>(),
                 version,
                 provider.GetRequiredService<IServiceReporter>(),
