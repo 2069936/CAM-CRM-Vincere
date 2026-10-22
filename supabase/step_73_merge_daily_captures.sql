@@ -249,12 +249,20 @@
 -- from an earlier capture, and a provisional row, is not in them until the
 -- client's summaries are rebuilt. Recalculate in the browser rewrites a
 -- close's flags from reconcile.js and so drops the three new kinds, as it
--- drops steps 65 and 71's today. A re-pin by step 66 after a fill counts the
--- provisional rows among accountsInClose in its audit row. An older capture
--- that arrives after a newer one is still superseded by v2 and not merged.
+-- drops steps 65 and 71's today. An older capture that arrives after a newer
+-- one is still superseded by v2 and not merged.
+--
+-- STEP 66'S PIN IS REPRODUCED HERE, with one change. It reads "the close's
+-- accounts" from account_snapshots, and after a fill the provisional rows are
+-- in that table too: a later pin would count them as accounts the close lists
+-- and pin a 'none' row for one whose reading a narrower cutoff no longer
+-- finds. record_tracker_close_readings is therefore step 66's body verbatim
+-- with `source = 'capture'` on its two reads of account_snapshots; same
+-- signature, same grants, same never-raises contract.
 --
 -- GRANTS. fill_day_from_tracker: EXECUTE for service_role only, revoked from
--- public, anon and authenticated. persist_auto_daily_import keeps step 28's
+-- public, anon and authenticated, and record_tracker_close_readings keeps step
+-- 66's (the same). persist_auto_daily_import keeps step 28's
 -- reach (nobody; v2, v3 and the replacement are security definer).
 -- fill_daily_import_from_tracker, write_close_merge_flag and the trigger
 -- functions: the owner only. Every function is security definer except the
@@ -265,7 +273,8 @@
 -- RE-RUNNING THIS FILE changes no row: `add column if not exists`, the checks
 -- dropped and recreated under their names, `create or replace` for the
 -- functions and `drop trigger if exists` before each trigger. A re-run of
--- step 47 or 50 puts back the destructive body; run 73 again after it.
+-- step 47 or 50 puts back the destructive body, and a re-run of 66 puts back
+-- the pin that counts provisional rows; run 73 again after any of them.
 --
 -- CHECK AFTERWARDS (read only):
 --
@@ -1792,7 +1801,300 @@ revoke all on function public.fill_daily_import_from_tracker(uuid)
   from public, anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
--- 6. The trigger: after step 66's pin, on the same transition.
+-- 6. Step 66's pin, reading the close's CAPTURE rows only.
+--
+-- record_tracker_close_readings takes "the close's accounts" from
+-- account_snapshots. After a fill, the provisional rows of the accounts the
+-- close lost are in that table too, and a later pin would call them accounts
+-- the close lists: counted in accountsInClose, preferred for the spelling, and
+-- pinned as 'none' when a narrower cutoff no longer finds their reading. So
+-- the function is reproduced from step 66 verbatim except for `source =
+-- 'capture'` on its two reads of account_snapshots, the same signature,
+-- grants and never-raises contract. A re-run of 66 puts the old reads back;
+-- run 73 again after it.
+-- ---------------------------------------------------------------------------
+create or replace function public.record_tracker_close_readings(p_daily_import_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_daily public.daily_imports;
+  v_batch public.ingest_batches;
+  v_device public.ingest_devices;
+  v_settings public.account_tracker_settings;
+  v_timezone text := 'America/New_York';
+  v_schedule time := '16:30:00';
+  v_captured_at timestamptz;
+  v_basis text;
+  v_grace integer;
+  v_stale integer;
+  v_tolerance numeric;
+  v_max_strategies integer;
+  v_history_retention integer;
+  v_cutoff timestamptz;
+  v_day_start timestamptz;
+  v_day_end timestamptz;
+  v_pinned integer := 0;
+  v_in_close integer := 0;
+  v_from_history integer := 0;
+  v_without integer := 0;
+  v_after_close integer := 0;
+  v_resets integer := 0;
+  v_strategies integer := 0;
+  v_history_seen integer := 0;
+  v_live_seen integer := 0;
+  v_counts jsonb;
+begin
+  begin
+    select daily.* into v_daily
+    from public.daily_imports as daily
+    where daily.id = p_daily_import_id;
+    if not found then
+      return jsonb_build_object('recorded', false, 'reason', 'no_daily_import', 'dailyImportId', p_daily_import_id);
+    end if;
+
+    select settings.* into v_settings
+    from public.account_tracker_settings as settings
+    where settings.id;
+    v_grace := coalesce(v_settings.pre_close_grace_seconds, 120);
+    v_stale := coalesce(v_settings.stale_sample_seconds, 1500);
+    v_tolerance := coalesce(v_settings.close_match_tolerance_dollars, 5);
+    v_max_strategies := coalesce(v_settings.max_strategies_per_account, 50);
+    v_history_retention := coalesce(v_settings.history_retention_days, 5);
+
+    -- The close batch: the one that finalized this import. After a second close
+    -- the earlier batch still names the import with status 'replaced', so only
+    -- a finished one counts, the import's own source batch first.
+    select batch.* into v_batch
+    from public.ingest_batches as batch
+    where batch.daily_import_id = p_daily_import_id
+      and batch.status in ('processed', 'incomplete')
+    order by (batch.id is not distinct from v_daily.source_batch_id) desc,
+             batch.processed_at desc nulls last,
+             batch.captured_at desc
+    limit 1;
+
+    if found then
+      v_captured_at := v_batch.captured_at;
+      v_basis := 'captured';
+      select device.* into v_device
+      from public.ingest_devices as device
+      where device.id = v_batch.device_id;
+    else
+      v_basis := 'scheduled';
+      -- The client's latest active machine, the way ingest-status.js picks one.
+      select device.* into v_device
+      from public.ingest_devices as device
+      where device.client_id = v_daily.client_id
+        and device.status = 'active'
+        and device.revoked_at is null
+      order by device.created_at desc
+      limit 1;
+    end if;
+    if v_device.id is not null then
+      v_timezone := coalesce(v_device.schedule_timezone, v_timezone);
+      v_schedule := coalesce(v_device.schedule_time, v_schedule);
+    end if;
+    if v_captured_at is null then
+      v_captured_at := (v_daily.trading_date + v_schedule) at time zone v_timezone;
+    end if;
+    v_cutoff := v_captured_at + make_interval(secs => v_grace);
+    v_day_start := v_daily.trading_date::timestamp at time zone v_timezone;
+    v_day_end := v_day_start + interval '1 day';
+
+    delete from public.tracker_close_readings where daily_import_id = p_daily_import_id;
+
+    with candidates as (
+      select run.*, lower(run.account_name) as key
+      from public.account_live_sample_history as run
+      where run.client_id = v_daily.client_id
+        and run.last_sampled_at >= v_day_start
+        and run.first_sampled_at <= v_cutoff
+    ),
+    names as (
+      select named.key,
+             coalesce(max(named.account_name) filter (where named.in_close), max(named.account_name)) as account_name,
+             bool_or(named.in_close) as in_close
+      from (
+        select lower(btrim(snapshot.account_name)) as key, btrim(snapshot.account_name) as account_name, true as in_close
+        from public.account_snapshots as snapshot
+        where snapshot.daily_import_id = p_daily_import_id
+          and btrim(snapshot.account_name) <> ''
+          -- Step 73: a provisional row is the tracker's own reading written
+          -- back, never the close's.
+          and snapshot.source = 'capture'
+        union all
+        select candidate.key, candidate.account_name, false
+        from candidates as candidate
+      ) as named
+      group by named.key
+    ),
+    picked as (
+      select distinct on (candidate.key) candidate.*
+      from candidates as candidate
+      order by candidate.key, candidate.first_sampled_at desc, candidate.last_sampled_at desc
+    ),
+    nexts as (
+      select lower(run.account_name) as key, min(run.first_sampled_at) as next_sampled_at
+      from public.account_live_sample_history as run
+      where run.client_id = v_daily.client_id
+        and run.first_sampled_at > v_cutoff
+        and run.first_sampled_at < v_day_end
+      group by lower(run.account_name)
+    ),
+    resets as (
+      select stepped.key,
+             bool_or(stepped.connected
+               and stepped.prev_realized is not null
+               and stepped.realized_pnl is not null
+               and abs(stepped.prev_realized) > 10 * v_tolerance
+               and abs(stepped.realized_pnl) <= v_tolerance) as reset_seen
+      from (
+        select candidate.key, candidate.connected, candidate.realized_pnl,
+               lag(candidate.realized_pnl) over (
+                 partition by candidate.key
+                 order by candidate.first_sampled_at, candidate.last_sampled_at) as prev_realized
+        from candidates as candidate
+      ) as stepped
+      group by stepped.key
+    ),
+    instances as (
+      select lower(live.account_name) as key,
+             row_number() over (
+               partition by lower(live.account_name)
+               order by live.strategy_name, live.instrument, live.strategy_id) as ordinal,
+             jsonb_build_object(
+               'strategyId', live.strategy_id,
+               'strategyName', live.strategy_name,
+               'algorithm', live.algorithm,
+               'instrument', live.instrument,
+               'realizedPnl', live.realized_pnl,
+               'unrealizedPnl', live.unrealized_pnl,
+               'restartedAt', live.restarted_at,
+               'sampledAt', live.sampled_at) as item
+      from public.algorithm_live_samples as live
+      where live.client_id = v_daily.client_id
+        and live.sampled_at >= v_day_start
+        and live.sampled_at < v_day_end
+    ),
+    strategies as (
+      select instance.key, jsonb_agg(instance.item order by instance.ordinal) as strategies
+      from instances as instance
+      where instance.ordinal <= v_max_strategies
+      group by instance.key
+    )
+    insert into public.tracker_close_readings (
+      daily_import_id, client_id, device_id, trading_date, account_name, source,
+      connection_name, connected, status, realized_pnl, unrealized_pnl, total_pnl,
+      strategy_count, enabled_strategy_count, run_state,
+      sampled_at, reading_since, reset_seen, next_sampled_at, strategies,
+      close_batch_id, close_captured_at, close_time_basis, grace_seconds, stale_seconds, compared_at
+    )
+    select p_daily_import_id,
+           v_daily.client_id,
+           coalesce(pick.device_id, v_batch.device_id),
+           v_daily.trading_date,
+           named.account_name,
+           case when pick.key is not null then 'crm_history' else 'none' end,
+           pick.connection_name, pick.connected, pick.status,
+           pick.realized_pnl, pick.unrealized_pnl, pick.total_pnl,
+           pick.strategy_count, pick.enabled_strategy_count, pick.run_state,
+           case when pick.key is not null then least(pick.last_sampled_at, v_cutoff) end,
+           pick.first_sampled_at,
+           coalesce(reset.reset_seen, false),
+           next.next_sampled_at,
+           coalesce(instance.strategies, '[]'::jsonb),
+           v_batch.id, v_captured_at, v_basis, v_grace, v_stale, v_now
+    from names as named
+    left join picked as pick on pick.key = named.key
+    left join nexts as next on next.key = named.key
+    left join resets as reset on reset.key = named.key
+    left join strategies as instance on instance.key = named.key;
+
+    select count(*),
+           count(*) filter (where pinned.source = 'crm_history'),
+           count(*) filter (where pinned.source = 'none'),
+           count(*) filter (where pinned.source = 'none' and pinned.next_sampled_at is not null),
+           count(*) filter (where pinned.reset_seen),
+           coalesce(sum(jsonb_array_length(pinned.strategies)), 0)
+      into v_pinned, v_from_history, v_without, v_after_close, v_resets, v_strategies
+    from public.tracker_close_readings as pinned
+    where pinned.daily_import_id = p_daily_import_id;
+
+    select count(*) into v_in_close
+    from public.account_snapshots as snapshot
+    where snapshot.daily_import_id = p_daily_import_id
+      and btrim(snapshot.account_name) <> ''
+      and snapshot.source = 'capture';
+    select count(*) into v_history_seen
+    from public.account_live_sample_history as run
+    where run.client_id = v_daily.client_id
+      and run.last_sampled_at >= v_day_start
+      and run.first_sampled_at <= v_cutoff;
+    select count(*) into v_live_seen
+    from public.account_live_samples as sample
+    where sample.client_id = v_daily.client_id;
+
+    -- The client's history, swept past the retention window. Cheap, bounded,
+    -- and the second of the two places a run ever leaves.
+    delete from public.account_live_sample_history as run
+    where run.client_id = v_daily.client_id
+      and run.last_sampled_at < v_now - make_interval(days => v_history_retention);
+
+    v_counts := jsonb_build_object(
+      'recorded', true,
+      'clientId', v_daily.client_id,
+      'dailyImportId', p_daily_import_id,
+      'tradingDate', v_daily.trading_date,
+      'closeBatchId', v_batch.id,
+      'deviceId', v_device.id,
+      'closeCapturedAt', v_captured_at,
+      'closeTimeBasis', v_basis,
+      'cutoffAt', v_cutoff,
+      'graceSeconds', v_grace,
+      'staleSeconds', v_stale,
+      'accountsPinned', v_pinned,
+      'accountsInClose', v_in_close,
+      'accountsFromHistory', v_from_history,
+      'accountsWithoutReading', v_without,
+      'accountsReadAfterClose', v_after_close,
+      'resetsSeen', v_resets,
+      'strategiesPinned', v_strategies,
+      'historyRowsSeen', v_history_seen,
+      'liveRowsSeen', v_live_seen
+    );
+
+    -- One row per comparison, machine action, in finalize_ingest_batch's shape.
+    -- entity_type 'daily_import' is new here: the thing compared is the close.
+    insert into public.audit_logs (user_id, entity_type, entity_id, action, after_data)
+    values (null, 'daily_import', p_daily_import_id, 'tracker_close_compared', v_counts - 'recorded');
+
+    return v_counts;
+  exception when others then
+    raise warning 'step 66: tracker close comparison skipped for daily import %: % (%)',
+      p_daily_import_id, sqlerrm, sqlstate;
+    return jsonb_build_object(
+      'recorded', false,
+      'reason', 'error',
+      'dailyImportId', p_daily_import_id,
+      'error', sqlerrm,
+      'sqlstate', sqlstate
+    );
+  end;
+end;
+$function$;
+
+revoke all on function public.record_tracker_close_readings(uuid) from public, anon, authenticated;
+grant execute on function public.record_tracker_close_readings(uuid) to service_role;
+
+comment on function public.record_tracker_close_readings(uuid) is
+  'Pins the tracker side of one close into tracker_close_readings, replacing the import''s rows (since step 73 the close''s accounts are its capture rows, never the provisional tracker rows), and writes one audit_logs row (entity_type daily_import, action tracker_close_compared). Fired by the trigger on ingest_batches when a batch becomes processed or incomplete; callable by hand for a manual close, which then uses the machine schedule as the capture time. Never raises: a fault is a WARNING and {recorded: false}.';
+
+-- ---------------------------------------------------------------------------
+-- 7. The trigger: after step 66's pin, on the same transition.
 --
 -- Its own trigger rather than a fifth line in step 66's function, so a re-run
 -- of 66 cannot drop it. PostgreSQL fires the AFTER triggers of one event in
@@ -1825,7 +2127,7 @@ create trigger tracker_fill_on_batch
   for each row execute function public.tracker_fill_on_batch();
 
 -- ---------------------------------------------------------------------------
--- 7. fill_day_from_tracker: Part 2 for every close of one date, by hand.
+-- 8. fill_day_from_tracker: Part 2 for every close of one date, by hand.
 -- ---------------------------------------------------------------------------
 create or replace function public.fill_day_from_tracker(p_trading_date date)
 returns jsonb

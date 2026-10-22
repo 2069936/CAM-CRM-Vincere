@@ -159,10 +159,13 @@ async function reading(importId, name) {
   return (await readings(importId)).find((row) => row.account_name.toLowerCase() === name.toLowerCase());
 }
 
+// The comparisons only: since step 73 the same finalize may also write a
+// tracker_fill_applied row about the same close, which is not a comparison.
 async function comparisons(importId) {
   return (await db.query(
     `select action, after_data, created_at from public.audit_logs
-      where entity_type = 'daily_import' and entity_id = $1 order by created_at`, [importId])).rows;
+      where entity_type = 'daily_import' and entity_id = $1 and action = 'tracker_close_compared'
+      order by created_at`, [importId])).rows;
 }
 
 function snapshot(accountName, grossRealizedPnl, over = {}) {
@@ -1364,6 +1367,10 @@ describe('running it again', () => {
     // from either trigger, no self-check disagreeing.
     expect(notices.length).toBeGreaterThan(0);
     expect(notices.filter((notice) => !/already exists, skipping$/.test(notice))).toEqual([]);
+    // Step 73 reproduces record_tracker_close_readings with its reads of the
+    // close narrowed to capture rows, and the runbook says to run 73 again after
+    // any re-run of 66. That is what puts the definitions back.
+    await applyFileCollectingNotices(db, 'step_73_merge_daily_captures.sql');
     for (const [signature, definition] of Object.entries(definitions)) {
       expect(await functionDefinition(signature), signature).toBe(definition);
     }

@@ -726,6 +726,12 @@ describe('the tracker fills an account the close lost', () => {
       ['ACC GONE', 250], ['ACC GONE 2', 75], ['ACC GONE 3', 180],
     ]);
     expect((await flagsOf(importId))).toHaveLength(4);
+    // Step 66's pin, as this file reproduces it: the provisional rows are not
+    // accounts the close lists.
+    const pinned = await one(db, `select after_data from public.audit_logs
+      where entity_type = 'daily_import' and entity_id = $1 and action = 'tracker_close_compared'
+      order by created_at desc limit 1`, [importId]);
+    expect(pinned).toMatchObject({ accountsInClose: 2, accountsWithoutReading: 0 });
   });
 
   it('a real capture replaces the provisional rows, even one that shows nothing, and the flags follow', async () => {

@@ -1,8 +1,8 @@
 /* ────────────────────────────────────────────────────────────────────────────
  * THE FLAGS THE DATABASE WRITES ITSELF, by type, and what each one asks.
  *
- * Every other flag type in operational_flags is written by reconcile.js while
- * a close is imported. These five are written by refresh_account_observations
+ * Most flag types in operational_flags are written by reconcile.js while a
+ * close is imported. These five are written by refresh_account_observations
  * (supabase/step_65 and step_71) when a close lands, and by the trigger on
  * account_live_samples (step 71) when the tracker samples an account. The
  * browser never generates them; it shows them, and the CAM flag queue says in
@@ -39,7 +39,31 @@ export const DATABASE_FLAG_HINTS = Object.freeze({
     'This account is Failed and has not traded since, but NinjaTrader still shows strategies enabled on it.',
 });
 
+/* THE THREE A CLOSE WRITES WHEN IT MERGES OR THE TRACKER FILLS IT (step 73).
+ *
+ * Kept apart from the five above on purpose: those are the account
+ * observation flags, and the step 71 cluster test holds that list to exactly
+ * what refresh_account_observations writes. These are written by
+ * persist_auto_daily_import, when a later capture showed nothing for an
+ * account the day had seen trade, and by fill_daily_import_from_tracker, when
+ * the tracker saw an account trade that the close lacks or holds empty. A
+ * capture never deletes them; a later capture resolves the two tracker ones. */
+export const CLOSE_MERGE_FLAG_TYPES = Object.freeze({
+  CAPTURE_LOST_ACTIVITY: 'Capture lost activity',
+  TRACKER_ONLY_ACCOUNT: 'Tracker only account',
+  CLOSE_BELOW_TRACKER: 'Close below tracker',
+});
+
+export const CLOSE_MERGE_FLAG_HINTS = Object.freeze({
+  [CLOSE_MERGE_FLAG_TYPES.CAPTURE_LOST_ACTIVITY]:
+    'A later capture showed no fills and no realized for an account that had traded, most likely because it was disconnected, so the CRM kept what the earlier capture stored.',
+  [CLOSE_MERGE_FLAG_TYPES.TRACKER_ONLY_ACCOUNT]:
+    'The close does not list this account but the tracker saw it trade, so its row comes from the tracker, with no fills and no balance, until a capture lists it.',
+  [CLOSE_MERGE_FLAG_TYPES.CLOSE_BELOW_TRACKER]:
+    'The close lists this account with no fills and no realized, but the tracker saw it trade that day, so its money is probably missing from the close.',
+});
+
 /** The hint for a flag type, or undefined for a type reconcile.js writes. */
 export function databaseFlagHint(type) {
-  return DATABASE_FLAG_HINTS[type];
+  return DATABASE_FLAG_HINTS[type] ?? CLOSE_MERGE_FLAG_HINTS[type];
 }
