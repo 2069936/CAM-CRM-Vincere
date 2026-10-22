@@ -326,8 +326,10 @@ describe('daily snapshot ingest', () => {
     const res = await ingest(handler, contractFixture);
     expect(res.statusCode).toBe(201);
     const finalized = calls.terminal[0];
+    // 'stored' joined with step 73: the read of the day's stored fills, which
+    // a later capture merges into, between the registry and reconcile.
     expect(Object.keys(finalized.stageDurationsMs).sort())
-      .toEqual(['normalize', 'persist', 'reconcile', 'registry', 'storage', 'throttle']);
+      .toEqual(['normalize', 'persist', 'reconcile', 'registry', 'storage', 'stored', 'throttle']);
     for (const value of Object.values(finalized.stageDurationsMs)) expect(value).toBeGreaterThanOrEqual(0);
     const summed = Object.values(finalized.stageDurationsMs).reduce((total, value) => total + value, 0);
     expect(finalized.ingestDurationMs).toBeGreaterThanOrEqual(summed);
@@ -716,21 +718,27 @@ describe('the day\'s stored fills', () => {
     expect(seen[0].executions).toEqual(stored.executions);
   });
 
-  it('a read that fails leaves the capture as it came and the close lands', async () => {
-    const seen = [];
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const { handler } = setup({
-        storedFills: () => { throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }); },
-        normalize,
-        reconcile: (value) => { seen.push(value.parsed); return { id: 'import-1', date: value.date, accounts: {}, snapshots: [], strategies: [], orders: [], executions: [], flags: [] }; },
-      });
-      const res = await ingest(handler, snapshot({ accounts: [{}] }));
-      expect(res.statusCode).toBe(201);
-      expect(seen[0].executions).toEqual([]);
-      expect(error).toHaveBeenCalledWith(expect.stringMatching(/^\[CRM\] stored fills not read for batch batch-1: Error 57014/));
-    } finally {
-      error.mockRestore();
-    }
+  it('a read that fails is a retry: the batch is released, nothing is stored, and the agent is told 503', async () => {
+    const { handler, calls } = setup({
+      storedFills: () => { throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }); },
+      normalize,
+    });
+    const res = await ingest(handler, snapshot({ accounts: [{}] }));
+    expect(res).toMatchObject({ statusCode: 503, body: { error: 'snapshot_ingest_failed' } });
+    expect(calls.order).toEqual(['auth', 'claim', 'storage', 'normalize', 'registry', 'stored']);
+    expect(calls.persist).toHaveLength(0);
+    expect(calls.release).toEqual([expect.objectContaining({ batchId: 'batch-1', deviceId: DEVICE_ID })]);
+    expect(calls.terminal).toHaveLength(0);
+  });
+
+  it('any failure of the read is a retry, not only a timeout, because the capture itself is sound', async () => {
+    const { handler, calls } = setup({
+      storedFills: () => { throw Object.assign(new Error('permission denied for table executions'), { code: '42501' }); },
+      normalize,
+    });
+    const res = await ingest(handler, snapshot({ accounts: [{}] }));
+    expect(res.statusCode).toBe(503);
+    expect(calls.release).toHaveLength(1);
+    expect(calls.terminal).toHaveLength(0);
   });
 });

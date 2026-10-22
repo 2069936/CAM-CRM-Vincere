@@ -70,7 +70,7 @@ describe('withStoredFills', () => {
       orders: [{ id: 'O2', accountName: 'APEX 01', state: 'Filled' }],
     };
     const { parsed: union, added } = withStoredFills(parsed, stored);
-    expect(added).toEqual({ executions: 1, orders: 1 });
+    expect(added).toEqual({ executions: 1, orders: 1, strategies: 0 });
     expect(union.executions.map((row) => [row.id, row.fromStore === true])).toEqual([['E2', false], ['E1', true]]);
     expect(union.orders.map((row) => [row.id, row.fromStore === true])).toEqual([['O2', false], ['O1', true]]);
     expect(parsed.executions).toHaveLength(1);
@@ -80,7 +80,7 @@ describe('withStoredFills', () => {
     const parsed = { accounts: [{ accountName: 'apex 01' }], executions: [captured(), captured({ id: 'E1', orderId: 'O1', action: 'Buy', price: 21000.25, time: '2026-10-22 10:00:00' })], orders: [{ id: 'O1', accountName: 'APEX 01' }] };
     const result = withStoredFills(parsed, stored);
     expect(result.parsed).toBe(parsed);
-    expect(result.added).toEqual({ executions: 0, orders: 0 });
+    expect(result.added).toEqual({ executions: 0, orders: 0, strategies: 0 });
   });
 
   it('an order in both is the capture\'s', () => {
@@ -110,12 +110,46 @@ describe('addStoredFills', () => {
     expect(result.executions.map((row) => row.id)).toEqual(['E1']);
   });
 
-  it('a store without the reader and a read that fails both leave the capture as it came, and the failure is reported', async () => {
+  it('a store without the reader leaves the capture as it came; a read that fails throws, so the caller can retry', async () => {
     expect(await addStoredFills({ store: {}, clientId: 'c1', date: '2026-10-22', parsed })).toBe(parsed);
-    const report = vi.fn(() => { throw new Error('the reporter fails too'); });
     const store = { loadStoredFills: async () => { throw Object.assign(new Error('timeout'), { code: '57014' }); } };
-    expect(await addStoredFills({ store, clientId: 'c1', date: '2026-10-22', parsed, report })).toBe(parsed);
-    expect(report).toHaveBeenCalledWith(expect.objectContaining({ code: '57014' }));
+    await expect(addStoredFills({ store, clientId: 'c1', date: '2026-10-22', parsed })).rejects.toMatchObject({ code: '57014' });
+  });
+});
+
+describe('strategies the capture no longer lists', () => {
+  const strategyRow = (over = {}) => ({
+    id: 's1', trading_account_id: 'a1', strategy_name: '2 - BETA-1.0', strategy_family: 'BETA', strategy_version: '1.0',
+    instrument: 'ES 12-26', data_series: '1 Minute', direction: 'Long', enabled: false, realized: null, unrealized: '0',
+    ran: true, ran_basis: 'fills', source: 'capture', ...over,
+  });
+
+  it('are sent back for the accounts the capture names, by group, and a tracker row never is', () => {
+    const stored = storedFillsFromRows({
+      strategies: [
+        strategyRow(),
+        strategyRow({ id: 's2', strategy_name: '0 - OGX-PF-2.4', instrument: 'MNQ 12-26' }),
+        strategyRow({ id: 's3', trading_account_id: 'a2' }),
+        strategyRow({ id: 's4', strategy_name: '9 - TRK', source: 'tracker' }),
+      ],
+      accounts,
+    });
+    expect(stored.strategies.map((row) => row.strategyName)).toEqual(['2 - BETA-1.0', '0 - OGX-PF-2.4', '2 - BETA-1.0']);
+    expect(stored.strategies[0]).toEqual({
+      accountName: 'APEX 01', strategyName: '2 - BETA-1.0', strategyFamily: 'BETA', strategyVersion: '1.0',
+      instrument: 'ES 12-26', dataSeries: '1 Minute', direction: 'Long', enabled: false, realized: null, unrealized: 0,
+      ran: true, ranBasis: 'fills', fromStore: true,
+    });
+    const parsed = {
+      accounts: [{ accountName: 'APEX 01' }],
+      // The capture still lists OGX (in another case): that group is the capture's.
+      strategies: [{ accountName: 'apex 01', strategyName: '0 - ogx-pf-2.4', instrument: 'MNQ 12-26' }],
+    };
+    const { parsed: union, added } = withStoredFills(parsed, stored);
+    expect(added).toEqual({ executions: 0, orders: 0, strategies: 1 });
+    expect(union.strategies.map((row) => [row.strategyName, row.fromStore === true])).toEqual([
+      ['0 - ogx-pf-2.4', false], ['2 - BETA-1.0', true],
+    ]);
   });
 });
 

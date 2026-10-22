@@ -9,12 +9,17 @@
  * only, stored beside a day that holds more.
  *
  * So the ingest route and the Manager's normal replay read the day's stored
- * fills and orders and add, for the accounts the new capture names, the ones
- * the capture does not list, before reconcileDailyImport runs. The derivation
- * is then the union's. Each added row carries `fromStore: true`, which the
- * database reads twice: it merges the row onto itself (it is already stored),
- * and it does not count it as the capture's own when it asks whether a capture
- * showed any activity for an account (step 73, rule d).
+ * fills, orders and strategy rows and add, for the accounts the new capture
+ * names, the ones the capture does not list, before reconcileDailyImport runs.
+ * The derivation is then the union's, and it covers the strategies an earlier
+ * capture listed and this one does not: a strategy loaded in the morning and
+ * gone from NinjaTrader by 16:30 still gets its share of the day's fills. Each
+ * added row carries `fromStore: true`, which the database reads three ways: a
+ * fill or an order merges onto itself (it is already stored); a fill does not
+ * count as the capture's own when the database asks whether a capture showed
+ * any activity for an account (step 73, rule d); and a strategy row is never
+ * inserted, it only brings the stored row its derived_realized, ran and
+ * ran_basis.
  *
  * Accounts the capture does not name get nothing added: their rows are kept by
  * the merge untouched, and naming them in the payload would make them present.
@@ -25,11 +30,15 @@
  * quantity, limit, stop, time, name). Matched by MULTIPLICITY: two identical
  * fills without an id in the day and one in the capture add one, never two and
  * never none. An order present in both is the capture's: its state and fill
- * move during the day.
+ * move during the day. A strategy by (account, strategy name, instrument), as
+ * a GROUP: when the capture lists any row of that identity, none of the
+ * stored ones is added, because the database replaces the group.
  *
- * If the read fails, the caller goes on without it, and the database sets the
- * split of every account whose stored fills the payload did not carry to NULL
- * ("not derived"), so a figure over part of the day is never stored either way.
+ * IF THE READ FAILS, THE CLOSE WAITS. The ingest route answers 503 and
+ * releases the batch, and the agent sends the same capture again; storing it
+ * without the day's fills would store a split over part of the day (which the
+ * database would then have to blank). Only a store without the reader at all
+ * (a test double, an adapter from before step 73) goes on with the capture.
  */
 
 const lower = (value) => String(value ?? '').trim().toLowerCase();
@@ -64,6 +73,10 @@ function orderIdentity(row) {
   ]);
 }
 
+function strategyIdentity(row) {
+  return JSON.stringify([lower(row.accountName), lower(row.strategyName), lower(row.instrument)]);
+}
+
 /** The accounts a capture speaks for, in any of its four sections, lower cased. */
 export function accountsNamedBy(parsed = {}) {
   const names = new Set();
@@ -81,11 +94,13 @@ export function accountsNamedBy(parsed = {}) {
  * marked `fromStore`. Values are carried as stored, nulls as nulls, so the
  * identity the database computes on the way back in is the one it stored.
  *
- * @param {{ executions?: Object[], orders?: Object[], accounts?: Object[] }} rows
- *   executions and orders as selected from their tables, accounts as
- *   `{ id, account_name }` of the client's trading_accounts.
+ * @param {{ executions?: Object[], orders?: Object[], strategies?: Object[], accounts?: Object[] }} rows
+ *   executions, orders and strategy rows as selected from their tables,
+ *   accounts as `{ id, account_name }` of the client's trading_accounts. A
+ *   provisional strategy row (source 'tracker') is not the close's and is
+ *   left out: a capture replaces it.
  */
-export function storedFillsFromRows({ executions = [], orders = [], accounts = [] } = {}) {
+export function storedFillsFromRows({ executions = [], orders = [], strategies = [], accounts = [] } = {}) {
   const nameById = new Map((accounts || []).map((account) => [account.id, account.account_name || '']));
   return {
     executions: (executions || [])
@@ -128,6 +143,23 @@ export function storedFillsFromRows({ executions = [], orders = [], accounts = [
         time: text(row.time_text),
         fromStore: true,
       })),
+    strategies: (strategies || [])
+      .filter((row) => nameById.has(row.trading_account_id) && row.source !== 'tracker')
+      .map((row) => ({
+        accountName: nameById.get(row.trading_account_id),
+        strategyName: text(row.strategy_name),
+        strategyFamily: text(row.strategy_family),
+        strategyVersion: text(row.strategy_version),
+        instrument: text(row.instrument),
+        dataSeries: text(row.data_series),
+        direction: text(row.direction),
+        enabled: row.enabled === true,
+        realized: amount(row.realized),
+        unrealized: amount(row.unrealized),
+        ...(typeof row.ran === 'boolean' ? { ran: row.ran } : {}),
+        ...(row.ran_basis ? { ranBasis: row.ran_basis } : {}),
+        fromStore: true,
+      })),
   };
 }
 
@@ -165,32 +197,33 @@ export function withStoredFills(parsed, stored) {
   const accounts = accountsNamedBy(capture);
   const executions = missingFrom(capture.executions || [], stored?.executions || [], fillIdentity, accounts);
   const orders = missingFrom(capture.orders || [], stored?.orders || [], orderIdentity, accounts);
-  if (!executions.length && !orders.length) {
-    return { parsed: capture, added: { executions: 0, orders: 0 } };
+  // Strategies by group: an identity the capture lists at all is the capture's.
+  const listed = new Set((capture.strategies || []).map(strategyIdentity));
+  const strategies = (stored?.strategies || [])
+    .filter((row) => accounts.has(lower(row.accountName)) && !listed.has(strategyIdentity(row)));
+  if (!executions.length && !orders.length && !strategies.length) {
+    return { parsed: capture, added: { executions: 0, orders: 0, strategies: 0 } };
   }
   return {
     parsed: {
       ...capture,
       executions: [...(capture.executions || []), ...executions],
       orders: [...(capture.orders || []), ...orders],
+      strategies: [...(capture.strategies || []), ...strategies],
     },
-    added: { executions: executions.length, orders: orders.length },
+    added: { executions: executions.length, orders: orders.length, strategies: strategies.length },
   };
 }
 
 /**
- * The step both callers run: read the day, add what the capture lacks, and
- * never fail the close over it. A store without the reader (a test double, an
- * older adapter) and a read that fails both leave the capture as it came; the
- * database then refuses to keep a split computed over part of the day.
+ * The step both callers run: read the day and add what the capture lacks. A
+ * store without the reader (a test double, an adapter from before step 73)
+ * leaves the capture as it came. A read that FAILS throws: the caller turns it
+ * into a retry, so the capture lands later with the day's fills rather than
+ * now with a split over part of them.
  */
-export async function addStoredFills({ store, clientId, date, parsed, report = () => {} }) {
+export async function addStoredFills({ store, clientId, date, parsed }) {
   if (typeof store?.loadStoredFills !== 'function') return parsed;
-  try {
-    const stored = await store.loadStoredFills(clientId, date);
-    return withStoredFills(parsed, stored).parsed;
-  } catch (error) {
-    try { report(error); } catch { /* a reporter must not fail the close */ }
-    return parsed;
-  }
+  const stored = await store.loadStoredFills(clientId, date);
+  return withStoredFills(parsed, stored).parsed;
 }

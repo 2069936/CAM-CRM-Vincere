@@ -6,11 +6,10 @@
 -- file needs step 29 (ingest_batches.reprocess_mode), step 47
 -- (strategy_snapshots.ran), step 50 (the persist body it replaces, with
 -- strategy_snapshots.derived_realized and account_snapshots.derivation),
--- step 64 (algorithm_live_samples.trades_this_run), step 66
--- (tracker_close_readings and account_live_sample_history), step 67
--- (operational_flags.resolution_note) and step 71
--- (account_observation_money), and says so if any of them is missing. It adds
--- no table, so step 56's exception table is unchanged.
+-- step 66 (tracker_close_readings and account_live_sample_history), step 67
+-- (operational_flags.resolution_note and account_is_past_live_flags) and
+-- step 71 (account_observation_money), and says so if any of them is
+-- missing. It adds no table, so step 56's exception table is unchanged.
 --
 -- THE PROBLEM, measured on production on 2026-10-22. The daily close capture
 -- runs at 16:30 New York and a VPS outage coincided with it: 33 machines sent
@@ -58,7 +57,22 @@
 --          loses the earlier fills from memory and the next capture simply does
 --          not list them. Identical twins (two fills with the same fallback
 --          identity) are matched by multiplicity, k-th to k-th, so neither side
---          can multiply or swallow them.
+--          can multiply or swallow them. Each row of either side is reduced
+--          to ONE text key (its trading account and external id, or the
+--          fallback columns with NULL as a sentinel and every number in its
+--          canonical trim_scale form) and the two sides meet on (key, k): an
+--          equality the planner hashes. The first draft paired them with IS
+--          NOT DISTINCT FROM, which cannot be hashed, and 8,000 fills took
+--          about ten seconds under the client's row lock against 0.4 for step
+--          50's replace; the test beside this file times it against step 50
+--          in the same run.
+--        * A NORMAL REPLAY CANNOT REMOVE A STORED FILL. A fill the day holds
+--          stays even when the capture being replayed no longer carries it,
+--          so a normalizer fix that moves a fill to another account or gives
+--          it another id leaves the old copy beside the new one. Only Replace
+--          closed day (rule f) deletes and rewrites the day's fills, and it
+--          needs the day to be Closed first. That is deliberate: a merge
+--          cannot tell a fill that was wrong from one NinjaTrader forgot.
 --        * orders are merged by external_order_id the same way (fallback:
 --          instrument, action, order_type, quantity, limit_price, stop_price,
 --          time_text, name), and an order present in both takes the NEWER
@@ -78,24 +92,33 @@
 --      reconcileDailyImport) before this RPC, from the fills the payload
 --      carries. Porting a 1,100 line FIFO with its refusal rules to SQL was not
 --      the small option, so the work is split:
---        * the JavaScript reads the day's stored fills and orders for the
---          accounts in the new capture (server/apiLib/autoImportStore.js
---          loadStoredFills, src/domain/storedFills.js) and hands
---          reconcileDailyImport the UNION, so the derivation it attaches is the
---          union's. Those fills travel in the payload marked "fromStore": true
---          and merge onto themselves here. The daily route and the normal
---          Manager replay do this; the closed day replacement does not (it
---          replaces, see f).
---        * this function then enforces the invariant whatever the caller did:
---          for a present account whose stored fills include one the payload did
---          not carry (a caller that could not read the stored fills, or a race),
---          the derivation it attached saw a subset, so derived_realized on that
+--        * the JavaScript reads the day's stored fills, orders and strategy
+--          rows for the accounts in the new capture
+--          (server/apiLib/autoImportStore.js loadStoredFills,
+--          src/domain/storedFills.js) and hands reconcileDailyImport the
+--          UNION, so the derivation it attaches is the union's, and it covers
+--          the strategies an earlier capture listed and this one does not.
+--          Those rows travel in the payload marked "fromStore": true. A fill or
+--          an order merges onto itself here; a strategy row is never inserted,
+--          it brings the stored row of its identity (k-th to k-th) its new
+--          derived_realized, ran and ran_basis, in place. The daily route and
+--          the normal Manager replay do this; the closed day replacement does
+--          not (it replaces, see f). If the read fails, the daily route answers
+--          503 and releases the batch, the retry convention it uses for a
+--          database that timed out on the persist, so the capture lands later
+--          in full instead of now with blanked figures; a normal replay fails
+--          and can be pressed again.
+--        * this function then enforces the invariant whatever the caller did,
+--          as a safety net: for a present account whose stored fills include
+--          one the payload did not carry (an older build, a race), the
+--          derivation it attached saw a subset, so derived_realized on that
 --          account's capture rows and account_snapshots.derivation are set to
 --          NULL. And on an account whose fill set grew in this merge, a strategy
---          row KEPT from an earlier capture (not listed by the new one) loses
---          its derived_realized: it was worked out over fewer fills. NULL is
---          step 37's "not derived", which every reader falls back from; a
---          figure over a subset of the day is never left standing.
+--          row kept from an earlier capture that the payload neither replaced
+--          nor sent back loses its derived_realized: it was worked out over
+--          fewer fills. NULL is step 37's "not derived", which every reader
+--          falls back from; a figure over a subset of the day is never left
+--          standing.
 --   d. THE CAPTURE THAT LOST ACTIVITY. If the stored state of an account shows
 --      activity (a stored execution for it that day, or a stored CAPTURE
 --      snapshot with abs(realized) > 0.005) and the new capture shows none (no
@@ -106,13 +129,19 @@
 --      message and in operational_flags.details, one per close and account. A
 --      tracker row (Part 2) is not stored activity, so a real capture always
 --      replaces it, even one that shows nothing.
---   e. operational_flags: the import's own flags are still deleted and written
---      again on every capture, as before (step 65 relies on it), EXCEPT the
---      three kinds this file introduces, 'Capture lost activity', 'Tracker
---      only account' and 'Close below tracker', which are never deleted by a
---      capture. One refinement: a 'Missing account' flag of the payload is not
---      written for an account the day still holds a snapshot of, because
---      after the merge "did not appear in this close" is no longer true.
+--   e. operational_flags: the three kinds this file introduces, 'Capture lost
+--      activity', 'Tracker only account' and 'Close below tracker', are never
+--      deleted by a capture. Otherwise a merge deletes and writes again only
+--      what the capture speaks for: the flags of the accounts it lists (step
+--      65's refresh relies on that rewrite) and the client level flags, with
+--      no account, that the import regenerates. An account the capture does
+--      not list, or one rule d holds back, keeps its flags as it keeps its
+--      rows, and a payload flag for it is added only when the day holds no
+--      flag of that type for it yet, so a second capture stacks no copy. A
+--      'Missing account' flag of the payload is not written for an account
+--      the day still holds a snapshot of, because after the merge "did not
+--      appear in this close" is no longer true. Replace closed day deletes
+--      every flag but the three kinds, as step 50 deleted every flag.
 --   f. THE MANAGER REPLAY. Two paths reach this function from the Manager's
 --      Auto Collection screen (server/autoCollection/admin/ingest-reprocess.js
 --      and ingest-reprocess-failed.js, step 29):
@@ -134,8 +163,10 @@
 --          claim_ingest_batch_reprocess) and the day's status 'Manager
 --          replacement in progress' (set by step 29 just before it calls this
 --          function), so no caller changes and a re-run of 29 or 30 cannot
---          turn it into a merge. The one difference: it too leaves the three
---          new flag kinds alone.
+--          turn it into a merge. The differences: it too leaves the three new
+--          flag kinds alone, and its account lookup takes the oldest registry
+--          row of a case variant like every other path in this function
+--          (step 50's unordered `select into` took any).
 --   g. The MANUAL browser upload (src/domain/dailyImportPersistence.js) is not
 --      changed and STILL REPLACES: it deletes the close's strategy rows,
 --      orders, executions and flags whenever its own sections are not empty,
@@ -168,54 +199,63 @@
 --   first), and the service role may call it for a close uploaded by hand,
 --   which no finalize reaches. For one close:
 --
---     THE READING OF AN ACCOUNT, and which source wins:
---       1. the pinned reading, tracker_close_readings with source other than
---          'none'. Step 66 pins the union of the close's accounts and every
---          account the client's machines reported that day, so an account
---          missing from the close IS pinned whenever the tracker saw it.
---       2. only when there is no pinned reading for the account (the pin
---          failed, the close was finalized before step 66, or it is a manual
---          close nobody pinned): the last account_live_sample_history run of
---          that account on any of the client's machines that began at or
---          before the close's capture time and was still running on the day.
+--     ACTIVITY, AND ONLY WHILE CONNECTED. The tracker samples disconnected
+--     accounts too, and a disconnected account keeps showing whatever
+--     realized NinjaTrader last held for it, which may be yesterday's; the
+--     AddOn leaves such an account out of the close on purpose. So an account
+--     counts as having traded only when at least one CONNECTED run of
+--     account_live_sample_history on the trading date, begun at or before
+--     the close's capture time, read abs(realized) > 0.005. A strategy
+--     reading is not evidence on its own: it can be frozen just the same.
+--
+--     THE READING, and which source wins:
+--       1. the last CONNECTED run of that account on any of the client's
+--          machines on the trading date that began at or before the capture
+--          time. That is the money, never a disconnected reading after it.
 --          The capture time is the finalized batch's captured_at, else a
 --          pinned close_captured_at whose basis is 'captured', else 17:00 New
---          York on the trading date.
---       In both, a reading taken while the account was DISCONNECTED gives way
---       to the last run of that day, before the capture time, in which it was
---       connected, when there is one: an account that dropped its connection
---       before 16:30 is exactly the one the close lost, and what NinjaTrader
---       shows for it while disconnected is not its day. source_detail.origin
---       then says account_live_sample_history.
+--          York on the trading date. source_detail.origin says
+--          account_live_sample_history.
+--       2. only when the history no longer holds the day for the account (it
+--          keeps five days): the pinned reading of tracker_close_readings,
+--          which step 66 keeps for good, and only if it was taken while the
+--          account was connected and read activity. origin says
+--          tracker_close_readings.
 --       Strategy readings: the pinned row's strategies; when it has none, the
---       algorithm_live_samples of that account sampled on the trading date.
---       trades_this_run is looked up in algorithm_live_samples by strategy id
---       for both (the pin does not carry it), and is simply absent once those
---       readings are swept (two days).
---     ACTIVITY: abs(realized) > 0.005 on the account reading, or a strategy
---     reading with abs(realized) > 0.005 or trades_this_run > 0.
+--       algorithm_live_samples of that account sampled on the trading date
+--       (swept after two days).
 --
---     a. An account with activity and NO account_snapshot in the close gets a
---        provisional one: realized and unrealized from the reading, total in
---        source_detail, balance, trailing drawdown and weekly P&L NULL,
---        derivation NULL, source 'tracker'. Its trading_account is resolved by
---        lower(account_name) within the client as the persistence does, and
---        created with the persistence's defaults (Unassigned, Active) when
---        there is none; an existing registry row is never rewritten. One
---        provisional strategy row per strategy reading, source 'tracker':
---        strategy_family the reading's algorithm (computed by the route with the
---        product's one family rule), realized and unrealized from the reading,
---        derived_realized NULL (no fills), ran true with ran_basis 'realized'
---        when its realized is non zero and NULL otherwise. The period reports
---        then attribute the money to the algorithm as they do a reported
---        realized. One 'Tracker only account' flag (Warning).
+--     WHICH ACCOUNTS. Only one the client's registry holds: the fill NEVER
+--     creates a trading_accounts row, because the tracker sees every account
+--     on the machine and only the close or a person decides what the desk
+--     tracks; an unknown one is counted as skippedUnknown. Not one that step
+--     67's account_is_past_live_flags calls dead by its status or its type
+--     (Failed, Inactive, Reserve, Inactive / Ignore), counted as
+--     skippedNotLive; its observation is passed as NULL, because "absent" and
+--     "breached" are what earlier closes said and an account the tracker saw
+--     trade today is not absent from it. Simulation accounts ARE filled: the
+--     desk keeps a client's simulation day, and the reports set it apart.
+--
+--     a. A live registry account with activity and NO account_snapshot in the
+--        close gets a provisional one: realized and unrealized from the
+--        reading, total in source_detail, balance, trailing drawdown and
+--        weekly P&L NULL, derivation NULL, source 'tracker', on the registry
+--        row the close would use (lower(account_name), the oldest of a case
+--        variant). One provisional strategy row per strategy reading, source
+--        'tracker': strategy_family the reading's algorithm (computed by the
+--        route with the product's one family rule), realized and unrealized
+--        from the reading, derived_realized NULL (no fills), ran true with
+--        ran_basis 'realized' when its realized is non zero and NULL
+--        otherwise. The period reports then attribute the money to the
+--        algorithm as they do a reported realized. One 'Tracker only account'
+--        flag (Warning).
 --     b. A later real capture that lists the account replaces the provisional
 --        rows (Part 1: the upsert sets source 'capture', the tracker strategy
 --        rows of a present account are deleted), even when it shows nothing,
 --        and the next fill resolves the 'Tracker only account' flag with the
 --        note 'A later capture included this account.'.
---     c. An account IN the close with no execution and abs(realized) <= 0.005
---        while its reading shows activity gets a 'Close below tracker' flag
+--     c. A live account IN the close with no execution and abs(realized) <=
+--        0.005 while its reading shows activity gets a 'Close below tracker' flag
 --        (Critical: the day's money for it is probably missing and there was
 --        nothing stored to keep). Resolved by a later fill, with the note 'A
 --        later capture showed this account trading.', once the close holds a
@@ -233,7 +273,8 @@
 --
 --   fill_day_from_tracker(trading_date) returns jsonb {tradingDate,
 --   dailyImports, accountsFilled, accountsRefreshed, strategiesFilled,
---   flagsWritten, flagsResolved, failedImports}: the same fill for every
+--   flagsWritten, flagsResolved, skippedUnknown, skippedNotLive,
+--   failedImports}: the same fill for every
 --   daily_import of that date, Closed ones included (it is run by hand, after
 --   review). Idempotent: a second run adds nothing, because an account that
 --   already has a snapshot gets none, a tracker row is refreshed only by a
@@ -1423,7 +1464,7 @@ end;
 $function$;
 
 comment on function public.persist_auto_daily_import(uuid, uuid, jsonb) is
-  'Persists one automatically collected daily import. Since step 73 a later capture MERGES into the day: accounts it does not list keep every row; for the accounts it lists, fills and orders merge by external id (fallback identity without one; an order in both takes the newer values), strategy rows are upserted per (account, strategy name, instrument), and an account whose stored rows show activity while the capture shows none keeps its rows with a Capture lost activity flag. derived_realized is NULLed where the payload did not see the whole merged fill set. The Manager''s closed day replacement still replaces (step 50 semantics). Flags of the three step 73 kinds are never deleted by a capture.';
+  'Persists one automatically collected daily import. Since step 73 a later capture MERGES into the day: accounts it does not list keep every row and every flag; for the accounts it lists, fills and orders merge by external id (fallback identity without one; an order in both takes the newer values), strategy rows are upserted per (account, strategy name, instrument) and rows sent back fromStore refresh the stored row''s derived figure, and an account whose stored rows show activity while the capture shows none keeps its rows with a Capture lost activity flag. derived_realized is NULLed where the payload did not see the whole merged fill set. A merge cannot remove a stored fill. The Manager''s closed day replacement still replaces (step 50 semantics). Flags of the three step 73 kinds are never deleted by a capture.';
 
 -- Step 28's reach, restated: nobody calls this directly. The endpoint calls v3,
 -- which calls v2, which calls this, and the closed day replacement calls it;
@@ -1910,7 +1951,7 @@ end;
 $function$;
 
 comment on function public.fill_daily_import_from_tracker(uuid) is
-  'Part 2 of step 73 for one close: a provisional account_snapshot (source tracker) and strategy rows for every account the tracker saw trade that the close does not hold, a Tracker only account flag for each, a Close below tracker flag for an account in the close with no fills and no realized while the tracker saw activity, and the resolution of both when a later capture answers them. The pinned reading wins; account_live_sample_history before the capture time is the fallback. Never writes a capture row, never raises (a fault is a WARNING and {filled: false}). Fired after every finalize by tracker_fill_on_batch; for many closes at once, fill_day_from_tracker.';
+  'Part 2 of step 73 for one close: a provisional account_snapshot (source tracker) and strategy rows for every account the tracker saw trade that the close does not hold, a Tracker only account flag for each, a Close below tracker flag for an account in the close with no fills and no realized while the tracker saw activity, and the resolution of both when a later capture answers them. Activity means a CONNECTED run of the day with a realized figure; the money is the last connected run before the capture time (the pinned reading only when the history no longer holds the day). Only live registry accounts, simulation included; never creates a registry row (skippedUnknown, skippedNotLive). Never writes a capture row, never raises (a fault is a WARNING and {filled: false}). Fired after every finalize by tracker_fill_on_batch; for many closes at once, fill_day_from_tracker.';
 
 -- The service role may call it for one close, as it may step 66's pin: a
 -- close uploaded by hand is never finalized, so nothing fires it there.

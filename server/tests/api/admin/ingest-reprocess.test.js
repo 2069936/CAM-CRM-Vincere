@@ -150,6 +150,23 @@ describe('immutable stored replay processor', () => {
     }
   });
 
+  it('a normal replay whose read of the day fails stores nothing and is recorded as a failed attempt', async () => {
+    const { canonical, batch } = replayEvidence();
+    const store = {
+      downloadObject: vi.fn(async () => canonical.gzip), loadRegistry: vi.fn(async () => ({})),
+      loadStoredFills: vi.fn(async () => { throw new Error('canceling statement due to statement timeout'); }),
+      createPersistenceAdapter: vi.fn(() => ({})), completeBatch: vi.fn(async () => undefined),
+    };
+    const persist = vi.fn();
+    await expect(processStoredReplay({
+      batch, store, processingToken: 'token', actorId: 'manager-1', reason: 'Approved replay reason', closedReplacement: false,
+      normalize: () => ({ date: batch.tradingDate, parsed: { accounts: [{ accountName: 'APEX 01' }] }, metadata: { isComplete: true } }),
+      reconcile: () => ({ date: batch.tradingDate }), persist,
+    })).rejects.toThrow('statement timeout');
+    expect(persist).not.toHaveBeenCalled();
+    expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorCode: 'ingest_failed' }));
+  });
+
   it('records a failed attempt without changing the immutable object', async () => {
     const { canonical, batch } = replayEvidence();
     const store = { downloadObject: vi.fn(async () => canonical.gzip), loadRegistry: vi.fn(async () => { throw new Error('registry down'); }), createPersistenceAdapter: vi.fn(), completeBatch: vi.fn(async () => undefined) };

@@ -364,7 +364,7 @@ describe('recording why a close was rejected', () => {
  * stops at its max-rows without saying so, and mapped to the normalizer's
  * shape so reconcile can derive over the union. */
 describe('loading the fills a day already holds', () => {
-  function fakeAdmin(tables) {
+  function fakeAdmin(tables, refuse = null) {
     const reads = [];
     return {
       reads,
@@ -378,6 +378,8 @@ describe('loading the fills a day already holds', () => {
           maybeSingle() { reads.push(query); return Promise.resolve({ data: (tables[table] || [])[0] ?? null, error: null }); },
           then(resolve, reject) {
             reads.push(query);
+            const refusal = refuse && refuse(query);
+            if (refusal) return Promise.resolve({ data: null, error: refusal }).then(resolve, reject);
             const rows = tables[table] || [];
             const data = query.range ? rows.slice(query.range[0], query.range[1] + 1) : rows;
             return Promise.resolve({ data, error: null }).then(resolve, reject);
@@ -410,10 +412,45 @@ describe('loading the fills a day already holds', () => {
       .toEqual([['client_id', 'client-1'], ['trading_date', '2026-10-22']]);
   });
 
+  it('reads the day\'s strategy rows without their parameters and leaves the tracker\'s out', async () => {
+    const admin = fakeAdmin({
+      daily_imports: [{ id: 'daily-1' }],
+      strategy_snapshots: [
+        { id: 's1', trading_account_id: 'a1', strategy_name: '2 - BETA-1.0', instrument: 'ES 12-26', realized: null, source: 'capture' },
+        { id: 's2', trading_account_id: 'a1', strategy_name: '9 - TRK', instrument: 'NQ 12-26', realized: '5', source: 'tracker' },
+      ],
+      trading_accounts: [{ id: 'a1', account_name: 'APEX 01' }],
+    });
+    const stored = await createAutoImportStore(admin).loadStoredFills('client-1', '2026-10-22');
+    expect(stored.strategies).toEqual([expect.objectContaining({ accountName: 'APEX 01', strategyName: '2 - BETA-1.0', realized: null, fromStore: true })]);
+    const columns = admin.reads.find((read) => read.table === 'strategy_snapshots').columns;
+    expect(columns).toContain('source');
+    expect(columns).not.toMatch(/parameters_raw|params_parsed/);
+  });
+
+  it('asks again without `source` on a database where step 73 has not run', async () => {
+    const admin = fakeAdmin({
+      daily_imports: [{ id: 'daily-1' }],
+      strategy_snapshots: [{ id: 's1', trading_account_id: 'a1', strategy_name: '2 - BETA-1.0', instrument: 'ES 12-26' }],
+      trading_accounts: [{ id: 'a1', account_name: 'APEX 01' }],
+    }, (query) => (query.table === 'strategy_snapshots' && query.columns.includes('source')
+      ? { code: '42703', message: 'column strategy_snapshots.source does not exist' }
+      : null));
+    const stored = await createAutoImportStore(admin).loadStoredFills('client-1', '2026-10-22');
+    expect(stored.strategies.map((row) => row.strategyName)).toEqual(['2 - BETA-1.0']);
+    expect(admin.reads.filter((read) => read.table === 'strategy_snapshots')).toHaveLength(2);
+  });
+
+  it('throws any other failed read, for the route to turn into a retry', async () => {
+    const admin = fakeAdmin({ daily_imports: [{ id: 'daily-1' }] },
+      (query) => (query.table === 'executions' ? { code: '57014', message: 'canceling statement due to statement timeout' } : null));
+    await expect(createAutoImportStore(admin).loadStoredFills('client-1', '2026-10-22')).rejects.toMatchObject({ code: '57014' });
+  });
+
   it('is empty for a day with no close yet', async () => {
     const admin = fakeAdmin({ daily_imports: [] });
     await expect(createAutoImportStore(admin).loadStoredFills('client-1', '2026-10-22'))
-      .resolves.toEqual({ executions: [], orders: [] });
+      .resolves.toEqual({ executions: [], orders: [], strategies: [] });
     expect(admin.reads.map((read) => read.table)).toEqual(['daily_imports']);
   });
 });
