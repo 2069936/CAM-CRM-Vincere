@@ -305,14 +305,14 @@ begin
     or to_regclass('public.account_live_sample_history') is null
     or to_regclass('public.algorithm_live_samples') is null
     or to_regprocedure('public.account_observation_money(numeric)') is null
+    or to_regprocedure('public.account_is_past_live_flags(text, text, text)') is null
     or (select count(*) from information_schema.columns
          where table_schema = 'public'
            and ((table_name = 'ingest_batches' and column_name = 'reprocess_mode')
              or (table_name = 'strategy_snapshots' and column_name in ('ran', 'derived_realized'))
              or (table_name = 'account_snapshots' and column_name = 'derivation')
-             or (table_name = 'algorithm_live_samples' and column_name = 'trades_this_run')
-             or (table_name = 'operational_flags' and column_name = 'resolution_note'))) <> 6 then
-    raise exception 'step 73 needs steps 29, 47, 50, 64, 66, 67 and 71 (ingest_batches.reprocess_mode, strategy_snapshots.ran and derived_realized, account_snapshots.derivation, algorithm_live_samples.trades_this_run, tracker_close_readings, account_live_sample_history, operational_flags.resolution_note, account_observation_money): run them first';
+             or (table_name = 'operational_flags' and column_name = 'resolution_note'))) <> 5 then
+    raise exception 'step 73 needs steps 29, 47, 50, 66, 67 and 71 (ingest_batches.reprocess_mode, strategy_snapshots.ran and derived_realized, account_snapshots.derivation, tracker_close_readings, account_live_sample_history, operational_flags.resolution_note and account_is_past_live_flags, account_observation_money): run them first';
   end if;
 end
 $step73_guard$;
@@ -324,7 +324,11 @@ begin;
 --
 -- NOT NULL DEFAULT 'capture': every row written before this file is a capture,
 -- and PostgreSQL 11 and later store the default without rewriting the table.
--- The checks are dropped and recreated under their names, step 72's shape.
+-- The checks are dropped and recreated under their names, step 72's shape,
+-- and added NOT VALID: adding one is then instant, and the scan of the two
+-- largest tables of the close happens in VALIDATE CONSTRAINT after the commit
+-- at the end of this file, under a lock that lets the desk keep reading and
+-- writing, instead of inside this transaction under the ALTER's.
 -- ---------------------------------------------------------------------------
 alter table public.account_snapshots
   add column if not exists source text not null default 'capture',
@@ -334,7 +338,7 @@ alter table public.account_snapshots
   drop constraint if exists account_snapshots_source_check;
 alter table public.account_snapshots
   add constraint account_snapshots_source_check
-  check (source in ('capture', 'tracker'));
+  check (source in ('capture', 'tracker')) not valid;
 
 alter table public.strategy_snapshots
   add column if not exists source text not null default 'capture';
@@ -343,7 +347,7 @@ alter table public.strategy_snapshots
   drop constraint if exists strategy_snapshots_source_check;
 alter table public.strategy_snapshots
   add constraint strategy_snapshots_source_check
-  check (source in ('capture', 'tracker'));
+  check (source in ('capture', 'tracker')) not valid;
 
 alter table public.operational_flags
   add column if not exists details jsonb;
@@ -504,6 +508,12 @@ declare
   v_grown_ids uuid[] := '{}';
   v_kept_from_earlier integer := 0;
   v_touched integer := 0;
+  -- lower(account name) -> the registry id every row of the payload resolves to.
+  v_account_ids jsonb := '{}'::jsonb;
+  -- Stored strategy rows the fromStore rows refreshed, and the rows this
+  -- capture inserted: neither loses its derived figure to the safety net.
+  v_refreshed_strategy_ids uuid[] := '{}';
+  v_inserted_strategy_ids uuid[] := '{}';
   v_protected constant text[] := array['Capture lost activity', 'Tracker only account', 'Close below tracker'];
   v_capture jsonb;
   v_stored public.account_snapshots;
@@ -664,54 +674,89 @@ begin
       updated_at = excluded.updated_at;
   end loop;
 
+  -- ONE ACCOUNT LOOKUP FOR THE WHOLE PAYLOAD. Every name any section or flag
+  -- carries is resolved once, the way the persistence always meant it: the
+  -- client's registry row whose lower(account_name) matches, the oldest when a
+  -- case variant exists twice. Every insert and every merge below reads this
+  -- map, so a snapshot, its strategies, its fills and its flags can never land
+  -- on two different registry rows, and no statement looks an account up once
+  -- per fill.
+  select coalesce(jsonb_object_agg(named.key, account.id) filter (where account.id is not null), '{}'::jsonb)
+    into v_account_ids
+  from (
+    select distinct lower(coalesce(item.value ->> 'accountName', '')) as key
+    from (
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'orders', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'flags', '[]'::jsonb))
+    ) as item(value)
+  ) as named
+  left join lateral (
+    select candidate.id
+    from public.trading_accounts as candidate
+    where candidate.client_id = p_client_id
+      and lower(candidate.account_name) = named.key
+    order by candidate.created_at, candidate.id
+    limit 1
+  ) as account on true
+  where named.key <> '';
+
   -- RULE D, decided against the stored day BEFORE anything of it is written.
   -- Stored activity: a stored fill of the account, or a stored CAPTURE
   -- snapshot with a realized figure. The new capture shows none: no fill of its
   -- own for the account (the "fromStore" fills the route added are the stored
-  -- ones coming back) and abs(realized) <= 0.005.
+  -- ones coming back) and abs(realized) <= 0.005. Each side is reduced to one
+  -- set of account keys first and the sets are joined, so the cost is the
+  -- size of the day, not the accounts times the fills.
   if v_had_day and not v_replace then
-    select coalesce(array_agg(distinct cap.key), '{}')
-      into v_kept
-    from (
+    with captured as (
       select lower(btrim(coalesce(item.value ->> 'accountName', ''))) as key,
              nullif(item.value ->> 'grossRealizedPnl', '')::numeric as realized
       from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb)) as item(value)
-    ) as cap
-    where cap.key <> ''
-      and abs(coalesce(cap.realized, 0)) <= 0.005
-      and not exists (
-        select 1
-        from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb)) as fill(value)
-        where lower(btrim(coalesce(fill.value ->> 'accountName', ''))) = cap.key
-          and coalesce(fill.value ->> 'fromStore', '') <> 'true'
-      )
-      and (
-        exists (
-          select 1
-          from public.executions as stored
-          join public.trading_accounts as account on account.id = stored.trading_account_id
-          where stored.daily_import_id = v_daily.id
-            and account.client_id = p_client_id
-            and lower(btrim(account.account_name)) = cap.key
-        )
-        or exists (
-          select 1
-          from public.account_snapshots as snapshot
-          where snapshot.daily_import_id = v_daily.id
-            and lower(btrim(snapshot.account_name)) = cap.key
-            and snapshot.source = 'capture'
-            and abs(coalesce(snapshot.gross_realized_pnl, 0)) > 0.005
-        )
-      );
+    ),
+    own_fills as (
+      select distinct lower(btrim(coalesce(fill.value ->> 'accountName', ''))) as key
+      from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb)) as fill(value)
+      where coalesce(fill.value ->> 'fromStore', '') <> 'true'
+    ),
+    stored_fills as (
+      select distinct lower(btrim(account.account_name)) as key
+      from public.executions as stored
+      join public.trading_accounts as account on account.id = stored.trading_account_id
+      where stored.daily_import_id = v_daily.id
+    ),
+    stored_realized as (
+      select distinct lower(btrim(snapshot.account_name)) as key
+      from public.account_snapshots as snapshot
+      where snapshot.daily_import_id = v_daily.id
+        and snapshot.source = 'capture'
+        and abs(coalesce(snapshot.gross_realized_pnl, 0)) > 0.005
+    )
+    select coalesce(array_agg(distinct captured.key), '{}')
+      into v_kept
+    from captured
+    left join own_fills on own_fills.key = captured.key
+    left join stored_fills on stored_fills.key = captured.key
+    left join stored_realized on stored_realized.key = captured.key
+    where captured.key <> ''
+      and abs(coalesce(captured.realized, 0)) <= 0.005
+      and own_fills.key is null
+      and (stored_fills.key is not null or stored_realized.key is not null);
 
     select count(*)::integer into v_kept_from_earlier
     from public.account_snapshots as snapshot
+    left join (
+      select distinct lower(btrim(coalesce(item.value ->> 'accountName', ''))) as key
+      from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb)) as item(value)
+    ) as captured on captured.key = lower(btrim(snapshot.account_name))
     where snapshot.daily_import_id = v_daily.id
-      and not exists (
-        select 1
-        from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb)) as item(value)
-        where lower(btrim(coalesce(item.value ->> 'accountName', ''))) = lower(btrim(snapshot.account_name))
-      );
+      and captured.key is null;
   end if;
 
   insert into public.daily_imports (
@@ -750,32 +795,25 @@ begin
     updated_at = excluded.updated_at
   returning * into v_daily;
 
-  -- The accounts this capture speaks for, in any of its four sections.
+  -- The accounts this capture speaks for, in any of its four sections, minus
+  -- the ones rule d holds back: their keys, and their registry ids.
   select coalesce(array_agg(distinct named.key), '{}'),
-         coalesce(array_agg(distinct account.id) filter (where account.id is not null), '{}')
+         coalesce(array_agg(distinct (v_account_ids ->> lower(named.name))::uuid)
+           filter (where v_account_ids ? lower(named.name)), '{}')
     into v_present_keys, v_present_ids
   from (
     select lower(btrim(coalesce(item.value ->> 'accountName', ''))) as key,
            coalesce(item.value ->> 'accountName', '') as name
-    from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb)) as item(value)
-    union
-    select lower(btrim(coalesce(item.value ->> 'accountName', ''))), coalesce(item.value ->> 'accountName', '')
-    from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb)) as item(value)
-    union
-    select lower(btrim(coalesce(item.value ->> 'accountName', ''))), coalesce(item.value ->> 'accountName', '')
-    from jsonb_array_elements(coalesce(p_import_result -> 'orders', '[]'::jsonb)) as item(value)
-    union
-    select lower(btrim(coalesce(item.value ->> 'accountName', ''))), coalesce(item.value ->> 'accountName', '')
-    from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb)) as item(value)
+    from (
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'snapshots', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'orders', '[]'::jsonb))
+      union all
+      select value from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb))
+    ) as item(value)
   ) as named
-  left join lateral (
-    select candidate.id
-    from public.trading_accounts as candidate
-    where candidate.client_id = p_client_id
-      and lower(candidate.account_name) = lower(named.name)
-    order by candidate.created_at, candidate.id
-    limit 1
-  ) as account on true
   where named.key <> ''
     and not (named.key = any(v_kept));
 
@@ -784,8 +822,7 @@ begin
     v_account_name := coalesce(v_item ->> 'accountName', '');
     -- Rule d: the stored snapshot of a held back account stays as it is.
     continue when lower(btrim(v_account_name)) = any(v_kept);
-    select id into v_account_id from public.trading_accounts
-      where client_id = p_client_id and lower(account_name) = lower(v_account_name);
+    v_account_id := (v_account_ids ->> lower(v_account_name))::uuid;
     insert into public.account_snapshots (
       daily_import_id, trading_account_id, account_name, connection,
       gross_realized_pnl, trailing_max_drawdown, account_balance, weekly_pnl,
@@ -816,17 +853,22 @@ begin
 
   if v_replace then
     -- ---------------------------------------------------------------------
-    -- Step 50's sections, verbatim: the closed day replacement replaces.
+    -- Step 50's sections: the closed day replacement replaces. The only
+    -- change is the account lookup, which reads the map above like every
+    -- other path (the oldest registry row of a case variant).
     -- ---------------------------------------------------------------------
     if jsonb_array_length(coalesce(p_import_result -> 'strategies', '[]'::jsonb)) > 0 then
       delete from public.strategy_snapshots where daily_import_id = v_daily.id;
       for v_item in select value from jsonb_array_elements(p_import_result -> 'strategies')
       loop
         v_account_name := coalesce(v_item ->> 'accountName', '');
-        select id into v_account_id from public.trading_accounts
-          where client_id = p_client_id and lower(account_name) = lower(v_account_name);
-        select id into v_snapshot_id from public.account_snapshots
-          where daily_import_id = v_daily.id and lower(account_name) = lower(v_account_name);
+        v_account_id := (v_account_ids ->> lower(v_account_name))::uuid;
+        select snapshot.id into v_snapshot_id
+        from public.account_snapshots as snapshot
+        where snapshot.daily_import_id = v_daily.id
+          and lower(snapshot.account_name) = lower(v_account_name)
+        order by snapshot.created_at, snapshot.id
+        limit 1;
         insert into public.strategy_snapshots (
           daily_import_id, trading_account_id, account_snapshot_id, strategy_name,
           strategy_family, strategy_version, instrument, data_series,
@@ -852,8 +894,7 @@ begin
       delete from public.orders where daily_import_id = v_daily.id;
       for v_item in select value from jsonb_array_elements(p_import_result -> 'orders')
       loop
-        select id into v_account_id from public.trading_accounts
-          where client_id = p_client_id and lower(account_name) = lower(coalesce(v_item ->> 'accountName', ''));
+        v_account_id := (v_account_ids ->> lower(coalesce(v_item ->> 'accountName', '')))::uuid;
         insert into public.orders (
           daily_import_id, trading_account_id, external_order_id, strategy_name,
           instrument, action, order_type, quantity, limit_price, stop_price,
@@ -873,8 +914,7 @@ begin
       delete from public.executions where daily_import_id = v_daily.id;
       for v_item in select value from jsonb_array_elements(p_import_result -> 'executions')
       loop
-        select id into v_account_id from public.trading_accounts
-          where client_id = p_client_id and lower(account_name) = lower(coalesce(v_item ->> 'accountName', ''));
+        v_account_id := (v_account_ids ->> lower(coalesce(v_item ->> 'accountName', '')))::uuid;
         insert into public.executions (
           daily_import_id, trading_account_id, external_execution_id,
           external_order_id, strategy_name, instrument, action, quantity, price,
@@ -894,49 +934,105 @@ begin
     -- ---------------------------------------------------------------------
     -- STRATEGIES, merged per (account, strategy name, instrument).
     --
-    -- One DELETE, then the payload's rows in its own order. What goes: every
-    -- tracker row of a present account (capture beats tracker), and every
-    -- capture row whose identity the payload lists (the group is replaced as a
-    -- group, so twins can neither multiply nor be dropped). What stays:
-    -- everything else, including every row of an account the capture does not
-    -- name and of an account rule d held back.
+    -- The payload carries two kinds of row. The capture's own: what it goes
+    -- in. And rows marked "fromStore": a strategy the day already holds for
+    -- an account this capture names that the capture does not list, sent
+    -- back by the route so the derivation covers it over the union of fills
+    -- (src/domain/storedFills.js). Those are never inserted; they bring the
+    -- stored row its new derived_realized, ran and ran_basis.
+    --
+    -- First one DELETE. What goes: every tracker row of a present account
+    -- (capture beats tracker), and every capture row whose identity the
+    -- capture's own rows list (the group is replaced as a group, so twins can
+    -- neither multiply nor be dropped). Everything else stays.
     --
     -- A stored row's account is its trading account, or the snapshot it hangs
     -- from when that is unresolved, the way step 65 attributes orphans.
     -- ---------------------------------------------------------------------
-    delete from public.strategy_snapshots as target
-    using (
-      select stored.id,
-             stored.source,
+    with listed as (
+      select distinct
+             lower(btrim(coalesce(item.value ->> 'accountName', ''))) || chr(31)
+               || lower(btrim(coalesce(item.value ->> 'strategyName', ''))) || chr(31)
+               || lower(btrim(coalesce(item.value ->> 'instrument', ''))) as identity
+      from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb)) as item(value)
+      where coalesce(item.value ->> 'fromStore', '') <> 'true'
+        and not (lower(btrim(coalesce(item.value ->> 'accountName', ''))) = any(v_kept))
+    ),
+    stored as (
+      select held.id,
+             held.source,
              coalesce(lower(btrim(account.account_name)), lower(btrim(snapshot.account_name)), '') as account_key,
-             lower(btrim(coalesce(stored.strategy_name, ''))) as strategy_key,
-             lower(btrim(coalesce(stored.instrument, ''))) as instrument_key
-      from public.strategy_snapshots as stored
-      left join public.trading_accounts as account on account.id = stored.trading_account_id
-      left join public.account_snapshots as snapshot on snapshot.id = stored.account_snapshot_id
-      where stored.daily_import_id = v_daily.id
-    ) as stored
+             coalesce(lower(btrim(account.account_name)), lower(btrim(snapshot.account_name)), '') || chr(31)
+               || lower(btrim(coalesce(held.strategy_name, ''))) || chr(31)
+               || lower(btrim(coalesce(held.instrument, ''))) as identity
+      from public.strategy_snapshots as held
+      left join public.trading_accounts as account on account.id = held.trading_account_id
+      left join public.account_snapshots as snapshot on snapshot.id = held.account_snapshot_id
+      where held.daily_import_id = v_daily.id
+    )
+    delete from public.strategy_snapshots as target
+    using stored
+    left join listed on listed.identity = stored.identity
     where target.id = stored.id
-      and (
-        (stored.source = 'tracker' and stored.account_key = any(v_present_keys))
-        or (stored.source <> 'tracker' and exists (
-          select 1
-          from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb)) as item(value)
-          where lower(btrim(coalesce(item.value ->> 'accountName', ''))) = stored.account_key
-            and not (stored.account_key = any(v_kept))
-            and lower(btrim(coalesce(item.value ->> 'strategyName', ''))) = stored.strategy_key
-            and lower(btrim(coalesce(item.value ->> 'instrument', ''))) = stored.instrument_key
-        ))
-      );
+      and ((stored.source = 'tracker' and stored.account_key = any(v_present_keys))
+        or (stored.source <> 'tracker' and listed.identity is not null));
+
+    -- The fromStore rows, onto the stored rows they came from: the k-th row
+    -- of an identity group meets the k-th stored row of it.
+    with incoming as (
+      select item.value as v,
+             row_number() over (partition by identity.value order by item.ordinality) as k,
+             identity.value as identity
+      from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb))
+        with ordinality as item(value, ordinality)
+      cross join lateral (
+        select lower(btrim(coalesce(item.value ->> 'accountName', ''))) || chr(31)
+          || lower(btrim(coalesce(item.value ->> 'strategyName', ''))) || chr(31)
+          || lower(btrim(coalesce(item.value ->> 'instrument', ''))) as value
+      ) as identity
+      where coalesce(item.value ->> 'fromStore', '') = 'true'
+        and not (lower(btrim(coalesce(item.value ->> 'accountName', ''))) = any(v_kept))
+    ),
+    held as (
+      select stored.id,
+             row_number() over (partition by stored.identity order by stored.created_at, stored.id) as k,
+             stored.identity
+      from (
+        select kept.id, kept.created_at,
+               coalesce(lower(btrim(account.account_name)), lower(btrim(snapshot.account_name)), '') || chr(31)
+                 || lower(btrim(coalesce(kept.strategy_name, ''))) || chr(31)
+                 || lower(btrim(coalesce(kept.instrument, ''))) as identity
+        from public.strategy_snapshots as kept
+        left join public.trading_accounts as account on account.id = kept.trading_account_id
+        left join public.account_snapshots as snapshot on snapshot.id = kept.account_snapshot_id
+        where kept.daily_import_id = v_daily.id
+          and kept.source = 'capture'
+      ) as stored
+    ),
+    refreshed as (
+      update public.strategy_snapshots as target
+      set derived_realized = nullif(incoming.v ->> 'derivedRealized', '')::numeric,
+          ran = nullif(incoming.v ->> 'ran', '')::boolean,
+          ran_basis = nullif(incoming.v ->> 'ranBasis', '')
+      from incoming
+      join held on held.identity = incoming.identity and held.k = incoming.k
+      where target.id = held.id
+      returning target.id
+    )
+    select coalesce(array_agg(refreshed.id), '{}') into v_refreshed_strategy_ids from refreshed;
 
     for v_item in select value from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb))
     loop
       v_account_name := coalesce(v_item ->> 'accountName', '');
-      continue when lower(btrim(v_account_name)) = any(v_kept);
-      select id into v_account_id from public.trading_accounts
-        where client_id = p_client_id and lower(account_name) = lower(v_account_name);
-      select id into v_snapshot_id from public.account_snapshots
-        where daily_import_id = v_daily.id and lower(account_name) = lower(v_account_name);
+      continue when lower(btrim(v_account_name)) = any(v_kept)
+        or coalesce(v_item ->> 'fromStore', '') = 'true';
+      v_account_id := (v_account_ids ->> lower(v_account_name))::uuid;
+      select snapshot.id into v_snapshot_id
+      from public.account_snapshots as snapshot
+      where snapshot.daily_import_id = v_daily.id
+        and lower(snapshot.account_name) = lower(v_account_name)
+      order by snapshot.created_at, snapshot.id
+      limit 1;
       insert into public.strategy_snapshots (
         daily_import_id, trading_account_id, account_snapshot_id, strategy_name,
         strategy_family, strategy_version, instrument, data_series,
@@ -955,104 +1051,78 @@ begin
         coalesce(nullif(v_item ->> 'unrealized', '')::numeric, 0),
         nullif(v_item ->> 'derivedRealized', '')::numeric,
         'capture'
-      );
+      )
+      returning id into v_snapshot_id;
+      v_inserted_strategy_ids := v_inserted_strategy_ids || v_snapshot_id;
     end loop;
 
     -- ---------------------------------------------------------------------
-    -- ORDERS, merged. Identity within (daily import, trading account): the
-    -- external order id, or the fallback in the header for an order without
-    -- one. Each side is numbered within its identity so the k-th payload row
-    -- meets the k-th stored row. A pair takes the payload's values (the newer
-    -- capture wins), an unpaired payload row is inserted, an unpaired stored
-    -- row stays.
+    -- ORDERS, merged. Each row of either side gets ONE text key: its trading
+    -- account and its external order id, or, without an id, the fallback
+    -- columns with NULL written as a sentinel and every number in its
+    -- canonical form (trim_scale, so 1.50 and 1.5 are one key). Each side is
+    -- numbered within its key so the k-th payload row meets the k-th stored
+    -- row, and the two meet on (key, k): an equality the planner can hash,
+    -- which IS NOT DISTINCT FROM is not. A pair takes the payload's values
+    -- (the newer capture wins), an unpaired payload row is inserted, an
+    -- unpaired stored row stays.
     -- ---------------------------------------------------------------------
     with incoming as (
       select item.ordinality as ord,
              item.value as v,
-             account.id as account_id,
-             nullif(item.value ->> 'id', '') as ident,
-             coalesce(item.value ->> 'instrument', '') as instrument,
-             coalesce(item.value ->> 'action', '') as action,
-             coalesce(item.value ->> 'orderType', '') as order_type,
-             nullif(item.value ->> 'quantity', '')::numeric as quantity,
-             nullif(item.value ->> 'limit', '')::numeric as limit_price,
-             nullif(item.value ->> 'stop', '')::numeric as stop_price,
-             coalesce(item.value ->> 'time', '') as time_text,
-             coalesce(item.value ->> 'name', '') as name
+             (v_account_ids ->> lower(coalesce(item.value ->> 'accountName', '')))::uuid as account_id
       from jsonb_array_elements(coalesce(p_import_result -> 'orders', '[]'::jsonb))
         with ordinality as item(value, ordinality)
-      left join lateral (
-        select candidate.id
-        from public.trading_accounts as candidate
-        where candidate.client_id = p_client_id
-          and lower(candidate.account_name) = lower(coalesce(item.value ->> 'accountName', ''))
-        order by candidate.created_at, candidate.id
-        limit 1
-      ) as account on true
       where not (lower(btrim(coalesce(item.value ->> 'accountName', ''))) = any(v_kept))
     ),
-    incoming_numbered as (
+    incoming_keyed as (
       select incoming.*,
-             row_number() over (
-               partition by incoming.account_id, incoming.ident,
-                 case when incoming.ident is null then incoming.instrument end,
-                 case when incoming.ident is null then incoming.action end,
-                 case when incoming.ident is null then incoming.order_type end,
-                 case when incoming.ident is null then incoming.quantity end,
-                 case when incoming.ident is null then incoming.limit_price end,
-                 case when incoming.ident is null then incoming.stop_price end,
-                 case when incoming.ident is null then incoming.time_text end,
-                 case when incoming.ident is null then incoming.name end
-               order by incoming.ord) as k
+             coalesce(incoming.account_id::text, '~') || chr(31)
+               || case when nullif(incoming.v ->> 'id', '') is not null
+                    then 'i' || chr(31) || (incoming.v ->> 'id')
+                    else 'f' || chr(31) || coalesce(incoming.v ->> 'instrument', '')
+                      || chr(31) || coalesce(incoming.v ->> 'action', '')
+                      || chr(31) || coalesce(incoming.v ->> 'orderType', '')
+                      || chr(31) || coalesce(trim_scale(nullif(incoming.v ->> 'quantity', '')::numeric)::text, '~')
+                      || chr(31) || coalesce(trim_scale(nullif(incoming.v ->> 'limit', '')::numeric)::text, '~')
+                      || chr(31) || coalesce(trim_scale(nullif(incoming.v ->> 'stop', '')::numeric)::text, '~')
+                      || chr(31) || coalesce(incoming.v ->> 'time', '')
+                      || chr(31) || coalesce(incoming.v ->> 'name', '')
+                  end as key
       from incoming
     ),
-    stored as (
-      select held.id as row_id,
-             held.trading_account_id as account_id,
-             nullif(held.external_order_id, '') as ident,
-             coalesce(held.instrument, '') as instrument,
-             coalesce(held.action, '') as action,
-             coalesce(held.order_type, '') as order_type,
-             held.quantity,
-             held.limit_price,
-             held.stop_price,
-             coalesce(held.time_text, '') as time_text,
-             coalesce(held.name, '') as name,
-             held.created_at
-      from public.orders as held
-      where held.daily_import_id = v_daily.id
+    incoming_numbered as (
+      select incoming_keyed.*,
+             row_number() over (partition by incoming_keyed.key order by incoming_keyed.ord) as k
+      from incoming_keyed
     ),
     stored_numbered as (
-      select stored.*,
-             row_number() over (
-               partition by stored.account_id, stored.ident,
-                 case when stored.ident is null then stored.instrument end,
-                 case when stored.ident is null then stored.action end,
-                 case when stored.ident is null then stored.order_type end,
-                 case when stored.ident is null then stored.quantity end,
-                 case when stored.ident is null then stored.limit_price end,
-                 case when stored.ident is null then stored.stop_price end,
-                 case when stored.ident is null then stored.time_text end,
-                 case when stored.ident is null then stored.name end
-               order by stored.created_at, stored.row_id) as k
-      from stored
+      select keyed.row_id,
+             keyed.key,
+             row_number() over (partition by keyed.key order by keyed.created_at, keyed.row_id) as k
+      from (
+        select held.id as row_id,
+               held.created_at,
+               coalesce(held.trading_account_id::text, '~') || chr(31)
+                 || case when nullif(held.external_order_id, '') is not null
+                      then 'i' || chr(31) || held.external_order_id
+                      else 'f' || chr(31) || coalesce(held.instrument, '')
+                        || chr(31) || coalesce(held.action, '')
+                        || chr(31) || coalesce(held.order_type, '')
+                        || chr(31) || coalesce(trim_scale(held.quantity)::text, '~')
+                        || chr(31) || coalesce(trim_scale(held.limit_price)::text, '~')
+                        || chr(31) || coalesce(trim_scale(held.stop_price)::text, '~')
+                        || chr(31) || coalesce(held.time_text, '')
+                        || chr(31) || coalesce(held.name, '')
+                    end as key
+        from public.orders as held
+        where held.daily_import_id = v_daily.id
+      ) as keyed
     ),
     pairs as (
       select incoming.ord, stored.row_id
       from incoming_numbered as incoming
-      join stored_numbered as stored
-        on stored.account_id is not distinct from incoming.account_id
-       and stored.ident is not distinct from incoming.ident
-       and stored.k = incoming.k
-       and (incoming.ident is not null or (
-         stored.instrument = incoming.instrument
-         and stored.action = incoming.action
-         and stored.order_type = incoming.order_type
-         and stored.quantity is not distinct from incoming.quantity
-         and stored.limit_price is not distinct from incoming.limit_price
-         and stored.stop_price is not distinct from incoming.stop_price
-         and stored.time_text = incoming.time_text
-         and stored.name = incoming.name))
+      join stored_numbered as stored on stored.key = incoming.key and stored.k = incoming.k
     ),
     refreshed as (
       update public.orders as target
@@ -1091,94 +1161,73 @@ begin
              nullif(incoming.v ->> 'remaining', '')::numeric, coalesce(incoming.v ->> 'name', ''),
              coalesce(incoming.v ->> 'time', '')
       from incoming_numbered as incoming
-      where not exists (select 1 from pairs where pairs.ord = incoming.ord)
+      left join pairs on pairs.ord = incoming.ord
+      where pairs.ord is null
       order by incoming.ord
       returning id
     )
     select (select count(*) from refreshed) + (select count(*) from added) into v_touched;
 
     -- ---------------------------------------------------------------------
-    -- EXECUTIONS, merged the same way, by external execution id or the
-    -- fallback (instrument, action, quantity, price, time_text, order id).
-    -- The same statement reports the two facts derived_realized depends on.
+    -- EXECUTIONS, merged the same way: one key per row, from the external
+    -- execution id or the fallback (instrument, action, quantity, price,
+    -- time_text, order id). The same statement reports the two facts
+    -- derived_realized depends on.
     -- ---------------------------------------------------------------------
     with incoming as (
       select item.ordinality as ord,
              item.value as v,
-             account.id as account_id,
-             nullif(item.value ->> 'id', '') as ident,
-             coalesce(item.value ->> 'instrument', '') as instrument,
-             coalesce(item.value ->> 'action', '') as action,
-             nullif(item.value ->> 'quantity', '')::numeric as quantity,
-             nullif(item.value ->> 'price', '')::numeric as price,
-             coalesce(item.value ->> 'time', '') as time_text,
-             coalesce(item.value ->> 'orderId', '') as order_id
+             (v_account_ids ->> lower(coalesce(item.value ->> 'accountName', '')))::uuid as account_id
       from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb))
         with ordinality as item(value, ordinality)
-      left join lateral (
-        select candidate.id
-        from public.trading_accounts as candidate
-        where candidate.client_id = p_client_id
-          and lower(candidate.account_name) = lower(coalesce(item.value ->> 'accountName', ''))
-        order by candidate.created_at, candidate.id
-        limit 1
-      ) as account on true
       where not (lower(btrim(coalesce(item.value ->> 'accountName', ''))) = any(v_kept))
     ),
-    incoming_numbered as (
+    incoming_keyed as (
       select incoming.*,
-             row_number() over (
-               partition by incoming.account_id, incoming.ident,
-                 case when incoming.ident is null then incoming.instrument end,
-                 case when incoming.ident is null then incoming.action end,
-                 case when incoming.ident is null then incoming.quantity end,
-                 case when incoming.ident is null then incoming.price end,
-                 case when incoming.ident is null then incoming.time_text end,
-                 case when incoming.ident is null then incoming.order_id end
-               order by incoming.ord) as k
+             coalesce(incoming.account_id::text, '~') || chr(31)
+               || case when nullif(incoming.v ->> 'id', '') is not null
+                    then 'i' || chr(31) || (incoming.v ->> 'id')
+                    else 'f' || chr(31) || coalesce(incoming.v ->> 'instrument', '')
+                      || chr(31) || coalesce(incoming.v ->> 'action', '')
+                      || chr(31) || coalesce(trim_scale(nullif(incoming.v ->> 'quantity', '')::numeric)::text, '~')
+                      || chr(31) || coalesce(trim_scale(nullif(incoming.v ->> 'price', '')::numeric)::text, '~')
+                      || chr(31) || coalesce(incoming.v ->> 'time', '')
+                      || chr(31) || coalesce(incoming.v ->> 'orderId', '')
+                  end as key
       from incoming
     ),
-    stored as (
-      select held.id as row_id,
-             held.trading_account_id as account_id,
-             nullif(held.external_execution_id, '') as ident,
-             coalesce(held.instrument, '') as instrument,
-             coalesce(held.action, '') as action,
-             held.quantity,
-             held.price,
-             coalesce(held.time_text, '') as time_text,
-             coalesce(held.external_order_id, '') as order_id,
-             held.created_at
-      from public.executions as held
-      where held.daily_import_id = v_daily.id
+    incoming_numbered as (
+      select incoming_keyed.*,
+             row_number() over (partition by incoming_keyed.key order by incoming_keyed.ord) as k
+      from incoming_keyed
     ),
     stored_numbered as (
-      select stored.*,
-             row_number() over (
-               partition by stored.account_id, stored.ident,
-                 case when stored.ident is null then stored.instrument end,
-                 case when stored.ident is null then stored.action end,
-                 case when stored.ident is null then stored.quantity end,
-                 case when stored.ident is null then stored.price end,
-                 case when stored.ident is null then stored.time_text end,
-                 case when stored.ident is null then stored.order_id end
-               order by stored.created_at, stored.row_id) as k
-      from stored
+      select keyed.row_id,
+             keyed.account_id,
+             keyed.key,
+             row_number() over (partition by keyed.key order by keyed.created_at, keyed.row_id) as k
+      from (
+        select held.id as row_id,
+               held.trading_account_id as account_id,
+               held.created_at,
+               coalesce(held.trading_account_id::text, '~') || chr(31)
+                 || case when nullif(held.external_execution_id, '') is not null
+                      then 'i' || chr(31) || held.external_execution_id
+                      else 'f' || chr(31) || coalesce(held.instrument, '')
+                        || chr(31) || coalesce(held.action, '')
+                        || chr(31) || coalesce(trim_scale(held.quantity)::text, '~')
+                        || chr(31) || coalesce(trim_scale(held.price)::text, '~')
+                        || chr(31) || coalesce(held.time_text, '')
+                        || chr(31) || coalesce(held.external_order_id, '')
+                    end as key
+        from public.executions as held
+        where held.daily_import_id = v_daily.id
+      ) as keyed
     ),
     pairs as (
       select incoming.ord, stored.row_id
       from incoming_numbered as incoming
-      join stored_numbered as stored
-        on stored.account_id is not distinct from incoming.account_id
-       and stored.ident is not distinct from incoming.ident
-       and stored.k = incoming.k
-       and (incoming.ident is not null or (
-         stored.instrument = incoming.instrument
-         and stored.action = incoming.action
-         and stored.quantity is not distinct from incoming.quantity
-         and stored.price is not distinct from incoming.price
-         and stored.time_text = incoming.time_text
-         and stored.order_id = incoming.order_id))
+      join stored_numbered as stored on stored.key = incoming.key and stored.k = incoming.k
     ),
     refreshed as (
       update public.executions as target
@@ -1215,7 +1264,8 @@ begin
              coalesce(incoming.v ->> 'name', ''), nullif(incoming.v ->> 'commission', '')::numeric,
              nullif(incoming.v ->> 'rate', '')::numeric, coalesce(incoming.v ->> 'connection', '')
       from incoming_numbered as incoming
-      where not exists (select 1 from pairs where pairs.ord = incoming.ord)
+      left join pairs on pairs.ord = incoming.ord
+      where pairs.ord is null
       order by incoming.ord
       returning trading_account_id
     )
@@ -1223,22 +1273,27 @@ begin
       coalesce((
         select array_agg(distinct stored.account_id)
         from stored_numbered as stored
-        where stored.account_id = any(v_present_ids)
-          and not exists (select 1 from pairs where pairs.row_id = stored.row_id)
+        left join pairs on pairs.row_id = stored.row_id
+        where pairs.row_id is null
+          and stored.account_id = any(v_present_ids)
       ), '{}'),
       coalesce((
         select array_agg(distinct added.trading_account_id)
         from added
         where added.trading_account_id is not null
-      ), '{}')
-      into v_unseen_ids, v_grown_ids;
+      ), '{}'),
+      (select count(*) from refreshed)
+      into v_unseen_ids, v_grown_ids, v_touched;
 
     -- ---------------------------------------------------------------------
-    -- RULE C, the invariant. A present account with a stored fill the payload
-    -- did not carry: the derivation the payload brought saw a subset of the
-    -- day, so neither it nor the per strategy figures it produced stand. An
-    -- account that gained fills: a strategy row kept from an earlier capture
-    -- was derived over fewer fills than the day now holds.
+    -- RULE C, the safety net. A present account with a stored fill the
+    -- payload did not carry: the derivation the payload brought saw a subset
+    -- of the day, so neither it nor the per strategy figures it produced
+    -- stand. An account that gained fills: a strategy row kept from an earlier
+    -- capture that the payload neither replaced nor brought back as fromStore
+    -- was derived over fewer fills than the day now holds. With the route
+    -- sending the day's fills and strategies back, neither happens; this is
+    -- what holds when it could not.
     -- ---------------------------------------------------------------------
     update public.strategy_snapshots as target
     set derived_realized = null
@@ -1247,15 +1302,9 @@ begin
       and target.derived_realized is not null
       and (
         target.trading_account_id = any(v_unseen_ids)
-        or (target.trading_account_id = any(v_grown_ids) and not exists (
-          select 1
-          from jsonb_array_elements(coalesce(p_import_result -> 'strategies', '[]'::jsonb)) as item(value)
-          join public.trading_accounts as account
-            on account.id = target.trading_account_id
-          where lower(btrim(coalesce(item.value ->> 'accountName', ''))) = lower(btrim(account.account_name))
-            and lower(btrim(coalesce(item.value ->> 'strategyName', ''))) = lower(btrim(coalesce(target.strategy_name, '')))
-            and lower(btrim(coalesce(item.value ->> 'instrument', ''))) = lower(btrim(coalesce(target.instrument, '')))
-        ))
+        or (target.trading_account_id = any(v_grown_ids)
+          and not (target.id = any(v_refreshed_strategy_ids))
+          and not (target.id = any(v_inserted_strategy_ids)))
       );
 
     update public.account_snapshots as snapshot
@@ -1266,26 +1315,49 @@ begin
   end if;
 
   -- -------------------------------------------------------------------------
-  -- FLAGS. The import's own are deleted and written again, as before, except
-  -- the three kinds this file introduces (rule e).
+  -- FLAGS (rule e).
+  --
+  -- Never the three kinds this file introduces. Replace closed day deletes
+  -- every other flag of the day, as step 50 did. A merge deletes only what
+  -- it writes again: the flags of the accounts this capture speaks for, and
+  -- the client level ones (no account) the import regenerates. An account the
+  -- capture does not list, or one rule d holds back, keeps its flags, as it
+  -- keeps its rows; a payload flag for it is added only when the day holds no
+  -- flag of that type for it yet, so a second capture never stacks a copy.
   -- -------------------------------------------------------------------------
-  delete from public.operational_flags
-  where daily_import_id = v_daily.id
-    and not (type = any(v_protected));
+  if v_replace then
+    delete from public.operational_flags
+    where daily_import_id = v_daily.id
+      and not (type = any(v_protected));
+  else
+    delete from public.operational_flags
+    where daily_import_id = v_daily.id
+      and not (type = any(v_protected))
+      and (trading_account_id is null or trading_account_id = any(v_present_ids));
+  end if;
   for v_item in select value from jsonb_array_elements(coalesce(p_import_result -> 'flags', '[]'::jsonb))
   loop
-    -- After a merge the day may still hold an account this capture did not
-    -- list, and "did not appear in this close" would then be false.
-    continue when not v_replace
-      and coalesce(v_item ->> 'type', '') = 'Missing account'
-      and exists (
-        select 1
-        from public.account_snapshots as snapshot
-        where snapshot.daily_import_id = v_daily.id
-          and lower(btrim(snapshot.account_name)) = lower(btrim(coalesce(v_item ->> 'accountName', '')))
-      );
-    select id into v_account_id from public.trading_accounts
-      where client_id = p_client_id and lower(account_name) = lower(coalesce(v_item ->> 'accountName', ''));
+    v_account_id := (v_account_ids ->> lower(coalesce(v_item ->> 'accountName', '')))::uuid;
+    if not v_replace then
+      -- After a merge the day may still hold an account this capture did not
+      -- list, and "did not appear in this close" would then be false.
+      continue when coalesce(v_item ->> 'type', '') = 'Missing account'
+        and exists (
+          select 1
+          from public.account_snapshots as snapshot
+          where snapshot.daily_import_id = v_daily.id
+            and lower(btrim(snapshot.account_name)) = lower(btrim(coalesce(v_item ->> 'accountName', '')))
+        );
+      continue when v_account_id is not null
+        and not (v_account_id = any(v_present_ids))
+        and exists (
+          select 1
+          from public.operational_flags as flag
+          where flag.daily_import_id = v_daily.id
+            and flag.trading_account_id = v_account_id
+            and flag.type = coalesce(v_item ->> 'type', 'Import review')
+        );
+    end if;
     insert into public.operational_flags (
       daily_import_id, client_id, trading_account_id, type, severity,
       message, status, resolved_at, resolved_by_user_id
@@ -1309,15 +1381,12 @@ begin
     from public.account_snapshots as snapshot
     where snapshot.daily_import_id = v_daily.id
       and lower(btrim(snapshot.account_name)) = v_account_name
-    order by (snapshot.source = 'capture') desc
+    order by (snapshot.source = 'capture') desc, snapshot.created_at, snapshot.id
     limit 1;
-    select account.id, coalesce(nullif(btrim(account.alias), ''), account.account_name)
-      into v_account_id, v_label
+    v_account_id := (v_account_ids ->> lower(coalesce(v_capture ->> 'accountName', '')))::uuid;
+    select coalesce(nullif(btrim(account.alias), ''), account.account_name) into v_label
     from public.trading_accounts as account
-    where account.client_id = p_client_id
-      and lower(btrim(account.account_name)) = v_account_name
-    order by account.created_at, account.id
-    limit 1;
+    where account.id = v_account_id;
     select count(*)::integer into v_stored_fills
     from public.executions as stored
     where stored.daily_import_id = v_daily.id
@@ -1382,9 +1451,10 @@ declare
   r record;
   v_account_id uuid;
   v_snapshot_id uuid;
-  v_label text;
   v_detail jsonb;
-  v_has_fills boolean;
+  v_fill_keys text[] := '{}';
+  v_skipped_unknown integer := 0;
+  v_skipped_not_live integer := 0;
   v_filled integer := 0;
   v_refreshed integer := 0;
   v_strategies integer := 0;
@@ -1434,11 +1504,51 @@ begin
     v_day_start := v_daily.trading_date::timestamp at time zone v_tz;
     v_day_end := v_day_start + interval '1 day';
 
+    -- The accounts this close already holds a fill for, once, as keys.
+    select coalesce(array_agg(distinct lower(btrim(account.account_name))), '{}')
+      into v_fill_keys
+    from public.executions as fill
+    join public.trading_accounts as account on account.id = fill.trading_account_id
+    where fill.daily_import_id = p_daily_import_id;
+
     for r in
-      with pinned as (
+      with runs as (
+        -- The history of the day up to the capture: every run that began at
+        -- or before it and was still running on the trading date.
+        select lower(btrim(run.account_name)) as key,
+               run.account_name,
+               run.device_id,
+               run.connection_name,
+               run.connected,
+               run.status,
+               run.realized_pnl,
+               run.unrealized_pnl,
+               run.total_pnl,
+               run.first_sampled_at,
+               least(run.last_sampled_at, v_captured_at) as sampled_at
+        from public.account_live_sample_history as run
+        where run.client_id = v_daily.client_id
+          and run.last_sampled_at >= v_day_start
+          and run.first_sampled_at <= v_captured_at
+      ),
+      traded as (
+        -- ACTIVE: at least one CONNECTED run of the day with a realized
+        -- figure. A disconnected account keeps showing whatever NinjaTrader
+        -- last held for it, so a disconnected reading is never evidence.
+        select distinct runs.key
+        from runs
+        where runs.connected
+          and abs(coalesce(runs.realized_pnl, 0)) > 0.005
+      ),
+      last_connected as (
+        select distinct on (runs.key) runs.*
+        from runs
+        where runs.connected
+        order by runs.key, runs.first_sampled_at desc, runs.sampled_at desc
+      ),
+      pinned as (
         select lower(btrim(pin.account_name)) as key,
                pin.account_name,
-               'tracker_close_readings'::text as origin,
                pin.device_id,
                pin.connection_name,
                pin.connected,
@@ -1453,130 +1563,130 @@ begin
         where pin.daily_import_id = p_daily_import_id
           and pin.source <> 'none'
       ),
-      history as (
-        select distinct on (lower(btrim(run.account_name)))
-               lower(btrim(run.account_name)) as key,
-               run.account_name,
-               'account_live_sample_history'::text as origin,
-               run.device_id,
-               run.connection_name,
-               run.connected,
-               run.status,
-               run.realized_pnl,
-               run.unrealized_pnl,
-               run.total_pnl,
-               least(run.last_sampled_at, v_captured_at) as sampled_at,
-               false as reset_seen,
-               '[]'::jsonb as strategies
-        from public.account_live_sample_history as run
-        where run.client_id = v_daily.client_id
-          and run.last_sampled_at >= v_day_start
-          and run.first_sampled_at <= v_captured_at
-        -- The last run while CONNECTED, else the last run: a reading taken
-        -- while the account was disconnected says nothing about its day.
-        order by lower(btrim(run.account_name)), run.connected desc,
-                 run.first_sampled_at desc, run.last_sampled_at desc
-      ),
       chosen as (
-        -- 1. The pin, when it was taken while the account was connected, or
-        --    when the history holds no connected run of that day to replace it.
-        select pinned.* from pinned
-        where pinned.connected
-          or not exists (select 1 from history where history.key = pinned.key and history.connected)
+        -- 1. The history holds the day: the money of the last connected run,
+        --    for an account one of whose connected runs showed activity.
+        select last_connected.key,
+               last_connected.account_name,
+               'account_live_sample_history'::text as origin,
+               last_connected.device_id,
+               last_connected.connection_name,
+               last_connected.connected,
+               last_connected.status,
+               last_connected.realized_pnl,
+               last_connected.unrealized_pnl,
+               last_connected.total_pnl,
+               last_connected.sampled_at,
+               coalesce(pinned.reset_seen, false) as reset_seen,
+               coalesce(pinned.strategies, '[]'::jsonb) as strategies
+        from last_connected
+        join traded on traded.key = last_connected.key
+        left join pinned on pinned.key = last_connected.key
         union all
-        -- 2. A pin taken while the account was disconnected (the case of
-        --    2026-10-22): the last connected run of the day before the
-        --    capture, with the pin's strategy readings.
-        select history.key, history.account_name, history.origin, history.device_id,
-               history.connection_name, history.connected, history.status,
-               history.realized_pnl, history.unrealized_pnl, history.total_pnl,
-               history.sampled_at, history.reset_seen, pinned.strategies
+        -- 2. The history no longer holds the day for this account (it keeps
+        --    five days): the pinned reading, and only one taken while the
+        --    account was connected and showing activity.
+        select pinned.key,
+               pinned.account_name,
+               'tracker_close_readings'::text,
+               pinned.device_id,
+               pinned.connection_name,
+               pinned.connected,
+               pinned.status,
+               pinned.realized_pnl,
+               pinned.unrealized_pnl,
+               pinned.total_pnl,
+               pinned.sampled_at,
+               pinned.reset_seen,
+               pinned.strategies
         from pinned
-        join history on history.key = pinned.key and history.connected
-        where not pinned.connected
-        union all
-        -- 3. No pin: the history alone.
-        select history.* from history
-        where not exists (select 1 from pinned where pinned.key = history.key)
+        where pinned.connected
+          and abs(coalesce(pinned.realized_pnl, 0)) > 0.005
+          and not exists (select 1 from runs where runs.key = pinned.key)
       ),
       live as (
         select lower(btrim(sample.account_name)) as key,
-               sample.strategy_id,
-               sample.strategy_name,
-               sample.algorithm,
-               sample.instrument,
-               sample.realized_pnl,
-               sample.unrealized_pnl,
-               sample.restarted_at,
-               sample.trades_this_run,
-               sample.sampled_at
+               jsonb_agg(jsonb_build_object(
+                 'strategyId', sample.strategy_id,
+                 'strategyName', sample.strategy_name,
+                 'algorithm', sample.algorithm,
+                 'instrument', sample.instrument,
+                 'realizedPnl', sample.realized_pnl,
+                 'unrealizedPnl', sample.unrealized_pnl,
+                 'restartedAt', sample.restarted_at,
+                 'sampledAt', sample.sampled_at)
+                 order by sample.strategy_name, sample.instrument, sample.strategy_id) as strategies
         from public.algorithm_live_samples as sample
         where sample.client_id = v_daily.client_id
           and sample.sampled_at >= v_day_start
           and sample.sampled_at < v_day_end
-      ),
-      readings as (
-        select chosen.*,
-               coalesce(
-                 case when jsonb_typeof(chosen.strategies) = 'array' and jsonb_array_length(chosen.strategies) > 0 then (
-                   select jsonb_agg(
-                            element.value || jsonb_build_object('tradesThisRun', (
-                              select live.trades_this_run from live
-                              where live.key = chosen.key
-                                and live.strategy_id = element.value ->> 'strategyId'
-                              limit 1))
-                            order by element.ordinality)
-                   from jsonb_array_elements(chosen.strategies) with ordinality as element(value, ordinality))
-                 end,
-                 (select jsonb_agg(jsonb_build_object(
-                           'strategyId', live.strategy_id,
-                           'strategyName', live.strategy_name,
-                           'algorithm', live.algorithm,
-                           'instrument', live.instrument,
-                           'realizedPnl', live.realized_pnl,
-                           'unrealizedPnl', live.unrealized_pnl,
-                           'restartedAt', live.restarted_at,
-                           'sampledAt', live.sampled_at,
-                           'tradesThisRun', live.trades_this_run)
-                         order by live.strategy_name, live.instrument, live.strategy_id)
-                  from live where live.key = chosen.key),
-                 '[]'::jsonb) as strategy_readings
-        from chosen
+        group by lower(btrim(sample.account_name))
       )
-      select readings.*,
-             (abs(coalesce(readings.realized_pnl, 0)) > 0.005
-               or exists (
-                 select 1
-                 from jsonb_array_elements(readings.strategy_readings) as strategy(value)
-                 where abs(coalesce(case when jsonb_typeof(strategy.value -> 'realizedPnl') = 'number'
-                                      then (strategy.value ->> 'realizedPnl')::numeric end, 0)) > 0.005
-                    or coalesce(case when jsonb_typeof(strategy.value -> 'tradesThisRun') = 'number'
-                                  then (strategy.value ->> 'tradesThisRun')::numeric end, 0) > 0)) as active,
+      select chosen.key,
+             chosen.account_name,
+             chosen.origin,
+             chosen.device_id,
+             chosen.connection_name,
+             chosen.connected,
+             chosen.status,
+             chosen.realized_pnl,
+             chosen.unrealized_pnl,
+             chosen.total_pnl,
+             chosen.sampled_at,
+             chosen.reset_seen,
+             -- The pin's strategy readings (kept for good), else the latest
+             -- of the day while algorithm_live_samples still holds them.
+             case when jsonb_typeof(chosen.strategies) = 'array' and jsonb_array_length(chosen.strategies) > 0
+               then chosen.strategies
+               else coalesce(live.strategies, '[]'::jsonb)
+             end as strategy_readings,
+             account.id as account_id,
+             coalesce(nullif(btrim(account.alias), ''), account.account_name) as label,
+             account.status as account_status,
+             account.account_type,
              snapshot.id as snapshot_id,
              snapshot.source as snapshot_source,
              snapshot.gross_realized_pnl as close_realized,
              snapshot.source_detail as snapshot_detail,
              snapshot.trading_account_id as snapshot_account_id
-      from readings
+      from chosen
+      left join live on live.key = chosen.key
+      left join lateral (
+        select candidate.*
+        from public.trading_accounts as candidate
+        where candidate.client_id = v_daily.client_id
+          and lower(candidate.account_name) = lower(chosen.account_name)
+        order by candidate.created_at, candidate.id
+        limit 1
+      ) as account on true
       left join lateral (
         select candidate.*
         from public.account_snapshots as candidate
         where candidate.daily_import_id = p_daily_import_id
-          and lower(btrim(candidate.account_name)) = readings.key
-        order by (candidate.source = 'capture') desc, candidate.created_at
+          and lower(btrim(candidate.account_name)) = chosen.key
+        order by (candidate.source = 'capture') desc, candidate.created_at, candidate.id
         limit 1
       ) as snapshot on true
-      order by readings.key
+      order by chosen.key
     loop
-      continue when not r.active;
-
-      select account.id, coalesce(nullif(btrim(account.alias), ''), account.account_name)
-        into v_account_id, v_label
-      from public.trading_accounts as account
-      where account.client_id = v_daily.client_id
-        and lower(account.account_name) = lower(r.account_name)
-      order by account.created_at, account.id
-      limit 1;
+      -- NEVER A NEW REGISTRY ROW. An account the client's registry does not
+      -- hold is not filled: the tracker sees every account on the machine,
+      -- and only the close (or a person) decides what the desk tracks.
+      if r.account_id is null and r.snapshot_id is null then
+        v_skipped_unknown := v_skipped_unknown + 1;
+        continue;
+      end if;
+      -- Not live by its status or its type (Failed, Inactive, Reserve,
+      -- Inactive / Ignore): step 67's own rule. The observation is passed as
+      -- NULL on purpose: "absent" and "breached" are what earlier closes said,
+      -- and an account the tracker saw trade today is not absent from it.
+      -- Simulation accounts are live here; the reports keep them apart.
+      if r.account_id is not null
+        and public.account_is_past_live_flags(r.account_status, r.account_type, null) then
+        v_skipped_not_live := v_skipped_not_live + 1;
+        continue;
+      end if;
+      v_account_id := r.account_id;
 
       v_detail := jsonb_build_object(
         'origin', r.origin,
@@ -1592,29 +1702,7 @@ begin
       );
 
       if r.snapshot_id is null then
-        -- a. The provisional account. The registry row the persistence would
-        -- make, made the same way and only when there is none.
-        if v_account_id is null then
-          insert into public.trading_accounts (
-            client_id, legacy_key, account_name, alias, connection, account_type,
-            status, payout_state, risk_level, bullet_bot_pass_type, bullet_bot_direction,
-            algo_stack, daily_loss_limit, notes, payout_count, updated_at
-          ) values (
-            v_daily.client_id, r.account_name, r.account_name, r.account_name,
-            coalesce(r.connection_name, ''), 'Unassigned', 'Active', 'Not requested',
-            '', '', '', '', '', '', 0, clock_timestamp()
-          )
-          on conflict (client_id, account_name) do nothing
-          returning id into v_account_id;
-          if v_account_id is null then
-            select account.id into v_account_id
-            from public.trading_accounts as account
-            where account.client_id = v_daily.client_id
-              and account.account_name = r.account_name;
-          end if;
-          v_label := r.account_name;
-        end if;
-
+        -- a. The provisional account, on the registry row the close would use.
         v_snapshot_id := null;
         insert into public.account_snapshots (
           daily_import_id, trading_account_id, account_name, connection,
@@ -1660,8 +1748,8 @@ begin
         v_flags := v_flags + public.write_close_merge_flag(
           p_daily_import_id, v_daily.client_id, v_account_id,
           'Tracker only account', 'Warning',
-          format('%s is not in the close, but the tracker saw it trade on %s: realized %s, unrealized %s, total %s at %s New York. Its row in this close comes from the tracker, with no fills and no balance, until a capture lists it.',
-            coalesce(v_label, r.account_name), v_daily.trading_date,
+          format('%s is not in the close, but the tracker saw it trade on %s: realized %s, unrealized %s, total %s at %s New York, its last reading while connected. Its row in this close comes from the tracker, with no fills and no balance, until a capture lists it.',
+            coalesce(r.label, r.account_name), v_daily.trading_date,
             coalesce(public.account_observation_money(r.realized_pnl), 'not reported'),
             coalesce(public.account_observation_money(r.unrealized_pnl), 'not reported'),
             coalesce(public.account_observation_money(r.total_pnl), 'not reported'),
@@ -1714,8 +1802,8 @@ begin
         perform public.write_close_merge_flag(
           p_daily_import_id, v_daily.client_id, coalesce(r.snapshot_account_id, v_account_id),
           'Tracker only account', 'Warning',
-          format('%s is not in the close, but the tracker saw it trade on %s: realized %s, unrealized %s, total %s at %s New York. Its row in this close comes from the tracker, with no fills and no balance, until a capture lists it.',
-            coalesce(v_label, r.account_name), v_daily.trading_date,
+          format('%s is not in the close, but the tracker saw it trade on %s: realized %s, unrealized %s, total %s at %s New York, its last reading while connected. Its row in this close comes from the tracker, with no fills and no balance, until a capture lists it.',
+            coalesce(r.label, r.account_name), v_daily.trading_date,
             coalesce(public.account_observation_money(r.realized_pnl), 'not reported'),
             coalesce(public.account_observation_money(r.unrealized_pnl), 'not reported'),
             coalesce(public.account_observation_money(r.total_pnl), 'not reported'),
@@ -1725,20 +1813,12 @@ begin
 
       else
         -- c. In the close with nothing in it, while the tracker saw a trade.
-        select exists (
-          select 1
-          from public.executions as fill
-          join public.trading_accounts as account on account.id = fill.trading_account_id
-          where fill.daily_import_id = p_daily_import_id
-            and account.client_id = v_daily.client_id
-            and lower(btrim(account.account_name)) = r.key
-        ) into v_has_fills;
-        continue when v_has_fills or abs(coalesce(r.close_realized, 0)) > 0.005;
+        continue when r.key = any(v_fill_keys) or abs(coalesce(r.close_realized, 0)) > 0.005;
         v_flags := v_flags + public.write_close_merge_flag(
           p_daily_import_id, v_daily.client_id, coalesce(r.snapshot_account_id, v_account_id),
           'Close below tracker', 'Critical',
-          format('%s is in the close with no fills and %s realized, but the tracker read realized %s, total %s at %s New York on %s. The day''s money for it is probably missing from the close.',
-            coalesce(v_label, r.account_name),
+          format('%s is in the close with no fills and %s realized, but the tracker read realized %s, total %s at %s New York on %s, its last reading while connected. The day''s money for it is probably missing from the close.',
+            coalesce(r.label, r.account_name),
             coalesce(public.account_observation_money(r.close_realized), '$0'),
             coalesce(public.account_observation_money(r.realized_pnl), 'not reported'),
             coalesce(public.account_observation_money(r.total_pnl), 'not reported'),
@@ -1804,7 +1884,9 @@ begin
       'accountsRefreshed', v_refreshed,
       'strategiesFilled', v_strategies,
       'flagsWritten', v_flags,
-      'flagsResolved', v_resolved
+      'flagsResolved', v_resolved,
+      'skippedUnknown', v_skipped_unknown,
+      'skippedNotLive', v_skipped_not_live
     );
 
     if v_filled + v_refreshed + v_flags + v_resolved > 0 then
@@ -2179,6 +2261,8 @@ declare
   v_strategies integer := 0;
   v_flags integer := 0;
   v_resolved integer := 0;
+  v_skipped_unknown integer := 0;
+  v_skipped_not_live integer := 0;
   v_failed uuid[] := '{}';
 begin
   if p_trading_date is null then
@@ -2199,6 +2283,8 @@ begin
       v_strategies := v_strategies + coalesce((v_one ->> 'strategiesFilled')::integer, 0);
       v_flags := v_flags + coalesce((v_one ->> 'flagsWritten')::integer, 0);
       v_resolved := v_resolved + coalesce((v_one ->> 'flagsResolved')::integer, 0);
+      v_skipped_unknown := v_skipped_unknown + coalesce((v_one ->> 'skippedUnknown')::integer, 0);
+      v_skipped_not_live := v_skipped_not_live + coalesce((v_one ->> 'skippedNotLive')::integer, 0);
     else
       v_failed := v_failed || v_import.id;
     end if;
@@ -2212,6 +2298,8 @@ begin
     'strategiesFilled', v_strategies,
     'flagsWritten', v_flags,
     'flagsResolved', v_resolved,
+    'skippedUnknown', v_skipped_unknown,
+    'skippedNotLive', v_skipped_not_live,
     'failedImports', to_jsonb(v_failed)
   );
 end;
@@ -2224,6 +2312,12 @@ revoke all on function public.fill_day_from_tracker(date) from public, anon, aut
 grant execute on function public.fill_day_from_tracker(date) to service_role;
 
 commit;
+
+-- The two checks, validated outside the transaction: SHARE UPDATE EXCLUSIVE,
+-- which blocks neither the browser's reads nor the ingest's writes. Each is its
+-- own statement and commits on its own; a re-run validates them again.
+alter table public.account_snapshots validate constraint account_snapshots_source_check;
+alter table public.strategy_snapshots validate constraint strategy_snapshots_source_check;
 
 -- What this leaves: no new table, and no table in public open. The same check
 -- steps 43 to 72 end with, for the same reason.

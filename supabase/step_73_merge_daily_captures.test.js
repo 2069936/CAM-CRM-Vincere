@@ -349,7 +349,7 @@ describe('the order guard', () => {
     const early = await startMigrationCluster(migrationFilesInOrder({ upTo: 65 }));
     try {
       await expect(applyFileCollectingNotices(early, STEP))
-        .rejects.toThrow(/step 73 needs steps 29, 47, 50, 64, 66, 67 and 71 .*: run them first/);
+        .rejects.toThrow(/step 73 needs steps 29, 47, 50, 66, 67 and 71 .*: run them first/);
       expect(await one(early, `select to_regprocedure('${FILL_DAY}') is null`)).toBe(true);
       expect(await one(early, `select count(*)::int from information_schema.columns
         where table_schema = 'public' and table_name = 'account_snapshots' and column_name = 'source'`)).toBe(0);
@@ -652,17 +652,37 @@ describe('the tracker fills an account the close lost', () => {
   beforeAll(async () => {
     who = await newClient('Tracker');
     const d = who.device;
-    await sample(d, at('10:00'), [reading('ACC IN', 0), reading('ACC GONE', 0), reading('ACC QUIET', 0)]);
+    // The registry: the fill never creates a row, so every account it may
+    // fill is on record. ACC IGN is retired; ACC SIM is a client simulation
+    // account, which the desk keeps; ACC UNKNOWN is on nobody's record.
+    for (const [name, type, status] of [
+      ['ACC GONE', 'Funded', 'Active'], ['ACC GONE 2', 'Funded', 'Active'], ['ACC GONE 3', 'Funded', 'Active'],
+      ['ACC DISC', 'Funded', 'Active'], ['ACC STALE', 'Funded', 'Active'], ['ACC IGN', 'Inactive / Ignore', 'Inactive'],
+      ['ACC SIM', 'Simulation', 'Active'],
+    ]) {
+      await db.query(`insert into public.trading_accounts (client_id, legacy_key, account_name, alias, account_type, status)
+        values ($1, $2, $2, $2, $3, $4)`, [who.client, name, type, status]);
+    }
+    // ACC STALE is disconnected all day: NinjaTrader keeps showing the realized
+    // it last held, and the AddOn leaves it out of the close on purpose.
+    const stale = reading('ACC STALE', 350, { connected: false, status: 'Disconnected' });
+    await sample(d, at('10:00'), [reading('ACC IN', 0), reading('ACC GONE', 0), reading('ACC QUIET', 0), stale]);
     await sample(d, at('14:00'), [
       reading('ACC GONE', 250),
       reading('ACC GONE 2', 75),
       reading('ACC GONE 3', 100),
       reading('ACC ZERO', 80),
       reading('ACC DISC', 60),
+      reading('ACC IGN', 40),
+      reading('ACC UNKNOWN', 90),
+      reading('ACC SIM', 15),
+      { ...stale, realizedPnl: 351, totalPnl: 351 },
     ]);
     await strategySample(d, at('14:00'), [
       { ...strategyReading('ACC GONE', '100', { realizedPnl: 250 }), tradesThisRun: 3 },
       { ...strategyReading('ACC GONE', '101', { strategyName: '1 - ALPHA-1.0', algorithm: 'ALPHA', instrument: 'NQ 12-26', instrumentRoot: 'NQ' }), tradesThisRun: 0 },
+      // A frozen strategy reading on the disconnected account is no evidence either.
+      { ...strategyReading('ACC STALE', '900', { realizedPnl: 350 }), tradesThisRun: 5 },
     ]);
     // Disconnected before the capture: the pin holds this reading, which says
     // nothing about the day, and the fill reads the 14:00 connected one.
@@ -678,7 +698,7 @@ describe('the tracker fills an account the close lost', () => {
     world.imports.tracker = importId;
   });
 
-  it('pins first (step 66), then fills: a provisional snapshot from the reading, no balance, marked tracker', async () => {
+  it('pins first (step 66), then fills from the last CONNECTED reading of the day: no balance, marked tracker', async () => {
     const rows = await snapshotsOf(importId);
     expect(rows.map((r) => [r.account, r.realized, r.unrealized, r.balance, r.trailing, r.source])).toEqual([
       ['ACC DISC', 60, 0, null, null, 'tracker'],
@@ -686,18 +706,24 @@ describe('the tracker fills an account the close lost', () => {
       ['ACC GONE 2', 75, 0, null, null, 'tracker'],
       ['ACC GONE 3', 100, 0, null, null, 'tracker'],
       ['ACC IN', 40, 0, 50040, 2000, 'capture'],
+      ['ACC SIM', 15, 0, null, null, 'tracker'],
       ['ACC ZERO', 0, 0, 50000, 2000, 'capture'],
     ]);
     expect(rows[1].source_detail).toMatchObject({
-      origin: 'tracker_close_readings', totalPnl: 250, connected: true, status: 'Connected', captureBasis: 'captured',
+      origin: 'account_live_sample_history', totalPnl: 250, connected: true, status: 'Connected', captureBasis: 'captured',
     });
     // The pin read ACC DISC disconnected at 16:20; the fill took the 14:00 run.
     expect(await one(db, `select connected from public.tracker_close_readings
       where daily_import_id = $1 and account_name = 'ACC DISC'`, [importId])).toBe(false);
     expect(rows[0].source_detail).toMatchObject({ origin: 'account_live_sample_history', connected: true, realizedPnl: 60 });
+  });
+
+  it('never fills an account disconnected all day, a retired one, or one the registry does not hold, and creates no registry row', async () => {
+    const names = (await snapshotsOf(importId)).map((r) => r.account);
+    for (const name of ['ACC STALE', 'ACC IGN', 'ACC UNKNOWN', 'ACC QUIET']) expect(names).not.toContain(name);
     expect(await one(db, `select count(*)::int from public.trading_accounts
-      where client_id = $1 and account_name in ('ACC GONE', 'ACC GONE 2', 'ACC GONE 3', 'ACC DISC')
-        and account_type = 'Unassigned' and status = 'Active'`, [who.client])).toBe(4);
+      where client_id = $1 and account_name = 'ACC UNKNOWN'`, [who.client])).toBe(0);
+    expect((await flagsOf(importId)).map((f) => f.account)).not.toEqual(expect.arrayContaining(['ACC STALE']));
   });
 
   it('adds the strategy readings as tracker rows, so the money lands on the algorithm', async () => {
@@ -708,7 +734,7 @@ describe('the tracker fills an account the close lost', () => {
     ]);
   });
 
-  it('writes Tracker only account for each provisional account and Close below tracker for the empty one', async () => {
+  it('writes Tracker only account for each provisional account and Close below tracker for the empty one, and counts what it skipped', async () => {
     const flags = await flagsOf(importId);
     expect(flags.map((f) => [f.type, f.account, f.severity, f.status])).toEqual([
       ['Close below tracker', 'ACC ZERO', 'Critical', 'Open'],
@@ -716,12 +742,15 @@ describe('the tracker fills an account the close lost', () => {
       ['Tracker only account', 'ACC GONE', 'Warning', 'Open'],
       ['Tracker only account', 'ACC GONE 2', 'Warning', 'Open'],
       ['Tracker only account', 'ACC GONE 3', 'Warning', 'Open'],
+      ['Tracker only account', 'ACC SIM', 'Warning', 'Open'],
     ]);
-    expect(flags[2].message).toMatch(/^ACC GONE is not in the close, but the tracker saw it trade on \d{4}-\d{2}-\d{2}: realized \$250, unrealized \$0, total \$250 at 14:00 New York\./);
+    expect(flags[2].message).toMatch(/^ACC GONE is not in the close, but the tracker saw it trade on \d{4}-\d{2}-\d{2}: realized \$250, unrealized \$0, total \$250 at 14:00 New York, its last reading while connected\./);
     expect(flags[0].details).toMatchObject({ accountName: 'ACC ZERO', close: { realized: 0, executions: 0 }, tracker: { realizedPnl: 80 } });
     const audit = await one(db, `select after_data from public.audit_logs
       where entity_type = 'daily_import' and entity_id = $1 and action = 'tracker_fill_applied'`, [importId]);
-    expect(audit).toMatchObject({ accountsFilled: 4, strategiesFilled: 2, flagsWritten: 5, flagsResolved: 0 });
+    expect(audit).toMatchObject({
+      accountsFilled: 5, strategiesFilled: 2, flagsWritten: 6, flagsResolved: 0, skippedUnknown: 1, skippedNotLive: 1,
+    });
   });
 
   it('a later close refreshes a provisional row from a strictly newer reading and adds nothing else', async () => {
@@ -731,9 +760,9 @@ describe('the tracker fills an account the close lost', () => {
     });
     const rows = await snapshotsOf(importId);
     expect(rows.filter((r) => r.source === 'tracker').map((r) => [r.account, r.realized])).toEqual([
-      ['ACC DISC', 60], ['ACC GONE', 250], ['ACC GONE 2', 75], ['ACC GONE 3', 180],
+      ['ACC DISC', 60], ['ACC GONE', 250], ['ACC GONE 2', 75], ['ACC GONE 3', 180], ['ACC SIM', 15],
     ]);
-    expect((await flagsOf(importId))).toHaveLength(5);
+    expect((await flagsOf(importId))).toHaveLength(6);
     // Step 66's pin, as this file reproduces it: the provisional rows are not
     // accounts the close lists.
     const pinned = await one(db, `select after_data from public.audit_logs
@@ -753,8 +782,9 @@ describe('the tracker fills an account the close lost', () => {
       ['ACC DISC', 60, 'tracker', expect.objectContaining({ origin: 'account_live_sample_history' })],
       ['ACC GONE', 260, 'capture', null],
       ['ACC GONE 2', 0, 'capture', null],
-      ['ACC GONE 3', 180, 'tracker', expect.objectContaining({ origin: 'tracker_close_readings' })],
+      ['ACC GONE 3', 180, 'tracker', expect.objectContaining({ origin: 'account_live_sample_history' })],
       ['ACC IN', 40, 'capture', null],
+      ['ACC SIM', 15, 'tracker', expect.objectContaining({ origin: 'account_live_sample_history' })],
       ['ACC ZERO', 80, 'capture', null],
     ]);
     const strategies = await strategiesOf(importId);
@@ -769,6 +799,7 @@ describe('the tracker fills an account the close lost', () => {
       ['Tracker only account', 'ACC GONE', 'Resolved', 'A later capture included this account.'],
       ['Tracker only account', 'ACC GONE 2', 'Resolved', 'A later capture included this account.'],
       ['Tracker only account', 'ACC GONE 3', 'Open', null],
+      ['Tracker only account', 'ACC SIM', 'Open', null],
     ]);
   });
 });
@@ -787,6 +818,8 @@ describe('fill_day_from_tracker', () => {
     await sample(d, at('17:30'), [reading('ACC F', 500)]);
     manual = await one(db, `insert into public.daily_imports (client_id, trading_date, status, source_type)
       values ($1, $2, 'Needs review', 'manual') returning id`, [who.client, DAY]);
+    await db.query(`insert into public.trading_accounts (client_id, account_name, alias)
+      values ($1, 'ACC F', 'ACC F')`, [who.client]);
     const account = await one(db, `insert into public.trading_accounts (client_id, account_name, alias)
       values ($1, 'ACC M', 'ACC M') returning id`, [who.client]);
     await db.query(`insert into public.account_snapshots (daily_import_id, trading_account_id, account_name,
