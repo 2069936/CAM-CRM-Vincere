@@ -180,6 +180,12 @@
 --          The capture time is the finalized batch's captured_at, else a
 --          pinned close_captured_at whose basis is 'captured', else 17:00 New
 --          York on the trading date.
+--       In both, a reading taken while the account was DISCONNECTED gives way
+--       to the last run of that day, before the capture time, in which it was
+--       connected, when there is one: an account that dropped its connection
+--       before 16:30 is exactly the one the close lost, and what NinjaTrader
+--       shows for it while disconnected is not its day. source_detail.origin
+--       then says account_live_sample_history.
 --       Strategy readings: the pinned row's strategies; when it has none, the
 --       algorithm_live_samples of that account sampled on the trading date.
 --       trades_this_run is looked up in algorithm_live_samples by strategy id
@@ -238,8 +244,9 @@
 --     select public.fill_day_from_tracker('2026-10-22');
 --
 -- WHAT THE BROWSER SHOWS. A provisional row is marked "From the tracker, no
--- fills" on the close's account table, the client period report and the desk
--- period report's coverage; the three flags reach the CAM flag queue, the
+-- fills" on the close's account table, the daily report panel, the client
+-- period report (which takes no balance from such a day) and the desk period
+-- report's coverage; the three flags reach the CAM flag queue, the
 -- client page and the Manager overview like every other flag, with a hover in
 -- src/domain/databaseFlagTypes.js; and the tracker comparison keeps calling an
 -- account with only a tracker row "tracker only".
@@ -1458,11 +1465,30 @@ begin
         where run.client_id = v_daily.client_id
           and run.last_sampled_at >= v_day_start
           and run.first_sampled_at <= v_captured_at
-        order by lower(btrim(run.account_name)), run.first_sampled_at desc, run.last_sampled_at desc
+        -- The last run while CONNECTED, else the last run: a reading taken
+        -- while the account was disconnected says nothing about its day.
+        order by lower(btrim(run.account_name)), run.connected desc,
+                 run.first_sampled_at desc, run.last_sampled_at desc
       ),
       chosen as (
-        select * from pinned
+        -- 1. The pin, when it was taken while the account was connected, or
+        --    when the history holds no connected run of that day to replace it.
+        select pinned.* from pinned
+        where pinned.connected
+          or not exists (select 1 from history where history.key = pinned.key and history.connected)
         union all
+        -- 2. A pin taken while the account was disconnected (the case of
+        --    2026-10-22): the last connected run of the day before the
+        --    capture, with the pin's strategy readings.
+        select history.key, history.account_name, history.origin, history.device_id,
+               history.connection_name, history.connected, history.status,
+               history.realized_pnl, history.unrealized_pnl, history.total_pnl,
+               history.sampled_at, history.reset_seen, pinned.strategies
+        from pinned
+        join history on history.key = pinned.key and history.connected
+        where not pinned.connected
+        union all
+        -- 3. No pin: the history alone.
         select history.* from history
         where not exists (select 1 from pinned where pinned.key = history.key)
       ),

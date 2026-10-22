@@ -658,11 +658,15 @@ describe('the tracker fills an account the close lost', () => {
       reading('ACC GONE 2', 75),
       reading('ACC GONE 3', 100),
       reading('ACC ZERO', 80),
+      reading('ACC DISC', 60),
     ]);
     await strategySample(d, at('14:00'), [
       { ...strategyReading('ACC GONE', '100', { realizedPnl: 250 }), tradesThisRun: 3 },
       { ...strategyReading('ACC GONE', '101', { strategyName: '1 - ALPHA-1.0', algorithm: 'ALPHA', instrument: 'NQ 12-26', instrumentRoot: 'NQ' }), tradesThisRun: 0 },
     ]);
+    // Disconnected before the capture: the pin holds this reading, which says
+    // nothing about the day, and the fill reads the 14:00 connected one.
+    await sample(d, at('16:20'), [reading('ACC DISC', 0, { connected: false, status: 'Disconnected', totalPnl: 0 })]);
     // After the first close's cutoff and before the second's: the reading a
     // later close pins, which refreshes the provisional row.
     await sample(d, at('16:40'), [reading('ACC GONE 3', 180)]);
@@ -677,19 +681,23 @@ describe('the tracker fills an account the close lost', () => {
   it('pins first (step 66), then fills: a provisional snapshot from the reading, no balance, marked tracker', async () => {
     const rows = await snapshotsOf(importId);
     expect(rows.map((r) => [r.account, r.realized, r.unrealized, r.balance, r.trailing, r.source])).toEqual([
+      ['ACC DISC', 60, 0, null, null, 'tracker'],
       ['ACC GONE', 250, 0, null, null, 'tracker'],
       ['ACC GONE 2', 75, 0, null, null, 'tracker'],
       ['ACC GONE 3', 100, 0, null, null, 'tracker'],
       ['ACC IN', 40, 0, 50040, 2000, 'capture'],
       ['ACC ZERO', 0, 0, 50000, 2000, 'capture'],
     ]);
-    const gone = rows[0];
-    expect(gone.source_detail).toMatchObject({
+    expect(rows[1].source_detail).toMatchObject({
       origin: 'tracker_close_readings', totalPnl: 250, connected: true, status: 'Connected', captureBasis: 'captured',
     });
+    // The pin read ACC DISC disconnected at 16:20; the fill took the 14:00 run.
+    expect(await one(db, `select connected from public.tracker_close_readings
+      where daily_import_id = $1 and account_name = 'ACC DISC'`, [importId])).toBe(false);
+    expect(rows[0].source_detail).toMatchObject({ origin: 'account_live_sample_history', connected: true, realizedPnl: 60 });
     expect(await one(db, `select count(*)::int from public.trading_accounts
-      where client_id = $1 and account_name in ('ACC GONE', 'ACC GONE 2', 'ACC GONE 3')
-        and account_type = 'Unassigned' and status = 'Active'`, [who.client])).toBe(3);
+      where client_id = $1 and account_name in ('ACC GONE', 'ACC GONE 2', 'ACC GONE 3', 'ACC DISC')
+        and account_type = 'Unassigned' and status = 'Active'`, [who.client])).toBe(4);
   });
 
   it('adds the strategy readings as tracker rows, so the money lands on the algorithm', async () => {
@@ -704,15 +712,16 @@ describe('the tracker fills an account the close lost', () => {
     const flags = await flagsOf(importId);
     expect(flags.map((f) => [f.type, f.account, f.severity, f.status])).toEqual([
       ['Close below tracker', 'ACC ZERO', 'Critical', 'Open'],
+      ['Tracker only account', 'ACC DISC', 'Warning', 'Open'],
       ['Tracker only account', 'ACC GONE', 'Warning', 'Open'],
       ['Tracker only account', 'ACC GONE 2', 'Warning', 'Open'],
       ['Tracker only account', 'ACC GONE 3', 'Warning', 'Open'],
     ]);
-    expect(flags[1].message).toMatch(/^ACC GONE is not in the close, but the tracker saw it trade on \d{4}-\d{2}-\d{2}: realized \$250, unrealized \$0, total \$250 at 14:00 New York\./);
+    expect(flags[2].message).toMatch(/^ACC GONE is not in the close, but the tracker saw it trade on \d{4}-\d{2}-\d{2}: realized \$250, unrealized \$0, total \$250 at 14:00 New York\./);
     expect(flags[0].details).toMatchObject({ accountName: 'ACC ZERO', close: { realized: 0, executions: 0 }, tracker: { realizedPnl: 80 } });
     const audit = await one(db, `select after_data from public.audit_logs
       where entity_type = 'daily_import' and entity_id = $1 and action = 'tracker_fill_applied'`, [importId]);
-    expect(audit).toMatchObject({ accountsFilled: 3, strategiesFilled: 2, flagsWritten: 4, flagsResolved: 0 });
+    expect(audit).toMatchObject({ accountsFilled: 4, strategiesFilled: 2, flagsWritten: 5, flagsResolved: 0 });
   });
 
   it('a later close refreshes a provisional row from a strictly newer reading and adds nothing else', async () => {
@@ -722,9 +731,9 @@ describe('the tracker fills an account the close lost', () => {
     });
     const rows = await snapshotsOf(importId);
     expect(rows.filter((r) => r.source === 'tracker').map((r) => [r.account, r.realized])).toEqual([
-      ['ACC GONE', 250], ['ACC GONE 2', 75], ['ACC GONE 3', 180],
+      ['ACC DISC', 60], ['ACC GONE', 250], ['ACC GONE 2', 75], ['ACC GONE 3', 180],
     ]);
-    expect((await flagsOf(importId))).toHaveLength(4);
+    expect((await flagsOf(importId))).toHaveLength(5);
     // Step 66's pin, as this file reproduces it: the provisional rows are not
     // accounts the close lists.
     const pinned = await one(db, `select after_data from public.audit_logs
@@ -741,6 +750,7 @@ describe('the tracker fills an account the close lost', () => {
     });
     const rows = await snapshotsOf(importId);
     expect(rows.map((r) => [r.account, r.realized, r.source, r.source_detail])).toEqual([
+      ['ACC DISC', 60, 'tracker', expect.objectContaining({ origin: 'account_live_sample_history' })],
       ['ACC GONE', 260, 'capture', null],
       ['ACC GONE 2', 0, 'capture', null],
       ['ACC GONE 3', 180, 'tracker', expect.objectContaining({ origin: 'tracker_close_readings' })],
@@ -755,6 +765,7 @@ describe('the tracker fills an account the close lost', () => {
     expect(flags.map((f) => [f.type, f.account, f.status, f.resolution_note])).toEqual([
       ['Close below tracker', 'ACC GONE 2', 'Open', null],
       ['Close below tracker', 'ACC ZERO', 'Resolved', 'A later capture showed this account trading.'],
+      ['Tracker only account', 'ACC DISC', 'Open', null],
       ['Tracker only account', 'ACC GONE', 'Resolved', 'A later capture included this account.'],
       ['Tracker only account', 'ACC GONE 2', 'Resolved', 'A later capture included this account.'],
       ['Tracker only account', 'ACC GONE 3', 'Open', null],
