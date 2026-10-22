@@ -1047,11 +1047,19 @@ describe('a superset capture of 4,000 fills', () => {
         `select public.claim_ingest_batch_v4($1, $2, $3::date, $4::timestamptz, 1, $5, $6, 10, $7::jsonb, $8, 120) as r`,
         [device, captureId, DAY, capturedAt, `${client}/${DAY}/${captureId}.json.gz`, 'a'.repeat(64),
           JSON.stringify(rowCounts), token])).rows[0].r;
+      expect(claimed.outcome).toBe('owned');
       const started = performance.now();
       const persisted = (await conn.query('select public.persist_auto_daily_import_v3($1, $2, $3, $4::jsonb) as r',
         [client, claimed.batch.id, token, JSON.stringify(body)])).rows[0].r;
       const elapsed = performance.now() - started;
       expect(persisted.disposition).toBe('persisted');
+      // Finalized as the route does, outside the clock, so no batch is left
+      // holding an admission slot for the next round.
+      await conn.query(
+        `select status from public.finalize_ingest_batch_v3(
+           $1, $2, $3, $4, 'processed', $5, $6::timestamptz, true, null, '{}'::jsonb, $7::jsonb,
+           'ingest_batch_processed', '{"storage": 1}'::jsonb, 5)`,
+        [claimed.batch.id, device, client, token, persisted.daily_import.id, capturedAt, JSON.stringify(rowCounts)]);
       return { elapsed, importId: persisted.daily_import.id };
     }
     await once(at('15:00'), fills(4000));
@@ -1060,16 +1068,24 @@ describe('a superset capture of 4,000 fills', () => {
     return superset.elapsed;
   }
 
+  // Three rounds, the two clusters taking turns, and the fastest of each: the
+  // full suite runs many clusters at once, and one slow moment on one side
+  // must not read as a regression. A quadratic pairing is several times
+  // slower on every round (2.4 s against 0.3 s at 4,000 fills when it was one).
   it('merges in at most three times what step 50 took to replace', async () => {
     const base = await startMigrationCluster(migrationFilesInOrder({ upTo: 72 }));
     try {
-      const step50 = await timeSuperset(base, 'Timing 50');
-      const step73 = await timeSuperset(db, 'Timing 73');
-      expect(step73).toBeLessThan(3 * step50 + 250);
+      const step50 = [];
+      const step73 = [];
+      for (let round = 0; round < 3; round += 1) {
+        step50.push(await timeSuperset(base, `Timing 50 ${round}`));
+        step73.push(await timeSuperset(db, `Timing 73 ${round}`));
+      }
+      expect(Math.min(...step73)).toBeLessThan(3 * Math.min(...step50) + 250);
     } finally {
       await base.close();
     }
-  }, 120_000);
+  }, 180_000);
 });
 
 describe('the two checks', () => {

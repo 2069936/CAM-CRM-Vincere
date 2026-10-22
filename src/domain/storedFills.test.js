@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { accountsNamedBy, addStoredFills, storedFillsFromRows, withStoredFills } from './storedFills.js';
+import { reconcileDailyImport } from './reconcile.js';
 
 /* The day's stored fills, handed back to the derivation (step 73). The
  * database half of the same identity is asserted by the step 73 cluster test;
@@ -161,5 +162,30 @@ describe('accountsNamedBy', () => {
       orders: [{ accountName: '' }],
       executions: [{ accountName: 'apex 01' }],
     })].sort()).toEqual(['apex 01', 'apex 02']);
+  });
+});
+
+describe('the marks reach the database', () => {
+  it('fromStore survives reconcileDailyImport on fills, orders and strategy rows, which is what the database reads', () => {
+    const out = reconcileDailyImport({
+      clientId: 'c1',
+      date: '2026-10-22',
+      registry: {},
+      parsed: {
+        accounts: [{ accountName: 'APEX 01', grossRealizedPnl: 10 }],
+        strategies: [
+          { accountName: 'APEX 01', strategyName: '0 - OGX-PF-2.4', instrument: 'MNQ 12-26', enabled: false, realized: null },
+          { accountName: 'APEX 01', strategyName: '2 - BETA-1.0', instrument: 'ES 12-26', enabled: false, realized: null, fromStore: true },
+        ],
+        orders: [{ id: 'O1', accountName: 'APEX 01', strategyName: '2 - BETA-1.0', time: '2026-10-22 10:00:00', fromStore: true }],
+        executions: [{ id: 'E1', orderId: 'O1', accountName: 'APEX 01', instrument: 'ES 12-26', action: 'Buy', quantity: 1, price: 10, time: '2026-10-22 10:00:00', fromStore: true }],
+      },
+    });
+    const all = (section) => [...out[section], ...(out.simulation?.[section] || []), ...(out.simulation?.undetermined?.[section] || [])];
+    expect(all('strategies').map((row) => [row.strategyName, row.fromStore === true])).toEqual([
+      ['0 - OGX-PF-2.4', false], ['2 - BETA-1.0', true],
+    ]);
+    expect(all('orders').map((row) => row.fromStore)).toEqual([true]);
+    expect(all('executions').map((row) => [row.id, row.fromStore, row.strategyName])).toEqual([['E1', true, '2 - BETA-1.0']]);
   });
 });
