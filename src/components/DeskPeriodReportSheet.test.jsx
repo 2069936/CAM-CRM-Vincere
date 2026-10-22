@@ -428,3 +428,21 @@ describe('the benchmark carries its risk level and its basis on paper', () => {
     expect(html).toContain('Measured at');
   });
 });
+
+/* A provisional row (step 73): the close lost the account and the tracker's
+ * reading stands in. The coverage table counts it as reporting and says how
+ * many on that date came from the tracker. */
+describe('the coverage table and the tracker\'s rows', () => {
+  it('names the provisional rows on their date and nowhere else', () => {
+    const book = [bulkClient({ id: 'trk', accountCount: 3, dates: ['2026-07-27', '2026-07-28'] })];
+    book[0].dailyImports[1].snapshots[0] = { ...book[0].dailyImports[1].snapshots[0], source: 'tracker' };
+    const period = resolvePeriod(book, { kind: 'week', key: '2026-07-27' });
+    const report = buildDeskPeriodReport(book, { period, builtAt: '2026-09-18 14:22', builtBy: 'Pedro' });
+    const html = renderToStaticMarkup(
+      <DeskPeriodReportSheet report={report} periods={listPeriods(book, 'week')} kind="week" benchmarkRisk="Low" />,
+    );
+    expect(html.match(/1 account from the tracker, no fills/g)).toHaveLength(1);
+    const row = html.slice(html.indexOf('<td>2026-07-28</td>'), html.indexOf('</tr>', html.indexOf('<td>2026-07-28</td>')));
+    expect(row).toContain('1 account from the tracker, no fills');
+  });
+});

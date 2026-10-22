@@ -67,7 +67,6 @@ const TODAY = nyDate(new Date());
 const DAY = shiftDays(TODAY, -1);
 /** An ISO instant for a New York clock time on the trading day. */
 const at = (hhmm, iso = DAY) => `${iso}T${hhmm}:00${offsetOn(iso)}`;
-const num = (value) => (value === null || value === undefined ? null : Number(value));
 
 let db;
 const world = { clients: {}, imports: {} };

@@ -7,6 +7,7 @@ import {
 } from './trackerCloseComparison';
 import { buildTrackerCloseFlag } from './trackerCloseFlag';
 import { mergeSimulationRows } from './simulationAccounts';
+import { isFromTracker } from './provisionalRows';
 import { cycleClock } from './algorithmLiveComparison';
 import { getClientImportByDate } from './crmStateStore';
 import { money } from './accountLiveDetail';
@@ -179,7 +180,10 @@ export function readingsForClose(readings, { client, dailyImport } = {}) {
 export function closeSidesOf(dailyImport) {
   if (!dailyImport) return { accountSnapshots: [], strategySnapshots: [] };
   const whole = mergeSimulationRows(dailyImport);
-  const accountSnapshots = (whole.snapshots || []).filter((row) => row && row.accountName);
+  // A provisional row (step 73) is the tracker's own reading written back for
+  // an account the close lost. Counted as the close it would "match" the
+  // tracker, so it is left out and the account stays "tracker only".
+  const accountSnapshots = (whole.snapshots || []).filter((row) => row && row.accountName && !isFromTracker(row));
   const strategySnapshots = accountSnapshots.flatMap((snapshot) => (Array.isArray(snapshot.strategies) ? snapshot.strategies : [])
     .map((strategy) => ({ ...strategy, accountSnapshotId: snapshot.id })));
   return { accountSnapshots, strategySnapshots };

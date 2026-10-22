@@ -256,3 +256,22 @@ describe('client facing paper', () => {
     }
   });
 });
+
+/* A PROVISIONAL DAY ON THE CLIENT'S PAPER (step 73). The close lost the
+ * account, the tracker's reading stands in for it, and the account's row says
+ * so, without a dash and without a $0 balance. */
+describe('an account the tracker filled in', () => {
+  it('says which day came from the tracker on the account\'s own row', () => {
+    const client = periodClient();
+    const close = client.dailyImports.find((entry) => entry.date === '2026-10-14');
+    close.snapshots = close.snapshots.map((snapshot) => (snapshot.accountName === 'LUC-1002'
+      ? { ...snapshot, source: 'tracker', accountBalance: 0, strategies: snapshot.strategies.map((row) => ({ ...row, source: 'tracker' })) }
+      : snapshot));
+    const view = mount({ client });
+    const text = readable(view.container.querySelector('.cpr-body'));
+    expect(text).toMatch(/Funded 02\s*From the tracker, no fills \([^)]*14[^)]*\)/);
+    expect(text.match(/From the tracker, no fills/g)).toHaveLength(1);
+    expect(text).not.toMatch(/[–—]/);
+    cleanup();
+  });
+});

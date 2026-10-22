@@ -70,6 +70,7 @@ import {
 import { instrumentRoot } from './instrumentSpecs';
 import { SEGMENTS, segmentForAccount } from './operationsSegments';
 import { isWeekday, resolvePeriod } from './deskPeriod';
+import { isFromTracker } from './provisionalRows';
 
 /**
  * Account closes a business needs on BOTH sides before this report prints a
@@ -245,6 +246,7 @@ function buildCoverage(clients, period) {
         importsOnDate: 0,
         afterPeriod: 0,
         rowsNotLoaded: 0,
+        fromTracker: 0,
       };
       seen.clients.add(client?.id ?? client?.name ?? '');
       clientsInPeriod.add(client?.id ?? client?.name ?? '');
@@ -275,6 +277,9 @@ function buildCoverage(clients, period) {
         seen.accountRows += 1;
         accountCloses += 1;
         if (Number(snapshot?.grossRealizedPnl || 0) !== 0) seen.accountDaysWithPnl += 1;
+        // Counted as reporting, because the account traded that day, and said
+        // apart: the row is the tracker's reading, with no fills (step 73).
+        if (isFromTracker(snapshot)) seen.fromTracker += 1;
       }
       byDate.set(date, seen);
     }
@@ -303,6 +308,9 @@ function buildCoverage(clients, period) {
     // Closes on this date whose account rows were never read. Their accounts
     // are absent from every count on the row, which is not the same as zero.
     rowsNotLoaded: row.rowsNotLoaded,
+    // Account rows on this date that are provisional: the close lost the
+    // account and the tracker's reading stands in for it (step 73).
+    fromTracker: row.fromTracker,
   }));
 
   // A weekday inside the period with no close is a ROW, with the word `No

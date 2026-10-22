@@ -17,6 +17,7 @@ import {
 import { createRequestGate } from './supabaseRetry';
 import { aggregateLogFamilyHistory } from './ninjaTraderLog';
 import { ACCOUNT_OBSERVATION_DEFAULTS } from './accountObservationDefaults';
+import { sourceFromRow } from './provisionalRows';
 
 function pickId(row) {
   return row.legacy_key || row.id;
@@ -125,6 +126,8 @@ function strategyFromRow(row, accountById = {}) {
     // can say the day happened.
     ran: typeof row.ran === 'boolean' ? row.ran : null,
     ranBasis: row.ran_basis || '',
+    // 'tracker' on a provisional row (step 73), 'capture' on every other.
+    source: sourceFromRow(row.source),
   };
 }
 
@@ -145,6 +148,10 @@ function snapshotFromRow(row, strategiesBySnapshot, accountById) {
     // looks like a measurement is the failure this whole feature exists to
     // avoid. Null on every close stored before step 37.
     derivation: row.derivation || null,
+    // 'tracker' on a provisional row built from the tracker's reading of an
+    // account the close lost, with no fills and no balance (step 73); the
+    // screens mark it. 'capture' on every other row.
+    source: sourceFromRow(row.source),
     meta: account ? accountMetaFromRow(account) : {},
     strategies: strategiesBySnapshot[row.id] || [],
   };
@@ -586,11 +593,14 @@ export const LOGIN_COLUMNS = {
  * reads, so it arrives when a close is opened.
  */
 export const LATEST_CLOSE_COLUMNS = {
+  // `source` (step 73): 'tracker' on a provisional row the tracker filled in
+  // for an account the close lost. A database without step 73 answers that the
+  // column does not exist and selectRows drops it, so every row reads capture.
   account_snapshots: 'id, daily_import_id, trading_account_id, account_name, connection, '
-    + 'gross_realized_pnl, trailing_max_drawdown, account_balance, weekly_pnl, unrealized_pnl',
+    + 'gross_realized_pnl, trailing_max_drawdown, account_balance, weekly_pnl, unrealized_pnl, source',
   strategy_snapshots: 'id, daily_import_id, account_snapshot_id, trading_account_id, strategy_name, '
     + 'strategy_family, strategy_version, instrument, data_series, direction, enabled, realized, '
-    + 'unrealized, derived_realized, ran, ran_basis',
+    + 'unrealized, derived_realized, ran, ran_basis, source',
   executions: 'id, daily_import_id, trading_account_id, external_execution_id, external_order_id, '
     + 'strategy_name, instrument, action, quantity, price, time_text, entry_exit, position, name, '
     + 'commission, rate, connection',

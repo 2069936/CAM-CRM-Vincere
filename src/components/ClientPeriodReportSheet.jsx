@@ -4,6 +4,7 @@ import {
   fmtMoney,
   fmtShort,
 } from '../domain/clientPeriodReport';
+import { FROM_TRACKER_LABEL } from '../domain/provisionalRows';
 import { BalanceSparkline, CombinedBalanceLine, DailyPnlBars } from './ClientPeriodReportCharts';
 
 /**
@@ -200,6 +201,9 @@ function AccountRow({ row }) {
   const notes = [];
   if (row.startSource === 'first' && row.startDate) notes.push(`first close ${dayLabel(row.startDate)}`);
   if (!row.endIsLastClose) notes.push(`last close ${dayLabel(row.endDate)}`);
+  // A provisional day (step 73): the close lost this account and the tracker's
+  // reading stands in for it, with no fills and no balance.
+  if (row.trackerDates?.length) notes.push(`${FROM_TRACKER_LABEL} (${row.trackerDates.map((date) => dayLabel(date)).join(', ')})`);
   return (
     <tr>
       <td>

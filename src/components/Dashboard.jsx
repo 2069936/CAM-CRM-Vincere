@@ -4,6 +4,8 @@ import { formatCurrency, summarizeAccountRows } from '../domain/report';
 import { PAYOUT_STATES } from '../domain/reconcile';
 import { fillsLoadedFor } from '../domain/closeLoadState';
 import { storedTargetStatus, STORED_TARGET } from '../domain/storedTarget';
+import { FROM_TRACKER_LABEL, isFromTracker } from '../domain/provisionalRows';
+import { databaseFlagHint } from '../domain/databaseFlagTypes';
 
 function drawdownDisplay(row) {
   const ddLimit = Number(row.meta?.maxDrawdownLimit);
@@ -282,6 +284,9 @@ function AccountTable({ title, rows, executions, mode, onUpdateAccount, dailyImp
                   <td>
                     <strong><ChevronDown className={expandedAccount === row.accountName ? 'chevron open' : 'chevron'} size={14} /> {row.meta?.alias || row.accountName}</strong>
                     <small>{row.meta?.connection || row.connection || 'No connection'}</small>
+                    {/* A provisional row the tracker filled in for an account
+                        the close lost (step 73): no fills, no balance. */}
+                    {isFromTracker(row) ? <small className="provisional-row-marker">{FROM_TRACKER_LABEL}</small> : null}
                   </td>
                   {!isCash ? <td>{row.meta?.status || 'Active'}</td> : null}
                   <td>
@@ -472,7 +477,7 @@ export default function Dashboard({ dailyImport, rows = [], title, mode, onBuild
               <div className={flag.status === 'Resolved' ? 'flag resolved' : `flag ${flag.severity.toLowerCase()}`} key={flag.id}>
                 {flag.severity === 'Critical' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
                 <div>
-                  <strong>{flag.type}
+                  <strong title={databaseFlagHint(flag.type)}>{flag.type}
                     {flag.status === 'Resolved' ? <span className="flag-resolved-badge">Resolved</span> : null}
                   </strong>
                   <span>{flag.message}</span>

@@ -249,7 +249,12 @@ function makeBook() {
             entry.parameters_raw = `BarsPeriod=${20 + row};StopLossTicks=${300 + row}`;
             entry.params_parsed = { BarsPeriod: String(20 + row), LicenseKey: 'LIC-XXXX' };
           }
-          if (table === 'account_snapshots') entry.derivation = { rows: row };
+          if (table === 'account_snapshots') {
+            entry.derivation = { rows: row };
+            // Step 73: the first account of every close is a provisional row
+            // the tracker filled in; the rest are captures.
+            entry.source = row === 0 ? 'tracker' : 'capture';
+          }
           tables[table].push(entry);
         }
       }
@@ -511,6 +516,11 @@ describe('what a click costs instead', () => {
     // read `account_name` off objects that spell it `accountName`, so every
     // order and execution fetched after the shell carried an empty account.
     expect(loaded.orders.every((order) => order.accountName.startsWith('ACC-4-'))).toBe(true);
+    // Where each account row came from survives the round trip (step 73).
+    expect(columnsAskedOf('account_snapshots').every((columns) => columns.includes('source'))).toBe(true);
+    const sources = [...(loaded.snapshots || []), ...(loaded.simulation?.snapshots || [])].map((row) => row.source);
+    expect(sources.filter((source) => source === 'tracker')).toHaveLength(1);
+    expect(sources.every((source) => source === 'tracker' || source === 'capture')).toBe(true);
     expect(loaded.executions.every((fill) => fill.accountName.startsWith('ACC-4-'))).toBe(true);
     // Other closes are untouched, including the one the login loaded.
     expect(merged.clients[4].dailyImports.at(-1).snapshotsLoaded).toBe(true);
