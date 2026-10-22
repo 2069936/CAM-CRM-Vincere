@@ -13,6 +13,7 @@ import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
 import { VALIDATION_REASON_CODES } from '../../../src/domain/autoImportValidationReason.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
+import { addStoredFills } from '../../../src/domain/storedFills.js';
 import { resolveAutoCollectionLimits } from '../../apiLib/autoCollectionLimits.js';
 import { normalizeMachineId } from '../../apiLib/ingestTokens.js';
 import {
@@ -369,6 +370,21 @@ export function createHandler({
         offlineRegistry,
         offlineRegistryVersion: registryVersion,
       } = await store.loadRegistryForIngest(device.clientId);
+      /* THE DAY'S STORED FILLS, SO THE SPLIT IS THE DAY'S (step 73).
+       *
+       * A later capture merges into the day and keeps the fills it lacks (a
+       * NinjaTrader restart forgets them), so the per algorithm split worked
+       * out below has to see them too. Read in the registry stage, which is
+       * already a database read of this client. A failed read never fails the
+       * close: it goes on with the capture alone and the database refuses to
+       * keep a split over part of the day. See src/domain/storedFills.js. */
+      const parsed = await addStoredFills({
+        store,
+        clientId: device.clientId,
+        date: normalized.date,
+        parsed: normalized.parsed,
+        report: (error) => console.error(`[CRM] stored fills not read for batch ${batch.id}: ${[error?.name, error?.code, error?.message].filter(Boolean).join(' ') || 'unknown'}`),
+      });
       stage = timer.enter('reconcile');
       // NO `priorImports` HERE, AND THAT IS A KNOWN GAP, NOT A DECISION THAT
       // NOTHING WAS OPEN. reconcileDailyImport uses the client's previous closes
@@ -387,7 +403,7 @@ export function createHandler({
         clientId: device.clientId,
         date: normalized.date,
         registry,
-        parsed: normalized.parsed,
+        parsed,
       });
       stage = timer.enter('persist');
       let dailyImport;

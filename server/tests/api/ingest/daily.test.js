@@ -28,7 +28,7 @@ function response() {
   return { headers: {}, setHeader(name, value) { this.headers[name] = value; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offlineRegistry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay, recordDetail } = {}) {
+function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offlineRegistry, authenticate, now, useRealDomain = false, complete, release, maxCompressedBytes, monotonic, currentDay, recordDetail, storedFills } = {}) {
   const calls = { order: [], claim: [], storeRaw: [], terminal: [], audit: [], device: [], persist: [], release: [], currentDay: [], detail: [], finish: [] };
   const batch = { id: 'batch-1', dailyImportId: null, status: 'received' };
   const autoStore = {
@@ -40,6 +40,13 @@ function setup({ claim, storeRaw, normalize, reconcile, persist, registry, offli
       calls.order.push('registry');
       return { registry: registry || {}, offlineRegistry: offlineRegistry || {}, offlineRegistryVersion: 'v-test' };
     },
+    ...(storedFills === undefined ? {} : {
+      async loadStoredFills(clientUuid, tradingDate) {
+        calls.order.push('stored');
+        calls.stored = { clientUuid, tradingDate };
+        return typeof storedFills === 'function' ? storedFills() : storedFills;
+      },
+    }),
     ...(currentDay === undefined ? {} : {
       async currentDailyImport(clientUuid, tradingDate) {
         calls.order.push('throttle');
@@ -675,5 +682,55 @@ describe('the roster the agent caches for offline reporting', () => {
     expect(res.statusCode).toBe(201);
     expect(res.body.registry).toEqual(offlineRegistry);
     expect(res.body.registryVersion).toBe('v-test');
+  });
+});
+
+/* THE DAY'S STORED FILLS REACH THE DERIVATION (step 73).
+ *
+ * A later capture merges into the day and keeps the fills it lacks, so the
+ * per algorithm split is worked out over the union: the route reads the day
+ * before reconcile and hands reconcile the capture plus the stored rows it
+ * does not list, marked fromStore. A failed read never fails the close. */
+describe('the day\'s stored fills', () => {
+  const stored = {
+    executions: [{ id: 'E-STORED', orderId: 'O-STORED', accountName: 'APEX 01', instrument: 'MNQ 12-26', action: 'Buy', quantity: 1, price: 21000, time: '2026-07-23 10:00:00', fromStore: true }],
+    orders: [],
+  };
+  const normalize = () => ({
+    date: '2026-07-23',
+    parsed: { accounts: [{ accountName: 'APEX 01' }], strategies: [], orders: [], executions: [] },
+    metadata: { isComplete: true, emptySections: [], sectionCounts: { accounts: 1, strategies: 0, orders: 0, executions: 0 } },
+  });
+
+  it('are read after the registry and handed to reconcile beside the capture', async () => {
+    const seen = [];
+    const { handler, calls } = setup({
+      storedFills: stored,
+      normalize,
+      reconcile: (value) => { seen.push(value.parsed); return { id: 'import-1', date: value.date, accounts: {}, snapshots: [], strategies: [], orders: [], executions: [], flags: [] }; },
+    });
+    const res = await ingest(handler, snapshot({ accounts: [{}] }));
+    expect(res.statusCode).toBe(201);
+    expect(calls.order).toEqual(['auth', 'claim', 'storage', 'normalize', 'registry', 'stored', 'reconcile', 'persist']);
+    expect(calls.stored).toEqual({ clientUuid: CLIENT_ID, tradingDate: '2026-07-23' });
+    expect(seen[0].executions).toEqual(stored.executions);
+  });
+
+  it('a read that fails leaves the capture as it came and the close lands', async () => {
+    const seen = [];
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { handler } = setup({
+        storedFills: () => { throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }); },
+        normalize,
+        reconcile: (value) => { seen.push(value.parsed); return { id: 'import-1', date: value.date, accounts: {}, snapshots: [], strategies: [], orders: [], executions: [], flags: [] }; },
+      });
+      const res = await ingest(handler, snapshot({ accounts: [{}] }));
+      expect(res.statusCode).toBe(201);
+      expect(seen[0].executions).toEqual([]);
+      expect(error).toHaveBeenCalledWith(expect.stringMatching(/^\[CRM\] stored fills not read for batch batch-1: Error 57014/));
+    } finally {
+      error.mockRestore();
+    }
   });
 });

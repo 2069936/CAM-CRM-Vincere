@@ -128,6 +128,28 @@ describe('immutable stored replay processor', () => {
     expect(store.completeBatch).toHaveBeenCalledWith(expect.objectContaining({ status: 'processed', success: true }));
   });
 
+  it.each([false, true])('reads the day\'s stored fills for a normal replay only, so its split is the day\'s (closed=%s)', async (closedReplacement) => {
+    const { canonical, batch } = replayEvidence();
+    const stored = { executions: [{ id: 'E-STORED', accountName: 'APEX 01', fromStore: true }], orders: [] };
+    const store = {
+      downloadObject: vi.fn(async () => canonical.gzip), loadRegistry: vi.fn(async () => ({})),
+      loadStoredFills: vi.fn(async () => stored),
+      createPersistenceAdapter: vi.fn(() => ({})), createClosedReplacementAdapter: vi.fn(() => ({})),
+      completeBatch: vi.fn(async () => undefined),
+    };
+    const normalize = vi.fn(() => ({ date: batch.tradingDate, parsed: { accounts: [{ accountName: 'APEX 01' }], executions: [], orders: [] }, metadata: { isComplete: true, emptySections: [] } }));
+    const reconcile = vi.fn(() => ({ date: batch.tradingDate }));
+    const persist = vi.fn(async () => ({ id: 'daily-1' }));
+    await processStoredReplay({ batch, store, processingToken: 'token', actorId: 'manager-1', reason: 'Approved replay reason', closedReplacement, normalize, reconcile, persist });
+    if (closedReplacement) {
+      expect(store.loadStoredFills).not.toHaveBeenCalled();
+      expect(reconcile.mock.calls[0][0].parsed.executions).toEqual([]);
+    } else {
+      expect(store.loadStoredFills).toHaveBeenCalledWith(CLIENT_ID, batch.tradingDate);
+      expect(reconcile.mock.calls[0][0].parsed.executions).toEqual(stored.executions);
+    }
+  });
+
   it('records a failed attempt without changing the immutable object', async () => {
     const { canonical, batch } = replayEvidence();
     const store = { downloadObject: vi.fn(async () => canonical.gzip), loadRegistry: vi.fn(async () => { throw new Error('registry down'); }), createPersistenceAdapter: vi.fn(), completeBatch: vi.fn(async () => undefined) };

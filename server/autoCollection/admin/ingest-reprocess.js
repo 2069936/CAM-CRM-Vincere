@@ -8,6 +8,7 @@ import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
 import { VALIDATION_REASON_CODES } from '../../../src/domain/autoImportValidationReason.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
+import { addStoredFills } from '../../../src/domain/storedFills.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REPLAYABLE = new Set(['failed', 'incomplete', 'late_closed_day', 'processing']);
@@ -65,6 +66,7 @@ export function createReplayStore(admin) {
     },
     downloadObject: download.downloadObject,
     loadRegistry: ingest.loadRegistry,
+    loadStoredFills: ingest.loadStoredFills,
     createPersistenceAdapter: ingest.createPersistenceAdapter,
     createClosedReplacementAdapter({ processingToken, actorId, reason }) {
       return {
@@ -116,7 +118,13 @@ export async function processStoredReplay({ batch, store, processingToken, actor
     const { snapshot } = verifyStoredSnapshot({ batch, compressed });
     const normalized = normalize(snapshot);
     const registry = await store.loadRegistry(batch.clientId);
-    const importResult = reconcile({ clientId: batch.clientId, date: normalized.date, registry, parsed: normalized.parsed });
+    // A normal replay merges into the day like the ingest route (step 73), so
+    // its split is worked out over the day's stored fills too. Replace closed
+    // day replaces the day's fills, so it is worked out over the snapshot alone.
+    const parsed = closedReplacement
+      ? normalized.parsed
+      : await addStoredFills({ store, clientId: batch.clientId, date: normalized.date, parsed: normalized.parsed });
+    const importResult = reconcile({ clientId: batch.clientId, date: normalized.date, registry, parsed });
     const adapter = closedReplacement
       ? store.createClosedReplacementAdapter({ processingToken, actorId, reason })
       : store.createPersistenceAdapter(processingToken);

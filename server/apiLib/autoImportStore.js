@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { ApiError } from './http.js';
 import { validationReasonSummary } from '../../src/domain/autoImportValidationReason.js';
+import { storedFillsFromRows } from '../../src/domain/storedFills.js';
 import {
   DEFAULT_MAX_COMPRESSED_BYTES,
   DEFAULT_MAX_UNCOMPRESSED_BYTES,
@@ -327,6 +328,29 @@ export async function recordValidationReason(store, batchId, errors, { report = 
   }
 }
 
+/* EVERY ROW OF ONE CLOSE, A PAGE AT A TIME.
+ *
+ * PostgREST answers at most its max-rows (1,000 on this project) per request
+ * and says nothing when it stops, so a busy client's day of fills read in one
+ * request would come back short and look complete. Ordered by id so the pages
+ * neither overlap nor skip.
+ */
+const STORED_FILLS_PAGE = 1000;
+
+async function everyRowOfClose(admin, table, columns, dailyImportId) {
+  const rows = [];
+  for (let from = 0; ; from += STORED_FILLS_PAGE) {
+    const { data, error } = await admin.from(table)
+      .select(columns)
+      .eq('daily_import_id', dailyImportId)
+      .order('id', { ascending: true })
+      .range(from, from + STORED_FILLS_PAGE - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < STORED_FILLS_PAGE) return rows;
+  }
+}
+
 export function createAutoImportStore(admin) {
   return {
     async claimBatch(payload) {
@@ -427,6 +451,37 @@ export function createAutoImportStore(admin) {
         offlineRegistry: offline,
         offlineRegistryVersion: offlineRegistryVersion(offline),
       };
+    },
+
+    /* THE FILLS AND ORDERS THE DAY ALREADY HOLDS (step 73).
+     *
+     * Read before reconcile so the per algorithm split is worked out over the
+     * day's fills and not only the new capture's: src/domain/storedFills.js
+     * says why and what is done with them. Nothing when the day has no close
+     * yet. Throws on a failed read; the caller goes on without it.
+     */
+    async loadStoredFills(clientUuid, tradingDate) {
+      const { data: daily, error } = await admin.from('daily_imports')
+        .select('id')
+        .eq('client_id', clientUuid)
+        .eq('trading_date', tradingDate)
+        .maybeSingle();
+      if (error) throw error;
+      if (!daily?.id) return { executions: [], orders: [] };
+      const [executions, orders, accounts] = await Promise.all([
+        everyRowOfClose(admin, 'executions', 'id, trading_account_id, external_execution_id, external_order_id, '
+          + 'strategy_name, instrument, action, quantity, price, time_text, entry_exit, position, name, '
+          + 'commission, rate, connection', daily.id),
+        everyRowOfClose(admin, 'orders', 'id, trading_account_id, external_order_id, strategy_name, instrument, '
+          + 'action, order_type, quantity, limit_price, stop_price, state, filled, avg_price, remaining, name, '
+          + 'time_text', daily.id),
+        admin.from('trading_accounts').select('id, account_name').eq('client_id', clientUuid)
+          .then(({ data, error: accountsError }) => {
+            if (accountsError) throw accountsError;
+            return data || [];
+          }),
+      ]);
+      return storedFillsFromRows({ executions, orders, accounts });
     },
 
     /* WHAT THE DAY ALREADY SAYS, READ BEFORE DECIDING TO SAY IT AGAIN.
