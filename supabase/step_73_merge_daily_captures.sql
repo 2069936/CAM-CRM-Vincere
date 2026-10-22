@@ -292,6 +292,12 @@
 --    group by 1, 2 order by 1, 2;
 --   select entity_id, after_data from public.audit_logs
 --    where action = 'tracker_fill_applied' order by created_at desc limit 20;
+--   select d.trading_date, count(*) as provisional_accounts,
+--          count(distinct d.client_id) as clients
+--     from public.account_snapshots s
+--     join public.daily_imports d on d.id = s.daily_import_id
+--    where s.source = 'tracker' and d.trading_date >= current_date - 7
+--    group by 1 order by 1;
 
 do $step73_guard$
 begin
