@@ -534,7 +534,7 @@ describe('derived_realized follows the merged fills', () => {
     expect((await snapshotsOf(importId))[0].derivation).toBeNull();
   });
 
-  it('a capture that carried the stored fills back keeps its figures; a row kept from earlier loses its own', async () => {
+  it('a capture that carried the stored fills back keeps its figures; a kept row nobody sent back loses its own (the safety net)', async () => {
     const who = await newClient('Derived union');
     const { importId } = await capture(who, at('13:00'), {
       snapshots: [snap('ACC 1', 50, { derivation })],
@@ -555,6 +555,42 @@ describe('derived_realized follows the merged fills', () => {
     ]);
     expect((await snapshotsOf(importId))[0].derivation).toEqual({ status: 'exact', reportedGross: 80 });
     expect((await fillsOf(importId)).map((r) => r.id)).toEqual(['E1', 'E2']);
+  });
+});
+
+describe('strategies the route sends back from the day', () => {
+  it('bring a kept row its figure over the union of fills instead of losing it, and are never inserted', async () => {
+    const who = await newClient('Strategies back');
+    const { importId } = await capture(who, at('13:00'), {
+      snapshots: [snap('ACC 1', 50, { derivation: { status: 'exact' } })],
+      strategies: [
+        strat('ACC 1', '0 - OGX-PF-2.4', 'MNQ 12-26', null, { derivedRealized: 50 }),
+        strat('ACC 1', '2 - BETA-1.0', 'ES 12-26', 4, { derivedRealized: 5 }),
+      ],
+      executions: [fill('ACC 1', 'E1')],
+    });
+    const before = await db.query(`select id from public.strategy_snapshots
+      where daily_import_id = $1 and strategy_name = '2 - BETA-1.0'`, [importId]);
+    await capture(who, at('16:30'), {
+      snapshots: [snap('ACC 1', 90, { derivation: { status: 'exact' } })],
+      strategies: [
+        strat('ACC 1', '0 - OGX-PF-2.4', 'MNQ 12-26', null, { derivedRealized: 70 }),
+        // What the route reads back from the day: BETA, which this capture
+        // no longer lists, derived again over every fill.
+        strat('ACC 1', '2 - BETA-1.0', 'ES 12-26', 4, { derivedRealized: 20, ranBasis: 'fills', fromStore: true }),
+        // And one the day does not hold (deleted meanwhile): nothing to refresh.
+        strat('ACC 1', '3 - GAMMA-1.0', 'NQ 12-26', 1, { derivedRealized: 1, fromStore: true }),
+      ],
+      executions: [fill('ACC 1', 'E1', { fromStore: true }), fill('ACC 1', 'E2', { time: `${DAY} 15:00:00` })],
+    });
+    const rows = await strategiesOf(importId);
+    expect(rows.map((r) => [r.name, r.realized, r.derived, r.ran_basis])).toEqual([
+      ['0 - OGX-PF-2.4', null, 70, 'fills'],
+      ['2 - BETA-1.0', 4, 20, 'fills'],
+    ]);
+    const after = await db.query(`select id from public.strategy_snapshots
+      where daily_import_id = $1 and strategy_name = '2 - BETA-1.0'`, [importId]);
+    expect(after.rows).toEqual(before.rows);
   });
 });
 
@@ -620,6 +656,42 @@ describe('rule d: a capture that shows no activity where the day had some', () =
 });
 
 describe('flags a capture may and may not delete', () => {
+  it('an account a later capture does not list keeps its flags, and a third capture stacks no copy', async () => {
+    const who = await newClient('Absent flags');
+    const { importId } = await capture(who, at('16:30'), {
+      snapshots: [snap('A', 300), snap('B', 100)],
+      executions: [fill('A', 'EA1'), fill('B', 'EB1')],
+      flags: [
+        { type: 'Drawdown approaching limit', severity: 'Warning', accountName: 'A', message: 'A is near its drawdown limit.' },
+        { type: 'Expected strategy missing', severity: 'Critical', accountName: 'A', message: 'A ran nothing expected.' },
+        { type: 'Strategy disabled', severity: 'Warning', accountName: 'B', message: 'B has a strategy disabled.' },
+        { type: 'Import review', severity: 'Warning', message: 'Client level note, first capture.' },
+      ],
+    });
+    // A reconnect retry at 16:45 lists B only; reconcile names A missing and
+    // regenerates B's flag and the client level one.
+    const later = {
+      snapshots: [snap('B', 100)],
+      executions: [fill('B', 'EB1')],
+      flags: [
+        { type: 'Missing account', severity: 'Warning', accountName: 'A', message: 'A existed before but did not appear in this close.' },
+        { type: 'Strategy disabled', severity: 'Warning', accountName: 'B', message: 'B has a strategy disabled.' },
+        { type: 'Import review', severity: 'Warning', message: 'Client level note, later capture.' },
+        { type: 'Drawdown approaching limit', severity: 'Warning', accountName: 'A', message: 'A is near its drawdown limit.' },
+      ],
+    };
+    await capture(who, at('16:45'), later);
+    await capture(who, at('16:50'), later);
+    expect((await flagsOf(importId)).map((f) => [f.type, f.account ?? null, f.message])).toEqual([
+      ['Drawdown approaching limit', 'A', 'A is near its drawdown limit.'],
+      ['Expected strategy missing', 'A', 'A ran nothing expected.'],
+      ['Import review', null, 'Client level note, later capture.'],
+      ['Strategy disabled', 'B', 'B has a strategy disabled.'],
+    ]);
+    expect((await fillsOf(importId)).map((r) => [r.account, r.id])).toEqual([['A', 'EA1'], ['B', 'EB1']]);
+  });
+
+
   it('a Missing account flag is not written for an account the day still holds', async () => {
     const who = await newClient('Missing');
     const { importId } = await capture(who, at('13:00'), {
@@ -945,6 +1017,66 @@ describe('the Manager replay', () => {
     expect((await flagsOf(importId)).map((f) => f.type)).toEqual(['Close below tracker', 'Closed day automatically replaced']);
     expect((await summaryOf(importId)).merge.mode).toBe('replace');
     expect(await one(db, 'select status from public.daily_imports where id = $1', [importId])).toBe('Closed');
+  });
+});
+
+/* ── What a merge costs ───────────────────────────────────────────────────── */
+
+/* Step 50 deleted the day's fills and inserted the capture's: linear. The
+ * merge pairs every incoming fill with a stored one, and a pairing written
+ * with IS NOT DISTINCT FROM cannot be hashed, so the planner nested it: 8,000
+ * fills took about ten seconds under the client's row lock. Both sides now
+ * meet on one text key. This guard times the same superset capture on a
+ * cluster without 73 and on this one, in the same run, so a quadratic plan
+ * fails here rather than at 16:30. */
+describe('a superset capture of 4,000 fills', () => {
+  async function timeSuperset(conn, label) {
+    const client = await one(conn, 'insert into public.clients (name) values ($1) returning id', [label]);
+    const device = await one(conn, 'insert into public.ingest_devices (client_id) values ($1) returning id', [client]);
+    const names = Array.from({ length: 20 }, (_, i) => `ACC${i}`);
+    const fills = (count) => Array.from({ length: count }, (_, k) => fill(names[k % 20], `E${k}`, {
+      orderId: `O${k}`, price: 21000 + (k % 50), time: `${DAY} 10:${String(k % 60).padStart(2, '0')}:00`,
+    }));
+    const snapshots = names.map((name) => snap(name, 100));
+    async function once(capturedAt, executions) {
+      const body = payload({ snapshots, executions });
+      const token = randomUUID();
+      const captureId = randomUUID();
+      const rowCounts = { accounts: snapshots.length, strategies: 0, orders: 0, executions: executions.length };
+      const claimed = (await conn.query(
+        `select public.claim_ingest_batch_v4($1, $2, $3::date, $4::timestamptz, 1, $5, $6, 10, $7::jsonb, $8, 120) as r`,
+        [device, captureId, DAY, capturedAt, `${client}/${DAY}/${captureId}.json.gz`, 'a'.repeat(64),
+          JSON.stringify(rowCounts), token])).rows[0].r;
+      const started = performance.now();
+      const persisted = (await conn.query('select public.persist_auto_daily_import_v3($1, $2, $3, $4::jsonb) as r',
+        [client, claimed.batch.id, token, JSON.stringify(body)])).rows[0].r;
+      const elapsed = performance.now() - started;
+      expect(persisted.disposition).toBe('persisted');
+      return { elapsed, importId: persisted.daily_import.id };
+    }
+    await once(at('15:00'), fills(4000));
+    const superset = await once(at('16:30'), fills(4040));
+    expect(await one(conn, 'select count(*)::int from public.executions where daily_import_id = $1', [superset.importId])).toBe(4040);
+    return superset.elapsed;
+  }
+
+  it('merges in at most three times what step 50 took to replace', async () => {
+    const base = await startMigrationCluster(migrationFilesInOrder({ upTo: 72 }));
+    try {
+      const step50 = await timeSuperset(base, 'Timing 50');
+      const step73 = await timeSuperset(db, 'Timing 73');
+      expect(step73).toBeLessThan(3 * step50 + 250);
+    } finally {
+      await base.close();
+    }
+  }, 120_000);
+});
+
+describe('the two checks', () => {
+  it('are validated after the commit, so they hold for every row', async () => {
+    expect(await column(db, `select conname || ':' || convalidated from pg_constraint
+      where conname in ('account_snapshots_source_check', 'strategy_snapshots_source_check') order by 1`))
+      .toEqual(['account_snapshots_source_check:true', 'strategy_snapshots_source_check:true']);
   });
 });
 
