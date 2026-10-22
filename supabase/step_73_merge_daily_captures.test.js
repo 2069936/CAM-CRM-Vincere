@@ -35,9 +35,9 @@ import {
 
 const STEP = 'step_73_merge_daily_captures.sql';
 const FILL_DAY = 'public.fill_day_from_tracker(date)';
+const FILL_ONE = 'public.fill_daily_import_from_tracker(uuid)';
 const INTERNAL = [
   'public.persist_auto_daily_import(uuid, uuid, jsonb)',
-  'public.fill_daily_import_from_tracker(uuid)',
   'public.write_close_merge_flag(uuid, uuid, uuid, text, text, text, jsonb)',
   'public.tracker_fill_on_batch()',
   'public.account_snapshots_source_guard()',
@@ -833,12 +833,18 @@ describe('fill_day_from_tracker', () => {
     expect(await capturedRows()).toEqual(captureRowsBefore);
   });
 
-  it('answers only the service role', async () => {
-    expect((await executeGrantees(FILL_DAY)).filter((role) => role !== 'postgres')).toEqual(['service_role']);
+  it('answers only the service role, for a day or for one close', async () => {
+    for (const signature of [FILL_DAY, FILL_ONE]) {
+      expect((await executeGrantees(signature)).filter((role) => role !== 'postgres'), signature).toEqual(['service_role']);
+    }
     for (const role of ['anon', 'authenticated']) {
       expect(await refusalAsRole(db, role, 'select public.fill_day_from_tracker($1::date)', { params: [DAY] }))
         .toMatch(/permission denied/);
+      expect(await refusalAsRole(db, role, 'select public.fill_daily_import_from_tracker($1::uuid)', { params: [manual] }))
+        .toMatch(/permission denied/);
     }
+    const single = (await asService('select public.fill_daily_import_from_tracker($1::uuid) as r', [manual]))[0].r;
+    expect(single).toMatchObject({ filled: true, accountsFilled: 0, flagsWritten: 0 });
     expect(await refusalAsRole(db, 'service_role', 'select public.fill_day_from_tracker(null)'))
       .toMatch(/invalid_trading_date/);
   });
@@ -941,7 +947,7 @@ describe('the browser and the grants', () => {
     expect(visible).toHaveLength(1);
   });
 
-  it('nobody but the owner may call the merge, the fill of one close, the flag writer or the trigger functions', async () => {
+  it('nobody but the owner may call the merge, the flag writer or the trigger functions', async () => {
     for (const signature of INTERNAL) {
       expect((await executeGrantees(signature)).filter((role) => role !== 'postgres'), signature).toEqual([]);
     }

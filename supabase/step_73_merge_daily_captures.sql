@@ -161,11 +161,12 @@
 --   no total column), captureTime and captureBasis. operational_flags.details
 --   (jsonb) carries the readings behind the three new flag kinds.
 --
---   fill_daily_import_from_tracker(daily_import_id), internal, runs at every
---   finalize (a new trigger, tracker_fill_on_batch, on the same transition as
---   step 66's tracker_close_on_batch; PostgreSQL fires triggers of one event
---   in name order, and "close" sorts before "fill", so the pin is always in
---   place first). For one close:
+--   fill_daily_import_from_tracker(daily_import_id) runs at every finalize (a
+--   new trigger, tracker_fill_on_batch, on the same transition as step 66's
+--   tracker_close_on_batch; PostgreSQL fires triggers of one event in name
+--   order, and "close" sorts before "fill", so the pin is always in place
+--   first), and the service role may call it for a close uploaded by hand,
+--   which no finalize reaches. For one close:
 --
 --     THE READING OF AN ACCOUNT, and which source wins:
 --       1. the pinned reading, tracker_close_readings with source other than
@@ -267,11 +268,11 @@
 -- with `source = 'capture'` on its two reads of account_snapshots; same
 -- signature, same grants, same never-raises contract.
 --
--- GRANTS. fill_day_from_tracker: EXECUTE for service_role only, revoked from
--- public, anon and authenticated, and record_tracker_close_readings keeps step
--- 66's (the same). persist_auto_daily_import keeps step 28's
--- reach (nobody; v2, v3 and the replacement are security definer).
--- fill_daily_import_from_tracker, write_close_merge_flag and the trigger
+-- GRANTS. fill_day_from_tracker and fill_daily_import_from_tracker: EXECUTE
+-- for service_role only, revoked from public, anon and authenticated, and
+-- record_tracker_close_readings keeps step 66's (the same).
+-- persist_auto_daily_import keeps step 28's reach (nobody; v2, v3 and the
+-- replacement are security definer). write_close_merge_flag and the trigger
 -- functions: the owner only. Every function is security definer except the
 -- two guards, with search_path pinned to pg_catalog, public. The new columns
 -- inherit their tables' grants and policies; selects that list columns are
@@ -1823,8 +1824,10 @@ $function$;
 comment on function public.fill_daily_import_from_tracker(uuid) is
   'Part 2 of step 73 for one close: a provisional account_snapshot (source tracker) and strategy rows for every account the tracker saw trade that the close does not hold, a Tracker only account flag for each, a Close below tracker flag for an account in the close with no fills and no realized while the tracker saw activity, and the resolution of both when a later capture answers them. The pinned reading wins; account_live_sample_history before the capture time is the fallback. Never writes a capture row, never raises (a fault is a WARNING and {filled: false}). Fired after every finalize by tracker_fill_on_batch; for many closes at once, fill_day_from_tracker.';
 
-revoke all on function public.fill_daily_import_from_tracker(uuid)
-  from public, anon, authenticated, service_role;
+-- The service role may call it for one close, as it may step 66's pin: a
+-- close uploaded by hand is never finalized, so nothing fires it there.
+revoke all on function public.fill_daily_import_from_tracker(uuid) from public, anon, authenticated;
+grant execute on function public.fill_daily_import_from_tracker(uuid) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 6. Step 66's pin, reading the close's CAPTURE rows only.
