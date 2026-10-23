@@ -4315,6 +4315,13 @@ tr:nth-child(2) .rank-badge {
   vertical-align: middle;
 }
 
+/* A provisional account row the tracker filled in for an account the close
+   lost (step 73): no fills, no balance, until a capture lists it. */
+.provisional-row-marker {
+  display: block;
+  color: var(--warning);
+}
+
 /* Activity log */
 .credentials-stack {
   display: flex;

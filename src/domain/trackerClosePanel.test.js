@@ -408,6 +408,19 @@ describe('the identity rule and the close side', () => {
     ]);
   });
 
+  it('leaves a provisional tracker row out of the close side, so the account stays tracker only (step 73)', () => {
+    const base = dailyImport();
+    const provisional = {
+      ...snapshot('snap-3', 'ACC 03', -40, [{ id: 'ss-3', strategyName: '0 - OGX-PF-2.4', instrument: 'MNQ 12-26', realized: -40, source: 'tracker' }]),
+      source: 'tracker',
+    };
+    const close = { ...base, snapshots: [...base.snapshots, provisional] };
+    const sides = closeSidesOf(close);
+    expect(sides.accountSnapshots.map((row) => row.accountName)).toEqual(['ACC 01', 'ACC 02', 'ACC 04']);
+    expect(sides.strategySnapshots.map((row) => row.accountSnapshotId)).toEqual(['snap-1']);
+    expect(closeVerdictsOf(panel({ dailyImport: close })).get('acc 03')).toBe('tracker_only');
+  });
+
   it('hands the pills only the verdicts that ask for attention, keyed by lower case account name', () => {
     const verdicts = closeVerdictsOf(panel());
     expect([...verdicts.entries()]).toEqual([['acc 01', 'differs'], ['acc 03', 'tracker_only'], ['acc 04', 'close_only']]);

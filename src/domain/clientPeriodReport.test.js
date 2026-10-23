@@ -83,7 +83,8 @@ function mini(days) {
           grossRealizedPnl: spec.realized || 0,
           accountBalance: spec.balance ?? 50000,
           trailingMaxDrawdown: spec.trailing || 0,
-          strategies,
+          strategies: spec.source ? strategies.map((strategy) => ({ ...strategy, source: spec.source })) : strategies,
+          ...(spec.source ? { source: spec.source } : {}),
         });
       }
       return {
@@ -609,5 +610,52 @@ describe('formatting', () => {
     expect(dayLabel('2026-10-12', { long: true })).toBe('Mon, Oct 12');
     expect(periodText('2026-12-28', '2027-01-08')).toBe('Mon, Dec 28, 2026 to Fri, Jan 8, 2027');
     expect(stampText('2026-07-01T20:05:00Z')).toBe('Jul 1, 2026, 4:05 pm ET');
+  });
+});
+
+/* A PROVISIONAL DAY (step 73): the close lost the account and the tracker's
+ * reading stands in, realized only, no fills, no balance. The store reads the
+ * missing balance as 0, which must never print as an emptied account. */
+describe('an account the tracker filled in', () => {
+  function report(days) {
+    const client = mini(days);
+    return buildClientPeriodReport(client, {
+      window: { from: '2026-10-12', to: '2026-10-18', kind: 'week' },
+      asOf: '2026-10-19',
+      builtAt: BUILT_AT,
+    });
+  }
+
+  it('keeps its money and its algorithm, says which days came from the tracker, and takes no balance from them', () => {
+    const built = report({
+      '2026-10-13': { A1: { realized: 100, balance: 50100, strategies: [['NSTAR', 100]], fills: [['NSTAR', 2]] } },
+      '2026-10-14': { A1: { realized: 250, balance: 0, trailing: 0, strategies: [['NSTAR', 250, false]], source: 'tracker' } },
+      '2026-10-15': { A1: { realized: 50, balance: 50400, strategies: [['NSTAR', 50]], fills: [['NSTAR', 2]] } },
+    });
+    const main = account(built, 'Main');
+    expect(main).toMatchObject({ realized: 400, end: 50400, endDate: '2026-10-15', trackerDates: ['2026-10-14'] });
+    expect(main.series).toEqual(expect.arrayContaining([50100, null, 50400]));
+    const tracked = built.days.find((entry) => entry.date === '2026-10-14');
+    expect(tracked).toMatchObject({ state: 'close', realized: 250, fills: 0, accountsTraded: 1, traded: true });
+    const nstar = built.algorithms.rows.find((row) => row.family === 'NSTAR');
+    expect(nstar.realized).toBe(400);
+  });
+
+  it('an account seen only through the tracker has no balance figures at all, and is left out of the balance totals', () => {
+    const built = report({
+      '2026-10-13': {
+        A1: { realized: 100, balance: 50100 },
+        E1: { realized: 0, balance: 50000 },
+      },
+      '2026-10-14': {
+        A1: { realized: 30, balance: 0, source: 'tracker' },
+        E1: { realized: 0, balance: 50000 },
+      },
+    });
+    const main = account(built, 'Main');
+    expect(main).toMatchObject({ realized: 130, end: 50100, endDate: '2026-10-13', endIsLastClose: false, trackerDates: ['2026-10-14'] });
+    const onlyTracked = report({ '2026-10-14': { A1: { realized: 30, balance: 0, source: 'tracker' } } });
+    expect(account(onlyTracked, 'Main')).toMatchObject({ start: null, end: null, change: null, realized: 30 });
+    expect(onlyTracked.accounts.totals).toMatchObject({ start: 0, end: 0, realized: 30 });
   });
 });

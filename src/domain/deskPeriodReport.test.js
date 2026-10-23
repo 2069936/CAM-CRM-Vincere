@@ -152,6 +152,14 @@ describe('coverage', () => {
     expect(built.coverage.totals.accountCloses).toBe(2);
   });
 
+  it('counts a provisional row the tracker filled in as reporting, and says how many were (step 73)', () => {
+    const book = [bulkClient({ id: 'trk', accountCount: 3, dates: ['2026-07-27', '2026-07-28'] })];
+    book[0].dailyImports[0].snapshots[2] = { ...book[0].dailyImports[0].snapshots[2], source: 'tracker', accountBalance: 0 };
+    const built = build(book, { kind: 'week', key: '2026-07-27' });
+    expect(built.coverage.rows.find((row) => row.date === '2026-07-27')).toMatchObject({ accountsReporting: 3, fromTracker: 1 });
+    expect(built.coverage.rows.find((row) => row.date === '2026-07-28')).toMatchObject({ accountsReporting: 3, fromTracker: 0 });
+  });
+
   it('counts a close as late when its import landed on a later calendar date, and not otherwise', () => {
     const late = [bulkClient({
       id: 'late', accountCount: 1, dates: ['2026-07-27', '2026-07-30'],

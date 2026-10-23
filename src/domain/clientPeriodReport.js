@@ -50,6 +50,7 @@ import { closeRowsMissing } from './deskPeriodReport';
 import { fillsLoadedFor } from './closeLoadState';
 import { isWeekday, lastDayOfMonth, mondayOf, shiftDate } from './deskPeriod';
 import { resolveAccountLimits } from './propFirmRules';
+import { isFromTracker } from './provisionalRows';
 
 /* ------------------------------------------------------------------ */
 /* Windows.                                                            */
@@ -498,14 +499,20 @@ function attributeAccountDay(snapshot, accountFills, fillsLoaded) {
 function readAccount(row, dailyImport, fillsLoaded, { attribute = false } = {}) {
   const accountName = row.accountName || '';
   const accountFills = executionsForAccount(dailyImport, accountName);
+  // A provisional row the tracker filled in for an account the close lost
+  // (step 73): its realized is the tracker's, it has no fills and NO BALANCE.
+  // Read as 0 the balance would print a client's account as emptied, so it is
+  // null, and the account's balances come from its real closes.
+  const fromTracker = isFromTracker(row);
   return {
     key: lower(accountName),
     accountName,
     alias: row.meta?.alias || accountName,
     meta: row.meta || {},
     type: accountTypeLabel(row.meta?.accountType),
+    fromTracker,
     realized: round2(row.grossRealizedPnl),
-    balance: round2(row.accountBalance),
+    balance: fromTracker ? null : round2(row.accountBalance),
     trailing: Number(row.trailingMaxDrawdown),
     fills: fillsLoaded ? accountFills.length : null,
     attribution: attribute ? attributeAccountDay(row, accountFills, fillsLoaded) : null,
@@ -584,25 +591,33 @@ function accountRows(population, { startClose, windowCloses, lastDate, client })
   const rows = [];
   for (const [key, entry] of population) {
     const series = entry.series;
-    const first = series[0];
-    const last = series[series.length - 1];
+    // Balances come from the closes that measured one: a provisional tracker
+    // day (step 73) has none, and an account seen only that way has no start,
+    // end or change at all rather than a made up $0.
+    const measured = series.filter((point) => point.balance != null);
+    const first = measured[0] || series[0];
+    const last = measured[measured.length - 1] || series[series.length - 1];
     const prior = startClose ? startClose.get(key) : null;
-    const start = prior ? prior.balance : first.balance;
-    const startSource = prior ? 'prior' : 'first';
+    const usePrior = Boolean(prior && prior.balance != null);
+    const start = usePrior ? prior.balance : first.balance;
+    const startSource = usePrior ? 'prior' : 'first';
     const realized = round2(series.reduce((total, point) => total + point.realized, 0));
+    const known = start != null && last.balance != null;
     rows.push({
       key,
       accountName: entry.accountName,
       alias: entry.alias,
       type: entry.type,
-      start: round2(start),
+      start: start == null ? null : round2(start),
       startSource,
-      startDate: prior ? null : first.date,
-      end: round2(last.balance),
+      startDate: usePrior ? null : first.date,
+      end: last.balance == null ? null : round2(last.balance),
       endDate: last.date,
       endIsLastClose: last.date === lastDate,
-      change: round2(last.balance - start),
+      change: known ? round2(last.balance - start) : null,
       realized,
+      // The days this account's row came from the tracker, with no fills.
+      trackerDates: series.filter((point) => point.account?.fromTracker).map((point) => point.date),
       buffer: bufferAtClose(last.account, client),
       series: windowCloses.map((date) => {
         const point = series.find((p) => p.date === date);
@@ -615,10 +630,13 @@ function accountRows(population, { startClose, windowCloses, lastDate, client })
     if (typeOrder) return typeOrder;
     return a.alias.localeCompare(b.alias);
   });
+  // An account with no measured balance in the window adds to the realized
+  // total and to neither balance total.
+  const balanced = rows.filter((row) => row.start != null && row.end != null);
   const totals = rows.length
     ? {
-      start: round2(rows.reduce((total, row) => total + row.start, 0)),
-      end: round2(rows.reduce((total, row) => total + row.end, 0)),
+      start: round2(balanced.reduce((total, row) => total + row.start, 0)),
+      end: round2(balanced.reduce((total, row) => total + row.end, 0)),
       realized: round2(rows.reduce((total, row) => total + row.realized, 0)),
     }
     : null;
@@ -777,8 +795,11 @@ export function buildClientPeriodReport(client, {
     const fills = read.fillsLoaded
       ? read.counted.reduce((total, account) => total + account.fills, 0)
       : null;
+    // A provisional tracker row has no fills by construction (step 73); its
+    // realized is the evidence the account traded.
+    const tradedAccount = (account) => account.fills > 0 || (account.fromTracker && account.realized !== 0);
     const accountsTraded = read.fillsLoaded
-      ? read.counted.filter((account) => account.fills > 0).length
+      ? read.counted.filter(tradedAccount).length
       : null;
     return {
       date,
@@ -788,7 +809,7 @@ export function buildClientPeriodReport(client, {
       fills,
       accountsTraded,
       accountsReporting: read.counted.length,
-      traded: read.fillsLoaded ? fills > 0 : (read.realized !== 0 ? true : null),
+      traded: read.fillsLoaded ? accountsTraded > 0 : (read.realized !== 0 ? true : null),
     };
   });
 

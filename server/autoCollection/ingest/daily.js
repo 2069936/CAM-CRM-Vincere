@@ -13,6 +13,7 @@ import { normalizeAutoImportSnapshot } from '../../../src/domain/autoImport.js';
 import { VALIDATION_REASON_CODES } from '../../../src/domain/autoImportValidationReason.js';
 import { persistDailyImportWithClient } from '../../../src/domain/dailyImportPersistence.js';
 import { reconcileDailyImport } from '../../../src/domain/reconcile.js';
+import { addStoredFills } from '../../../src/domain/storedFills.js';
 import { resolveAutoCollectionLimits } from '../../apiLib/autoCollectionLimits.js';
 import { normalizeMachineId } from '../../apiLib/ingestTokens.js';
 import {
@@ -128,7 +129,7 @@ export function isTransientStoreError(error) {
 }
 
 function publicFailure(stage, error) {
-  if (stage === 'storage') return new ApiError(503, 'snapshot_ingest_failed');
+  if (stage === 'storage' || stage === 'stored') return new ApiError(503, 'snapshot_ingest_failed');
   if (stage === 'persist' && isTransientStoreError(error)) return new ApiError(503, 'snapshot_ingest_failed');
   if (['normalize', 'reconcile', 'persist'].includes(stage)) return new ApiError(422, 'snapshot_processing_failed');
   if (stage === 'registry') return new ApiError(503, 'snapshot_ingest_failed');
@@ -137,7 +138,7 @@ function publicFailure(stage, error) {
 
 function failureCode(stage, error) {
   if (stage === 'persist' && isTransientStoreError(error)) return 'persistence_unavailable';
-  return ({ storage: 'storage_failed', normalize: 'normalization_failed', registry: 'registry_load_failed', reconcile: 'reconciliation_failed', persist: 'persistence_failed' })[stage] || 'ingest_failed';
+  return ({ storage: 'storage_failed', normalize: 'normalization_failed', registry: 'registry_load_failed', stored: 'stored_fills_unavailable', reconcile: 'reconciliation_failed', persist: 'persistence_failed' })[stage] || 'ingest_failed';
 }
 
 function isDeviceCredentialError(error) {
@@ -369,6 +370,22 @@ export function createHandler({
         offlineRegistry,
         offlineRegistryVersion: registryVersion,
       } = await store.loadRegistryForIngest(device.clientId);
+      /* THE DAY'S STORED FILLS, SO THE SPLIT IS THE DAY'S (step 73).
+       *
+       * A later capture merges into the day and keeps the fills and strategy
+       * rows it lacks (a NinjaTrader restart forgets them), so the per
+       * algorithm split worked out below has to see them too. A read that
+       * fails is a RETRY, not a close stored with a split over part of the
+       * day: the stage below releases the batch and answers 503, which the
+       * agent retries with the capture kept in its queue, as it does a
+       * database that timed out on the persist. See src/domain/storedFills.js. */
+      stage = timer.enter('stored');
+      const parsed = await addStoredFills({
+        store,
+        clientId: device.clientId,
+        date: normalized.date,
+        parsed: normalized.parsed,
+      });
       stage = timer.enter('reconcile');
       // NO `priorImports` HERE, AND THAT IS A KNOWN GAP, NOT A DECISION THAT
       // NOTHING WAS OPEN. reconcileDailyImport uses the client's previous closes
@@ -387,7 +404,7 @@ export function createHandler({
         clientId: device.clientId,
         date: normalized.date,
         registry,
-        parsed: normalized.parsed,
+        parsed,
       });
       stage = timer.enter('persist');
       let dailyImport;
@@ -471,9 +488,11 @@ export function createHandler({
         // retry of the SAME capture is claimed again. Finalizing it as failed
         // here would make that retry a 409 capture_requires_replay, which the
         // agent treats as operator action and quarantines: the 503 would have
-        // promised a retry it could not keep.
+        // promised a retry it could not keep. A failed read of the day's
+        // stored fills (step 73) takes the same exit, whatever its cause: the
+        // capture is sound, only the day it merges into could not be read.
         const transientPersist = stage === 'persist' && isTransientStoreError(error);
-        if ((stage === 'storage' && error?.message !== 'immutable_object_conflict') || transientPersist) {
+        if ((stage === 'storage' && error?.message !== 'immutable_object_conflict') || transientPersist || stage === 'stored') {
           try {
             await store.releaseLease({
               batchId: batch.id,

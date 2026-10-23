@@ -111,6 +111,7 @@ import {
   removeAccountFromRegistry,
 } from "./domain/crmStateStore";
 import { buildCamOverview } from "./domain/camOverview";
+import { FROM_TRACKER_LABEL, isFromTracker } from "./domain/provisionalRows";
 import { strategyRan, withStrategyRan } from "./domain/strategyRan";
 import { groupInsights, SEVERITY_LABEL, factValue } from "./domain/insightFeed";
 import { daysBetween } from "./domain/overviewCharts";
@@ -8324,6 +8325,11 @@ export function ReportPanel({
                           <small>
                             {row.meta?.connection || row.connection || ""}
                           </small>
+                          {/* Step 73: the close lost this account and the
+                              tracker's reading stands in, with no fills. */}
+                          {isFromTracker(row) ? (
+                            <small className="provisional-row-marker">{FROM_TRACKER_LABEL}</small>
+                          ) : null}
                         </td>
                         <td>{row.meta?.status || "Active"}</td>
                         {cfg.showStrategies ? (

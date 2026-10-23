@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { formatCurrency } from '../domain/report';
 import { describeMoneyCompleteness } from '../domain/deskMoney';
+import { fromTrackerCountLabel } from '../domain/provisionalRows';
 import PanelLoadState from './PanelLoadState';
 import ReportSheetActions from './ReportSheetActions';
 import {
@@ -431,7 +432,10 @@ export default function DeskPeriodReportSheet({
                   <tr key={row.date}>
                     <td>{row.date}</td>
                     <td>{count(row.clientsReporting)}</td>
-                    <td>{count(row.accountsReporting)}</td>
+                    <td>
+                      {count(row.accountsReporting)}
+                      {row.fromTracker ? <small className="provisional-row-marker">{fromTrackerCountLabel(row.fromTracker)}</small> : null}
+                    </td>
                     <td>{percent(row.shareOfFullest)}</td>
                     <td>{count(row.accountDaysWithPnl)}</td>
                     <td>{count(row.arrivedLate)}</td>
