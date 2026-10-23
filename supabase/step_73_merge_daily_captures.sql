@@ -60,12 +60,20 @@
 --          can multiply or swallow them. Each row of either side is reduced
 --          to ONE text key (its trading account and external id, or the
 --          fallback columns with NULL as a sentinel and every number in its
---          canonical trim_scale form) and the two sides meet on (key, k): an
---          equality the planner hashes. The first draft paired them with IS
---          NOT DISTINCT FROM, which cannot be hashed, and 8,000 fills took
---          about ten seconds under the client's row lock against 0.4 for step
---          50's replace; the test beside this file times it against step 50
---          in the same run.
+--          canonical trim_scale form), and the two sides are paired by
+--          GROUPING them on (key, k), never by joining them. A join's cost
+--          depends on what the planner believes about the sizes, and inside
+--          a PL/pgSQL function it cannot know them: jsonb_array_elements is
+--          estimated at 100 rows whatever the payload holds, and the plan is
+--          cached per connection, built when the closes it saw were small.
+--          Measured: pairing with IS NOT DISTINCT FROM took about ten seconds
+--          at 8,000 fills (0.4 for step 50's replace), and the same pairing as
+--          a join on (key, k) took 0.8 s at 4,000 fills once its plan had been
+--          cached on small closes, against 0.12 s freshly planned. A GROUP BY
+--          is a hash or a sort whatever the planner believes. Every read of
+--          stored rows is bounded by the close's daily_import_id, so the rest
+--          of the book never enters a merge; the tests beside this file guard
+--          both the growth with the fills and the cost of a large book.
 --        * A NORMAL REPLAY CANNOT REMOVE A STORED FILL. A fill the day holds
 --          stays even when the capture being replayed no longer carries it,
 --          so a normalizer fix that moves a fill to another account or gives
@@ -190,7 +198,9 @@
 --   balance. account_snapshots.source_detail (jsonb) says which reading:
 --   origin, sampledAt, deviceId, connected, status, totalPnl (the snapshot has
 --   no total column), captureTime and captureBasis. operational_flags.details
---   (jsonb) carries the readings behind the three new flag kinds.
+--   (jsonb) carries the readings behind the three new flag kinds, and an
+--   index on operational_flags (daily_import_id, trading_account_id, type)
+--   keeps every per close flag read from scanning the book's flags.
 --
 --   fill_daily_import_from_tracker(daily_import_id) runs at every finalize (a
 --   new trigger, tracker_fill_on_batch, on the same transition as step 66's
@@ -392,6 +402,13 @@ alter table public.strategy_snapshots
 
 alter table public.operational_flags
   add column if not exists details jsonb;
+
+-- The flags of one close, by account and kind: what a merge deletes and
+-- writes again, and what write_close_merge_flag and the tracker fill look up
+-- once per account. Without it each of those reads every flag of the book
+-- (thousands on production), so a close's cost grew with the book.
+create index if not exists idx_operational_flags_import_account_type
+  on public.operational_flags (daily_import_id, trading_account_id, type);
 
 comment on column public.account_snapshots.source is
   'capture: written from a close (automatic or uploaded). tracker: PROVISIONAL, built by fill_daily_import_from_tracker from the tracker''s reading of an account that traded and is missing from the close; realized and unrealized only, no fills, no balance. A later capture that lists the account replaces it. Step 73.';
@@ -766,11 +783,18 @@ begin
       from jsonb_array_elements(coalesce(p_import_result -> 'executions', '[]'::jsonb)) as fill(value)
       where coalesce(fill.value ->> 'fromStore', '') <> 'true'
     ),
+    -- Reduced to the distinct accounts BEFORE the registry is joined, so the
+    -- join is accounts by accounts and never fills by accounts.
+    stored_fill_accounts as (
+      select distinct stored.trading_account_id as id
+      from public.executions as stored
+      where stored.daily_import_id = v_daily.id
+        and stored.trading_account_id is not null
+    ),
     stored_fills as (
       select distinct lower(btrim(account.account_name)) as key
-      from public.executions as stored
-      join public.trading_accounts as account on account.id = stored.trading_account_id
-      where stored.daily_import_id = v_daily.id
+      from stored_fill_accounts
+      join public.trading_accounts as account on account.id = stored_fill_accounts.id
     ),
     stored_realized as (
       select distinct lower(btrim(snapshot.account_name)) as key
@@ -1102,11 +1126,24 @@ begin
     -- account and its external order id, or, without an id, the fallback
     -- columns with NULL written as a sentinel and every number in its
     -- canonical form (trim_scale, so 1.50 and 1.5 are one key). Each side is
-    -- numbered within its key so the k-th payload row meets the k-th stored
-    -- row, and the two meet on (key, k): an equality the planner can hash,
-    -- which IS NOT DISTINCT FROM is not. A pair takes the payload's values
-    -- (the newer capture wins), an unpaired payload row is inserted, an
-    -- unpaired stored row stays.
+    -- numbered within its key, so the k-th payload row meets the k-th stored
+    -- row. A pair takes the payload's values (the newer capture wins), an
+    -- unpaired payload row is inserted, an unpaired stored row stays.
+    --
+    -- THE PAIRING IS A GROUP BY, NOT A JOIN, and that is the point. Both sides
+    -- go into one list and are grouped by (key, k): a hash or a sort, never
+    -- worse than n log n, whatever the planner believes about the sizes. A
+    -- join of the two sides depends on that belief, and the planner cannot
+    -- know a payload's size (jsonb_array_elements is estimated at 100 rows
+    -- whatever it holds), nor a day's, inside a PL/pgSQL plan cached when the
+    -- tables were small. Measured: a join written with IS NOT DISTINCT FROM
+    -- took ten seconds at 8,000 fills, and the same join on (key, k), once its
+    -- plan had been cached on small closes, took 0.8 s at 4,000 fills against
+    -- 0.12 s freshly planned. The grouping has no plan to go wrong.
+    --
+    -- Every read of a stored row is bounded by its close (daily_import_id),
+    -- which the index on (daily_import_id, external_order_id) answers, so the
+    -- rest of the book never enters the merge.
     -- ---------------------------------------------------------------------
     with incoming as (
       select item.ordinality as ord,
@@ -1132,58 +1169,71 @@ begin
                   end as key
       from incoming
     ),
-    incoming_numbered as (
-      select incoming_keyed.*,
-             row_number() over (partition by incoming_keyed.key order by incoming_keyed.ord) as k
+    stored_keyed as (
+      select held.id as row_id,
+             held.created_at,
+             coalesce(held.trading_account_id::text, '~') || chr(31)
+               || case when nullif(held.external_order_id, '') is not null
+                    then 'i' || chr(31) || held.external_order_id
+                    else 'f' || chr(31) || coalesce(held.instrument, '')
+                      || chr(31) || coalesce(held.action, '')
+                      || chr(31) || coalesce(held.order_type, '')
+                      || chr(31) || coalesce(trim_scale(held.quantity)::text, '~')
+                      || chr(31) || coalesce(trim_scale(held.limit_price)::text, '~')
+                      || chr(31) || coalesce(trim_scale(held.stop_price)::text, '~')
+                      || chr(31) || coalesce(held.time_text, '')
+                      || chr(31) || coalesce(held.name, '')
+                  end as key
+      from public.orders as held
+      where held.daily_import_id = v_daily.id
+    ),
+    sides as (
+      select incoming_keyed.key,
+             row_number() over (partition by incoming_keyed.key order by incoming_keyed.ord) as k,
+             incoming_keyed.ord,
+             incoming_keyed.v,
+             incoming_keyed.account_id,
+             null::uuid as row_id
       from incoming_keyed
+      union all
+      select stored_keyed.key,
+             row_number() over (partition by stored_keyed.key order by stored_keyed.created_at, stored_keyed.row_id),
+             null::bigint,
+             null::jsonb,
+             null::uuid,
+             stored_keyed.row_id
+      from stored_keyed
     ),
-    stored_numbered as (
-      select keyed.row_id,
-             keyed.key,
-             row_number() over (partition by keyed.key order by keyed.created_at, keyed.row_id) as k
-      from (
-        select held.id as row_id,
-               held.created_at,
-               coalesce(held.trading_account_id::text, '~') || chr(31)
-                 || case when nullif(held.external_order_id, '') is not null
-                      then 'i' || chr(31) || held.external_order_id
-                      else 'f' || chr(31) || coalesce(held.instrument, '')
-                        || chr(31) || coalesce(held.action, '')
-                        || chr(31) || coalesce(held.order_type, '')
-                        || chr(31) || coalesce(trim_scale(held.quantity)::text, '~')
-                        || chr(31) || coalesce(trim_scale(held.limit_price)::text, '~')
-                        || chr(31) || coalesce(trim_scale(held.stop_price)::text, '~')
-                        || chr(31) || coalesce(held.time_text, '')
-                        || chr(31) || coalesce(held.name, '')
-                    end as key
-        from public.orders as held
-        where held.daily_import_id = v_daily.id
-      ) as keyed
-    ),
-    pairs as (
-      select incoming.ord, stored.row_id
-      from incoming_numbered as incoming
-      join stored_numbered as stored on stored.key = incoming.key and stored.k = incoming.k
+    paired as (
+      -- At most one payload row and one stored row per (key, k).
+      select max(sides.ord) as ord,
+             (array_agg(sides.v) filter (where sides.ord is not null))[1] as v,
+             (array_agg(sides.account_id) filter (where sides.ord is not null))[1] as account_id,
+             (array_agg(sides.row_id) filter (where sides.row_id is not null))[1] as row_id
+      from sides
+      group by sides.key, sides.k
     ),
     refreshed as (
       update public.orders as target
-      set external_order_id = coalesce(incoming.v ->> 'id', ''),
-          strategy_name = coalesce(incoming.v ->> 'strategyName', ''),
-          instrument = coalesce(incoming.v ->> 'instrument', ''),
-          action = coalesce(incoming.v ->> 'action', ''),
-          order_type = coalesce(incoming.v ->> 'orderType', ''),
-          quantity = nullif(incoming.v ->> 'quantity', '')::numeric,
-          limit_price = nullif(incoming.v ->> 'limit', '')::numeric,
-          stop_price = nullif(incoming.v ->> 'stop', '')::numeric,
-          state = coalesce(incoming.v ->> 'state', ''),
-          filled = nullif(incoming.v ->> 'filled', '')::numeric,
-          avg_price = nullif(incoming.v ->> 'avgPrice', '')::numeric,
-          remaining = nullif(incoming.v ->> 'remaining', '')::numeric,
-          name = coalesce(incoming.v ->> 'name', ''),
-          time_text = coalesce(incoming.v ->> 'time', '')
-      from pairs
-      join incoming_numbered as incoming on incoming.ord = pairs.ord
-      where target.id = pairs.row_id
+      set external_order_id = coalesce(paired.v ->> 'id', ''),
+          strategy_name = coalesce(paired.v ->> 'strategyName', ''),
+          instrument = coalesce(paired.v ->> 'instrument', ''),
+          action = coalesce(paired.v ->> 'action', ''),
+          order_type = coalesce(paired.v ->> 'orderType', ''),
+          quantity = nullif(paired.v ->> 'quantity', '')::numeric,
+          limit_price = nullif(paired.v ->> 'limit', '')::numeric,
+          stop_price = nullif(paired.v ->> 'stop', '')::numeric,
+          state = coalesce(paired.v ->> 'state', ''),
+          filled = nullif(paired.v ->> 'filled', '')::numeric,
+          avg_price = nullif(paired.v ->> 'avgPrice', '')::numeric,
+          remaining = nullif(paired.v ->> 'remaining', '')::numeric,
+          name = coalesce(paired.v ->> 'name', ''),
+          time_text = coalesce(paired.v ->> 'time', '')
+      from paired
+      where paired.ord is not null
+        and paired.row_id is not null
+        and target.id = paired.row_id
+        and target.daily_import_id = v_daily.id
       returning target.id
     ),
     added as (
@@ -1192,19 +1242,19 @@ begin
         instrument, action, order_type, quantity, limit_price, stop_price,
         state, filled, avg_price, remaining, name, time_text
       )
-      select v_daily.id, incoming.account_id, coalesce(incoming.v ->> 'id', ''),
-             coalesce(incoming.v ->> 'strategyName', ''),
-             coalesce(incoming.v ->> 'instrument', ''), coalesce(incoming.v ->> 'action', ''),
-             coalesce(incoming.v ->> 'orderType', ''),
-             nullif(incoming.v ->> 'quantity', '')::numeric, nullif(incoming.v ->> 'limit', '')::numeric,
-             nullif(incoming.v ->> 'stop', '')::numeric, coalesce(incoming.v ->> 'state', ''),
-             nullif(incoming.v ->> 'filled', '')::numeric, nullif(incoming.v ->> 'avgPrice', '')::numeric,
-             nullif(incoming.v ->> 'remaining', '')::numeric, coalesce(incoming.v ->> 'name', ''),
-             coalesce(incoming.v ->> 'time', '')
-      from incoming_numbered as incoming
-      left join pairs on pairs.ord = incoming.ord
-      where pairs.ord is null
-      order by incoming.ord
+      select v_daily.id, paired.account_id, coalesce(paired.v ->> 'id', ''),
+             coalesce(paired.v ->> 'strategyName', ''),
+             coalesce(paired.v ->> 'instrument', ''), coalesce(paired.v ->> 'action', ''),
+             coalesce(paired.v ->> 'orderType', ''),
+             nullif(paired.v ->> 'quantity', '')::numeric, nullif(paired.v ->> 'limit', '')::numeric,
+             nullif(paired.v ->> 'stop', '')::numeric, coalesce(paired.v ->> 'state', ''),
+             nullif(paired.v ->> 'filled', '')::numeric, nullif(paired.v ->> 'avgPrice', '')::numeric,
+             nullif(paired.v ->> 'remaining', '')::numeric, coalesce(paired.v ->> 'name', ''),
+             coalesce(paired.v ->> 'time', '')
+      from paired
+      where paired.ord is not null
+        and paired.row_id is null
+      order by paired.ord
       returning id
     )
     select (select count(*) from refreshed) + (select count(*) from added) into v_touched;
@@ -1212,8 +1262,8 @@ begin
     -- ---------------------------------------------------------------------
     -- EXECUTIONS, merged the same way: one key per row, from the external
     -- execution id or the fallback (instrument, action, quantity, price,
-    -- time_text, order id). The same statement reports the two facts
-    -- derived_realized depends on.
+    -- time_text, order id), paired by grouping, never by a join. The same
+    -- statement reports the two facts derived_realized depends on.
     -- ---------------------------------------------------------------------
     with incoming as (
       select item.ordinality as ord,
@@ -1237,57 +1287,71 @@ begin
                   end as key
       from incoming
     ),
-    incoming_numbered as (
-      select incoming_keyed.*,
-             row_number() over (partition by incoming_keyed.key order by incoming_keyed.ord) as k
+    stored_keyed as (
+      select held.id as row_id,
+             held.trading_account_id as account_id,
+             held.created_at,
+             coalesce(held.trading_account_id::text, '~') || chr(31)
+               || case when nullif(held.external_execution_id, '') is not null
+                    then 'i' || chr(31) || held.external_execution_id
+                    else 'f' || chr(31) || coalesce(held.instrument, '')
+                      || chr(31) || coalesce(held.action, '')
+                      || chr(31) || coalesce(trim_scale(held.quantity)::text, '~')
+                      || chr(31) || coalesce(trim_scale(held.price)::text, '~')
+                      || chr(31) || coalesce(held.time_text, '')
+                      || chr(31) || coalesce(held.external_order_id, '')
+                  end as key
+      from public.executions as held
+      where held.daily_import_id = v_daily.id
+    ),
+    sides as (
+      select incoming_keyed.key,
+             row_number() over (partition by incoming_keyed.key order by incoming_keyed.ord) as k,
+             incoming_keyed.ord,
+             incoming_keyed.v,
+             incoming_keyed.account_id,
+             null::uuid as row_id
       from incoming_keyed
+      union all
+      select stored_keyed.key,
+             row_number() over (partition by stored_keyed.key order by stored_keyed.created_at, stored_keyed.row_id),
+             null::bigint,
+             null::jsonb,
+             stored_keyed.account_id,
+             stored_keyed.row_id
+      from stored_keyed
     ),
-    stored_numbered as (
-      select keyed.row_id,
-             keyed.account_id,
-             keyed.key,
-             row_number() over (partition by keyed.key order by keyed.created_at, keyed.row_id) as k
-      from (
-        select held.id as row_id,
-               held.trading_account_id as account_id,
-               held.created_at,
-               coalesce(held.trading_account_id::text, '~') || chr(31)
-                 || case when nullif(held.external_execution_id, '') is not null
-                      then 'i' || chr(31) || held.external_execution_id
-                      else 'f' || chr(31) || coalesce(held.instrument, '')
-                        || chr(31) || coalesce(held.action, '')
-                        || chr(31) || coalesce(trim_scale(held.quantity)::text, '~')
-                        || chr(31) || coalesce(trim_scale(held.price)::text, '~')
-                        || chr(31) || coalesce(held.time_text, '')
-                        || chr(31) || coalesce(held.external_order_id, '')
-                    end as key
-        from public.executions as held
-        where held.daily_import_id = v_daily.id
-      ) as keyed
-    ),
-    pairs as (
-      select incoming.ord, stored.row_id
-      from incoming_numbered as incoming
-      join stored_numbered as stored on stored.key = incoming.key and stored.k = incoming.k
+    paired as (
+      -- At most one payload row and one stored row per (key, k); the account
+      -- of each side is kept apart for the two facts below.
+      select max(sides.ord) as ord,
+             (array_agg(sides.v) filter (where sides.ord is not null))[1] as v,
+             (array_agg(sides.account_id) filter (where sides.ord is not null))[1] as account_id,
+             (array_agg(sides.row_id) filter (where sides.row_id is not null))[1] as row_id,
+             (array_agg(sides.account_id) filter (where sides.row_id is not null))[1] as stored_account_id
+      from sides
+      group by sides.key, sides.k
     ),
     refreshed as (
       update public.executions as target
-      set external_order_id = coalesce(incoming.v ->> 'orderId', ''),
-          strategy_name = coalesce(incoming.v ->> 'strategyName', ''),
-          instrument = coalesce(incoming.v ->> 'instrument', ''),
-          action = coalesce(incoming.v ->> 'action', ''),
-          quantity = nullif(incoming.v ->> 'quantity', '')::numeric,
-          price = nullif(incoming.v ->> 'price', '')::numeric,
-          time_text = coalesce(incoming.v ->> 'time', ''),
-          entry_exit = coalesce(incoming.v ->> 'entryExit', ''),
-          position = coalesce(incoming.v ->> 'position', ''),
-          name = coalesce(incoming.v ->> 'name', ''),
-          commission = nullif(incoming.v ->> 'commission', '')::numeric,
-          rate = nullif(incoming.v ->> 'rate', '')::numeric,
-          connection = coalesce(incoming.v ->> 'connection', '')
-      from pairs
-      join incoming_numbered as incoming on incoming.ord = pairs.ord
-      where target.id = pairs.row_id
+      set external_order_id = coalesce(paired.v ->> 'orderId', ''),
+          strategy_name = coalesce(paired.v ->> 'strategyName', ''),
+          instrument = coalesce(paired.v ->> 'instrument', ''),
+          action = coalesce(paired.v ->> 'action', ''),
+          quantity = nullif(paired.v ->> 'quantity', '')::numeric,
+          price = nullif(paired.v ->> 'price', '')::numeric,
+          time_text = coalesce(paired.v ->> 'time', ''),
+          entry_exit = coalesce(paired.v ->> 'entryExit', ''),
+          position = coalesce(paired.v ->> 'position', ''),
+          name = coalesce(paired.v ->> 'name', ''),
+          commission = nullif(paired.v ->> 'commission', '')::numeric,
+          rate = nullif(paired.v ->> 'rate', '')::numeric,
+          connection = coalesce(paired.v ->> 'connection', '')
+      from paired
+      where paired.ord is not null
+        and paired.row_id is not null
+        and target.id = paired.row_id
+        and target.daily_import_id = v_daily.id
       returning target.id
     ),
     added as (
@@ -1296,28 +1360,30 @@ begin
         external_order_id, strategy_name, instrument, action, quantity, price,
         time_text, entry_exit, position, name, commission, rate, connection
       )
-      select v_daily.id, incoming.account_id, coalesce(incoming.v ->> 'id', ''),
-             coalesce(incoming.v ->> 'orderId', ''),
-             coalesce(incoming.v ->> 'strategyName', ''), coalesce(incoming.v ->> 'instrument', ''),
-             coalesce(incoming.v ->> 'action', ''), nullif(incoming.v ->> 'quantity', '')::numeric,
-             nullif(incoming.v ->> 'price', '')::numeric, coalesce(incoming.v ->> 'time', ''),
-             coalesce(incoming.v ->> 'entryExit', ''), coalesce(incoming.v ->> 'position', ''),
-             coalesce(incoming.v ->> 'name', ''), nullif(incoming.v ->> 'commission', '')::numeric,
-             nullif(incoming.v ->> 'rate', '')::numeric, coalesce(incoming.v ->> 'connection', '')
-      from incoming_numbered as incoming
-      left join pairs on pairs.ord = incoming.ord
-      where pairs.ord is null
-      order by incoming.ord
+      select v_daily.id, paired.account_id, coalesce(paired.v ->> 'id', ''),
+             coalesce(paired.v ->> 'orderId', ''),
+             coalesce(paired.v ->> 'strategyName', ''), coalesce(paired.v ->> 'instrument', ''),
+             coalesce(paired.v ->> 'action', ''), nullif(paired.v ->> 'quantity', '')::numeric,
+             nullif(paired.v ->> 'price', '')::numeric, coalesce(paired.v ->> 'time', ''),
+             coalesce(paired.v ->> 'entryExit', ''), coalesce(paired.v ->> 'position', ''),
+             coalesce(paired.v ->> 'name', ''), nullif(paired.v ->> 'commission', '')::numeric,
+             nullif(paired.v ->> 'rate', '')::numeric, coalesce(paired.v ->> 'connection', '')
+      from paired
+      where paired.ord is not null
+        and paired.row_id is null
+      order by paired.ord
       returning trading_account_id
     )
     select
+      -- Present accounts with a stored fill no payload row paired.
       coalesce((
-        select array_agg(distinct stored.account_id)
-        from stored_numbered as stored
-        left join pairs on pairs.row_id = stored.row_id
-        where pairs.row_id is null
-          and stored.account_id = any(v_present_ids)
+        select array_agg(distinct paired.stored_account_id)
+        from paired
+        where paired.ord is null
+          and paired.row_id is not null
+          and paired.stored_account_id = any(v_present_ids)
       ), '{}'),
+      -- Accounts that gained a fill in this merge.
       coalesce((
         select array_agg(distinct added.trading_account_id)
         from added
@@ -1548,9 +1614,13 @@ begin
     -- The accounts this close already holds a fill for, once, as keys.
     select coalesce(array_agg(distinct lower(btrim(account.account_name))), '{}')
       into v_fill_keys
-    from public.executions as fill
-    join public.trading_accounts as account on account.id = fill.trading_account_id
-    where fill.daily_import_id = p_daily_import_id;
+    from (
+      select distinct fill.trading_account_id as id
+      from public.executions as fill
+      where fill.daily_import_id = p_daily_import_id
+        and fill.trading_account_id is not null
+    ) as filled
+    join public.trading_accounts as account on account.id = filled.id;
 
     for r in
       with runs as (

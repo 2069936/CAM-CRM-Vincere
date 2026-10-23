@@ -1020,74 +1020,6 @@ describe('the Manager replay', () => {
   });
 });
 
-/* ── What a merge costs ───────────────────────────────────────────────────── */
-
-/* Step 50 deleted the day's fills and inserted the capture's: linear. The
- * merge pairs every incoming fill with a stored one, and a pairing written
- * with IS NOT DISTINCT FROM cannot be hashed, so the planner nested it: 8,000
- * fills took about ten seconds under the client's row lock. Both sides now
- * meet on one text key. This guard times the same superset capture on a
- * cluster without 73 and on this one, in the same run, so a quadratic plan
- * fails here rather than at 16:30. */
-describe('a superset capture of 4,000 fills', () => {
-  async function timeSuperset(conn, label, count) {
-    const client = await one(conn, 'insert into public.clients (name) values ($1) returning id', [label]);
-    const device = await one(conn, 'insert into public.ingest_devices (client_id) values ($1) returning id', [client]);
-    const names = Array.from({ length: 20 }, (_, i) => `ACC${i}`);
-    const fills = (count) => Array.from({ length: count }, (_, k) => fill(names[k % 20], `E${k}`, {
-      orderId: `O${k}`, price: 21000 + (k % 50), time: `${DAY} 10:${String(k % 60).padStart(2, '0')}:00`,
-    }));
-    const snapshots = names.map((name) => snap(name, 100));
-    async function once(capturedAt, executions) {
-      const body = payload({ snapshots, executions });
-      const token = randomUUID();
-      const captureId = randomUUID();
-      const rowCounts = { accounts: snapshots.length, strategies: 0, orders: 0, executions: executions.length };
-      const claimed = (await conn.query(
-        `select public.claim_ingest_batch_v4($1, $2, $3::date, $4::timestamptz, 1, $5, $6, 10, $7::jsonb, $8, 120) as r`,
-        [device, captureId, DAY, capturedAt, `${client}/${DAY}/${captureId}.json.gz`, 'a'.repeat(64),
-          JSON.stringify(rowCounts), token])).rows[0].r;
-      expect(claimed.outcome).toBe('owned');
-      const started = performance.now();
-      const persisted = (await conn.query('select public.persist_auto_daily_import_v3($1, $2, $3, $4::jsonb) as r',
-        [client, claimed.batch.id, token, JSON.stringify(body)])).rows[0].r;
-      const elapsed = performance.now() - started;
-      expect(persisted.disposition).toBe('persisted');
-      // Finalized as the route does, outside the clock, so no batch is left
-      // holding an admission slot for the next round.
-      await conn.query(
-        `select status from public.finalize_ingest_batch_v3(
-           $1, $2, $3, $4, 'processed', $5, $6::timestamptz, true, null, '{}'::jsonb, $7::jsonb,
-           'ingest_batch_processed', '{"storage": 1}'::jsonb, 5)`,
-        [claimed.batch.id, device, client, token, persisted.daily_import.id, capturedAt, JSON.stringify(rowCounts)]);
-      return { elapsed, importId: persisted.daily_import.id };
-    }
-    await once(at('15:00'), fills(count));
-    const superset = await once(at('16:30'), fills(count + count / 100));
-    expect(await one(conn, 'select count(*)::int from public.executions where daily_import_id = $1', [superset.importId])).toBe(count + count / 100);
-    return superset.elapsed;
-  }
-
-  // HOW THE MERGE GROWS, NOT HOW FAST THIS MACHINE IS. A guard against step
-  // 50's absolute time failed on CI by 35 ms (1,995 against 1,960): a shared
-  // runner under the full suite is several times slower than a laptop and
-  // not steadily so. What the guard is for is the quadratic pairing this file
-  // once had, and that shows in the growth: four times the fills cost about
-  // four times the time when the pairing hashes, and 11.6 times when it did
-  // not (205 ms at 1,000 fills, 2,383 ms at 4,000). Both sizes run on the same
-  // cluster in alternating rounds, fastest of each, so a slow moment on the
-  // runner moves both sides together.
-  it('grows about linearly with the fills, not quadratically', async () => {
-    const small = [];
-    const large = [];
-    for (let round = 0; round < 3; round += 1) {
-      small.push(await timeSuperset(db, `Timing 1k ${round}`, 1000));
-      large.push(await timeSuperset(db, `Timing 4k ${round}`, 4000));
-    }
-    expect(Math.min(...large) / Math.min(...small)).toBeLessThan(8);
-  }, 180_000);
-});
-
 describe('the two checks', () => {
   it('are validated after the commit, so they hold for every row', async () => {
     expect(await column(db, `select conname || ':' || convalidated from pg_constraint
@@ -1159,6 +1091,139 @@ describe('the browser and the grants', () => {
   });
 });
 
+/* ── What a merge costs ───────────────────────────────────────────────────── */
+
+/* Step 50 deleted the day's fills and inserted the capture's: linear. The
+ * merge pairs every incoming fill with a stored one, and how it pairs them has
+ * twice cost more than its own work. Pairing with IS NOT DISTINCT FROM cannot
+ * be hashed: 8,000 fills took about ten seconds under the client's row lock.
+ * Pairing with a join on one text key could be hashed, and still took 0.8 s at
+ * 4,000 fills here, because PL/pgSQL caches each statement's plan per
+ * connection and the plan it cached had been built when the closes before it
+ * were small (jsonb_array_elements is estimated at 100 rows whatever the
+ * payload holds): a nested loop, quadratic in the fills. Freshly planned, the
+ * same statement took 0.12 s. The pairing is now a GROUP BY, which no plan can
+ * make quadratic, and every stored read is bounded by its close.
+ *
+ * These guards run last among the describes that write closes, on the world
+ * the file has built and with every plan already cached on small closes, which
+ * is the state a pooled production connection is in at 16:30. */
+describe('what a superset capture costs', () => {
+  async function timeSuperset(conn, label, count) {
+    const client = await one(conn, 'insert into public.clients (name) values ($1) returning id', [label]);
+    const device = await one(conn, 'insert into public.ingest_devices (client_id) values ($1) returning id', [client]);
+    const names = Array.from({ length: 20 }, (_, i) => `ACC${i}`);
+    const fills = (count) => Array.from({ length: count }, (_, k) => fill(names[k % 20], `E${k}`, {
+      orderId: `O${k}`, price: 21000 + (k % 50), time: `${DAY} 10:${String(k % 60).padStart(2, '0')}:00`,
+    }));
+    const snapshots = names.map((name) => snap(name, 100));
+    async function once(capturedAt, executions) {
+      const body = payload({ snapshots, executions });
+      const token = randomUUID();
+      const captureId = randomUUID();
+      const rowCounts = { accounts: snapshots.length, strategies: 0, orders: 0, executions: executions.length };
+      const claimed = (await conn.query(
+        `select public.claim_ingest_batch_v4($1, $2, $3::date, $4::timestamptz, 1, $5, $6, 10, $7::jsonb, $8, 120) as r`,
+        [device, captureId, DAY, capturedAt, `${client}/${DAY}/${captureId}.json.gz`, 'a'.repeat(64),
+          JSON.stringify(rowCounts), token])).rows[0].r;
+      expect(claimed.outcome).toBe('owned');
+      const started = performance.now();
+      const persisted = (await conn.query('select public.persist_auto_daily_import_v3($1, $2, $3, $4::jsonb) as r',
+        [client, claimed.batch.id, token, JSON.stringify(body)])).rows[0].r;
+      const elapsed = performance.now() - started;
+      expect(persisted.disposition).toBe('persisted');
+      // Finalized as the route does, outside the clock, so no batch is left
+      // holding an admission slot for the next round.
+      await conn.query(
+        `select status from public.finalize_ingest_batch_v3(
+           $1, $2, $3, $4, 'processed', $5, $6::timestamptz, true, null, '{}'::jsonb, $7::jsonb,
+           'ingest_batch_processed', '{"storage": 1}'::jsonb, 5)`,
+        [claimed.batch.id, device, client, token, persisted.daily_import.id, capturedAt, JSON.stringify(rowCounts)]);
+      return { elapsed, importId: persisted.daily_import.id };
+    }
+    await once(at('15:00'), fills(count));
+    const superset = await once(at('16:30'), fills(count + count / 100));
+    expect(await one(conn, 'select count(*)::int from public.executions where daily_import_id = $1', [superset.importId])).toBe(count + count / 100);
+    return superset.elapsed;
+  }
+
+  // HOW THE MERGE GROWS, NOT HOW FAST THIS MACHINE IS. A guard on step 50's
+  // absolute time failed on CI by 35 ms: a shared runner under the full suite
+  // is several times slower than a laptop and not steadily so. What the guard
+  // is for is a pairing that grows faster than the fills, and that shows in
+  // the ratio: four times the fills cost about four times the time when the
+  // pairing is linear, and ten to twelve times when it was not (2,383 ms
+  // against 205 with IS NOT DISTINCT FROM; 797 against 81 with the cached
+  // nested loop). One unmeasured round of each size first, then both sizes on
+  // this cluster in alternating rounds, fastest of each.
+  it('grows about linearly with the fills, not quadratically', async () => {
+    await timeSuperset(db, 'Warm up 1k', 1000);
+    await timeSuperset(db, 'Warm up 4k', 4000);
+    const small = [];
+    const large = [];
+    for (let round = 0; round < 3; round += 1) {
+      small.push(await timeSuperset(db, `Timing 1k ${round}`, 1000));
+      large.push(await timeSuperset(db, `Timing 4k ${round}`, 4000));
+    }
+    expect(Math.min(...large) / Math.min(...small)).toBeLessThan(7);
+  }, 240_000);
+
+  /* THE SIZE OF THE BOOK MUST NOT MATTER. Production holds about 50,000 fills
+   * and 100,000 orders over more than 1,100 accounts, with thousands of flags.
+   * A close must cost what its own rows cost. Two fresh clusters, one with a
+   * large unrelated book inserted directly (100 clients, 2,000 accounts, 500
+   * closes, 20,000 fills, 20,000 orders, 5,000 flags), each warmed with small
+   * closes so its plans are cached the way a pooled connection's are, then the
+   * same 4,000 fill superset on each, alternating, fastest of three. */
+  it('costs the same on a large unrelated book, within twice the plain one', async () => {
+    const files = migrationFilesInOrder();
+    const plain = await startMigrationCluster(files);
+    const loaded = await startMigrationCluster(files);
+    try {
+      await loaded.exec(`
+        insert into public.clients (name)
+          select 'Book ' || n from generate_series(1, 100) as n;
+        insert into public.trading_accounts (client_id, legacy_key, account_name, alias, account_type, status)
+          select c.id, 'BK' || n, 'BK ' || c.name || ' ' || n, 'BK ' || n, 'Funded', 'Active'
+          from public.clients as c cross join generate_series(1, 20) as n
+          where c.name like 'Book %';
+        insert into public.daily_imports (client_id, trading_date, status, source_type)
+          select c.id, current_date - 3 - d, 'Closed', 'automatic'
+          from public.clients as c cross join generate_series(0, 4) as d
+          where c.name like 'Book %';
+        insert into public.executions (daily_import_id, trading_account_id, external_execution_id, external_order_id,
+                                       instrument, action, quantity, price, time_text)
+          select d.id, a.id, 'X' || n || '-' || d.id, 'XO' || n || '-' || d.id, 'MNQ 12-26', 'Buy', 1, 21000, '10:00:00'
+          from public.daily_imports as d
+          join lateral (select id from public.trading_accounts where client_id = d.client_id order by id limit 1) as a on true
+          cross join generate_series(1, 40) as n;
+        insert into public.orders (daily_import_id, trading_account_id, external_order_id, instrument, action, quantity, state)
+          select d.id, a.id, 'XO' || n || '-' || d.id, 'MNQ 12-26', 'Buy', 1, 'Filled'
+          from public.daily_imports as d
+          join lateral (select id from public.trading_accounts where client_id = d.client_id order by id limit 1) as a on true
+          cross join generate_series(1, 40) as n;
+        insert into public.operational_flags (daily_import_id, client_id, type, severity, message)
+          select d.id, d.client_id, 'Import review', 'Warning', 'Book flag ' || n
+          from public.daily_imports as d cross join generate_series(1, 10) as n;`);
+      expect(await one(loaded, 'select count(*)::int from public.executions')).toBe(20000);
+      expect(await one(loaded, "select count(*)::int from public.trading_accounts where account_name like 'BK %'")).toBe(2000);
+      for (const conn of [plain, loaded]) {
+        for (let warm = 0; warm < 3; warm += 1) await timeSuperset(conn, `Warm ${warm}`, 100);
+      }
+      const onPlain = [];
+      const onLoaded = [];
+      for (let round = 0; round < 3; round += 1) {
+        onPlain.push(await timeSuperset(plain, `Plain ${round}`, 4000));
+        onLoaded.push(await timeSuperset(loaded, `Loaded ${round}`, 4000));
+      }
+      expect(Math.min(...onLoaded)).toBeLessThan(2 * Math.min(...onPlain));
+    } finally {
+      await plain.close();
+      await loaded.close();
+    }
+  }, 300_000);
+});
+
 /* ── Running it again ─────────────────────────────────────────────────────── */
 
 describe('running it again', () => {
@@ -1175,6 +1240,7 @@ describe('running it again', () => {
       'column "source_detail" of relation "account_snapshots" already exists, skipping',
       'column "source" of relation "strategy_snapshots" already exists, skipping',
       'column "details" of relation "operational_flags" already exists, skipping',
+      'relation "idx_operational_flags_import_account_type" already exists, skipping',
     ]);
     expect(await counts()).toEqual(before);
     expect((await executeGrantees(FILL_DAY)).filter((role) => role !== 'postgres')).toEqual(['service_role']);
