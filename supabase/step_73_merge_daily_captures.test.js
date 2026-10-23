@@ -1030,7 +1030,7 @@ describe('the Manager replay', () => {
  * cluster without 73 and on this one, in the same run, so a quadratic plan
  * fails here rather than at 16:30. */
 describe('a superset capture of 4,000 fills', () => {
-  async function timeSuperset(conn, label) {
+  async function timeSuperset(conn, label, count) {
     const client = await one(conn, 'insert into public.clients (name) values ($1) returning id', [label]);
     const device = await one(conn, 'insert into public.ingest_devices (client_id) values ($1) returning id', [client]);
     const names = Array.from({ length: 20 }, (_, i) => `ACC${i}`);
@@ -1062,29 +1062,29 @@ describe('a superset capture of 4,000 fills', () => {
         [claimed.batch.id, device, client, token, persisted.daily_import.id, capturedAt, JSON.stringify(rowCounts)]);
       return { elapsed, importId: persisted.daily_import.id };
     }
-    await once(at('15:00'), fills(4000));
-    const superset = await once(at('16:30'), fills(4040));
-    expect(await one(conn, 'select count(*)::int from public.executions where daily_import_id = $1', [superset.importId])).toBe(4040);
+    await once(at('15:00'), fills(count));
+    const superset = await once(at('16:30'), fills(count + count / 100));
+    expect(await one(conn, 'select count(*)::int from public.executions where daily_import_id = $1', [superset.importId])).toBe(count + count / 100);
     return superset.elapsed;
   }
 
-  // Three rounds, the two clusters taking turns, and the fastest of each: the
-  // full suite runs many clusters at once, and one slow moment on one side
-  // must not read as a regression. A quadratic pairing is several times
-  // slower on every round (2.4 s against 0.3 s at 4,000 fills when it was one).
-  it('merges in at most three times what step 50 took to replace', async () => {
-    const base = await startMigrationCluster(migrationFilesInOrder({ upTo: 72 }));
-    try {
-      const step50 = [];
-      const step73 = [];
-      for (let round = 0; round < 3; round += 1) {
-        step50.push(await timeSuperset(base, `Timing 50 ${round}`));
-        step73.push(await timeSuperset(db, `Timing 73 ${round}`));
-      }
-      expect(Math.min(...step73)).toBeLessThan(3 * Math.min(...step50) + 250);
-    } finally {
-      await base.close();
+  // HOW THE MERGE GROWS, NOT HOW FAST THIS MACHINE IS. A guard against step
+  // 50's absolute time failed on CI by 35 ms (1,995 against 1,960): a shared
+  // runner under the full suite is several times slower than a laptop and
+  // not steadily so. What the guard is for is the quadratic pairing this file
+  // once had, and that shows in the growth: four times the fills cost about
+  // four times the time when the pairing hashes, and 11.6 times when it did
+  // not (205 ms at 1,000 fills, 2,383 ms at 4,000). Both sizes run on the same
+  // cluster in alternating rounds, fastest of each, so a slow moment on the
+  // runner moves both sides together.
+  it('grows about linearly with the fills, not quadratically', async () => {
+    const small = [];
+    const large = [];
+    for (let round = 0; round < 3; round += 1) {
+      small.push(await timeSuperset(db, `Timing 1k ${round}`, 1000));
+      large.push(await timeSuperset(db, `Timing 4k ${round}`, 4000));
     }
+    expect(Math.min(...large) / Math.min(...small)).toBeLessThan(8);
   }, 180_000);
 });
 
