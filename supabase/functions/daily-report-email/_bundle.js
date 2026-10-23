@@ -3312,6 +3312,14 @@ Object.freeze({
 	newAccountDays: 14
 });
 //#endregion
+//#region src/domain/provisionalRows.js
+var TRACKER_SOURCE = "tracker";
+var CAPTURE_SOURCE = "capture";
+/** The stored `source` column, read back: 'tracker' or 'capture', never anything else. */
+function sourceFromRow(value) {
+	return value === "tracker" ? TRACKER_SOURCE : CAPTURE_SOURCE;
+}
+//#endregion
 //#region src/domain/supabaseStore.js
 function pickId(row) {
 	return row.legacy_key || row.id;
@@ -3375,7 +3383,8 @@ function strategyFromRow(row, accountById = {}) {
 		unrealized: numberOrNull$1(row.unrealized),
 		derivedRealized: numberOrNull$1(row.derived_realized),
 		ran: typeof row.ran === "boolean" ? row.ran : null,
-		ranBasis: row.ran_basis || ""
+		ranBasis: row.ran_basis || "",
+		source: sourceFromRow(row.source)
 	};
 }
 function snapshotFromRow(row, strategiesBySnapshot, accountById) {
@@ -3390,6 +3399,7 @@ function snapshotFromRow(row, strategiesBySnapshot, accountById) {
 		weeklyPnl: Number(row.weekly_pnl || 0),
 		unrealizedPnl: Number(row.unrealized_pnl || 0),
 		derivation: row.derivation || null,
+		source: sourceFromRow(row.source),
 		meta: account ? accountMetaFromRow(account) : {},
 		strategies: strategiesBySnapshot[row.id] || []
 	};
@@ -3567,8 +3577,8 @@ var CRM_STATE_TABLES = [
 * reads, so it arrives when a close is opened.
 */
 var LATEST_CLOSE_COLUMNS = {
-	account_snapshots: "id, daily_import_id, trading_account_id, account_name, connection, gross_realized_pnl, trailing_max_drawdown, account_balance, weekly_pnl, unrealized_pnl",
-	strategy_snapshots: "id, daily_import_id, account_snapshot_id, trading_account_id, strategy_name, strategy_family, strategy_version, instrument, data_series, direction, enabled, realized, unrealized, derived_realized, ran, ran_basis",
+	account_snapshots: "id, daily_import_id, trading_account_id, account_name, connection, gross_realized_pnl, trailing_max_drawdown, account_balance, weekly_pnl, unrealized_pnl, source",
+	strategy_snapshots: "id, daily_import_id, account_snapshot_id, trading_account_id, strategy_name, strategy_family, strategy_version, instrument, data_series, direction, enabled, realized, unrealized, derived_realized, ran, ran_basis, source",
 	executions: "id, daily_import_id, trading_account_id, external_execution_id, external_order_id, strategy_name, instrument, action, quantity, price, time_text, entry_exit, position, name, commission, rate, connection"
 };
 LATEST_CLOSE_COLUMNS.executions, `${LATEST_CLOSE_COLUMNS.account_snapshots}`, LATEST_CLOSE_COLUMNS.strategy_snapshots;
@@ -3818,7 +3828,7 @@ function jsonArray(value) {
 	return Array.isArray(value) ? value : [];
 }
 //#endregion
-//#region node_modules/fflate/esm/browser.js
+//#region ../../CAM-CRM-Vincere/node_modules/fflate/esm/browser.js
 var u8 = Uint8Array, u16 = Uint16Array, i32 = Int32Array;
 var fleb = new u8([
 	0,
